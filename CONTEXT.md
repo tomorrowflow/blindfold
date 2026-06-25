@@ -1,0 +1,87 @@
+# CONTEXT — Blindfold
+
+Blindfold is a self-hosted proxy that sits in the request path of the LLM tools a
+user controls. It **blindfolds** outbound prompts (replacing real **entities** with
+**surrogates**) and **restores** real values in the response, so the user works
+with clear names while the provider only ever sees plausible fakes. Drivers:
+GDPR/compliance + IP protection. Full architecture and decision log: `docs/DESIGN.md`.
+
+This file is the project's **ubiquitous language**. Use these terms (not synonyms)
+in issues, tests, code, and docs. If a needed concept isn't here, that's a signal
+to add it via `/grill-with-docs`, not to invent a synonym.
+
+## Glossary
+
+- **Blindfold** — (verb) replace real entities with surrogates in an outbound
+  payload before it leaves the machine. (noun) the system as a whole. Avoid
+  "anonymize"/"mask"/"redact" as the primary verb — they imply destruction; we
+  pseudonymize reversibly.
+- **Restore** — the reverse of blindfold: replace surrogates with their real
+  entities in a provider response. Avoid "de-anonymize"/"unmask".
+- **Entity** — a real-world referent that must be protected: a person, organization,
+  contact-PII value (email, phone, IBAN, ID), or IP term/codename.
+- **Surrogate** — the fake stand-in assigned to an entity. Plausible and
+  locale-aware for names/orgs; **reserved-namespace** (non-routable, non-colliding)
+  for contactable PII. Stable once minted.
+- **Mapping** (a.k.a. **re-identification mapping**) — the real↔surrogate record.
+  The crown-jewel secret; real-value side is stored encrypted.
+- **Entity graph** — the curated store of entities, variations, relationships, and
+  surrogates. The authoritative dictionary the deterministic passes match against.
+- **Variation** — a surface form of an entity (full name, first name, initials,
+  nickname, misspelling). Resolving variations to one entity is **coreference**.
+- **Relationship** — an edge in the entity graph (person works-at org, alias-of,
+  reports-to). Drives the **coherent surrogate world** and disambiguation.
+- **Coherent surrogate world** — surrogates whose relationships stay internally
+  consistent: a person's fake email domain equals their employer's fake domain;
+  locales match; dates are **date-shifted** by a stable per-entity offset.
+- **Detection layers**:
+  - **L1** — deterministic regex/PII detection (emails, phones, IBANs, IDs).
+  - **L2** — the curated entity-graph dictionary, matched 4-pass (exact, normalized,
+    fuzzy, first-name ambiguity), German-aware.
+  - **L3** — local-LLM **candidate-span adjudication** (Ollama), run only on spans
+    the deterministic passes can't resolve.
+- **Candidate span** — a flagged span (unknown capitalized token, fuzzy near-miss,
+  ambiguous first name) handed to L3, plus minimal context. L3 cost scales with the
+  number of candidate spans, not payload size.
+- **Hop** — a single message within a request (system prompt, a user turn, or a
+  **tool-result** message). Blindfold rewrites every hop, not just the first prompt.
+- **Workspace** — the scoping unit for team access (RBAC), disambiguation context,
+  and audit. One canonical entity per real referent, organized by workspace tags.
+- **Review inbox** — the queue of **provisional**ly-blindfolded novel candidates
+  awaiting human confirmation.
+- **Provisional surrogate** — the fake auto-minted for a novel entity at request
+  time, before review; protection happens immediately and non-blocking.
+- **Learning loop** — review actions feed the system: **confirm** grows the entity
+  graph; **reject** grows the **allowlist**. Bidirectional; makes detection more
+  deterministic over time.
+- **Allowlist** — learned tokens marked NOT sensitive (e.g. a code identifier
+  mis-flagged as a name), so they're never blindfolded again.
+- **Closed-world restore** — restore only surrogates actually injected for this
+  exchange, to avoid restoring a coincidentally-emitted lookalike.
+- **Verify pass** — post-restore assertion that no real entity value leaked into
+  the response and no injected surrogate was left unresolved.
+- **Sliding-window restore** — streaming restore that holds back a tail buffer (≥
+  the longest known surrogate) so surrogates split across stream chunks are matched
+  before emitting; tool-call JSON is reassembled before restoring inside it.
+- **Transit** — the OpenBao (MPL-2.0) encryption-as-a-service engine that holds the
+  encryption keys and performs encrypt/decrypt; the app never holds key material.
+- **Blind index** — a deterministic derived column enabling equality lookups over
+  encrypted real-value columns without decrypting them.
+- **Fail-closed** — when the full detection pipeline can't run, block by default;
+  deterministic L1+L2 still protect known entities. A per-workspace opt-in allows
+  degrading to deterministic-only.
+
+## Key invariants
+
+- Every hop of every request is blindfolded before egress. Over-redaction is a
+  quality bug; an un-blindfolded real entity is a privacy bug.
+- Surrogates are stable: a given entity maps to the same surrogate everywhere.
+- The real-value side of the mapping is never stored in plaintext.
+- Restore is closed-world and followed by a verify pass.
+
+## Non-goals
+
+- Intercepting apps whose endpoint can't be redirected (claude.ai web, ChatGPT
+  desktop/mobile). Scope is tools where the base URL is configurable.
+- Irreversible anonymization. Blindfold is reversible pseudonymization by design.
+- Being a general secrets manager. Secret/key custody is delegated to OpenBao.
