@@ -75,6 +75,17 @@ converged to `STATUS: pass`.
 - **OWNER = environment / research / unknown** → do **not** burn a retry. Surface to the
   human (environment: infra/setup; research: needs a diagnose spike; unknown: not localized).
 
+**Web-side gate (`WEB-VERIFY: needed`).** `verify` cannot drive a browser, so when its
+report says `WEB-VERIFY: needed` (the slice touched the management SPA, ADR-0011), spawn
+the **`browser-verify`** agent in the same worktree, passing the agent brief. It launches
+the SPA and drives it via the Playwright MCP, returning its own `WEB-VERIFY` block
+(behavior + the SPA-privacy clauses, incl. **authorized-only re-identification**). Treat
+its verdict as part of this gate: **do not advance to step 5 on a SPA slice until
+`browser-verify` returns `WEB-VERIFY: pass`.** Route a `WEB-VERIFY: fail` exactly like a
+`verify` fail by its owner — `frontend`/`backend`/`schema` → repair (counts as one outer
+retry); **`leak-policy`** (a real value shown to an unauthorized viewer, or leaked to a
+third-party origin) → **STOP, never retry**, surface to the human.
+
 **No-progress guard.** If two consecutive reports share the same failure signature
 (same OWNER + same failing assertion/EVIDENCE), the loop is thrashing — STOP early and
 surface to the human rather than spending the remaining budget.

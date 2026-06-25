@@ -40,6 +40,20 @@ If the slice does not touch the request path, state which leak-audit clauses are
 If the diff touches the mapping store, OpenBao Transit, the blind index, RBAC, audit,
 or the egress path, run the `security-review` skill. Otherwise run `code-review`.
 
+### 4. Web-side behavior (frontend/SPA slices) — flag, don't drive
+The FastAPI test client (above) covers the JSON API seam, **not** what a human sees and
+does in the management SPA (ADR-0011). If the diff touches the SPA (review inbox,
+org-graph/surrogate editor, audit/RBAC admin), the browser must be driven via the
+`browser-verify` agent (Playwright MCP) — its assertions, including **authorized-only
+re-identification**, are part of this gate, not optional.
+
+You are an independent gate with no agent-spawning tool, so you do **not** run it
+yourself: set **`WEB-VERIFY: needed`** in your report and let `phase` spawn
+`browser-verify` in the worktree. For a SPA-touching slice, do **not** emit `STATUS: pass`
+until that browser check has come back clean — fold its `WEB-VERIFY` verdict and `PRIVACY`
+clauses into your LEAK-AUDIT line. If the slice does not touch the SPA, set
+`WEB-VERIFY: n/a`.
+
 ## Your verdict — emit a machine-routable report (always, last thing you output)
 
 The loop converges only on a machine-routable report. End every run with exactly this
@@ -56,6 +70,7 @@ EVIDENCE:
   - mechanical auto-fix applied: <what>        (only if you fixed something this run)
 LEAK-AUDIT:
   - <clause A..G> : pass | fail | n/a   (one line each that applies)
+WEB-VERIFY: needed | n/a   (needed = SPA-touched; phase must run browser-verify before pass)
 SUGGESTED FIX:
   - <smallest concrete change, behavioral not procedural>
 RE-VERIFY ONLY:
