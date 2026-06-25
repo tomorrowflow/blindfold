@@ -25,8 +25,11 @@ The issue number to work (e.g. `/phase 2`). If none is given, list unblocked
 - If the issue is `ready-for-human` (HITL — e.g. #10 OpenBao key/RBAC policy, #15
   org-graph editor UX), do **not** run the autonomous loop. Route to the human and
   suggest `grill-with-docs` (policy/architecture) or `prototype` (UX) instead.
-- Create an **isolated git worktree** on a new branch for this issue
-  (`git worktree add ../blindfold-issue-<n> -b issue-<n>`). Both `implement` and `verify`
+- Create an **isolated git worktree** on a new branch for this issue, **inside the repo**
+  so it falls within the harness sandbox root (a sibling path like `../blindfold-issue-<n>`
+  is outside the permitted subtree and agent file tools are denied there):
+  `git worktree add .worktrees/issue-<n> -b issue-<n>` (the `.worktrees/` dir is
+  gitignored). Both `implement` and `verify`
   operate in this one shared worktree, so every implement→verify→repair cycle is
   reproducible and the whole attempt is discardable if it goes bad (3rd-fail escalation,
   or `leak-policy` owner). Pass the worktree path to both agents.
@@ -111,7 +114,7 @@ the human is satisfied.
 ### 7. Close out, then STOP
 - Push the worktree branch and open/update the PR linking the issue; comment status on
   the issue. Do not merge or change the parent issue.
-- Remove the worktree once the branch is pushed (`git worktree remove ../blindfold-issue-<n>`).
+- Remove the worktree once the branch is pushed (`git worktree remove .worktrees/issue-<n>`).
   On a 3rd-fail or `leak-policy` stop, **leave it intact** for the human to inspect.
 - **Stop here.** Tell the human the phase is complete and that they should `/clear`
   before starting the next phase. Do **not** begin another issue.
