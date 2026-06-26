@@ -1,0 +1,13 @@
+Blindfold
+Copyright 2026 tomorrowflow
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This product depends on, but does not include, third-party software:
+
+  - OpenBao (https://openbao.org) — Mozilla Public License 2.0.
+    Used as a separate network service (the Transit encryption engine).
+    Not bundled or redistributed by this project.
+
+  - LiteLLM (https://github.com/BerriAI/litellm) — MIT License.
+    Used as a gateway library dependency.
