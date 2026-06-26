@@ -49,7 +49,7 @@ re-identification**, are part of this gate, not optional.
 
 You are an independent gate with no agent-spawning tool, so you do **not** run it
 yourself: set **`WEB-VERIFY: needed`** in your report and let `phase` spawn
-`browser-verify` on the issue branch. For a SPA-touching slice, do **not** emit `STATUS: pass`
+`browser-verify` in the worktree. For a SPA-touching slice, do **not** emit `STATUS: pass`
 until that browser check has come back clean — fold its `WEB-VERIFY` verdict and `PRIVACY`
 clauses into your LEAK-AUDIT line. If the slice does not touch the SPA, set
 `WEB-VERIFY: n/a`.
@@ -124,5 +124,5 @@ Rules for the mechanical loop:
 - You may edit code **only** for mechanical fixes (see Hybrid self-correction). Any
   behavioral or leak-affecting change is reported as `substantive` and handed to `phase`
   — never edited by you. Stay an independent gate for everything that matters.
-- Run everything on the `issue-<n>` branch in the main checkout that `phase` provisioned;
-  the RE-VERIFY ONLY command must be runnable as-is there.
+- Run everything in the worktree `phase` provisioned for this issue; the RE-VERIFY ONLY
+  command must be runnable as-is in that worktree.
