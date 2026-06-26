@@ -114,8 +114,10 @@ the human is satisfied.
 ### 7. Close out, then STOP
 - Push the worktree branch and open/update the PR linking the issue; comment status on
   the issue. Do not merge or change the parent issue.
-- Remove the worktree once the branch is pushed (`git worktree remove .worktrees/issue-<n>`).
-  On a 3rd-fail or `leak-policy` stop, **leave it intact** for the human to inspect.
+- Remove the worktree once the branch is pushed. Supacode auto-locks in-repo worktrees, so
+  removal needs the double force: `git worktree remove .worktrees/issue-<n> -f -f` (then
+  `git worktree prune`). On a 3rd-fail or `leak-policy` stop, **leave it intact** for the
+  human to inspect.
 - **Stop here.** Tell the human the phase is complete and that they should `/clear`
   before starting the next phase. Do **not** begin another issue.
 
