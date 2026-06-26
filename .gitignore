@@ -1,0 +1,12 @@
+# Phase worktrees live inside the repo so they fall within the harness sandbox root.
+.worktrees/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.env
