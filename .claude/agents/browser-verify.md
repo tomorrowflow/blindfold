@@ -21,7 +21,7 @@ audited"**, not "no real value on screen". Use `CONTEXT.md` vocabulary throughou
 
 1. **Self-specialize.** Read the **agent brief** on the issue (`gh issue view <n>
    --comments`), `CONTEXT.md`, and ADR-0011 (+ any ADR the slice touches). Work inside the
-   **git worktree** `phase` provisioned — never the main checkout.
+   **`issue-<n>` branch in the main checkout** that `phase` provisioned.
 2. **Launch the app.** Use the `run` skill to start the SPA + JSON API. If it cannot start,
    that is `environment` — stop and report, do not guess.
 3. **Run the recipe.** Load the `browser-verify` skill and follow it: drive the slice's
