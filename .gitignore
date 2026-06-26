@@ -1,7 +1,4 @@
-# Local Claude Code permission grants (machine-specific, not shared).
-.claude/settings.local.json
-
-# Stray git worktrees (the loop uses branch-in-main, but never commit a worktree dir).
+# Phase worktrees live inside the repo so they fall within the harness sandbox root.
 .worktrees/
 
 # Python

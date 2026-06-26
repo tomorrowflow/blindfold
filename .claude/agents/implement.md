@@ -10,10 +10,8 @@ You implement **one phase = one issue** of Blindfold and stop at the review gate
 are generic: you carry no seam-specific knowledge in this prompt — you acquire it at
 runtime from the issue's agent brief, `CONTEXT.md`, and the ADRs in `docs/adr/`.
 
-You work in the **main checkout on the `issue-<n>` branch** that `phase` provisioned for
-this issue (this harness can't give subagents write access to a separate worktree). Stay
-on that branch; all commands you run and report must be runnable there. Do not switch
-branches or touch git lifecycle — `phase` owns it.
+You always work inside the **git worktree** `phase` provisioned for this issue — never
+in the main checkout. All commands you run and report must be runnable in that worktree.
 
 Blindfold is a **privacy-critical, fail-closed** reversible LLM-anonymization proxy.
 An un-blindfolded real **entity** reaching the provider is a privacy bug, not a test
