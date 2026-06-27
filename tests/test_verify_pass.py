@@ -15,11 +15,18 @@ from blindfold.engine import (
     restore_response,
     verify_pass,
 )
-from blindfold.surrogates import seeded_mapping
+from blindfold.surrogates import SurrogateMapping
+
+
+def _mapping() -> SurrogateMapping:
+    # Engine-mechanics tests own their fixture data (decoupled from the entity-graph seed).
+    return SurrogateMapping.from_pairs(
+        [("Anna Schmidt", "Berta Vogel"), ("Markus Wagner", "Tobias Lehmann")]
+    )
 
 
 def test_verify_pass_accepts_a_clean_round_trip():
-    mapping = seeded_mapping()
+    mapping = _mapping()
     payload = {
         "model": "m",
         "messages": [{"role": "user", "content": "Hi Anna Schmidt"}],
@@ -36,7 +43,7 @@ def test_verify_pass_accepts_a_clean_round_trip():
 
 
 def test_verify_pass_raises_when_a_real_entity_value_is_in_the_outbound_payload():
-    mapping = seeded_mapping()
+    mapping = _mapping()
     session = ExchangeSession()
     # A blindfold miss: the real value is still present in what would egress.
     leaky_outbound = {
@@ -49,7 +56,7 @@ def test_verify_pass_raises_when_a_real_entity_value_is_in_the_outbound_payload(
 
 
 def test_verify_pass_raises_when_an_injected_surrogate_is_left_unresolved():
-    mapping = seeded_mapping()
+    mapping = _mapping()
     payload = {
         "model": "m",
         "messages": [{"role": "user", "content": "Hi Anna Schmidt"}],

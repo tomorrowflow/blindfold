@@ -10,13 +10,7 @@ Transit-backed mapping secrecy (leak-audit clause G) are out of scope (issues #3
 
 from __future__ import annotations
 
-# Hardcoded known person entities for the tracer-bullet slice, with deterministic
-# surrogates so the round trip is predictable. Real detection (L1/L2/L3) is out of
-# scope; here the entity set is fixed and matched by exact value.
-_SEED: dict[str, str] = {
-    "Anna Schmidt": "Berta Vogel",
-    "Markus Wagner": "Tobias Lehmann",
-}
+from collections.abc import Iterable
 
 # Plausible fake names used to mint surrogates for novel entities deterministically.
 _SURROGATE_POOL: tuple[str, ...] = (
@@ -33,6 +27,15 @@ class SurrogateMapping:
 
     def __init__(self) -> None:
         self._by_real: dict[str, str] = {}
+
+    @classmethod
+    def from_pairs(cls, pairs: Iterable[tuple[str, str]]) -> "SurrogateMapping":
+        """Build a mapping from (real -> surrogate) pairs supplied by the entity-graph
+        repository seam (replaces the retired hardcoded ``_SEED`` dict)."""
+        mapping = cls()
+        for real, surrogate in pairs:
+            mapping.seed(real, surrogate)
+        return mapping
 
     def seed(self, real: str, surrogate: str) -> None:
         self._by_real[real] = surrogate
@@ -60,10 +63,3 @@ class SurrogateMapping:
         if index < len(_SURROGATE_POOL):
             return _SURROGATE_POOL[index]
         return f"Surrogate Person {index}"
-
-
-def seeded_mapping() -> SurrogateMapping:
-    mapping = SurrogateMapping()
-    for real, surrogate in _SEED.items():
-        mapping.seed(real, surrogate)
-    return mapping

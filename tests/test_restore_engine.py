@@ -5,11 +5,18 @@ only surrogates injected this exchange are reversed).
 """
 
 from blindfold.engine import blindfold_payload, restore_response
-from blindfold.surrogates import seeded_mapping
+from blindfold.surrogates import SurrogateMapping
+
+
+def _mapping() -> SurrogateMapping:
+    # Engine-mechanics tests own their fixture data (decoupled from the entity-graph seed).
+    return SurrogateMapping.from_pairs(
+        [("Anna Schmidt", "Berta Vogel"), ("Markus Wagner", "Tobias Lehmann")]
+    )
 
 
 def _exchange():
-    mapping = seeded_mapping()
+    mapping = _mapping()
     payload = {
         "model": "claude-3-5-sonnet",
         "messages": [

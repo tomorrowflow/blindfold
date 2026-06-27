@@ -10,15 +10,19 @@ from fastapi import Depends, FastAPI, Request
 
 from .config import get_settings
 from .engine import blindfold_payload, restore_response, verify_pass
-from .surrogates import SurrogateMapping, seeded_mapping
+from .store import vendored_seed_repository
+from .surrogates import SurrogateMapping
 from .upstream import UpstreamClient
 
 app = FastAPI(title="Blindfold")
 
-# Process-wide surrogate mapping seeded from the hardcoded entity set. Keeping it a
+# Process-wide surrogate mapping built from the entity-graph repository seam (the seeded
+# real->surrogate pairs, including variations), NOT a hardcoded dict. Keeping it a
 # singleton makes surrogates stable across exchanges within the process (leak-audit
-# clause E-stable). Persistence is out of scope this slice (issue #3/#10).
-_mapping = seeded_mapping()
+# clause E-stable). The default seam is the in-process vendored seed; tests substitute it
+# via dependency_overrides[get_mapping]. Postgres-backed persistence lands via the same
+# repository seam (ETL into the graph); this slice keeps the request path hermetic.
+_mapping = SurrogateMapping.from_pairs(vendored_seed_repository().seeded_pairs())
 
 # Client auth/version headers forwarded upstream. content-type is intentionally omitted
 # so it is not duplicated with the JSON body the upstream client serializes.

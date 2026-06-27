@@ -5,7 +5,14 @@ blindfolded — not just the first prompt.
 """
 
 from blindfold.engine import blindfold_payload
-from blindfold.surrogates import seeded_mapping
+from blindfold.surrogates import SurrogateMapping
+
+
+def _mapping() -> SurrogateMapping:
+    # Engine-mechanics tests own their fixture data (decoupled from the entity-graph seed).
+    return SurrogateMapping.from_pairs(
+        [("Anna Schmidt", "Berta Vogel"), ("Markus Wagner", "Tobias Lehmann")]
+    )
 
 
 def _anthropic_request_with_entities_in_every_hop():
@@ -38,7 +45,7 @@ def _anthropic_request_with_entities_in_every_hop():
 
 
 def test_blindfold_replaces_real_entities_in_every_hop_with_surrogates():
-    mapping = seeded_mapping()
+    mapping = _mapping()
     payload = _anthropic_request_with_entities_in_every_hop()
 
     blinded, _session = blindfold_payload(payload, mapping)
@@ -64,7 +71,7 @@ def test_blindfold_replaces_real_entities_in_every_hop_with_surrogates():
 
 
 def test_blindfold_leaves_non_entity_content_byte_identical():
-    mapping = seeded_mapping()
+    mapping = _mapping()
     payload = _anthropic_request_with_entities_in_every_hop()
 
     blinded, _session = blindfold_payload(payload, mapping)
@@ -78,7 +85,7 @@ def test_blindfold_leaves_non_entity_content_byte_identical():
 
 
 def test_blindfold_does_not_mutate_the_input_payload():
-    mapping = seeded_mapping()
+    mapping = _mapping()
     payload = _anthropic_request_with_entities_in_every_hop()
 
     blindfold_payload(payload, mapping)
