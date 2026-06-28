@@ -14,8 +14,8 @@ from __future__ import annotations
 # surrogates so the round trip is predictable. Real detection (L1/L2/L3) is out of
 # scope; here the entity set is fixed and matched by exact value.
 _SEED: dict[str, str] = {
-    "Anna Schmidt": "Berta Vogel",
-    "Markus Wagner": "Tobias Lehmann",
+    "Stefan Wegner": "Berta Vogel",
+    "Markus Eberhardt": "Tobias Lehmann",
 }
 
 # Plausible fake names used to mint surrogates for novel entities deterministically.

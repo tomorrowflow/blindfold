@@ -1,0 +1,1440 @@
+{
+  "format": "diary-processor-backup",
+  "version": 1,
+  "created_at": "2026-02-10T21:39:50.069697Z",
+  "persons": [
+    {
+      "canonical_name": "Markus Eberhardt",
+      "first_name": "Markus",
+      "last_name": "Eberhardt",
+      "role": "Developer",
+      "department": "Delivery, Team A",
+      "company": "enervia",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Markus",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Tobias Reiniger",
+      "first_name": "Tobias",
+      "last_name": "Reiniger",
+      "role": "Team Lead, Engineering Lead",
+      "department": "Delivery, Team A",
+      "company": "enervia",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Tobi",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Stefan Wegner",
+      "first_name": "Stefan",
+      "last_name": "Wegner",
+      "role": "Developer",
+      "department": "Delivery, Team B",
+      "company": "enervia",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Stephan",
+          "type": "misspelling"
+        },
+        {
+          "variation": "Stef",
+          "type": "nickname"
+	  	}
+      ]
+    },
+    {
+      "canonical_name": "Lukas Heller",
+      "first_name": "Lukas",
+      "last_name": "Heller",
+      "role": "",
+      "department": "",
+      "company": "",
+      "status": "active",
+      "variations": []
+    },
+    {
+      "canonical_name": "Cem Aydin",
+      "first_name": "Cem",
+      "last_name": "Aydin",
+      "role": "Team Lead, Engineering Lead",
+      "department": "Delivery, Team C",
+      "company": "enervia",
+      "status": "active",
+      "variations": []
+    },
+    {
+      "canonical_name": "Henrik Vogt",
+      "first_name": "Henrik",
+      "last_name": "Vogt",
+      "role": "Head of Customer Success",
+      "department": "Project Delivery & Customer Success, Team Z",
+      "company": "Enervia",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Henri",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Sophie Maier",
+      "first_name": "Sophie",
+      "last_name": "Maier",
+      "role": "HR & Office Management",
+      "department": "Internal Business Services, Magic Square",
+      "company": "enervia",
+      "status": "active",
+      "variations": []
+    },
+    {
+      "canonical_name": "Philipp Hofer",
+      "first_name": "Philipp",
+      "last_name": "Hofer",
+      "role": "Product Manager, Product Owner",
+      "department": "Product Management & Design, Tivoli",
+      "company": "enervia",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Phil",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Birgit Lang",
+      "first_name": "Birgit",
+      "last_name": "Lang",
+      "role": "Head of IT",
+      "department": "IT",
+      "company": "Netzwerk AZ",
+      "status": "active",
+      "variations": []
+    },
+    {
+      "canonical_name": "Sebastian Fröhlich",
+      "first_name": "Sebastian",
+      "last_name": "Fröhlich",
+      "role": "Sales Manager",
+      "department": "Go-to-Market",
+      "company": "enervia",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Sebi",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Fabian Kern",
+      "first_name": "Fabian",
+      "last_name": "Kern",
+      "role": "Developer",
+      "department": "Delivery, Team B",
+      "company": "enervia",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Fabi",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Tobias Bachmann",
+      "first_name": "Tobias",
+      "last_name": "Bachmann",
+      "role": "IT Projektleiter",
+      "department": "IT",
+      "company": "Netzwerk AZ",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Tobi",
+          "type": "nickname"
+        },
+        {
+          "variation": "Tobbi",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Milan Grgic",
+      "first_name": "Milan",
+      "last_name": "Grgic",
+      "role": "Developer",
+      "department": "Delivery, Team A",
+      "company": "enervia",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Milo",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Lena Stern",
+      "first_name": "Lena",
+      "last_name": "Stern",
+      "role": "",
+      "department": "",
+      "company": "",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Leni",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Henning Albers",
+      "first_name": "Henning",
+      "last_name": "Albers",
+      "role": "Board Member",
+      "department": "Board of Directors, Voltwerk Innovation",
+      "company": "Voltwerk",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Henry",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Robin Klein",
+      "first_name": "Robin",
+      "last_name": "Klein",
+      "role": "Requirement Engineer",
+      "department": "Team Z",
+      "company": "Adesso",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Rob",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Jakob Nowak",
+      "first_name": "Jakob",
+      "last_name": "Nowak",
+      "role": "Developer",
+      "department": "Delivery, Team A",
+      "company": "enervia",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Jacob",
+          "type": "misspelling"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Niklas Fuchs",
+      "first_name": "Niklas",
+      "last_name": "Fuchs",
+      "role": "CTO, Managing Director",
+      "department": "Management",
+      "company": "enervia",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Nick",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Konrad Bender",
+      "first_name": "Konrad",
+      "last_name": "Bender",
+      "role": "",
+      "department": "",
+      "company": "Voltwerk Security",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Conni",
+          "type": "nickname"
+        },
+        {
+          "variation": "Konni",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Paul Hartmann",
+      "first_name": "Paul",
+      "last_name": "Hartmann",
+      "role": "Data Engineer",
+      "department": "Project Delivery & Customer Success, Team Z, Team Z Data",
+      "company": "enervia",
+      "status": "active",
+      "variations": []
+    },
+    {
+      "canonical_name": "Felix Walter",
+      "first_name": "Felix",
+      "last_name": "Walter",
+      "role": "Project Manager",
+      "department": "Project Delivery & Customer Success, Team Z",
+      "company": "enervia",
+      "status": "active",
+      "variations": []
+    },
+    {
+      "canonical_name": "Mira Holm",
+      "first_name": "Mira",
+      "last_name": "Holm",
+      "role": "UX Design",
+      "department": "Product Management & Design, Tivoli",
+      "company": "enervia",
+      "status": "active",
+      "variations": []
+    },
+    {
+      "canonical_name": "Eva Brandt",
+      "first_name": "Eva",
+      "last_name": "Brandt",
+      "role": "Data Engineer",
+      "department": "Project Delivery & Customer Success, Team Z, Team Z Data",
+      "company": "enervia",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Ewa",
+          "type": "nickname"
+        },
+        {
+          "variation": "Evi",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Roland Berg",
+      "first_name": "Roland",
+      "last_name": "Berg",
+      "role": "IT Specialist, AI Specialist",
+      "department": "IT",
+      "company": "Voltwerk",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Roli",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Nina Frey",
+      "first_name": "Nina",
+      "last_name": "Frey",
+      "role": "Marketing Manager",
+      "department": "Go-to-Market",
+      "company": "enervia",
+      "status": "active",
+      "variations": []
+    },
+    {
+      "canonical_name": "Jan Krüger",
+      "first_name": "Jan",
+      "last_name": "Krüger",
+      "role": "Developer",
+      "department": "Delivery, Team A",
+      "company": "enervia",
+      "status": "active",
+      "variations": []
+    },
+    {
+      "canonical_name": "Marie Heuer",
+      "first_name": "Marie",
+      "last_name": "Heuer",
+      "role": "Business Development Manager",
+      "department": "Internal Business Services, Magic Square",
+      "company": "enervia",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Mary",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Tomas Havel",
+      "first_name": "Tomas",
+      "last_name": "Havel",
+      "role": "Developer",
+      "department": "Delivery, Prodigy",
+      "company": "enervia",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Tom",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Mara Junker",
+      "first_name": "Mara",
+      "last_name": "Junker",
+      "role": "Venture Scaler",
+      "department": "Voltwerk Innovation",
+      "company": "Voltwerk",
+      "status": "active",
+      "variations": []
+    },
+    {
+      "canonical_name": "Yusuf Demir",
+      "first_name": "Yusuf",
+      "last_name": "Demir",
+      "role": "Team Lead, Engineering Lead",
+      "department": "Delivery, Prodigy, Plattform",
+      "company": "enervia",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Jay",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Anika Kraus",
+      "first_name": "Anika",
+      "last_name": "Kraus",
+      "role": "Project Manager",
+      "department": "Project Delivery & Customer Success, Team Z, Team Z Data",
+      "company": "enervia",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Annika",
+          "type": "misspelling"
+        }
+      ]
+    },
+    {
+      "canonical_name": "David Heinrich",
+      "first_name": "David",
+      "last_name": "Heinrich",
+      "role": "Project Manager",
+      "department": "Project Delivery & Customer Success, Team Z",
+      "company": "enervia",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Dave",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Simon Berger",
+      "first_name": "Simon",
+      "last_name": "Berger",
+      "role": "Developer, Engineering Lead",
+      "department": "Delivery, Team C",
+      "company": "enervia",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Simo",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Andreas Ritter",
+      "first_name": "Andreas",
+      "last_name": "Ritter",
+      "role": "Product Manager, Product Owner",
+      "department": "Product Management & Design, Tivoli",
+      "company": "enervia",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Andi",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Selin Yilmaz",
+      "first_name": "Selin",
+      "last_name": "Yilmaz",
+      "role": "UX Design",
+      "department": "Product Management & Design, Tivoli",
+      "company": "enervia",
+      "status": "active",
+      "variations": []
+    },
+    {
+      "canonical_name": "Robert Hahn",
+      "first_name": "Robert",
+      "last_name": "Hahn",
+      "role": "Board Member",
+      "department": "Board of Directors, Voltwerk Innovation",
+      "company": "Voltwerk",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Robi",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Patrick Strobel",
+      "first_name": "Patrick",
+      "last_name": "Strobel",
+      "role": "Controller",
+      "department": "Controlling",
+      "company": "Voltwerk Innovation",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Patti",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Daniela Engel",
+      "first_name": "Daniela",
+      "last_name": "Engel",
+      "role": "HR & Office Management",
+      "department": "Internal Business Services, Magic Square",
+      "company": "enervia",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Dani",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Moritz Friedrich",
+      "first_name": "Moritz",
+      "last_name": "Friedrich",
+      "role": "Project Manager, Data Governance Manager",
+      "department": "Project Delivery & Customer Success, Team Z",
+      "company": "enervia",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Mo",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Adrian Munz",
+      "first_name": "Adrian",
+      "last_name": "Munz",
+      "role": "CEO",
+      "department": "Produkt",
+      "company": "LUMICA",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Ari",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Leon Wiedemann",
+      "first_name": "Leon",
+      "last_name": "Wiedemann",
+      "role": "Developer",
+      "department": "Delivery, Team B",
+      "company": "enervia",
+      "status": "active",
+      "variations": []
+    },
+    {
+      "canonical_name": "Sabine Brenner",
+      "first_name": "Sabine",
+      "last_name": "Brenner",
+      "role": "Board Member",
+      "department": "Board of Directors, Netzwerk AZ",
+      "company": "Voltwerk",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Bine",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Till Ostermann",
+      "first_name": "Till",
+      "last_name": "Ostermann",
+      "role": "Finance",
+      "department": "Internal Business Services, Magic Square",
+      "company": "enervia",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Tillo",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Jonas Knopp",
+      "first_name": "Jonas",
+      "last_name": "Knopp",
+      "role": "Head of Product",
+      "department": "Produkt",
+      "company": "LUMICA",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Jo",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Vincent Ackermann",
+      "first_name": "Vincent",
+      "last_name": "Ackermann",
+      "role": "Board Member",
+      "department": "Board of Directors, Netzwerk AZ",
+      "company": "Voltwerk",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Vic",
+          "type": "nickname"
+        },
+        {
+          "variation": "Vick",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Oliver Drechsler",
+      "first_name": "Oliver",
+      "last_name": "Drechsler",
+      "role": "Board Member",
+      "department": "Board of Directors, Voltwerk Innovation",
+      "company": "Voltwerk",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Olli",
+          "type": "nickname"
+        },
+        {
+          "variation": "Oli",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Ben Stenzel",
+      "first_name": "Ben",
+      "last_name": "Stenzel",
+      "role": "Project Manager",
+      "department": "Project Delivery & Customer Success, Team Z",
+      "company": "enervia",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Benni",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Kirill Sokolov",
+      "first_name": "Kirill",
+      "last_name": "Sokolov",
+      "role": "Developer",
+      "department": "Delivery, Team A",
+      "company": "enervia",
+      "status": "active",
+      "variations": []
+    },
+    {
+      "canonical_name": "Boris Petrov",
+      "first_name": "Boris",
+      "last_name": "Petrov",
+      "role": "Developer",
+      "department": "Delivery, Team B",
+      "company": "enervia",
+      "status": "active",
+      "variations": []
+    },
+    {
+      "canonical_name": "Laura Wittmann",
+      "first_name": "Laura",
+      "last_name": "Wittmann",
+      "role": "Client Support",
+      "department": "Project Delivery & Customer Success, Team Z",
+      "company": "enervia",
+      "status": "active",
+      "variations": []
+    },
+    {
+      "canonical_name": "Christian Uhlmann",
+      "first_name": "Christian",
+      "last_name": "Uhlmann",
+      "role": "Developer",
+      "department": "Delivery, Team B",
+      "company": "enervia",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Chris",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Armen Aslanyan",
+      "first_name": "Armen",
+      "last_name": "Aslanyan",
+      "role": "Developer",
+      "department": "Delivery, Team B",
+      "company": "enervia",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Armen",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Marc Eggimann",
+      "first_name": "Marc",
+      "last_name": "Eggimann",
+      "role": "Developer, Engineering Lead",
+      "department": "Delivery, Team C",
+      "company": "enervia",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Mark",
+          "type": "nickname"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Dennis Hoffmann",
+      "first_name": "Dennis",
+      "last_name": "Hoffmann",
+      "role": "Vertrieb",
+      "department": "Go-to-Market",
+      "company": "enervia",
+      "status": "active",
+      "variations": []
+    },
+    {
+      "canonical_name": "Martin Bach",
+      "first_name": "Martin",
+      "last_name": "Bach",
+      "role": "CEO, Head of Sales, Founder, Managing Director",
+      "department": "Management",
+      "company": "enervia",
+      "status": "active",
+      "variations": []
+    },
+    {
+      "canonical_name": "Sascha Gerber",
+      "first_name": "Sascha",
+      "last_name": "Gerber",
+      "role": "Team Lead, Engineering Lead",
+      "department": "Delivery, Team A",
+      "company": "enervia",
+      "status": "active",
+      "variations": []
+    },
+    {
+      "canonical_name": "Sarah Schreiber",
+      "first_name": "Sarah",
+      "last_name": "Schreiber",
+      "role": "Head of Product Management",
+      "department": "Delivery, Tivoli",
+      "company": "enervia",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Sara",
+          "type": "misspelling"
+        }
+      ]
+    },
+    {
+      "canonical_name": "Amin Diallo",
+      "first_name": "Amin",
+      "last_name": "Diallo",
+      "role": "Project Manager",
+      "department": "Project Delivery & Customer Success, Team Z, Team Z Data",
+      "company": "enervia",
+      "status": "active",
+      "variations": []
+    }
+  ],
+  "terms": [
+    {
+      "canonical_term": "API",
+      "category": "technology",
+      "context": "Application Programming Interface",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "API"
+        },
+        {
+          "variation": "apis"
+        },
+        {
+          "variation": "REST API"
+        },
+        {
+          "variation": "REST"
+        },
+        {
+          "variation": "endpoint"
+        },
+        {
+          "variation": "endpoints"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Ardensys",
+      "category": "company",
+      "context": "Externer Dienstleister",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Ardensys"
+        }
+      ]
+    },
+    {
+      "canonical_term": "BYOD Regelung",
+      "category": "term",
+      "context": "Bring Your Own Device policy",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "BYOD"
+        },
+        {
+          "variation": "Bring Your Own Device"
+        },
+        {
+          "variation": "BYOD Regelung"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Bilateral meeting",
+      "category": "concept",
+      "context": "Abkürzung für 'bilaterales Gespräch',",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Bila"
+        },
+        {
+          "variation": "Bilar"
+        },
+        {
+          "variation": "bilaterales Gespräch"
+        },
+        {
+          "variation": "One on One"
+        },
+        {
+          "variation": "1:1"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Billable Hours",
+      "category": "concept",
+      "context": "key business metric for consulting",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "billable hours"
+        }
+      ]
+    },
+    {
+      "canonical_term": "CO2 Bilanz",
+      "category": "product",
+      "context": "Produktmodul für CO2-Fußabdruck-Berechnung",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "CO2 Bilanz"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Cloud Migration",
+      "category": "project",
+      "context": "Project to migrate infrastructure to cloud",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "cloud migration"
+        },
+        {
+          "variation": "migration to cloud"
+        },
+        {
+          "variation": "cloud transition"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Cloud Services",
+      "category": "department",
+      "context": "Cloud infrastructure and services division",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Cloud"
+        },
+        {
+          "variation": "Cloud Ops"
+        },
+        {
+          "variation": "Cloud Engineering"
+        },
+        {
+          "variation": "Cloud Infrastructure"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Controlling",
+      "category": "department",
+      "context": "Controlling/finance function",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Controlling"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Deferred Maintenance",
+      "category": "concept",
+      "context": "Alternativer Begriff für technische Schulden",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Deferred Maintenance"
+        }
+      ]
+    },
+    {
+      "canonical_term": "DevOps",
+      "category": "technology",
+      "context": "Development and operations practices",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "devops"
+        },
+        {
+          "variation": "Dev Ops"
+        },
+        {
+          "variation": "DEVOPS"
+        },
+        {
+          "variation": "deployment"
+        },
+        {
+          "variation": "operations"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Docker",
+      "category": "technology",
+      "context": "Container technology",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "docker"
+        },
+        {
+          "variation": "DOCKER"
+        },
+        {
+          "variation": "containers"
+        },
+        {
+          "variation": "containerization"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Voltwerk",
+      "category": "company",
+      "context": "Parent company entity",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Voltwerk"
+        },
+        {
+          "variation": "VNB"
+        },
+        {
+          "variation": "VOLTWERK"
+        },
+        {
+          "variation": "parent company"
+        },
+        {
+          "variation": "the firm"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Enervia",
+      "category": "company",
+      "context": "Main company entity",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Enervia"
+        },
+        {
+          "variation": "enervia"
+        },
+        {
+          "variation": "ENERVIA"
+        },
+        {
+          "variation": "Enervia AG"
+        },
+        {
+          "variation": "E-nervia"
+        },
+        {
+          "variation": "Enervia GmbH"
+        },
+        {
+          "variation": "Enerva"
+        },
+        {
+          "variation": "the company"
+        },
+        {
+          "variation": "our company"
+        },
+        {
+          "variation": "the firm"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Engineering",
+      "category": "department",
+      "context": "Software development and engineering department",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Engineering"
+        },
+        {
+          "variation": "Softwareentwicklung"
+        },
+        {
+          "variation": "Technikabteilung"
+        },
+        {
+          "variation": "Eng"
+        },
+        {
+          "variation": "Tech Team"
+        },
+        {
+          "variation": "Development"
+        },
+        {
+          "variation": "Engineering Team"
+        },
+        {
+          "variation": "Dev"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Executive Board",
+      "category": "department",
+      "context": "Executive leadership and board members",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Board"
+        },
+        {
+          "variation": "Exec Board"
+        },
+        {
+          "variation": "Management Board"
+        },
+        {
+          "variation": "C-Suite"
+        },
+        {
+          "variation": "Leadership"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Firefighting Modus",
+      "category": "concept",
+      "context": "Beschreibung der Arbeitsweise: 'wir sind im Firefighting Modus' - Krisenmanagement-Modus.",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Firefighting Modus"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Flight Ladders",
+      "category": "concept",
+      "context": "agile workflow methodology",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Flight Ladders"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Forecasting",
+      "category": "concept",
+      "context": "Eine Planungsmethode zur Abschätzung von Aufwänden",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Forecasting"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Atrack",
+      "category": "technology",
+      "context": "Zeiterfassungs- und Reporting-Tool besprochen",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Atrack"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Internal Business Services",
+      "category": "department",
+      "context": "HR and operations department",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "IBS"
+        },
+        {
+          "variation": "Internal Bus. Services"
+        },
+        {
+          "variation": "Business Services"
+        },
+        {
+          "variation": "Internal Services"
+        },
+        {
+          "variation": "Internalservices"
+        }
+      ]
+    },
+    {
+      "canonical_term": "KritisV",
+      "category": "technology",
+      "context": "German critical infrastructure regulation",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "KritisV"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Kubernetes",
+      "category": "technology",
+      "context": "Container orchestration platform",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Kubernetes"
+        },
+        {
+          "variation": "K8s"
+        },
+        {
+          "variation": "k8s"
+        },
+        {
+          "variation": "kubernetes"
+        },
+        {
+          "variation": "K8S"
+        },
+        {
+          "variation": "Kube"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Leading-Team",
+      "category": "department",
+      "context": "Executive or leadership team, possibly similar to Executive Board",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "LT"
+        },
+        {
+          "variation": "Leading Team"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Magic Square",
+      "category": "department",
+      "context": "Internal business division within Enervia",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "magic square"
+        },
+        {
+          "variation": "MS"
+        },
+        {
+          "variation": "Magic-Square"
+        },
+        {
+          "variation": "the square"
+        },
+        {
+          "variation": "MagicSquare"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Monday-Morning-Meeting",
+      "category": "concept",
+      "context": "Monday-Morning-Meeting alle zwei Wochen - recurring team meeting format",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Monday-Morning-Meeting"
+        },
+        {
+          "variation": "Meeting am Montag"
+        }
+      ]
+    },
+    {
+      "canonical_term": "NIS 2",
+      "category": "technology",
+      "context": "NIS2 EU cybersecurity directive",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "NISS 2"
+        }
+      ]
+    },
+    {
+      "canonical_term": "No Estimates",
+      "category": "concept",
+      "context": "Wird als alternative Reaktion auf Forecasting erwähnt; bezeichnet eine spezifische agile Vorgehensweise",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "No Estimates"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Payment Systems",
+      "category": "department",
+      "context": "Payment processing and financial transactions",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Payment"
+        },
+        {
+          "variation": "Payments"
+        },
+        {
+          "variation": "Payment Team"
+        },
+        {
+          "variation": "Payment Services"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Performance Optimization",
+      "category": "project",
+      "context": "Performance tuning and optimization efforts",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "performance optimization"
+        },
+        {
+          "variation": "perf optimization"
+        },
+        {
+          "variation": "performance improvements"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Product Management",
+      "category": "department",
+      "context": "Product strategy and management",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Product"
+        },
+        {
+          "variation": "PM"
+        },
+        {
+          "variation": "Prod"
+        },
+        {
+          "variation": "Product Team"
+        },
+        {
+          "variation": "Product Org"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Q4 Rollout",
+      "category": "project",
+      "context": "Fourth quarter deployment or release",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Q4"
+        },
+        {
+          "variation": "fourth quarter rollout"
+        },
+        {
+          "variation": "Q4 deployment"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Retro",
+      "category": "concept",
+      "context": "Alle vier Wochen einmal auf eine Retro konzentrieren. Agile Retrospektive.",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Retro"
+        },
+        {
+          "variation": "Retrospective"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Smart Grid Initiative",
+      "category": "concept",
+      "context": "Ideenkonzept im Energiecluster-Kontext",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Smart Grid Ini"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Sync",
+      "category": "concept",
+      "context": "synchronization meeting, special concept for a meeting to exchange information efficiently and effectively",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Sync"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Untravia",
+      "category": "company",
+      "context": "Gesprächspartner bei Onboarding, Firma",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Untravia"
+        }
+      ]
+    },
+    {
+      "canonical_term": "Ventures",
+      "category": "concept",
+      "context": "Geschäftsbereiche oder Startups innerhalb des Unternehmens",
+      "status": "active",
+      "variations": [
+        {
+          "variation": "Ventures"
+        },
+        {
+          "variation": "Voltwerk Ventures"
+        }
+      ]
+    }
+  ]
+}

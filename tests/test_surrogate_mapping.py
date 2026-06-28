@@ -10,7 +10,7 @@ from blindfold.surrogates import seeded_mapping
 
 def test_seeded_entity_has_stable_surrogate_across_lookups():
     mapping = seeded_mapping()
-    real = "Anna Schmidt"
+    real = "Stefan Wegner"
 
     first = mapping.surrogate_for(real)
     second = mapping.surrogate_for(real)
@@ -23,7 +23,7 @@ def test_seeded_entity_has_stable_surrogate_across_lookups():
 
 def test_minting_an_existing_entity_returns_the_same_surrogate():
     mapping = seeded_mapping()
-    real = "Markus Wagner"
+    real = "Markus Eberhardt"
 
     minted_once = mapping.mint(real)
     minted_again = mapping.mint(real)

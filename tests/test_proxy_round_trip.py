@@ -40,11 +40,11 @@ def _make_stub_upstream(scripted_response, recorded):
 def _request_with_entities_in_every_hop():
     return {
         "model": "claude-3-5-sonnet",
-        "system": "You assist Anna Schmidt.",
+        "system": "You assist Stefan Wegner.",
         "messages": [
             {
                 "role": "user",
-                "content": [{"type": "text", "text": "Ping Markus Wagner please."}],
+                "content": [{"type": "text", "text": "Ping Markus Eberhardt please."}],
             },
             {
                 "role": "user",
@@ -53,7 +53,7 @@ def _request_with_entities_in_every_hop():
                         "type": "tool_result",
                         "tool_use_id": "toolu_1",
                         "content": [
-                            {"type": "text", "text": "Reviewer: Anna Schmidt."}
+                            {"type": "text", "text": "Reviewer: Stefan Wegner."}
                         ],
                     }
                 ],
@@ -65,9 +65,9 @@ def _request_with_entities_in_every_hop():
 @pytest.mark.anyio
 async def test_round_trip_blindfolds_every_hop_upstream_and_restores_for_client():
     mapping = seeded_mapping()
-    anna = "Anna Schmidt"
-    markus = "Markus Wagner"
-    anna_surrogate = mapping.surrogate_for(anna)
+    stefan = "Stefan Wegner"
+    markus = "Markus Eberhardt"
+    stefan_surrogate = mapping.surrogate_for(stefan)
     markus_surrogate = mapping.surrogate_for(markus)
 
     # The provider only ever sees surrogates, so its response references the surrogate.
@@ -76,7 +76,7 @@ async def test_round_trip_blindfolds_every_hop_upstream_and_restores_for_client(
         "type": "message",
         "role": "assistant",
         "content": [
-            {"type": "text", "text": f"{anna_surrogate} and {markus_surrogate} notified."}
+            {"type": "text", "text": f"{stefan_surrogate} and {markus_surrogate} notified."}
         ],
         "model": "claude-3-5-sonnet",
         "stop_reason": "end_turn",
@@ -103,10 +103,10 @@ async def test_round_trip_blindfolds_every_hop_upstream_and_restores_for_client(
     # --- Clause A: zero real entity values reached the upstream, every hop. ---
     assert len(recorded) == 1
     egressed = recorded[0].content.decode("utf-8")
-    assert anna not in egressed
+    assert stefan not in egressed
     assert markus not in egressed
     # And the surrogates are what actually egressed.
-    assert anna_surrogate in egressed
+    assert stefan_surrogate in egressed
     assert markus_surrogate in egressed
     # Structural sanity: it was valid JSON in Anthropic shape, all hops present.
     sent = json.loads(egressed)
@@ -116,17 +116,17 @@ async def test_round_trip_blindfolds_every_hop_upstream_and_restores_for_client(
     # --- Clause B: the client received fully restored real values, in prose. ---
     body = resp.json()
     client_text = body["content"][0]["text"]
-    assert anna in client_text
+    assert stefan in client_text
     assert markus in client_text
-    assert anna_surrogate not in client_text
+    assert stefan_surrogate not in client_text
     assert markus_surrogate not in client_text
 
 
 @pytest.mark.anyio
 async def test_round_trip_restore_is_closed_world_for_coincidental_lookalikes():
     mapping = seeded_mapping()
-    # Only Anna appears in the request, so only her surrogate is injected this exchange.
-    markus_surrogate = mapping.surrogate_for("Markus Wagner")
+    # Only Stefan appears in the request, so only his surrogate is injected this exchange.
+    markus_surrogate = mapping.surrogate_for("Markus Eberhardt")
 
     scripted_response = {
         "content": [
@@ -147,7 +147,7 @@ async def test_round_trip_restore_is_closed_world_for_coincidental_lookalikes():
                 json={
                     "model": "m",
                     "messages": [
-                        {"role": "user", "content": "Note from Anna Schmidt."}
+                        {"role": "user", "content": "Note from Stefan Wegner."}
                     ],
                 },
             )
@@ -157,7 +157,7 @@ async def test_round_trip_restore_is_closed_world_for_coincidental_lookalikes():
     text = resp.json()["content"][0]["text"]
     # The provider-emitted surrogate was NOT injected this exchange -> left untouched.
     assert markus_surrogate in text
-    assert "Markus Wagner" not in text
+    assert "Markus Eberhardt" not in text
 
 
 @pytest.mark.anyio
