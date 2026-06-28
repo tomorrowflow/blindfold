@@ -102,9 +102,26 @@ def _blindfold_block(block: Any, mapping: SurrogateMapping, session: ExchangeSes
         block["text"] = _blindfold_text(block["text"], mapping, session)
     elif block_type == "tool_result":
         block["content"] = _blindfold_content(block.get("content"), mapping, session)
-    # tool_use `input` (tool-call JSON) is intentionally NOT blindfolded this slice
-    # (out of scope: issue #11).
+    elif block_type == "tool_use":
+        # Tool-call JSON (issue #11): the assistant's prior tool_use.input is echoed
+        # back into the request on multi-turn exchanges. Treat it as a hop (ADR-0002)
+        # and blindfold any real entity inside its structured args so clause A holds
+        # across every hop, not just text blocks.
+        block["input"] = _blindfold_json_value(block.get("input"), mapping, session)
     return block
+
+
+def _blindfold_json_value(
+    value: Any, mapping: SurrogateMapping, session: ExchangeSession
+) -> Any:
+    """Recursively rewrite every string leaf in a JSON-shaped value via L1+L2."""
+    if isinstance(value, str):
+        return _blindfold_text(value, mapping, session)
+    if isinstance(value, dict):
+        return {k: _blindfold_json_value(v, mapping, session) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_blindfold_json_value(item, mapping, session) for item in value]
+    return value
 
 
 def _blindfold_text(text: str, mapping: SurrogateMapping, session: ExchangeSession) -> str:
@@ -152,12 +169,16 @@ def restore_response(
     content = out.get("content")
     if isinstance(content, list):
         for block in content:
-            if (
-                isinstance(block, dict)
-                and block.get("type") == "text"
-                and isinstance(block.get("text"), str)
-            ):
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text" and isinstance(block.get("text"), str):
                 block["text"] = _restore_text(block["text"], session)
+            elif block.get("type") == "tool_use":
+                # Tool-call JSON (issue #11): restore surrogates inside string values
+                # of structured args. The dict is already reassembled here (non-stream
+                # path); JSON escaping is preserved because we walk the parsed value
+                # and the ASGI serializer re-encodes string content for us.
+                block["input"] = _restore_json_value(block.get("input"), session)
     return out
 
 
@@ -198,6 +219,33 @@ def _restore_text(text: str, session: ExchangeSession) -> str:
     ):
         result = result.replace(surrogate, real)
     return result
+
+
+def _restore_json_value(value: Any, session: ExchangeSession) -> Any:
+    """Recursively restore surrogates inside any JSON-shaped value (issue #11).
+
+    Walks dicts/lists and rewrites string leaves with :func:`_restore_text`. Non-string
+    leaves (numbers, booleans, null) are returned as-is. Closed-world stays intact —
+    only surrogates injected this exchange are reversed.
+    """
+    if isinstance(value, str):
+        return _restore_text(value, session)
+    if isinstance(value, dict):
+        return {k: _restore_json_value(v, session) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_restore_json_value(item, session) for item in value]
+    return value
+
+
+def restore_tool_call_json(value: Any, session: ExchangeSession) -> Any:
+    """Public seam: restore surrogates inside tool-call JSON (ADR-0006, issue #11).
+
+    Accepts either a parsed JSON value (dict/list/scalar) or a raw string. Closed-world:
+    only surrogates injected for this exchange are reversed. Callers that have already
+    reassembled streamed ``input_json_delta`` fragments hand the full assembled value
+    in here, then re-encode for emission.
+    """
+    return _restore_json_value(value, session)
 
 
 class StreamingRestorer:

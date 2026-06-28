@@ -26,6 +26,7 @@ from .engine import (
     blindfold_payload,
     restore_chat_completion,
     restore_response,
+    restore_tool_call_json,
     verify_pass,
 )
 from .store import vendored_seed_repository
@@ -122,20 +123,31 @@ async def _stream_restored(
 
     Parses upstream SSE events line-by-line, feeds ``text_delta`` payloads through a
     ``StreamingRestorer`` so a surrogate split across upstream chunks is held back
-    until matched, and re-emits restored ``content_block_delta`` events. Non-text
-    events pass through unchanged.
+    until matched, and re-emits restored ``content_block_delta`` events.
+
+    For ``tool_use`` blocks (issue #11), ``input_json_delta`` fragments are held back
+    per content_block index, reassembled on ``content_block_stop``, and emitted as
+    one restored delta — sliding-window restore over partial_json strings would still
+    leak a half-surrogate that straddled a chunk boundary.
     """
     restorer = StreamingRestorer(session)
+    # Per-content-block index → accumulated partial_json fragments. Presence in this
+    # dict marks the block as a tool_use whose deltas must be held back.
+    tool_use_buffers: dict[int, list[str]] = {}
     buffer = ""
     async with upstream.stream_messages(blinded, forwarded) as response:
         async for raw in response.aiter_bytes():
             buffer += raw.decode("utf-8")
             while "\n\n" in buffer:
                 event, buffer = buffer.split("\n\n", 1)
-                async for out in _process_sse_event(event, restorer):
+                async for out in _process_sse_event(
+                    event, restorer, tool_use_buffers, session
+                ):
                     yield out
         if buffer.strip():
-            async for out in _process_sse_event(buffer, restorer):
+            async for out in _process_sse_event(
+                buffer, restorer, tool_use_buffers, session
+            ):
                 yield out
         # Flush any held-back tail at end of stream so nothing buffered is lost.
         tail = restorer.flush()
@@ -144,29 +156,77 @@ async def _stream_restored(
 
 
 async def _process_sse_event(
-    event: str, restorer: StreamingRestorer
+    event: str,
+    restorer: StreamingRestorer,
+    tool_use_buffers: dict[int, list[str]],
+    session: ExchangeSession,
 ) -> AsyncIterator[bytes]:
-    """Split one SSE event into ``event:`` / ``data:`` lines and rewrite text deltas."""
+    """Split one SSE event into ``event:`` / ``data:`` lines and rewrite text/tool deltas."""
     event_name, data_line = None, None
     for line in event.split("\n"):
         if line.startswith("event:"):
             event_name = line[len("event:") :].strip()
         elif line.startswith("data:"):
             data_line = line[len("data:") :].strip()
-    if event_name == "content_block_delta" and data_line:
+    payload: dict | None = None
+    if data_line:
         try:
             payload = json.loads(data_line)
         except json.JSONDecodeError:
-            yield (event + "\n\n").encode("utf-8")
-            return
+            payload = None
+
+    if event_name == "content_block_start" and isinstance(payload, dict):
+        block = payload.get("content_block", {})
+        if isinstance(block, dict) and block.get("type") == "tool_use":
+            tool_use_buffers[payload.get("index", 0)] = []
+        yield (event + "\n\n").encode("utf-8")
+        return
+
+    if event_name == "content_block_delta" and isinstance(payload, dict):
+        index = payload.get("index", 0)
         delta = payload.get("delta", {})
         if delta.get("type") == "text_delta" and isinstance(delta.get("text"), str):
             restored_text = restorer.feed(delta["text"])
             if restored_text:
-                yield _emit_text_delta(restored_text, index=payload.get("index", 0))
+                yield _emit_text_delta(restored_text, index=index)
             return
-    # Non-text-delta event: pass through unchanged.
+        if (
+            delta.get("type") == "input_json_delta"
+            and index in tool_use_buffers
+            and isinstance(delta.get("partial_json"), str)
+        ):
+            # Hold back: emit ONE restored delta on content_block_stop (ADR-0006).
+            tool_use_buffers[index].append(delta["partial_json"])
+            return
+
+    if event_name == "content_block_stop" and isinstance(payload, dict):
+        index = payload.get("index", 0)
+        if index in tool_use_buffers:
+            assembled = "".join(tool_use_buffers.pop(index))
+            restored_json = _restore_tool_use_json(assembled, session)
+            yield _emit_input_json_delta(restored_json, index=index)
+            yield (event + "\n\n").encode("utf-8")
+            return
+
+    # Non-handled event: pass through unchanged.
     yield (event + "\n\n").encode("utf-8")
+
+
+def _restore_tool_use_json(assembled: str, session: ExchangeSession) -> str:
+    """Restore surrogates inside reassembled tool-call JSON; preserve escaping.
+
+    Parses the full JSON, restores strings closed-world via ``session``, and re-encodes
+    so any character requiring escaping (quote, backslash, control char) is escaped
+    correctly. If the upstream JSON didn't parse (truncated stream / provider bug),
+    fall back to a closed-world text restore over the raw string — still safe because
+    only injected surrogates are reversed.
+    """
+    try:
+        parsed = json.loads(assembled)
+    except json.JSONDecodeError:
+        return restore_tool_call_json(assembled, session)
+    restored = restore_tool_call_json(parsed, session)
+    return json.dumps(restored)
 
 
 def _emit_text_delta(text: str, index: int = 0) -> bytes:
@@ -174,5 +234,14 @@ def _emit_text_delta(text: str, index: int = 0) -> bytes:
         "type": "content_block_delta",
         "index": index,
         "delta": {"type": "text_delta", "text": text},
+    }
+    return f"event: content_block_delta\ndata: {json.dumps(payload)}\n\n".encode("utf-8")
+
+
+def _emit_input_json_delta(partial_json: str, index: int) -> bytes:
+    payload = {
+        "type": "content_block_delta",
+        "index": index,
+        "delta": {"type": "input_json_delta", "partial_json": partial_json},
     }
     return f"event: content_block_delta\ndata: {json.dumps(payload)}\n\n".encode("utf-8")
