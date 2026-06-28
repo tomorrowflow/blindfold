@@ -19,7 +19,17 @@ to add it via `/grill-with-docs`, not to invent a synonym.
 - **Restore** — the reverse of blindfold: replace surrogates with their real
   entities in a provider response. Avoid "de-anonymize"/"unmask".
 - **Entity** — a real-world referent that must be protected: a person, organization,
-  contact-PII value (email, phone, IBAN, ID), or IP term/codename.
+  contact-PII value (email, phone, IBAN, ID), or IP term/codename. An organization worth
+  protecting is realized as a **Term**; an internal **Org unit** is graph structure and is
+  an Entity only when its name is itself sensitive (then it is also a Term).
+- **Term** — a non-person sensitive referent — a real company name, internal codename, or
+  secret project/initiative/system name — that must be blindfolded. The non-person
+  counterpart to a person Entity; membership in the term set is the single lever that decides
+  whether a token is blindfolded. _Avoid_: keyword, tag.
+- **Org unit** — a node in the organization's structure (department, division, board),
+  carrying hierarchy and role assignments. Structure, **not** a sensitivity signal: an Org
+  unit is never blindfolded by virtue of being one. A unit whose name is itself sensitive is
+  *also* registered as a **Term**. _Avoid_: department (as the canonical word), team.
 - **Surrogate** — the fake stand-in assigned to an entity. Plausible and
   locale-aware for names/orgs; **reserved-namespace** (non-routable, non-colliding)
   for contactable PII. Stable once minted.
@@ -76,6 +86,9 @@ to add it via `/grill-with-docs`, not to invent a synonym.
 - Every hop of every request is blindfolded before egress. Over-redaction is a
   quality bug; an un-blindfolded real entity is a privacy bug.
 - Surrogates are stable: a given entity maps to the same surrogate everywhere.
+- Sensitivity (is it blindfolded?) and structure (is it an Org unit?) are independent axes.
+  Being an Org unit never makes a referent sensitive, and being sensitive never makes it
+  structural; a name that is both is recorded as both an Org unit and a Term.
 - The real-value side of the mapping is never stored in plaintext.
 - Restore is closed-world and followed by a verify pass.
 
