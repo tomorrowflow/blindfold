@@ -5,7 +5,14 @@ blindfolded — not just the first prompt.
 """
 
 from blindfold.engine import blindfold_payload
-from blindfold.surrogates import seeded_mapping
+from blindfold.surrogates import SurrogateMapping
+
+
+def _mapping() -> SurrogateMapping:
+    # Engine-mechanics tests own their fixture data (decoupled from the entity-graph seed).
+    return SurrogateMapping.from_pairs(
+        [("Anna Schmidt", "Berta Vogel"), ("Markus Wagner", "Tobias Lehmann")]
+    )
 
 
 def _anthropic_request_with_entities_in_every_hop():
@@ -13,12 +20,12 @@ def _anthropic_request_with_entities_in_every_hop():
     # tool-result message's text — three distinct hops.
     return {
         "model": "claude-3-5-sonnet",
-        "system": "You assist Stefan Wegner with code review.",
+        "system": "You assist Anna Schmidt with code review.",
         "messages": [
             {
                 "role": "user",
                 "content": [
-                    {"type": "text", "text": "Ask Markus Eberhardt about the patch."}
+                    {"type": "text", "text": "Ask Markus Wagner about the patch."}
                 ],
             },
             {
@@ -28,7 +35,7 @@ def _anthropic_request_with_entities_in_every_hop():
                         "type": "tool_result",
                         "tool_use_id": "toolu_1",
                         "content": [
-                            {"type": "text", "text": "Owner: Stefan Wegner (line 1)."}
+                            {"type": "text", "text": "Owner: Anna Schmidt (line 1)."}
                         ],
                     }
                 ],
@@ -38,14 +45,14 @@ def _anthropic_request_with_entities_in_every_hop():
 
 
 def test_blindfold_replaces_real_entities_in_every_hop_with_surrogates():
-    mapping = seeded_mapping()
+    mapping = _mapping()
     payload = _anthropic_request_with_entities_in_every_hop()
 
     blinded, _session = blindfold_payload(payload, mapping)
 
-    stefan = "Stefan Wegner"
-    markus = "Markus Eberhardt"
-    stefan_surrogate = mapping.surrogate_for(stefan)
+    anna = "Anna Schmidt"
+    markus = "Markus Wagner"
+    anna_surrogate = mapping.surrogate_for(anna)
     markus_surrogate = mapping.surrogate_for(markus)
 
     system_text = blinded["system"]
@@ -54,17 +61,17 @@ def test_blindfold_replaces_real_entities_in_every_hop_with_surrogates():
 
     # No real entity value survives in any hop.
     for hop_text in (system_text, user_text, tool_result_text):
-        assert stefan not in hop_text
+        assert anna not in hop_text
         assert markus not in hop_text
 
     # The surrogates are present where the entities were.
-    assert stefan_surrogate in system_text
+    assert anna_surrogate in system_text
     assert markus_surrogate in user_text
-    assert stefan_surrogate in tool_result_text
+    assert anna_surrogate in tool_result_text
 
 
 def test_blindfold_leaves_non_entity_content_byte_identical():
-    mapping = seeded_mapping()
+    mapping = _mapping()
     payload = _anthropic_request_with_entities_in_every_hop()
 
     blinded, _session = blindfold_payload(payload, mapping)
@@ -78,9 +85,9 @@ def test_blindfold_leaves_non_entity_content_byte_identical():
 
 
 def test_blindfold_does_not_mutate_the_input_payload():
-    mapping = seeded_mapping()
+    mapping = _mapping()
     payload = _anthropic_request_with_entities_in_every_hop()
 
     blindfold_payload(payload, mapping)
 
-    assert payload["system"] == "You assist Stefan Wegner with code review."
+    assert payload["system"] == "You assist Anna Schmidt with code review."

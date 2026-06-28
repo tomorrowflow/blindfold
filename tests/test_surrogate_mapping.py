@@ -2,15 +2,21 @@
 
 Scope note: this slice covers only E-stable/idempotent. E reserved-namespace and
 coherent-world are N/A here (no PII/relationship surrogates yet); G mapping-secrecy
-is N/A (in-memory plaintext mapping, no persistence/crypto this slice).
+is N/A (in-memory plaintext mapping, real values plaintext, Transit deferred to #10 /
+ADR-0008 — an intentional, ADR-backed deferral, not a leak).
 """
 
-from blindfold.surrogates import seeded_mapping
+from blindfold.store import vendored_seed_repository
+from blindfold.surrogates import SurrogateMapping
+
+
+def _seeded_mapping() -> SurrogateMapping:
+    return SurrogateMapping.from_pairs(vendored_seed_repository().seeded_pairs())
 
 
 def test_seeded_entity_has_stable_surrogate_across_lookups():
-    mapping = seeded_mapping()
-    real = "Stefan Wegner"
+    mapping = _seeded_mapping()
+    real = "Martin Bach"
 
     first = mapping.surrogate_for(real)
     second = mapping.surrogate_for(real)
@@ -22,8 +28,8 @@ def test_seeded_entity_has_stable_surrogate_across_lookups():
 
 
 def test_minting_an_existing_entity_returns_the_same_surrogate():
-    mapping = seeded_mapping()
-    real = "Markus Eberhardt"
+    mapping = _seeded_mapping()
+    real = "Andreas Ritter"
 
     minted_once = mapping.mint(real)
     minted_again = mapping.mint(real)
@@ -33,7 +39,7 @@ def test_minting_an_existing_entity_returns_the_same_surrogate():
 
 
 def test_minting_a_novel_entity_is_idempotent_and_stable():
-    mapping = seeded_mapping()
+    mapping = SurrogateMapping()
     novel = "Wilhelm Brandt"
 
     first = mapping.mint(novel)

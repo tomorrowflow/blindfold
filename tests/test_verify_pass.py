@@ -15,19 +15,26 @@ from blindfold.engine import (
     restore_response,
     verify_pass,
 )
-from blindfold.surrogates import seeded_mapping
+from blindfold.surrogates import SurrogateMapping
+
+
+def _mapping() -> SurrogateMapping:
+    # Engine-mechanics tests own their fixture data (decoupled from the entity-graph seed).
+    return SurrogateMapping.from_pairs(
+        [("Anna Schmidt", "Berta Vogel"), ("Markus Wagner", "Tobias Lehmann")]
+    )
 
 
 def test_verify_pass_accepts_a_clean_round_trip():
-    mapping = seeded_mapping()
+    mapping = _mapping()
     payload = {
         "model": "m",
-        "messages": [{"role": "user", "content": "Hi Stefan Wegner"}],
+        "messages": [{"role": "user", "content": "Hi Anna Schmidt"}],
     }
     blinded, session = blindfold_payload(payload, mapping)
-    stefan_surrogate = mapping.surrogate_for("Stefan Wegner")
+    anna_surrogate = mapping.surrogate_for("Anna Schmidt")
     provider_response = {
-        "content": [{"type": "text", "text": f"{stefan_surrogate} replied."}]
+        "content": [{"type": "text", "text": f"{anna_surrogate} replied."}]
     }
     restored = restore_response(provider_response, session)
 
@@ -36,11 +43,11 @@ def test_verify_pass_accepts_a_clean_round_trip():
 
 
 def test_verify_pass_raises_when_a_real_entity_value_is_in_the_outbound_payload():
-    mapping = seeded_mapping()
+    mapping = _mapping()
     session = ExchangeSession()
     # A blindfold miss: the real value is still present in what would egress.
     leaky_outbound = {
-        "messages": [{"role": "user", "content": "Contact Stefan Wegner now."}]
+        "messages": [{"role": "user", "content": "Contact Anna Schmidt now."}]
     }
     restored = {"content": [{"type": "text", "text": "ok"}]}
 
@@ -49,15 +56,15 @@ def test_verify_pass_raises_when_a_real_entity_value_is_in_the_outbound_payload(
 
 
 def test_verify_pass_raises_when_an_injected_surrogate_is_left_unresolved():
-    mapping = seeded_mapping()
+    mapping = _mapping()
     payload = {
         "model": "m",
-        "messages": [{"role": "user", "content": "Hi Stefan Wegner"}],
+        "messages": [{"role": "user", "content": "Hi Anna Schmidt"}],
     }
     blinded, session = blindfold_payload(payload, mapping)
-    stefan_surrogate = mapping.surrogate_for("Stefan Wegner")
+    anna_surrogate = mapping.surrogate_for("Anna Schmidt")
     # Restore failed to reverse the injected surrogate (it is still client-visible).
-    unrestored = {"content": [{"type": "text", "text": f"{stefan_surrogate} replied."}]}
+    unrestored = {"content": [{"type": "text", "text": f"{anna_surrogate} replied."}]}
 
     with pytest.raises(UnresolvedSurrogateError):
         verify_pass(blinded, unrestored, session, mapping)

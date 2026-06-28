@@ -1,0 +1,35 @@
+{
+  "_provenance": "Vendored cold-start seed for Blindfold, transcribed from voice-diary's curated data (server/webapp/seed.sql) per ADR-0012 (data reuse as a cold-start seed; concept reuse, NOT runtime coupling). This is a standalone artifact in THIS repo with no build/runtime dependency on the voice-diary repo. persons (+variations) and terms (+variations) are voice-diary's curated entities verbatim; org_units / entity_relationships / role_assignments are derived from the persons' company/department/role columns (voice-diary did not curate org_unit rows). Real values are plaintext THIS slice; Transit encryption + blind index land in #10 (ADR-0008).",
+  "_curation": "Per ADR-0013 (seed only sensitive referents): `terms` holds ONLY sensitive referents (blindfold targets); non-sensitive context tokens are either org_units (structure, never blindfolded) or absent from the seed. Curated by hand from voice-diary's ASR-era `terms` (whose `category` column was an ASR signal, NOT a privacy signal). Decisions: KEEP as term -> Enervia, Voltwerk; PROMOTE to term -> Magic Square (internal codename, voice-diary category 'department'). DEMOTE to org_unit-only (already an org_unit with a member) -> Engineering (its bilingual variations Softwareentwicklung/Technikabteilung were dropped: an un-blindfolded token needs no coreference). DROP entirely (generic/public, no structure) -> Kubernetes (+K8s/k8s), BYOD Policy (+BYOD/Bring Your Own Device), Internal Business Services, Cloud Services, Payment Systems (the last three were voice-diary category 'department' but carry no members/edges, so no org_unit row this slice). Unifying terms/org_units under one entity + a `sensitive` flag is deferred to v2: ADR-0014 / issue #22.",
+  "workspace": {"slug": "default", "name": "Default Workspace"},
+  "persons": [
+    {"canonical_name": "Martin Bach", "variations": ["Martin", "Bach"]},
+    {"canonical_name": "Stefan Wegner", "variations": ["Stefan", "Stef"]},
+    {"canonical_name": "Sophie Maier", "variations": ["Sophie", "Sofie"]},
+    {"canonical_name": "Andreas Ritter", "variations": ["Andreas", "Ritter"]},
+    {"canonical_name": "Henning Albers", "variations": ["Henning", "Albers"]}
+  ],
+  "terms": [
+    {"canonical_name": "Enervia", "variations": ["enervia", "ENERVIA", "Enervia AG", "E-nervia", "Enervia GmbH", "Enerva"]},
+    {"canonical_name": "Voltwerk", "variations": []},
+    {"canonical_name": "Magic Square", "variations": []}
+  ],
+  "org_units": [
+    {"name": "Enervia", "parent": null},
+    {"name": "Voltwerk", "parent": null},
+    {"name": "Management", "parent": "Enervia"},
+    {"name": "HR", "parent": "Enervia"},
+    {"name": "Engineering", "parent": "Enervia"},
+    {"name": "Board of Directors", "parent": "Voltwerk"}
+  ],
+  "entity_relationships": [
+    {"source_kind": "org_unit", "source": "Enervia", "relation": "subsidiary_of", "target_kind": "org_unit", "target": "Voltwerk"}
+  ],
+  "role_assignments": [
+    {"person": "Martin Bach", "org_unit": "Management", "role": "CEO"},
+    {"person": "Stefan Wegner", "org_unit": "Management", "role": "CTO"},
+    {"person": "Sophie Maier", "org_unit": "HR", "role": "HR Manager"},
+    {"person": "Andreas Ritter", "org_unit": "Engineering", "role": "Product Manager"},
+    {"person": "Henning Albers", "org_unit": "Board of Directors", "role": "Board Member"}
+  ]
+}
