@@ -17,9 +17,12 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from .detection import Entity
+
+if TYPE_CHECKING:
+    from .review import Allowlist
 
 # Window of context around a candidate span handed to L3 — wide enough to disambiguate
 # ("Klaus signed the contract" vs. "Klaus the bus driver"), narrow enough that cost
@@ -111,7 +114,9 @@ class L3ContentCache:
 
 
 def select_candidate_spans(
-    text: str, known_entities: list[Entity]
+    text: str,
+    known_entities: list[Entity],
+    allowlist: "Allowlist | None" = None,
 ) -> list[CandidateSpan]:
     """Flag the unknown capitalized tokens in ``text``, with minimal context.
 
@@ -119,6 +124,8 @@ def select_candidate_spans(
     are L2's territory and are NOT re-flagged here. Sentence-starter function words
     are filtered to keep the candidate set small (a quality optimisation, not a
     privacy one — L3 would reject "Please" anyway, but pre-filtering saves a call).
+    Tokens the user has rejected (ADR-0010 allowlist) are filtered too — over-
+    redaction is the quality bug the learning loop fixes.
     """
     known_surfaces = _known_surfaces(known_entities)
     candidates: list[CandidateSpan] = []
@@ -127,6 +134,8 @@ def select_candidate_spans(
         if token in _SENTENCE_STOPWORDS:
             continue
         if token in known_surfaces:
+            continue
+        if allowlist is not None and allowlist.contains(token):
             continue
         start, end = match.start(), match.end()
         context = _context_window(text, start, end)
@@ -164,12 +173,16 @@ class L3Detector:
         adjudicator: L3Adjudicator,
         cache: L3ContentCache | None = None,
         deterministic_only: bool = False,
+        allowlist: "Allowlist | None" = None,
     ) -> None:
         self._adjudicator = adjudicator
         self._cache = cache if cache is not None else L3ContentCache()
         # ADR-0009: per-workspace opt-in to skip L3 entirely. Known-entity protection
         # via L1+L2 still runs; novelty discovery is the documented loss.
         self._deterministic_only = deterministic_only
+        # ADR-0010 allowlist: rejected tokens are filtered before adjudication so
+        # the learning loop's "reject" verdict actually suppresses re-detection.
+        self._allowlist = allowlist
 
     def detect(
         self, text: str, known_entities: list[Entity]
@@ -177,7 +190,9 @@ class L3Detector:
         if self._deterministic_only:
             return []
         results: list[tuple[CandidateSpan, L3Adjudication]] = []
-        for candidate in select_candidate_spans(text, known_entities):
+        for candidate in select_candidate_spans(
+            text, known_entities, self._allowlist
+        ):
             cached = self._cache.get(candidate)
             if cached is not None:
                 results.append((candidate, cached))

@@ -11,10 +11,15 @@
 from __future__ import annotations
 
 import copy
+import logging
 from typing import Any
 
 from .detection import detect_l2, detect_pii
+from .l3 import L3Detector
+from .review import ReviewInbox
 from .surrogates import SurrogateMapping
+
+logger = logging.getLogger(__name__)
 
 
 class LeakError(Exception):
@@ -36,30 +41,41 @@ class ExchangeSession:
 
 
 def blindfold_payload(
-    payload: dict[str, Any], mapping: SurrogateMapping
+    payload: dict[str, Any],
+    mapping: SurrogateMapping,
+    l3_detector: L3Detector | None = None,
+    inbox: ReviewInbox | None = None,
 ) -> tuple[dict[str, Any], ExchangeSession]:
     """Return a blindfolded copy of an Anthropic Messages ``payload`` plus the session.
 
     Every hop (system prompt, user turns, tool-result text) is rewritten; all other
     content is left byte-identical. The input ``payload`` is not mutated.
+
+    When ``l3_detector`` is provided, novel candidate spans confirmed by the L3
+    adjudicator are auto-blindfolded with a provisional surrogate (ADR-0010) and
+    recorded in ``inbox`` for async human review (confirm grows the entity graph;
+    reject grows the allowlist).
     """
     session = ExchangeSession()
     out = copy.deepcopy(payload)
 
     system = out.get("system")
     if system is not None:
-        out["system"] = _blindfold_system(system, mapping, session)
+        out["system"] = _blindfold_system(system, mapping, session, l3_detector, inbox)
 
     for message in out.get("messages", []):
         message["content"] = _blindfold_content(
-            message.get("content"), mapping, session
+            message.get("content"), mapping, session, l3_detector, inbox
         )
 
     return out, session
 
 
 def blindfold_chat_completions_payload(
-    payload: dict[str, Any], mapping: SurrogateMapping
+    payload: dict[str, Any],
+    mapping: SurrogateMapping,
+    l3_detector: L3Detector | None = None,
+    inbox: ReviewInbox | None = None,
 ) -> tuple[dict[str, Any], ExchangeSession]:
     """Return a blindfolded copy of an OpenAI Chat Completions ``payload`` plus the session.
 
@@ -72,59 +88,105 @@ def blindfold_chat_completions_payload(
 
     for message in out.get("messages", []):
         message["content"] = _blindfold_content(
-            message.get("content"), mapping, session
+            message.get("content"), mapping, session, l3_detector, inbox
         )
 
     return out, session
 
 
-def _blindfold_system(system: Any, mapping: SurrogateMapping, session: ExchangeSession) -> Any:
+def _blindfold_system(
+    system: Any,
+    mapping: SurrogateMapping,
+    session: ExchangeSession,
+    l3_detector: L3Detector | None,
+    inbox: ReviewInbox | None,
+) -> Any:
     if isinstance(system, str):
-        return _blindfold_text(system, mapping, session)
+        return _blindfold_text(system, mapping, session, l3_detector, inbox)
     if isinstance(system, list):
-        return [_blindfold_block(block, mapping, session) for block in system]
+        return [
+            _blindfold_block(block, mapping, session, l3_detector, inbox)
+            for block in system
+        ]
     return system
 
 
-def _blindfold_content(content: Any, mapping: SurrogateMapping, session: ExchangeSession) -> Any:
+def _blindfold_content(
+    content: Any,
+    mapping: SurrogateMapping,
+    session: ExchangeSession,
+    l3_detector: L3Detector | None,
+    inbox: ReviewInbox | None,
+) -> Any:
     if isinstance(content, str):
-        return _blindfold_text(content, mapping, session)
+        return _blindfold_text(content, mapping, session, l3_detector, inbox)
     if isinstance(content, list):
-        return [_blindfold_block(block, mapping, session) for block in content]
+        return [
+            _blindfold_block(block, mapping, session, l3_detector, inbox)
+            for block in content
+        ]
     return content
 
 
-def _blindfold_block(block: Any, mapping: SurrogateMapping, session: ExchangeSession) -> Any:
+def _blindfold_block(
+    block: Any,
+    mapping: SurrogateMapping,
+    session: ExchangeSession,
+    l3_detector: L3Detector | None,
+    inbox: ReviewInbox | None,
+) -> Any:
     if not isinstance(block, dict):
         return block
     block_type = block.get("type")
     if block_type == "text" and isinstance(block.get("text"), str):
-        block["text"] = _blindfold_text(block["text"], mapping, session)
+        block["text"] = _blindfold_text(
+            block["text"], mapping, session, l3_detector, inbox
+        )
     elif block_type == "tool_result":
-        block["content"] = _blindfold_content(block.get("content"), mapping, session)
+        block["content"] = _blindfold_content(
+            block.get("content"), mapping, session, l3_detector, inbox
+        )
     elif block_type == "tool_use":
         # Tool-call JSON (issue #11): the assistant's prior tool_use.input is echoed
         # back into the request on multi-turn exchanges. Treat it as a hop (ADR-0002)
         # and blindfold any real entity inside its structured args so clause A holds
         # across every hop, not just text blocks.
-        block["input"] = _blindfold_json_value(block.get("input"), mapping, session)
+        block["input"] = _blindfold_json_value(
+            block.get("input"), mapping, session, l3_detector, inbox
+        )
     return block
 
 
 def _blindfold_json_value(
-    value: Any, mapping: SurrogateMapping, session: ExchangeSession
+    value: Any,
+    mapping: SurrogateMapping,
+    session: ExchangeSession,
+    l3_detector: L3Detector | None,
+    inbox: ReviewInbox | None,
 ) -> Any:
     """Recursively rewrite every string leaf in a JSON-shaped value via L1+L2."""
     if isinstance(value, str):
-        return _blindfold_text(value, mapping, session)
+        return _blindfold_text(value, mapping, session, l3_detector, inbox)
     if isinstance(value, dict):
-        return {k: _blindfold_json_value(v, mapping, session) for k, v in value.items()}
+        return {
+            k: _blindfold_json_value(v, mapping, session, l3_detector, inbox)
+            for k, v in value.items()
+        }
     if isinstance(value, list):
-        return [_blindfold_json_value(item, mapping, session) for item in value]
+        return [
+            _blindfold_json_value(item, mapping, session, l3_detector, inbox)
+            for item in value
+        ]
     return value
 
 
-def _blindfold_text(text: str, mapping: SurrogateMapping, session: ExchangeSession) -> str:
+def _blindfold_text(
+    text: str,
+    mapping: SurrogateMapping,
+    session: ExchangeSession,
+    l3_detector: L3Detector | None = None,
+    inbox: ReviewInbox | None = None,
+) -> str:
     """Rewrite ``text`` by replacing every L2-detected entity span with its surrogate.
 
     L2 (ADR-0003) flags candidate spans at token boundaries — no substring over-
@@ -153,6 +215,32 @@ def _blindfold_text(text: str, mapping: SurrogateMapping, session: ExchangeSessi
         surrogate = mapping.mint_pii(span.kind, span.value)
         result = result.replace(span.value, surrogate)
         session.record(surrogate, span.value)
+    # L3 candidate-span adjudication (ADR-0003 / ADR-0010): novel capitalized tokens
+    # the deterministic passes couldn't resolve. Confirmed candidates get a
+    # **provisional** surrogate minted by the inbox (NOT the main mapping — keeping
+    # provisional state separate is what lets ``reject`` cleanly drop them) and
+    # land in the review inbox for async human review. Auto-blindfold is non-
+    # blocking — the request never stalls waiting on the reviewer.
+    if l3_detector is not None and inbox is not None:
+        adjudications = l3_detector.detect(result, mapping.entities())
+        # Re-resolve candidate offsets against the current ``result`` because L2/L1
+        # have already rewritten the text out from under L3's original start/end.
+        spans: list[tuple[int, int, str, str]] = []
+        for candidate, decision in adjudications:
+            if not decision.is_entity:
+                continue
+            hit = result.find(candidate.text)
+            if hit == -1:
+                continue
+            item = inbox.upsert(candidate.text, candidate.context)
+            spans.append(
+                (hit, hit + len(candidate.text), item.provisional_surrogate, candidate.text)
+            )
+        for start, end, surrogate, real in sorted(
+            spans, key=lambda s: s[0], reverse=True
+        ):
+            result = result[:start] + surrogate + result[end:]
+            session.record(surrogate, real)
     return result
 
 
@@ -307,23 +395,29 @@ def verify_pass(
     session: ExchangeSession,
     mapping: SurrogateMapping,
 ) -> None:
-    """Post-restore self-check (ADR-0006); raises on either failure mode.
+    """Post-restore self-check (ADR-0006); warns then raises on either failure mode.
 
     Failure mode 1 (:class:`LeakError`): a real entity value is present in the payload
     that egresses upstream. Failure mode 2 (:class:`UnresolvedSurrogateError`): an
     injected surrogate is still present in the client-visible restored response.
+
+    Each failure is logged at WARNING level naming the offending value before the
+    exception is raised, so the operator is *warned* on a dedicated log surface (the
+    AC's "clear warning") rather than only via the bubbled-up exception traceback.
     """
     outbound_text = _collect_text(blinded_outbound)
     for real in mapping.real_values():
         if real in outbound_text:
-            raise LeakError(f"real entity value would egress upstream: {real!r}")
+            message = f"real entity value would egress upstream: {real!r}"
+            logger.warning("verify_pass: %s", message)
+            raise LeakError(message)
 
     restored_text = _collect_text(restored_response)
     for surrogate in session.injected:
         if surrogate in restored_text:
-            raise UnresolvedSurrogateError(
-                f"injected surrogate left unresolved in response: {surrogate!r}"
-            )
+            message = f"injected surrogate left unresolved in response: {surrogate!r}"
+            logger.warning("verify_pass: %s", message)
+            raise UnresolvedSurrogateError(message)
 
 
 def _collect_text(obj: Any) -> str:
