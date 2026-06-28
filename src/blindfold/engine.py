@@ -13,6 +13,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 
+from .detection import detect_l2, detect_pii
 from .surrogates import SurrogateMapping
 
 
@@ -37,7 +38,7 @@ class ExchangeSession:
 def blindfold_payload(
     payload: dict[str, Any], mapping: SurrogateMapping
 ) -> tuple[dict[str, Any], ExchangeSession]:
-    """Return a blindfolded copy of ``payload`` plus the exchange session.
+    """Return a blindfolded copy of an Anthropic Messages ``payload`` plus the session.
 
     Every hop (system prompt, user turns, tool-result text) is rewritten; all other
     content is left byte-identical. The input ``payload`` is not mutated.
@@ -48,6 +49,26 @@ def blindfold_payload(
     system = out.get("system")
     if system is not None:
         out["system"] = _blindfold_system(system, mapping, session)
+
+    for message in out.get("messages", []):
+        message["content"] = _blindfold_content(
+            message.get("content"), mapping, session
+        )
+
+    return out, session
+
+
+def blindfold_chat_completions_payload(
+    payload: dict[str, Any], mapping: SurrogateMapping
+) -> tuple[dict[str, Any], ExchangeSession]:
+    """Return a blindfolded copy of an OpenAI Chat Completions ``payload`` plus the session.
+
+    Every hop is rewritten — system / user / assistant / tool messages alike (ADR-0002).
+    Mirrors :func:`blindfold_payload`, sharing :func:`_blindfold_text` so a real entity
+    that appears in either format produces the same surrogate.
+    """
+    session = ExchangeSession()
+    out = copy.deepcopy(payload)
 
     for message in out.get("messages", []):
         message["content"] = _blindfold_content(
@@ -87,18 +108,41 @@ def _blindfold_block(block: Any, mapping: SurrogateMapping, session: ExchangeSes
 
 
 def _blindfold_text(text: str, mapping: SurrogateMapping, session: ExchangeSession) -> str:
+    """Rewrite ``text`` by replacing every L2-detected entity span with its surrogate.
+
+    L2 (ADR-0003) flags candidate spans at token boundaries — no substring over-
+    redaction. Variations of one entity share its surrogate (coreference, ADR-0004),
+    so all hits restore to the same canonical real value via ``session``.
+    """
     result = text
-    for real, surrogate in mapping.pairs():
-        if real in result:
-            result = result.replace(real, surrogate)
-            session.record(surrogate, real)
+    spans = detect_l2(result, mapping.entities())
+    if spans:
+        # Replace right-to-left so earlier spans' offsets stay valid mid-rewrite.
+        for span in sorted(spans, key=lambda s: s.start, reverse=True):
+            result = result[: span.start] + span.surrogate + result[span.end :]
+            session.record(span.surrogate, span.real)
+    # L1 deterministic PII (ADR-0003): regex over the full text, reserved-namespace
+    # surrogates (ADR-0005). Runs after the dictionary pass so any entity-graph
+    # match has already won; PII spans cover what L1 alone is meant to catch.
+    for span in detect_pii(result):
+        if span.value not in result:
+            continue
+        # Reserved-namespace surrogates are themselves PII-shaped (an `.invalid`
+        # email is still an email). On a later hop the dict pass replaces a real
+        # value with its surrogate; L1 would then re-detect that surrogate and mint
+        # a second surrogate for the same entity, breaking clause E-stable. Skip.
+        if mapping.is_known_surrogate(span.value):
+            continue
+        surrogate = mapping.mint_pii(span.kind, span.value)
+        result = result.replace(span.value, surrogate)
+        session.record(surrogate, span.value)
     return result
 
 
 def restore_response(
     response: dict[str, Any], session: ExchangeSession
 ) -> dict[str, Any]:
-    """Return a copy of ``response`` with this exchange's surrogates restored.
+    """Return a copy of an Anthropic Messages ``response`` with surrogates restored.
 
     Closed-world (ADR-0006): only surrogates recorded in ``session`` are reversed, so
     a surrogate-shaped token the provider emitted on its own is left untouched. The
@@ -117,6 +161,35 @@ def restore_response(
     return out
 
 
+def restore_chat_completion(
+    response: dict[str, Any], session: ExchangeSession
+) -> dict[str, Any]:
+    """Return a copy of an OpenAI Chat Completions ``response`` with surrogates restored.
+
+    Walks ``choices[*].message.content`` (string or text-block list). Closed-world: only
+    surrogates recorded in ``session`` are reversed (ADR-0006). The input is not mutated.
+    """
+    out = copy.deepcopy(response)
+    for choice in out.get("choices", []) or []:
+        if not isinstance(choice, dict):
+            continue
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content")
+        if isinstance(content, str):
+            message["content"] = _restore_text(content, session)
+        elif isinstance(content, list):
+            for block in content:
+                if (
+                    isinstance(block, dict)
+                    and block.get("type") == "text"
+                    and isinstance(block.get("text"), str)
+                ):
+                    block["text"] = _restore_text(block["text"], session)
+    return out
+
+
 def _restore_text(text: str, session: ExchangeSession) -> str:
     result = text
     # Longest surrogate first for safe exact replacement.
@@ -125,6 +198,59 @@ def _restore_text(text: str, session: ExchangeSession) -> str:
     ):
         result = result.replace(surrogate, real)
     return result
+
+
+class StreamingRestorer:
+    """Sliding-window streaming restore (ADR-0006).
+
+    Holds back a tail buffer at least as long as the longest injected surrogate so a
+    surrogate split across stream chunks is matched and restored before emission. The
+    restore stays closed-world: only surrogates recorded in ``session`` are reversed.
+    """
+
+    def __init__(self, session: ExchangeSession) -> None:
+        self._session = session
+        self._buffer = ""
+        # Tail held back equals the longest injected surrogate; 0 means nothing to
+        # protect (no surrogates injected -> emit chunks unchanged).
+        self._tail = max((len(s) for s in session.injected), default=0)
+
+    def feed(self, chunk: str) -> str:
+        """Buffer ``chunk``, restore in-place, and return the safe prefix to emit."""
+        self._buffer += chunk
+        if len(self._buffer) <= self._tail:
+            return ""
+        safe_len = len(self._buffer) - self._tail
+        restored, consumed = self._restore_prefix(safe_len)
+        self._buffer = self._buffer[consumed:]
+        return restored
+
+    def flush(self) -> str:
+        """Emit any remaining buffered text, fully restored."""
+        if not self._buffer:
+            return ""
+        restored = _restore_text(self._buffer, self._session)
+        self._buffer = ""
+        return restored
+
+    def _restore_prefix(self, safe_len: int) -> tuple[str, int]:
+        """Restore the buffer's safe prefix, extending if a match straddles ``safe_len``.
+
+        A surrogate may start within the safe prefix and extend into the tail; in that
+        case we restore the full match (and consume up to its end), preserving the
+        sliding-window invariant.
+        """
+        end = safe_len
+        for surrogate in sorted(self._session.injected, key=len, reverse=True):
+            search_start = 0
+            while search_start < safe_len:
+                hit = self._buffer.find(surrogate, search_start)
+                if hit == -1 or hit >= safe_len:
+                    break
+                end = max(end, hit + len(surrogate))
+                search_start = hit + 1
+        restored = _restore_text(self._buffer[:end], self._session)
+        return restored, end
 
 
 def verify_pass(

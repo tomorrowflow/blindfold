@@ -91,3 +91,19 @@ CREATE TABLE IF NOT EXISTS surrogates (
     surrogate     TEXT NOT NULL,
     UNIQUE (workspace_id, referent_kind, referent_id)
 );
+
+-- Retired surrogates: the historical alias trail left behind when a curator edits a
+-- referent's active surrogate (ADR-0005: editing a surrogate must preserve restorability
+-- of past exchanges). The schema lands this slice; the Postgres write path (CLI
+-- edit-surrogate against the DB) and the matching read path in PostgresSeedRepository
+-- — which will UNION these rows alongside the active surrogate, retired pairs first so a
+-- real-keyed SurrogateMapping ends up with the ACTIVE surrogate for subsequent blindfold
+-- — land in the follow-up Postgres-wiring slice referenced from cli.main().
+CREATE TABLE IF NOT EXISTS retired_surrogates (
+    id            SERIAL PRIMARY KEY,
+    workspace_id  INTEGER NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
+    referent_kind TEXT NOT NULL,
+    referent_id   INTEGER NOT NULL,
+    surrogate     TEXT NOT NULL,
+    UNIQUE (workspace_id, referent_kind, referent_id, surrogate)
+);

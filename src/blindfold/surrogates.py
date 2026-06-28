@@ -4,6 +4,12 @@ A surrogate is the fake stand-in assigned to an entity. Surrogates are *stable*
 (a given entity maps to the same surrogate everywhere) and minting is *idempotent*
 (minting an entity that already has a surrogate returns the existing one).
 
+For contactable PII (emails, phones, IBANs, IDs) minting draws from **reserved /
+non-routable namespaces** (ADR-0005, leak-audit clause E) — `.invalid` / `.example`
+domains, NANPA `555-01XX` fictional range, the unassigned ISO 3166 country code for
+IBANs, an explicit ``RESERVED`` ID prefix — so Blindfold never generates a routable
+lookalike of a real third party's contact value.
+
 This slice keeps the mapping in-memory and in plaintext on purpose: persistence and
 Transit-backed mapping secrecy (leak-audit clause G) are out of scope (issues #3/#10).
 """
@@ -11,6 +17,8 @@ Transit-backed mapping secrecy (leak-audit clause G) are out of scope (issues #3
 from __future__ import annotations
 
 from collections.abc import Iterable
+
+from .detection import Entity
 
 # Plausible fake names used to mint surrogates for novel entities deterministically.
 _SURROGATE_POOL: tuple[str, ...] = (
@@ -22,11 +30,39 @@ _SURROGATE_POOL: tuple[str, ...] = (
 )
 
 
+def _mint_pii_surrogate(kind: str, index: int) -> str:
+    """Return the ``index``-th reserved-namespace surrogate for a PII ``kind``.
+
+    Reservations (deliberately non-routable):
+      - ``email`` -> RFC 2606 ``.invalid`` TLD (never deliverable).
+      - ``phone`` -> NANPA fictional range ``+1-555-0100..0199`` (reserved for fiction).
+      - ``iban``  -> ISO 3166 unassigned country code ``XX`` (no real bank routes it).
+      - ``id``    -> explicit ``ID-RESERVED-XXXX`` prefix (clearly synthetic).
+    """
+    if kind == "email":
+        return f"pii-user-{index:04d}@blindfold.invalid"
+    if kind == "phone":
+        # 100..199 keeps the surrogate inside the NANPA fictional `555-01XX` range
+        # (index wraps deterministically past 100 fakes — collisions inside one
+        # exchange are vanishingly unlikely and the closed-world session still
+        # records the (surrogate -> real) pair for the exchange).
+        return f"+1-555-{100 + (index % 100):04d}"
+    if kind == "iban":
+        # `XX` is unassigned in ISO 3166-1; `99` keeps the format-valid 2+2 prefix
+        # without colliding with any real country IBAN range.
+        return f"XX99 0000 0000 0000 0000 {index:04d}"
+    if kind == "id":
+        return f"ID-RESERVED-{index:06d}"
+    return f"PII-RESERVED-{kind}-{index:04d}"
+
+
 class SurrogateMapping:
     """In-memory registry of real -> surrogate assignments."""
 
     def __init__(self) -> None:
         self._by_real: dict[str, str] = {}
+        self._known_surrogates: set[str] = set()
+        self._pii_counters: dict[str, int] = {}
 
     @classmethod
     def from_pairs(cls, pairs: Iterable[tuple[str, str]]) -> "SurrogateMapping":
@@ -39,24 +75,62 @@ class SurrogateMapping:
 
     def seed(self, real: str, surrogate: str) -> None:
         self._by_real[real] = surrogate
+        self._known_surrogates.add(surrogate)
 
     def mint(self, real: str) -> str:
         """Return the surrogate for ``real``, minting a stable one if needed."""
         if real not in self._by_real:
-            self._by_real[real] = self._next_surrogate()
+            surrogate = self._next_surrogate()
+            self._by_real[real] = surrogate
+            self._known_surrogates.add(surrogate)
         return self._by_real[real]
+
+    def mint_pii(self, kind: str, value: str) -> str:
+        """Return a stable reserved-namespace surrogate for L1-detected PII.
+
+        Stable: the same ``value`` always returns the same surrogate within this
+        mapping (idempotent). The surrogate is drawn from a reserved namespace per
+        :func:`_mint_pii_surrogate` so Blindfold never generates a routable lookalike
+        of a real third party's contact value (leak-audit clause E reserved-namespace).
+        """
+        if value not in self._by_real:
+            index = self._pii_counters.get(kind, 0)
+            self._pii_counters[kind] = index + 1
+            surrogate = _mint_pii_surrogate(kind, index)
+            self._by_real[value] = surrogate
+            self._known_surrogates.add(surrogate)
+        return self._by_real[value]
 
     def surrogate_for(self, real: str) -> str | None:
         return self._by_real.get(real)
 
-    def pairs(self) -> list[tuple[str, str]]:
-        """(real, surrogate) pairs, longest real first for safe exact replacement."""
-        return sorted(
-            self._by_real.items(), key=lambda kv: len(kv[0]), reverse=True
-        )
+    def is_known_surrogate(self, value: str) -> bool:
+        """True if ``value`` is itself a surrogate this mapping has already issued.
+
+        Used by the engine to skip L1 spans whose value is one of L1's own
+        (PII-shaped) surrogates from a prior hop — re-blindfolding them would mint a
+        second surrogate for the same real entity and break clause E-stable.
+        """
+        return value in self._known_surrogates
 
     def real_values(self) -> list[str]:
         return list(self._by_real.keys())
+
+    def entities(self) -> list[Entity]:
+        """Group seeded real values by surrogate to recover entity-graph records.
+
+        Same surrogate ⇒ same referent (ADR-0007). The first real value seeded for a
+        given surrogate is taken as the **canonical** form; the rest are variations
+        (coreference, ADR-0004). Dict insertion order is preserved (Python 3.7+), so
+        the order seeded via :py:meth:`from_pairs` is the order recovered here.
+        """
+        by_surrogate: dict[str, list[str]] = {}
+        for real, surrogate in self._by_real.items():
+            by_surrogate.setdefault(surrogate, []).append(real)
+        return [
+            Entity(canonical=reals[0], variations=tuple(reals[1:]), surrogate=surrogate)
+            for surrogate, reals in by_surrogate.items()
+        ]
 
     def _next_surrogate(self) -> str:
         index = len(self._by_real)

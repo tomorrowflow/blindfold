@@ -91,3 +91,25 @@ def test_blindfold_does_not_mutate_the_input_payload():
     blindfold_payload(payload, mapping)
 
     assert payload["system"] == "You assist Anna Schmidt with code review."
+
+
+def test_blindfold_uses_l2_token_boundaries_and_does_not_overredact_substrings():
+    # Engine-seam regression for the L2 wiring (issue #7). The naive substring
+    # blindfold would also rewrite "Anna" inside "Annapolis" — over-redaction is a
+    # quality bug per CONTEXT.md. Once the engine routes through detect_l2, the
+    # token-boundary rule applies end-to-end.
+    mapping = SurrogateMapping.from_pairs(
+        [("Anna Schmidt", "Berta Vogel"), ("Anna", "Berta Vogel")]
+    )
+    payload = {
+        "model": "m",
+        "messages": [
+            {"role": "user", "content": "Annapolis hosts the offsite this year."}
+        ],
+    }
+
+    blinded, session = blindfold_payload(payload, mapping)
+
+    text = blinded["messages"][0]["content"]
+    assert text == "Annapolis hosts the offsite this year."
+    assert session.injected == {}

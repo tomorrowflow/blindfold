@@ -7,6 +7,9 @@ pre-built ``httpx.AsyncClient`` with a ``MockTransport``.
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 import httpx
 
 from .config import Settings
@@ -34,3 +37,23 @@ class UpstreamClient:
         )
         response.raise_for_status()
         return response.json()
+
+    async def send_chat_completions(
+        self, payload: dict, headers: dict[str, str]
+    ) -> dict:
+        response = await self._client.post(
+            "/v1/chat/completions", json=payload, headers=headers
+        )
+        response.raise_for_status()
+        return response.json()
+
+    @asynccontextmanager
+    async def stream_messages(
+        self, payload: dict, headers: dict[str, str]
+    ) -> AsyncIterator[httpx.Response]:
+        """Open a streaming POST to ``/v1/messages`` (SSE response from the provider)."""
+        async with self._client.stream(
+            "POST", "/v1/messages", json=payload, headers=headers
+        ) as response:
+            response.raise_for_status()
+            yield response
