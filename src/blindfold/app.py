@@ -605,8 +605,8 @@ async def list_audit_events(
 ) -> dict:
     """List audit events scoped to a workspace (ADR-0007 / ADR-0008 / issue #16).
 
-    Requires the calling identity to hold the ``viewer`` role (or above) on the
-    requested workspace — workspace A's events are hidden from identities with
+    Requires the calling identity to hold the ``viewer`` role (exact-match; ADR-0015)
+    on the requested workspace — workspace A's events are hidden from identities with
     access only to workspace B (workspace scoping, acceptance criterion 2).
     """
     identity = _caller_identity(request)
@@ -685,40 +685,3 @@ async def revoke_workspace_role(
     return {"identity": target_identity, "workspace": slug, "role": role, "action": "revoked"}
 
 
-@app.get("/v1/management/surrogate/{value}/real")
-async def reidentify_surrogate(
-    value: str,
-    workspace: str,
-    request: Request,
-    rbac: RbacRegistry = Depends(get_rbac),
-    mapping: SurrogateMapping = Depends(get_mapping),
-    audit_log: AuditLog = Depends(get_audit_log),
-) -> dict:
-    """Look up the real entity behind a surrogate value (re-identification).
-
-    Requires the ``re-identifier`` role on the workspace. Every lookup is captured as a
-    ``re-identified`` audit event so de-anonymization is always attributable (ADR-0008).
-    The real-value side is currently in plaintext; Transit encryption lands with #10.
-    """
-    identity = _caller_identity(request)
-    _require_role(identity, workspace, "re-identifier", rbac)
-
-    # Reverse lookup: find the real value whose surrogate matches ``value``.
-    real: str | None = None
-    for entity in mapping.entities():
-        if entity.surrogate == value:
-            real = entity.canonical
-            break
-
-    if real is None:
-        raise HTTPException(status_code=404, detail="surrogate not found")
-
-    audit_log.append(
-        AuditRecord(
-            workspace=workspace,
-            event="re-identified",
-            reason=f"surrogate {value!r} re-identified",
-            identity=identity,
-        )
-    )
-    return {"surrogate": value, "real": real, "workspace": workspace}

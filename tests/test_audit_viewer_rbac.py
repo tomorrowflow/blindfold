@@ -18,10 +18,9 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from blindfold.app import app, get_audit_log, get_mapping, get_rbac
+from blindfold.app import app, get_audit_log, get_rbac
 from blindfold.policy import AuditLog, AuditRecord
 from blindfold.rbac import RbacRegistry
-from blindfold.surrogates import SurrogateMapping
 
 
 # ---------------------------------------------------------------------------
@@ -221,86 +220,23 @@ async def test_rbac_admin_grant_denied_without_admin_role():
     assert resp.status_code == 403
 
 
-# ---------------------------------------------------------------------------
-# 4. Re-identification: GET /v1/management/surrogate/{value}/real
-# ---------------------------------------------------------------------------
-
-
 @pytest.mark.anyio
-async def test_reidentification_returns_real_value_and_logs_audit_event():
+async def test_rbac_admin_can_revoke_a_role():
     rbac = RbacRegistry()
-    rbac.grant("alice", "ws-a", "re-identifier")
-
-    # Build a mapping with one known surrogate→real pair
-    mapping = SurrogateMapping()
-    mapping.seed("Johann Bach", "Clara Hoffmann")
-
-    audit_log = AuditLog()
+    rbac.grant("alice", "ws-a", "admin")
+    rbac.grant("bob", "ws-a", "viewer")
 
     app.dependency_overrides[get_rbac] = lambda: rbac
-    app.dependency_overrides[get_mapping] = lambda: mapping
-    app.dependency_overrides[get_audit_log] = lambda: audit_log
     try:
         async with _make_client() as client:
-            resp = await client.get(
-                "/v1/management/surrogate/Clara%20Hoffmann/real",
-                params={"workspace": "ws-a"},
+            resp = await client.delete(
+                "/v1/management/workspaces/ws-a/roles/bob",
+                params={"role": "viewer"},
                 headers={"x-blindfold-identity": "alice"},
             )
     finally:
         app.dependency_overrides.clear()
 
     assert resp.status_code == 200
-    assert resp.json()["real"] == "Johann Bach"
-    # Re-identification event MUST be audited
-    assert any(
-        r.event == "re-identified"
-        and r.workspace == "ws-a"
-        and r.identity == "alice"
-        for r in audit_log.records
-    )
+    assert not rbac.has_role("bob", "ws-a", "viewer")
 
-
-@pytest.mark.anyio
-async def test_reidentification_denied_without_re_identifier_role():
-    rbac = RbacRegistry()
-    rbac.grant("alice", "ws-a", "viewer")  # viewer only, not re-identifier
-
-    mapping = SurrogateMapping()
-    mapping.seed("Johann Bach", "Clara Hoffmann")
-
-    app.dependency_overrides[get_rbac] = lambda: rbac
-    app.dependency_overrides[get_mapping] = lambda: mapping
-    try:
-        async with _make_client() as client:
-            resp = await client.get(
-                "/v1/management/surrogate/Clara%20Hoffmann/real",
-                params={"workspace": "ws-a"},
-                headers={"x-blindfold-identity": "alice"},
-            )
-    finally:
-        app.dependency_overrides.clear()
-
-    assert resp.status_code == 403
-
-
-@pytest.mark.anyio
-async def test_reidentification_returns_404_for_unknown_surrogate():
-    rbac = RbacRegistry()
-    rbac.grant("alice", "ws-a", "re-identifier")
-
-    mapping = SurrogateMapping()
-
-    app.dependency_overrides[get_rbac] = lambda: rbac
-    app.dependency_overrides[get_mapping] = lambda: mapping
-    try:
-        async with _make_client() as client:
-            resp = await client.get(
-                "/v1/management/surrogate/Unknown%20Person/real",
-                params={"workspace": "ws-a"},
-                headers={"x-blindfold-identity": "alice"},
-            )
-    finally:
-        app.dependency_overrides.clear()
-
-    assert resp.status_code == 404
