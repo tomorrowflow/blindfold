@@ -26,7 +26,7 @@ import json
 from collections.abc import AsyncIterator
 
 from fastapi import Depends, FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from .config import get_settings
 from .engine import (
@@ -55,6 +55,7 @@ from .policy import (
     WorkspacePolicies,
 )
 from .review import Allowlist, ReviewInbox
+from .spa import review_inbox_html
 from .store import vendored_seed_repository
 from .surrogates import SurrogateMapping
 from .upstream import UpstreamClient
@@ -364,6 +365,17 @@ async def chat_completions(
     if block is not None:
         return block
     return restored
+
+
+@app.get("/ui/review-inbox", response_class=HTMLResponse)
+async def review_inbox_spa() -> HTMLResponse:
+    """Serve the review-inbox SPA bundle (ADR-0011 / issue #14).
+
+    Thin Vue 3 page that consumes :func:`list_review_inbox`,
+    :func:`confirm_review_item` and :func:`reject_review_item` over the JSON
+    management API — the "API is the tested seam" boundary the SPA reads from.
+    """
+    return HTMLResponse(content=review_inbox_html())
 
 
 @app.get("/v1/management/review-inbox")
