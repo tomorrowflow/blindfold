@@ -244,6 +244,83 @@ function commitsAhead(branch: string): number {
   }
 }
 
+// Are we running inside a live Supacode session? True only when the CLI is on
+// PATH AND the app socket is reachable (SUPACODE_SOCKET_PATH is exported inside
+// Supacode terminals; `supacode socket` confirms the app is actually up). When
+// true, the per-issue worktrees are registered Supacode *surfaces*, so teardown
+// must go THROUGH Supacode — a raw `git worktree remove` would orphan the surface
+// in Supacode's registry. Probed once and memoised; fail-OPEN to the git path.
+let _supacodeSession: boolean | null = null;
+function supacodeSession(): boolean {
+  if (_supacodeSession !== null) return _supacodeSession;
+  try {
+    if (!process.env.SUPACODE_SOCKET_PATH) return (_supacodeSession = false);
+    execFileSync("supacode", ["socket"], { stdio: "ignore" });
+    return (_supacodeSession = true);
+  } catch {
+    return (_supacodeSession = false);
+  }
+}
+
+// Resolve the on-disk worktree path checked out on `branch` by asking git, rather
+// than reconstructing it from a naming convention — robust to however the
+// sandcastle library lays worktrees out. Returns null if no worktree is on it.
+function worktreePathForBranch(branch: string): string | null {
+  try {
+    const out = execFileSync("git", ["worktree", "list", "--porcelain"], {
+      encoding: "utf8",
+    });
+    let cur: string | null = null;
+    for (const line of out.split("\n")) {
+      if (line.startsWith("worktree ")) cur = line.slice("worktree ".length).trim();
+      else if (
+        line.startsWith("branch ") &&
+        line.slice("branch ".length).trim() === `refs/heads/${branch}`
+      ) {
+        return cur;
+      }
+    }
+  } catch {
+    /* fall through — treated as "no worktree", branch-only cleanup still runs */
+  }
+  return null;
+}
+
+// Reap a merged issue's per-issue worktree + branch. The merge ran in the sandbox;
+// this teardown is host-side, alongside the label/close lifecycle. Without it the
+// locked worktrees under .sandcastle/worktrees/ and the sandcastle/issue-* branches
+// accreted across every run. Prefer Supacode-native deletion when in a Supacode
+// session — one call unlocks, removes the git worktree, deletes the branch, AND
+// deregisters the surface; outside Supacode, force-remove via git (the worktrees
+// are locked) then delete the branch. Best-effort + fail-OPEN: a cleanup hiccup
+// must never throw into the lifecycle path. Never touches the target's own worktree.
+function reapBranch(branch: string): void {
+  if (branch === TARGET_BRANCH) return;
+  const path = worktreePathForBranch(branch);
+  try {
+    if (supacodeSession() && path) {
+      // Supacode keys worktrees by the percent-encoded absolute path (trailing slash).
+      const id = encodeURIComponent(path.endsWith("/") ? path : path + "/");
+      execFileSync("supacode", ["worktree", "delete", "-w", id], { stdio: "ignore" });
+      // Supacode also drops the branch, but be explicit in case a version doesn't.
+      try {
+        execFileSync("git", ["branch", "-D", branch], { stdio: "ignore" });
+      } catch {
+        /* already removed by Supacode */
+      }
+      console.log(`  🧹 reaped worktree + branch for ${branch} (via Supacode)`);
+    } else {
+      if (path) {
+        execFileSync("git", ["worktree", "remove", "--force", path], { stdio: "ignore" });
+      }
+      execFileSync("git", ["branch", "-D", branch], { stdio: "ignore" });
+      console.log(`  🧹 reaped worktree + branch for ${branch} (via git)`);
+    }
+  } catch (err) {
+    console.warn(`  (cleanup for ${branch} failed, continuing: ${err})`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main loop
 // ---------------------------------------------------------------------------
@@ -594,6 +671,9 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     // Close from the HOST (the sandbox PAT can't write issues). This is the
     // terminal lifecycle step: a merged issue is done.
     closeIssue(issue.id, "Completed by Sandcastle — merged into " + TARGET_BRANCH + ".");
+    // The branch is merged and the issue closed — its worktree + branch are spent.
+    // Reap them (Supacode-aware) so they don't accrete across runs.
+    reapBranch(issue.branch);
   }
 }
 
