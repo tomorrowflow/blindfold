@@ -10,6 +10,7 @@ Leak-audit clause analysis:
 - F (access control) — covered: endpoint returns 403 when the calling identity lacks
   the ``re-identifier`` role on the requested workspace; workspace-scoped (surrogate
   from workspace A is NOT re-identifiable by a caller holding re-identifier only on B).
+  503 when Transit is not configured (env vars absent) — covered by test 6.
 - G (mapping secrecy) — covered by design: the endpoint decrypts via Transit (stubbed
   at network boundary here); the real value is never stored in the audit record (only
   the surrogate is recorded), honoring the CONTEXT invariant.
@@ -271,3 +272,56 @@ async def test_reidentify_multi_workspace_referent_resolves_from_any_authorized_
 
     assert resp.status_code == 200
     assert resp.json()["real"] == real_value
+
+
+# ---------------------------------------------------------------------------
+# 6. 503 when Transit client is not configured
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_reidentify_returns_503_when_transit_not_configured():
+    surrogate = "Clara Hoffmann"
+    ciphertext = "vault:v1:enc:martin"
+
+    rbac = RbacRegistry()
+    rbac.grant("alice", "default", "re-identifier")
+
+    store = _store_with({(surrogate, "default"): ciphertext})
+    audit_log = AuditLog()
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_reidentify_store] = lambda: store
+    app.dependency_overrides[get_transit_client] = lambda: None
+    app.dependency_overrides[get_audit_log] = lambda: audit_log
+    try:
+        async with _make_client() as client:
+            resp = await client.get(
+                f"/v1/management/surrogate/{surrogate}/real",
+                headers={
+                    "x-blindfold-identity": "alice",
+                    "x-blindfold-workspace": "default",
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 503
+
+
+# ---------------------------------------------------------------------------
+# 7. get_transit_client auto-initializes from settings when token is configured
+# ---------------------------------------------------------------------------
+
+
+def test_get_transit_client_returns_transit_client_when_token_configured(monkeypatch):
+    monkeypatch.setenv("BLINDFOLD_OPENBAO_ADDR", "http://openbao.test:8200")
+    monkeypatch.setenv("BLINDFOLD_OPENBAO_TOKEN", "dev-root-token")
+    client = get_transit_client()
+    assert isinstance(client, TransitClient)
+
+
+def test_get_transit_client_returns_none_when_token_not_configured(monkeypatch):
+    monkeypatch.delenv("BLINDFOLD_OPENBAO_TOKEN", raising=False)
+    client = get_transit_client()
+    assert client is None

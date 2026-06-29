@@ -95,10 +95,9 @@ _rbac = RbacRegistry()
 # dependency_overrides[get_reidentify_store].
 _reidentify_store = InMemoryReIdentificationStore()
 
-# Process-wide Transit client (ADR-0008 / #10). Reads BLINDFOLD_OPENBAO_ADDR /
-# BLINDFOLD_OPENBAO_TOKEN from the environment. Tests substitute via
+# No module-level Transit client singleton — get_transit_client() reads settings on each
+# call (matching get_upstream_client() pattern). Tests substitute via
 # dependency_overrides[get_transit_client].
-_transit_client: TransitClient | None = None
 
 # Per-request header naming the workspace this exchange runs under. ADR-0009 scopes
 # the degrade opt-in per workspace so one team's risk tolerance does not apply to all.
@@ -181,7 +180,10 @@ def get_reidentify_store() -> ReIdentificationStore:
 
 
 def get_transit_client() -> TransitClient | None:
-    return _transit_client
+    settings = get_settings()
+    if settings.openbao_token:
+        return TransitClient(addr=settings.openbao_addr, token=settings.openbao_token)
+    return None
 
 
 def _forwarded_headers(request: Request) -> dict[str, str]:
