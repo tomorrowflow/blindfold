@@ -64,11 +64,14 @@ class AuditRecord:
       - ``blocked-unresolved-surrogate`` — verify_pass found an injected surrogate
                                           still in the restored response.
       - ``deterministic-only-pass``   — degraded-mode pass under the opt-in.
+      - ``re-identified``             — an authorized identity looked up the real value
+                                        behind a surrogate (management API, issue #16).
     """
 
     workspace: str
     event: str
     reason: str
+    identity: str | None = None
 
 
 @dataclass
