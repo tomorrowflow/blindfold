@@ -10,3 +10,12 @@ venv/
 .ruff_cache/
 *.egg-info/
 .env
+
+# Node (sandcastle harness deps — package.json/lock are tracked)
+node_modules/
+
+# graphify output
+graphify-out/
+
+# macOS
+.DS_Store
