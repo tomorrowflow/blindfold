@@ -52,9 +52,9 @@ def mine_transcripts(
     records the (real, provisional_surrogate, context) tuple — the same shape a
     live request would have produced.
     """
-    # Mining never mutates ``mapping``; snapshot the known-entity list once so the
-    # deterministic pre-filter inside ``select_candidate_spans`` isn't rebuilt for
-    # every transcript (O(transcripts × entities) → O(entities + transcripts)).
+    # Mining never mutates ``mapping``, so recover the entity-graph record list once
+    # rather than per transcript: ``mapping.entities()`` regroups every seeded pair by
+    # surrogate, and that result is identical for every transcript in the batch.
     known_entities = mapping.entities()
     proposed: list[ReviewItem] = []
     scanned = 0
