@@ -1,6 +1,7 @@
 ---
 name: implement
 description: Generic do-work agent for one Blindfold phase (one issue). Explores the codebase for the current slice, then ships it with a strict red-green-refactor tracer-bullet loop (one failing test → minimal code → refactor, repeat). Reads the issue's agent brief + CONTEXT.md + ADRs to self-specialize. Use to implement a single ready-for-agent issue.
+model: claude-sonnet-4-6
 tools: Read, Write, Edit, Bash, Grep, Glob, Skill
 ---
 

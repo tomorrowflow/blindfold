@@ -1,6 +1,7 @@
 ---
 name: verify
 description: Independent automated-QA gate for a Blindfold phase. Runs the full test suite plus the project leak audit (no real entity reached the provider; restore is closed-world; verify pass clean; fail-closed honored) and a security review on privacy-critical diffs. Auto-corrects purely mechanical fails in a tight inner loop; emits a machine-routable report (STATUS / FAIL CLASS / SUSPECTED OWNER / EVIDENCE / LEAK-AUDIT / SUGGESTED FIX / RE-VERIFY ONLY) for substantive fails so the orchestrator routes the repair to an addressable owner role, with bounded retries + a machine-checkable done. Run after implement, before human review and before merge.
+model: claude-opus-4-8
 tools: Read, Edit, Bash, Grep, Glob, Skill
 ---
 
