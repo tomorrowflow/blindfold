@@ -65,9 +65,13 @@ _SUFFIX_RE = re.compile(
 _DATE_SHIFT_RANGE = 180  # ±180 days
 
 
+def _digest(canonical: str) -> int:
+    """Deterministic integer hash of ``canonical`` (no randomness — stable across runs)."""
+    return int(hashlib.sha256(canonical.encode("utf-8")).hexdigest(), 16)
+
+
 def _stable_index(canonical: str, pool_size: int) -> int:
-    digest = int(hashlib.sha256(canonical.encode("utf-8")).hexdigest(), 16)
-    return digest % pool_size
+    return _digest(canonical) % pool_size
 
 
 def _domain_from_name(name: str) -> str:
@@ -116,8 +120,9 @@ class SurrogateEngine:
             org_surrogate = self._registry[employer]
             name = self._mint_person_name(canonical)
             email_domain = org_surrogate.email_domain
-            first = name.split()[0].lower()
-            last = name.split()[-1].lower() if len(name.split()) > 1 else "user"
+            parts = name.split()
+            first = parts[0].lower()
+            last = parts[-1].lower() if len(parts) > 1 else "user"
             email = f"{first}.{last}@{email_domain}"
         else:
             name = self._mint_org_name(canonical)
@@ -135,8 +140,7 @@ class SurrogateEngine:
         the same offset, so all dates for one entity are shifted by the same delta,
         preserving intervals between events.
         """
-        digest = int(hashlib.sha256(canonical.encode("utf-8")).hexdigest(), 16)
-        return (digest % (2 * _DATE_SHIFT_RANGE + 1)) - _DATE_SHIFT_RANGE
+        return (_digest(canonical) % (2 * _DATE_SHIFT_RANGE + 1)) - _DATE_SHIFT_RANGE
 
     def date_shift(self, canonical: str, d: date) -> date:
         """Apply the stable per-entity date-shift offset to ``d``."""

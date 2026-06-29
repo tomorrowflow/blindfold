@@ -11,8 +11,6 @@ Leak-audit clauses for this slice:
 
 from datetime import date
 
-import pytest
-
 from blindfold.surrogate_engine import SurrogateEngine
 
 
