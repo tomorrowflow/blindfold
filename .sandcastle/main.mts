@@ -209,6 +209,27 @@ function setStateLabel(id: string, state: SandcastleState): void {
   }
 }
 
+// Close an issue from the HOST, where `gh` is authenticated. Issue-closing was
+// historically delegated to the merge agent inside the sandbox, but the
+// sandbox PAT lacks `issues:write`, so every `gh issue close` there failed with
+// "Resource not accessible by personal access token" and merged issues stayed
+// OPEN. Closing belongs on the host alongside the merged-label/comment, for the
+// same reason all other issue mutations do. Idempotent: closing an
+// already-closed issue is a harmless no-op we swallow. Best-effort + fail-OPEN
+// so an issue-tracker hiccup never throws into the merge path.
+function closeIssue(id: string, comment: string): void {
+  if (!REPO) return;
+  try {
+    execFileSync(
+      "gh",
+      ["issue", "close", id, "--repo", REPO, "--comment", comment],
+      { stdio: "ignore" },
+    );
+  } catch (err) {
+    console.warn(`  (issue #${id} close failed, continuing: ${err})`);
+  }
+}
+
 // How many commits `branch` is ahead of the target. This is the TRUE "is there
 // work?" signal — unlike the merge gate's current-run commit count, it counts
 // commits a prior run already left on the branch. Host-side; 0 on any error.
@@ -570,6 +591,9 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       `🎉 Merged \`${issue.branch}\` into \`${TARGET_BRANCH}\` — cleared the implementer + reviewer` +
         ` (and, when applicable, browser) gates.`,
     );
+    // Close from the HOST (the sandbox PAT can't write issues). This is the
+    // terminal lifecycle step: a merged issue is done.
+    closeIssue(issue.id, "Completed by Sandcastle — merged into " + TARGET_BRANCH + ".");
   }
 }
 

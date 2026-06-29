@@ -13,13 +13,12 @@ For each branch:
 
 After all branches are merged, make a single commit summarizing the merge.
 
-# CLOSE ISSUES
+# DO NOT CLOSE ISSUES
 
-For each branch that was merged, close its issue using the following command:
-
-`gh issue close <ID> --comment "Completed by Sandcastle"`
-
-Here are all the issues:
+Do **not** run `gh issue close`. Issue lifecycle (labels, comments, and closing)
+is handled on the HOST by the orchestrator, where `gh` is authenticated — the
+sandbox PAT lacks `issues:write`, so any `gh issue` mutation here fails. For
+context, here are the issues whose branches you are merging:
 
 {{ISSUES}}
 
