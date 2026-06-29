@@ -26,10 +26,12 @@ from .surrogates import SurrogateMapping
 class MiningReport:
     """Summary of one mining run, for CLI / SPA display.
 
-    ``proposed`` is the list of inbox items that landed during this run (in the
-    order they were proposed). Re-mining the same novel value reuses the existing
-    inbox entry (E-stable) — the same ``ReviewItem`` may appear here once per run
-    but its ``id`` and ``provisional_surrogate`` are stable across runs.
+    ``proposed`` lists each L3-confirmed candidate appearance in order, so a
+    novel value found in multiple transcripts shows up multiple times here —
+    but every appearance points to the **same** ``ReviewItem`` (same ``id`` and
+    ``provisional_surrogate``), because ``ReviewInbox.upsert`` reuses entries
+    by ``real`` (clause E-stable). The inbox itself therefore holds at most one
+    row per novel value, however many times mining encounters it.
     """
 
     transcripts_scanned: int
@@ -50,11 +52,15 @@ def mine_transcripts(
     records the (real, provisional_surrogate, context) tuple — the same shape a
     live request would have produced.
     """
+    # Mining never mutates ``mapping``; snapshot the known-entity list once so the
+    # deterministic pre-filter inside ``select_candidate_spans`` isn't rebuilt for
+    # every transcript (O(transcripts × entities) → O(entities + transcripts)).
+    known_entities = mapping.entities()
     proposed: list[ReviewItem] = []
     scanned = 0
     for transcript in transcripts:
         scanned += 1
-        for candidate, decision in detector.detect(transcript, mapping.entities()):
+        for candidate, decision in detector.detect(transcript, known_entities):
             if not decision.is_entity:
                 continue
             proposed.append(inbox.upsert(candidate.text, candidate.context))
