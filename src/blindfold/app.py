@@ -584,10 +584,10 @@ def _caller_identity(request: Request) -> str:
 
 
 def _require_role(
-    identity: str, workspace: str, role: str, rbac: RbacRegistry
+    request: Request, workspace: str, role: str, rbac: RbacRegistry
 ) -> None:
-    """Raise 403 if ``identity`` lacks ``role`` on ``workspace``."""
-    if not rbac.has_role(identity, workspace, role):
+    """Raise 403 if the calling identity lacks ``role`` on ``workspace``."""
+    if not rbac.has_role(_caller_identity(request), workspace, role):
         raise HTTPException(status_code=403, detail="insufficient rights")
 
 
@@ -609,8 +609,7 @@ async def list_audit_events(
     on the requested workspace — workspace A's events are hidden from identities with
     access only to workspace B (workspace scoping, acceptance criterion 2).
     """
-    identity = _caller_identity(request)
-    _require_role(identity, workspace, "viewer", rbac)
+    _require_role(request, workspace, "viewer", rbac)
     events = [
         {
             "workspace": r.workspace,
@@ -634,8 +633,7 @@ async def list_workspace_roles(
 
     Requires the ``admin`` role on the workspace.
     """
-    identity = _caller_identity(request)
-    _require_role(identity, slug, "admin", rbac)
+    _require_role(request, slug, "admin", rbac)
     assignments = [
         {"identity": a.identity, "workspace": a.workspace, "role": a.role}
         for a in rbac.list_workspace(slug)
@@ -654,8 +652,7 @@ async def grant_workspace_role(
 
     Requires the ``admin`` role. Body: ``{identity, role}``.
     """
-    identity = _caller_identity(request)
-    _require_role(identity, slug, "admin", rbac)
+    _require_role(request, slug, "admin", rbac)
     target_identity = body.get("identity", "")
     role = body.get("role", "")
     if not target_identity or not role:
@@ -679,8 +676,7 @@ async def revoke_workspace_role(
 
     Requires the ``admin`` role. ``role`` is a query parameter.
     """
-    identity = _caller_identity(request)
-    _require_role(identity, slug, "admin", rbac)
+    _require_role(request, slug, "admin", rbac)
     rbac.revoke(target_identity, slug, role)
     return {"identity": target_identity, "workspace": slug, "role": role, "action": "revoked"}
 
