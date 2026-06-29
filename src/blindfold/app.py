@@ -54,6 +54,7 @@ from .policy import (
     AuditRecord,
     WorkspacePolicies,
 )
+from .rbac import RbacRegistry
 from .review import Allowlist, ReviewInbox
 from .spa import review_inbox_html
 from .store import vendored_seed_repository
@@ -83,9 +84,16 @@ _allowlist = Allowlist()
 _workspace_policies = WorkspacePolicies()
 _audit_log = AuditLog()
 
+# Process-wide RBAC registry (ADR-0007/0008). Persistence deferred to the Postgres/
+# Transit slice (#10). Tests substitute via dependency_overrides[get_rbac].
+_rbac = RbacRegistry()
+
 # Per-request header naming the workspace this exchange runs under. ADR-0009 scopes
 # the degrade opt-in per workspace so one team's risk tolerance does not apply to all.
 WORKSPACE_HEADER = "x-blindfold-workspace"
+
+# Per-request header identifying the calling human identity (for RBAC + audit).
+IDENTITY_HEADER = "x-blindfold-identity"
 
 # Client auth/version headers forwarded upstream. content-type is intentionally omitted
 # so it is not duplicated with the JSON body the upstream client serializes. The union
@@ -150,6 +158,10 @@ def get_workspace_policies() -> WorkspacePolicies:
 
 def get_audit_log() -> AuditLog:
     return _audit_log
+
+
+def get_rbac() -> RbacRegistry:
+    return _rbac
 
 
 def _forwarded_headers(request: Request) -> dict[str, str]:
@@ -577,3 +589,107 @@ def _emit_input_json_delta(partial_json: str, index: int) -> bytes:
         "delta": {"type": "input_json_delta", "partial_json": partial_json},
     }
     return f"event: content_block_delta\ndata: {json.dumps(payload)}\n\n".encode("utf-8")
+
+
+def _caller_identity(request: Request) -> str:
+    return request.headers.get(IDENTITY_HEADER, "")
+
+
+def _require_role(
+    request: Request, workspace: str, role: str, rbac: RbacRegistry
+) -> None:
+    """Raise 403 if the calling identity lacks ``role`` on ``workspace``."""
+    if not rbac.has_role(_caller_identity(request), workspace, role):
+        raise HTTPException(status_code=403, detail="insufficient rights")
+
+
+# ---------------------------------------------------------------------------
+# Management endpoints — audit viewer + workspace/RBAC admin (ADR-0011 / #16)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/v1/management/audit")
+async def list_audit_events(
+    request: Request,
+    workspace: str,
+    rbac: RbacRegistry = Depends(get_rbac),
+    audit_log: AuditLog = Depends(get_audit_log),
+) -> dict:
+    """List audit events scoped to a workspace (ADR-0007 / ADR-0008 / issue #16).
+
+    Requires the calling identity to hold the ``viewer`` role (exact-match; ADR-0015)
+    on the requested workspace — workspace A's events are hidden from identities with
+    access only to workspace B (workspace scoping, acceptance criterion 2).
+    """
+    _require_role(request, workspace, "viewer", rbac)
+    events = [
+        {
+            "workspace": r.workspace,
+            "event": r.event,
+            "reason": r.reason,
+            "identity": r.identity,
+        }
+        for r in audit_log.records
+        if r.workspace == workspace
+    ]
+    return {"events": events}
+
+
+@app.get("/v1/management/workspaces/{slug}/roles")
+async def list_workspace_roles(
+    slug: str,
+    request: Request,
+    rbac: RbacRegistry = Depends(get_rbac),
+) -> dict:
+    """List per-identity role assignments for a workspace.
+
+    Requires the ``admin`` role on the workspace.
+    """
+    _require_role(request, slug, "admin", rbac)
+    assignments = [
+        {"identity": a.identity, "workspace": a.workspace, "role": a.role}
+        for a in rbac.list_workspace(slug)
+    ]
+    return {"assignments": assignments}
+
+
+@app.post("/v1/management/workspaces/{slug}/roles")
+async def grant_workspace_role(
+    slug: str,
+    request: Request,
+    body: dict,
+    rbac: RbacRegistry = Depends(get_rbac),
+) -> dict:
+    """Grant a role to an identity within a workspace.
+
+    Requires the ``admin`` role. Body: ``{identity, role}``.
+    """
+    _require_role(request, slug, "admin", rbac)
+    target_identity = body.get("identity", "")
+    role = body.get("role", "")
+    if not target_identity or not role:
+        raise HTTPException(status_code=422, detail="identity and role are required")
+    try:
+        rbac.grant(target_identity, slug, role)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"identity": target_identity, "workspace": slug, "role": role, "action": "granted"}
+
+
+@app.delete("/v1/management/workspaces/{slug}/roles/{target_identity}")
+async def revoke_workspace_role(
+    slug: str,
+    target_identity: str,
+    role: str,
+    request: Request,
+    rbac: RbacRegistry = Depends(get_rbac),
+) -> dict:
+    """Revoke a role from an identity within a workspace.
+
+    Requires the ``admin`` role. ``role`` is a query parameter.
+    """
+    _require_role(request, slug, "admin", rbac)
+    rbac.revoke(target_identity, slug, role)
+    return {"identity": target_identity, "workspace": slug, "role": role, "action": "revoked"}
+
+
