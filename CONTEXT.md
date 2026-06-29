@@ -17,7 +17,15 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   "anonymize"/"mask"/"redact" as the primary verb — they imply destruction; we
   pseudonymize reversibly.
 - **Restore** — the reverse of blindfold: replace surrogates with their real
-  entities in a provider response. Avoid "de-anonymize"/"unmask".
+  entities in a provider response. Automatic and inline in the request path,
+  closed-world. Avoid "de-anonymize"/"unmask". Distinct from **Re-identify**.
+- **Re-identify** — the on-demand, RBAC-gated, audited management action of
+  resolving a surrogate back to its real entity (e.g. via the management API /
+  audit viewer). Not the same as **Restore**: Restore is automatic inline
+  reversal scoped to one exchange; Re-identify is a deliberate human/admin lookup
+  of the **mapping**. Authorized **iff the referent is tagged to a workspace the
+  caller holds the `re-identifier` role on** — a multi-workspace referent is
+  re-identifiable from any of its workspaces. Every re-identify is an audit event.
 - **Entity** — a real-world referent that must be protected: a person, organization,
   contact-PII value (email, phone, IBAN, ID), or IP term/codename. An organization worth
   protecting is realized as a **Term**; an internal **Org unit** is graph structure and is
@@ -57,6 +65,10 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   **tool-result** message). Blindfold rewrites every hop, not just the first prompt.
 - **Workspace** — the scoping unit for team access (RBAC), disambiguation context,
   and audit. One canonical entity per real referent, organized by workspace tags.
+  Scope binds on the **mapping** itself, not merely on audit visibility: a
+  **Re-identify** resolves only if the referent is tagged to a workspace the caller
+  is authorized on. The surrogate stays globally stable (one referent → one
+  surrogate everywhere); what is workspace-scoped is the *right to unmask it*.
 - **Review inbox** — the queue of **provisional**ly-blindfolded novel candidates
   awaiting human confirmation.
 - **Provisional surrogate** — the fake auto-minted for a novel entity at request
