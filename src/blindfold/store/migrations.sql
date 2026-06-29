@@ -107,3 +107,19 @@ CREATE TABLE IF NOT EXISTS retired_surrogates (
     surrogate     TEXT NOT NULL,
     UNIQUE (workspace_id, referent_kind, referent_id, surrogate)
 );
+
+-- Transit ciphertext + blind-index columns (ADR-0008 / issue #10).
+-- Real-value columns are stored as Transit ciphertext; the blind index enables equality
+-- lookups without decrypting. Nullable so existing plain-ETL rows are valid; the
+-- Transit-backed ETL (run_etl_with_transit) populates both.
+ALTER TABLE persons ADD COLUMN IF NOT EXISTS canonical_name_ciphertext TEXT;
+ALTER TABLE persons ADD COLUMN IF NOT EXISTS canonical_name_blind_index TEXT;
+
+ALTER TABLE person_variations ADD COLUMN IF NOT EXISTS value_ciphertext TEXT;
+ALTER TABLE person_variations ADD COLUMN IF NOT EXISTS value_blind_index TEXT;
+
+ALTER TABLE terms ADD COLUMN IF NOT EXISTS canonical_name_ciphertext TEXT;
+ALTER TABLE terms ADD COLUMN IF NOT EXISTS canonical_name_blind_index TEXT;
+
+ALTER TABLE term_variations ADD COLUMN IF NOT EXISTS value_ciphertext TEXT;
+ALTER TABLE term_variations ADD COLUMN IF NOT EXISTS value_blind_index TEXT;

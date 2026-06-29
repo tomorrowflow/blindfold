@@ -1,0 +1,40 @@
+"""Re-identification store seam (ADR-0015 / issue #10).
+
+Provides the (surrogate, workspace) → ciphertext lookup that backs the
+re-identify endpoint. Two implementations share the seam:
+
+- :class:`InMemoryReIdentificationStore` — in-process dict, used in tests and
+  when the Postgres store is unavailable.
+- Postgres-backed (future: wired via ETL + ciphertext columns).
+"""
+
+from __future__ import annotations
+
+from typing import Protocol, runtime_checkable
+
+
+@runtime_checkable
+class ReIdentificationStore(Protocol):
+    """Look up the ciphertext for a (surrogate, workspace) pair."""
+
+    async def surrogate_to_ciphertext(self, surrogate: str, workspace: str) -> str | None:
+        """Return the ciphertext for ``surrogate`` scoped to ``workspace``, or None."""
+        ...
+
+
+class InMemoryReIdentificationStore:
+    """In-process store backed by a pre-seeded dict of (surrogate, workspace) → ciphertext.
+
+    Entries are scoped by workspace: a surrogate from workspace A is NOT visible when
+    queried with workspace B (ADR-0015 workspace-scoped re-identification).
+    A multi-workspace referent has one entry per workspace it is tagged to.
+    """
+
+    def __init__(self, entries: dict[tuple[str, str], str] | None = None) -> None:
+        self._entries: dict[tuple[str, str], str] = entries or {}
+
+    def seed(self, surrogate: str, workspace: str, ciphertext: str) -> None:
+        self._entries[(surrogate, workspace)] = ciphertext
+
+    async def surrogate_to_ciphertext(self, surrogate: str, workspace: str) -> str | None:
+        return self._entries.get((surrogate, workspace))

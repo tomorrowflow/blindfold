@@ -29,6 +29,8 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from .config import get_settings
+from .reidentify import InMemoryReIdentificationStore, ReIdentificationStore
+from .transit import TransitClient
 from .engine import (
     ExchangeSession,
     LeakError,
@@ -87,6 +89,16 @@ _audit_log = AuditLog()
 # Process-wide RBAC registry (ADR-0007/0008). Persistence deferred to the Postgres/
 # Transit slice (#10). Tests substitute via dependency_overrides[get_rbac].
 _rbac = RbacRegistry()
+
+# Process-wide re-identification store (ADR-0015 / #10). Starts empty; the Postgres
+# ETL populates this via Transit ciphertext columns. Tests substitute via
+# dependency_overrides[get_reidentify_store].
+_reidentify_store = InMemoryReIdentificationStore()
+
+# Process-wide Transit client (ADR-0008 / #10). Reads BLINDFOLD_OPENBAO_ADDR /
+# BLINDFOLD_OPENBAO_TOKEN from the environment. Tests substitute via
+# dependency_overrides[get_transit_client].
+_transit_client: TransitClient | None = None
 
 # Per-request header naming the workspace this exchange runs under. ADR-0009 scopes
 # the degrade opt-in per workspace so one team's risk tolerance does not apply to all.
@@ -162,6 +174,14 @@ def get_audit_log() -> AuditLog:
 
 def get_rbac() -> RbacRegistry:
     return _rbac
+
+
+def get_reidentify_store() -> ReIdentificationStore:
+    return _reidentify_store
+
+
+def get_transit_client() -> TransitClient | None:
+    return _transit_client
 
 
 def _forwarded_headers(request: Request) -> dict[str, str]:
@@ -691,5 +711,52 @@ async def revoke_workspace_role(
     _require_role(request, slug, "admin", rbac)
     rbac.revoke(target_identity, slug, role)
     return {"identity": target_identity, "workspace": slug, "role": role, "action": "revoked"}
+
+
+@app.get("/v1/management/surrogate/{surrogate}/real")
+async def reidentify_surrogate(
+    surrogate: str,
+    request: Request,
+    rbac: RbacRegistry = Depends(get_rbac),
+    store: ReIdentificationStore = Depends(get_reidentify_store),
+    transit: TransitClient | None = Depends(get_transit_client),
+    audit_log: AuditLog = Depends(get_audit_log),
+) -> dict:
+    """Re-identify a surrogate: return its real value (ADR-0015 / issue #10).
+
+    Workspace-scoped: the surrogate resolves **only if** the referent is tagged to a
+    workspace the calling identity holds the ``re-identifier`` role on. A multi-workspace
+    referent is re-identifiable from any of its workspaces.
+
+    Every call is audited as a ``re-identified`` event. The audit record carries the
+    surrogate (never the plaintext real value — CONTEXT invariant).
+
+    Returns 403 when the caller lacks the role; 404 when the surrogate is not found in
+    the requested workspace; 503 when Transit is not configured.
+    """
+    workspace = _workspace_slug(request)
+    _require_role(request, workspace, "re-identifier", rbac)
+
+    ciphertext = await store.surrogate_to_ciphertext(surrogate, workspace)
+    if ciphertext is None:
+        raise HTTPException(status_code=404, detail="surrogate not found in this workspace")
+
+    if transit is None:
+        raise HTTPException(
+            status_code=503,
+            detail="Transit client not configured; set BLINDFOLD_OPENBAO_ADDR and BLINDFOLD_OPENBAO_TOKEN",
+        )
+
+    real = transit.decrypt(ciphertext)
+
+    audit_log.append(
+        AuditRecord(
+            workspace=workspace,
+            event="re-identified",
+            reason=f"surrogate={surrogate}",
+            identity=_caller_identity(request),
+        )
+    )
+    return {"surrogate": surrogate, "real": real, "workspace": workspace}
 
 
