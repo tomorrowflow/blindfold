@@ -216,6 +216,10 @@ class EntityGraph:
 
         return entity, dependents
 
+    def list_entities(self, workspace: str) -> list[EntityRecord]:
+        """Return all entity records tagged to ``workspace``."""
+        return [e for e in self._entities.values() if e.workspace == workspace]
+
     def merge(
         self,
         workspace: str,

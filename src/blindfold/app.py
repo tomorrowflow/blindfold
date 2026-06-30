@@ -60,7 +60,7 @@ from .policy import (
 from .rbac import RbacRegistry
 from .relationships import RelationshipStore
 from .review import Allowlist, ReviewInbox
-from .spa import review_inbox_html
+from .spa import org_graph_html, review_inbox_html
 from .store import vendored_seed_repository
 from .surrogates import SurrogateMapping
 from .upstream import UpstreamClient
@@ -991,3 +991,60 @@ async def edit_entity_surrogate(
             for d in dependents
         ],
     }
+
+
+# ---------------------------------------------------------------------------
+# Org-graph endpoint + SPA (ADR-0011 / ADR-0017 / issue #29)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/v1/management/workspaces/{slug}/graph")
+async def get_org_graph(
+    slug: str,
+    entity_graph: EntityGraph = Depends(get_entity_graph),
+    relationship_store: RelationshipStore = Depends(get_relationship_store),
+) -> dict:
+    """Return the workspace's entity graph in surrogate-space (issue #29).
+
+    Nodes are labelled with their active surrogates — no real entity names
+    are returned and no Transit decrypt is performed. Loading the graph emits
+    no audit events (it is not a re-identify operation, per ADR-0015).
+
+    Returns ``{nodes: [...], edges: [...]}``:
+    - nodes: ``{id, kind, label}`` — ``id`` is the stable entity_id;
+      ``label`` is the active surrogate; ``kind`` is ``person`` or ``term``.
+    - edges: ``{id, source, target, relation}`` — workspace-scoped
+      relationship edges from the RelationshipStore.
+    """
+    entities = entity_graph.list_entities(slug)
+    edges = relationship_store.list_workspace(slug)
+    return {
+        "nodes": [
+            {
+                "id": e.entity_id,
+                "kind": e.kind,
+                "label": e.active_surrogate,
+            }
+            for e in entities
+        ],
+        "edges": [
+            {
+                "id": edge.id,
+                "source": edge.source_id,
+                "target": edge.target_id,
+                "relation": edge.relation,
+            }
+            for edge in edges
+        ],
+    }
+
+
+@app.get("/ui/org-graph", response_class=HTMLResponse)
+async def org_graph_spa() -> HTMLResponse:
+    """Serve the org-graph SPA bundle (ADR-0011 / ADR-0017 / issue #29).
+
+    Cytoscape.js page that renders the workspace entity graph in surrogate-space.
+    Per-node reveal calls the re-identify endpoint (re-identifier role required,
+    every reveal is audited per ADR-0015).
+    """
+    return HTMLResponse(content=org_graph_html())
