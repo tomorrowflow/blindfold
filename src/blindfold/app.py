@@ -57,6 +57,7 @@ from .policy import (
     WorkspacePolicies,
 )
 from .rbac import RbacRegistry
+from .relationships import RelationshipStore
 from .review import Allowlist, ReviewInbox
 from .spa import review_inbox_html
 from .store import vendored_seed_repository
@@ -94,6 +95,10 @@ _rbac = RbacRegistry()
 # ETL populates this via Transit ciphertext columns. Tests substitute via
 # dependency_overrides[get_reidentify_store].
 _reidentify_store = InMemoryReIdentificationStore()
+
+# Process-wide relationship-edge store (issue #27). In-memory; Postgres persistence
+# lands in a future slice. Tests substitute via dependency_overrides[get_relationship_store].
+_relationship_store = RelationshipStore()
 
 # No module-level Transit client singleton — get_transit_client() reads settings on each
 # call (matching get_upstream_client() pattern). Tests substitute via
@@ -177,6 +182,10 @@ def get_rbac() -> RbacRegistry:
 
 def get_reidentify_store() -> ReIdentificationStore:
     return _reidentify_store
+
+
+def get_relationship_store() -> RelationshipStore:
+    return _relationship_store
 
 
 def get_transit_client() -> TransitClient | None:
@@ -762,3 +771,50 @@ async def reidentify_surrogate(
     return {"surrogate": surrogate, "real": real, "workspace": workspace}
 
 
+# ---------------------------------------------------------------------------
+# Management endpoints — relationship-edge CRUD (issue #27)
+# ---------------------------------------------------------------------------
+
+
+@app.post("/v1/management/workspaces/{slug}/relationships", status_code=201)
+async def create_relationship_edge(
+    slug: str,
+    body: dict,
+    store: RelationshipStore = Depends(get_relationship_store),
+) -> dict:
+    """Create a relationship edge between two entity nodes (issue #27).
+
+    Controlled vocabulary: ``employer`` (person→org) and ``subsidiary_of`` (org→org).
+    ``alias-of`` is rejected — use the Merge API (#15). Unknown relations are rejected.
+    """
+    relation = body.get("relation", "")
+    source_kind = body.get("source_kind", "")
+    source_id = str(body.get("source_id", ""))
+    target_kind = body.get("target_kind", "")
+    target_id = str(body.get("target_id", ""))
+    try:
+        edge = store.create(slug, source_kind, source_id, relation, target_kind, target_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "id": edge.id,
+        "workspace": edge.workspace,
+        "source_kind": edge.source_kind,
+        "source_id": edge.source_id,
+        "relation": edge.relation,
+        "target_kind": edge.target_kind,
+        "target_id": edge.target_id,
+    }
+
+
+@app.delete("/v1/management/workspaces/{slug}/relationships/{edge_id}")
+async def delete_relationship_edge(
+    slug: str,
+    edge_id: str,
+    store: RelationshipStore = Depends(get_relationship_store),
+) -> dict:
+    """Delete a relationship edge by id (issue #27). Returns 404 if not found in workspace."""
+    removed = store.delete(edge_id, slug)
+    if not removed:
+        raise HTTPException(status_code=404, detail="relationship edge not found in this workspace")
+    return {"id": edge_id, "workspace": slug, "action": "deleted"}
