@@ -113,6 +113,16 @@ class SurrogateMapping:
         """
         return value in self._known_surrogates
 
+    def retire_surrogate(self, surrogate: str) -> None:
+        """Keep a retired surrogate recognized so it is not re-blindfolded if encountered.
+
+        After a merge, the loser's old surrogate is retired: it will never be the active
+        surrogate for a future blindfold pass, but it must stay in _known_surrogates so
+        the engine does not attempt to re-blindfold it if seen in an outbound prompt
+        (e.g. carried over from a past exchange).
+        """
+        self._known_surrogates.add(surrogate)
+
     def real_values(self) -> list[str]:
         return list(self._by_real.keys())
 

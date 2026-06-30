@@ -29,6 +29,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from .config import get_settings
+from .entity_graph import CrossKindMergeError, EntityGraph, OrgUnitMergeError
 from .reidentify import InMemoryReIdentificationStore, ReIdentificationStore
 from .transit import TransitClient
 from .engine import (
@@ -94,6 +95,12 @@ _rbac = RbacRegistry()
 # ETL populates this via Transit ciphertext columns. Tests substitute via
 # dependency_overrides[get_reidentify_store].
 _reidentify_store = InMemoryReIdentificationStore()
+
+# Process-wide in-memory entity graph (ADR-0011 / issue #26). Holds persons and terms
+# with their variations, relationships, role assignments, and surrogates. Persistence
+# (Postgres) lands in a future slice. Tests substitute via
+# dependency_overrides[get_entity_graph].
+_entity_graph = EntityGraph()
 
 # No module-level Transit client singleton — get_transit_client() reads settings on each
 # call (matching get_upstream_client() pattern). Tests substitute via
@@ -177,6 +184,10 @@ def get_rbac() -> RbacRegistry:
 
 def get_reidentify_store() -> ReIdentificationStore:
     return _reidentify_store
+
+
+def get_entity_graph() -> EntityGraph:
+    return _entity_graph
 
 
 def get_transit_client() -> TransitClient | None:
@@ -713,6 +724,86 @@ async def revoke_workspace_role(
     _require_role(request, slug, "admin", rbac)
     rbac.revoke(target_identity, slug, role)
     return {"identity": target_identity, "workspace": slug, "role": role, "action": "revoked"}
+
+
+@app.post("/v1/management/entities/merge")
+async def merge_entities(
+    request: Request,
+    body: dict,
+    rbac: RbacRegistry = Depends(get_rbac),
+    entity_graph: EntityGraph = Depends(get_entity_graph),
+    mapping: SurrogateMapping = Depends(get_mapping),
+    audit_log: AuditLog = Depends(get_audit_log),
+) -> dict:
+    """Merge two same-kind entities (person↔person or term↔term) in a workspace.
+
+    The caller designates a winner and a loser. After merge: the loser's canonical
+    name and variations are absorbed by the winner; the loser's surrogate is retired
+    (kept restorable in past exchanges, never deleted); all relationships and role
+    assignments mentioning the loser re-home onto the winner (self-loops dropped,
+    duplicates deduped, non-colliding contradictions kept).
+
+    Cross-kind and org-unit merges are rejected with 422. Requires the ``admin``
+    role on the workspace (ADR-0016).
+    """
+    workspace = body.get("workspace", "")
+    _require_role(request, workspace, "admin", rbac)
+
+    winner_spec = body.get("winner", {})
+    loser_spec = body.get("loser", {})
+
+    try:
+        merged = entity_graph.merge(
+            workspace=workspace,
+            winner_kind=winner_spec.get("kind", ""),
+            winner_canonical=winner_spec.get("canonical_name", ""),
+            loser_kind=loser_spec.get("kind", ""),
+            loser_canonical=loser_spec.get("canonical_name", ""),
+        )
+    except CrossKindMergeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OrgUnitMergeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    loser_canonical = loser_spec.get("canonical_name", "")
+
+    # Sync the surrogate mapping: loser's canonical + inherited variations now
+    # map to the winner's active surrogate (for future blindfold passes).
+    mapping.seed(loser_canonical, merged.active_surrogate)
+    for variation in merged.variations:
+        mapping.seed(variation, merged.active_surrogate)
+
+    # Retired surrogates stay recognized as known so they are not re-blindfolded
+    # if encountered in a future outbound prompt (e.g., carried over from a past
+    # exchange). Past exchange sessions remain self-contained and restore correctly
+    # via their own ExchangeSession.injected dict (closed-world restore, ADR-0006).
+    for retired in merged.retired_surrogates:
+        mapping.retire_surrogate(retired)
+
+    audit_log.append(
+        AuditRecord(
+            workspace=workspace,
+            event="entity-merged",
+            reason=(
+                f"winner={winner_spec.get('canonical_name', '')!r}, "
+                f"loser={loser_canonical!r}"
+            ),
+            identity=_caller_identity(request),
+        )
+    )
+
+    return {
+        "winner": {
+            "kind": merged.kind,
+            "canonical_name": merged.canonical_name,
+            "variations": merged.variations,
+            "active_surrogate": merged.active_surrogate,
+            "retired_surrogates": merged.retired_surrogates,
+        },
+        "workspace": workspace,
+    }
 
 
 @app.get("/v1/management/surrogate/{surrogate}/real")
