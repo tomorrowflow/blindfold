@@ -29,7 +29,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from .config import get_settings
-from .entity_graph import CrossKindMergeError, EntityGraph, OrgUnitMergeError
+from .entity_graph import CrossKindMergeError, EntityGraph, OrgUnitMergeError, SurrogateCollisionError
 from .reidentify import InMemoryReIdentificationStore, ReIdentificationStore
 from .transit import TransitClient
 from .engine import (
@@ -909,3 +909,85 @@ async def delete_relationship_edge(
     if not removed:
         raise HTTPException(status_code=404, detail="relationship edge not found in this workspace")
     return {"id": edge_id, "workspace": slug, "action": "deleted"}
+
+
+# ---------------------------------------------------------------------------
+# Management endpoints — surrogate editor (issue #28)
+# ---------------------------------------------------------------------------
+
+
+@app.patch("/v1/management/entities/{entity_id}/surrogate")
+async def edit_entity_surrogate(
+    entity_id: str,
+    request: Request,
+    body: dict,
+    rbac: RbacRegistry = Depends(get_rbac),
+    entity_graph: EntityGraph = Depends(get_entity_graph),
+    mapping: SurrogateMapping = Depends(get_mapping),
+    audit_log: AuditLog = Depends(get_audit_log),
+) -> dict:
+    """Edit an entity's active surrogate; retire the previous value (issue #28).
+
+    The previous surrogate is retained in retired_surrogates so past exchanges
+    that used it still restore correctly (closed-world restore, ADR-0006). The
+    new surrogate becomes active for future blindfold passes.
+
+    Rejected with 409 if the proposed surrogate collides with any active or retired
+    surrogate in the workspace (the point is to remove a collision, not shuffle it).
+
+    Returns a warning listing coherent-world dependents whose surrogates may now
+    be inconsistent (e.g. employees whose email domain was derived from this org's
+    surrogate). No cascade — the curator fixes dependents individually (#25).
+
+    Requires the ``admin`` role on the workspace.
+    """
+    workspace = body.get("workspace", "")
+    new_surrogate = body.get("new_surrogate", "")
+
+    _require_role(request, workspace, "admin", rbac)
+
+    if not new_surrogate:
+        raise HTTPException(status_code=422, detail="new_surrogate is required")
+
+    try:
+        entity, dependents = entity_graph.edit_surrogate(entity_id, workspace, new_surrogate)
+    except SurrogateCollisionError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    # Update the surrogate mapping so future blindfold passes use the new surrogate.
+    mapping.seed(entity.canonical_name, new_surrogate)
+    for variation in entity.variations:
+        mapping.seed(variation, new_surrogate)
+
+    # Keep the retired surrogate recognized so it is not re-blindfolded if encountered
+    # in a future outbound prompt (closed-world sessions resolve it via their own
+    # ExchangeSession.injected dict, ADR-0006).
+    for retired in entity.retired_surrogates:
+        mapping.retire_surrogate(retired)
+
+    audit_log.append(
+        AuditRecord(
+            workspace=workspace,
+            event="surrogate-edited",
+            reason=f"entity_id={entity_id!r}, new_surrogate={new_surrogate!r}",
+            identity=_caller_identity(request),
+        )
+    )
+
+    return {
+        "entity_id": entity.entity_id,
+        "workspace": workspace,
+        "canonical_name": entity.canonical_name,
+        "active_surrogate": entity.active_surrogate,
+        "retired_surrogates": entity.retired_surrogates,
+        "inconsistent_dependents": [
+            {
+                "entity_id": d.entity_id,
+                "canonical_name": d.canonical_name,
+                "kind": d.kind,
+            }
+            for d in dependents
+        ],
+    }

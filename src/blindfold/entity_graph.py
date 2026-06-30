@@ -24,6 +24,10 @@ class OrgUnitMergeError(ValueError):
     """Raised when attempting to merge an org-unit entity (not supported)."""
 
 
+class SurrogateCollisionError(ValueError):
+    """Raised when a proposed surrogate value is already active or retired in the workspace."""
+
+
 @dataclass
 class EntityRecord:
     entity_id: str
@@ -147,6 +151,70 @@ class EntityGraph:
             for ra in self._role_assignments
             if ra.workspace == workspace and ra.person_id == person_id
         ]
+
+    def get_by_id(self, entity_id: str, workspace: str) -> EntityRecord | None:
+        entity = self._entities.get(entity_id)
+        if entity is None or entity.workspace != workspace:
+            return None
+        return entity
+
+    def edit_surrogate(
+        self,
+        entity_id: str,
+        workspace: str,
+        new_surrogate: str,
+    ) -> tuple[EntityRecord, list[EntityRecord]]:
+        """Edit the active surrogate for an entity; retire the previous value.
+
+        Rejects with SurrogateCollisionError if new_surrogate is already active or
+        retired for any entity in the workspace (point: remove a collision, not shuffle it).
+
+        Returns (updated_entity, dependents) where dependents is the list of entities
+        that have a relationship to this entity and whose coherent-world surrogates
+        (e.g. email domains derived from an employer's surrogate) may now be inconsistent.
+        No cascade is performed — the caller receives the warning and fixes individually.
+        """
+        entity = self.get_by_id(entity_id, workspace)
+        if entity is None:
+            raise KeyError(f"entity not found: entity_id={entity_id!r}, workspace={workspace!r}")
+
+        # Collect all active + retired surrogates in workspace (excluding this entity's own
+        # current active surrogate, which is being replaced and not a collision).
+        all_surrogates: set[str] = set()
+        for e in self._entities.values():
+            if e.workspace != workspace:
+                continue
+            if e.entity_id == entity_id:
+                # Include this entity's retired surrogates but not its current active one
+                # (the active one is being replaced, not a collision source).
+                all_surrogates.update(e.retired_surrogates)
+            else:
+                if e.active_surrogate:
+                    all_surrogates.add(e.active_surrogate)
+                all_surrogates.update(e.retired_surrogates)
+
+        if new_surrogate in all_surrogates:
+            raise SurrogateCollisionError(
+                f"surrogate collision: {new_surrogate!r} is already active or retired in workspace {workspace!r}"
+            )
+
+        # Retire the old active surrogate.
+        old_surrogate = entity.active_surrogate
+        if old_surrogate and old_surrogate not in entity.retired_surrogates:
+            entity.retired_surrogates.append(old_surrogate)
+        entity.active_surrogate = new_surrogate
+
+        # Find coherent-world dependents: entities that have a relationship to this entity.
+        dependents: list[EntityRecord] = []
+        seen_ids: set[str] = set()
+        for rel in self._relationships:
+            if rel.workspace == workspace and rel.target_id == entity_id:
+                dep = self._entities.get(rel.source_id)
+                if dep is not None and dep.entity_id not in seen_ids:
+                    dependents.append(dep)
+                    seen_ids.add(dep.entity_id)
+
+        return entity, dependents
 
     def merge(
         self,
