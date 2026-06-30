@@ -72,9 +72,13 @@ async def test_graph_endpoint_returns_nodes_labelled_with_surrogates():
     # Nodes are labelled with surrogates, not real names.
     assert "Clara Hoffmann" in labels
     assert "Project Wren" in labels
-    # Real names must NOT appear.
+    # Real names must NOT appear — assert against the full recorded egress
+    # bytes, not just the parsed label set, so a real value leaking into any
+    # other field (id, edge, error text) is also caught.
     assert "Martin Bach" not in labels
     assert "Project Condor" not in labels
+    assert "Martin Bach" not in resp.text
+    assert "Project Condor" not in resp.text
 
 
 # ---------------------------------------------------------------------------
