@@ -148,6 +148,10 @@ class EntityGraph:
             if ra.workspace == workspace and ra.person_id == person_id
         ]
 
+    def list_entities(self, workspace: str) -> list[EntityRecord]:
+        """Return all entity records tagged to ``workspace``."""
+        return [e for e in self._entities.values() if e.workspace == workspace]
+
     def merge(
         self,
         workspace: str,
