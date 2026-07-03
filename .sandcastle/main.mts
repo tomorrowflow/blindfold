@@ -83,21 +83,26 @@ const TARGET_BRANCH = execSync("git rev-parse --abbrev-ref HEAD", {
   encoding: "utf8",
 }).trim();
 
-// The management SPA (ADR-0011). It does NOT exist yet, so SPA_EXISTS is false and
-// the browser gate below is an inert no-op until this directory appears. Point
-// SPA_DIR at the real path if/when the SPA lands somewhere other than `frontend/`.
-const SPA_DIR = "frontend";
-const SPA_EXISTS = existsSync(SPA_DIR);
+// The management SPA (ADR-0011). It is NOT a separate `frontend/` build — it's
+// served straight out of FastAPI as a self-contained HTML string in
+// `src/blindfold/spa.py` (review inbox #14 + org-graph #29), mounted by
+// `blindfold.app:app` at the `/ui/*` routes. The browser gate is active whenever
+// that module exists. If SPA-observable code spreads to other files the page
+// consumes (e.g. new `/ui/*`-backing endpoints in app.py), add them to SPA_PATHS.
+const SPA_MODULE = "src/blindfold/spa.py";
+const ASGI_APP = "blindfold.app:app";
+const SPA_PATHS = [SPA_MODULE];
+const SPA_EXISTS = existsSync(SPA_MODULE);
 
 // A branch needs the browser gate only if the SPA exists AND this branch's diff
-// touches it. Deterministic + host-side (the branch commits are in the shared
-// .git after the run), so it doesn't depend on agent behavior. Returns false —
-// gate is N/A — whenever there is no SPA, which is the case today.
+// touches SPA-observable code. Deterministic + host-side (the branch commits are
+// in the shared .git after the run), so it doesn't depend on agent behavior.
+// Returns false — gate is N/A — whenever there is no SPA.
 function branchTouchesSpa(branch: string): boolean {
   if (!SPA_EXISTS) return false;
   try {
     const out = execSync(
-      `git diff --name-only ${TARGET_BRANCH}...${branch} -- ${SPA_DIR}`,
+      `git diff --name-only ${TARGET_BRANCH}...${branch} -- ${SPA_PATHS.join(" ")}`,
       { encoding: "utf8" },
     );
     return out.trim().length > 0;
@@ -108,8 +113,8 @@ function branchTouchesSpa(branch: string): boolean {
 
 console.log(
   SPA_EXISTS
-    ? `Browser gate ACTIVE: SPA-touching branches must also pass web-verify (${SPA_DIR}/).`
-    : `Browser gate inert: no SPA at ${SPA_DIR}/ yet (ADR-0011) — web-verify is skipped.`,
+    ? `Browser gate ACTIVE: SPA-touching branches must also pass web-verify (${SPA_MODULE}).`
+    : `Browser gate inert: no SPA module at ${SPA_MODULE} yet (ADR-0011) — web-verify is skipped.`,
 );
 
 // ---------------------------------------------------------------------------
@@ -242,6 +247,33 @@ function commitsAhead(branch: string): number {
   } catch {
     return 0;
   }
+}
+
+// A compact, agent-authored overview of what a branch actually produced, for the
+// issue timeline. Built host-side from the branch's own commits (the implementer
+// writes a RALPH: subject stating the slice + issue ref) plus a diffstat — so it
+// captures the agent's stated intent AND the concrete result without depending on
+// the agent emitting anything extra, and, like everything on this side-channel,
+// it can never throw into the fail-closed gate (all git calls are swallowed).
+// Returns "" when there's nothing to summarize, so callers can skip cleanly.
+function summarizeBranch(branch: string): string {
+  const git = (args: string[]): string => {
+    try {
+      return execFileSync("git", args, { encoding: "utf8" }).trim();
+    } catch {
+      return "";
+    }
+  };
+  const range = `${TARGET_BRANCH}..${branch}`;
+  const subjects = git(["log", range, "--format=%s"])
+    .split("\n")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (subjects.length === 0) return "";
+  const bullets = subjects.map((s) => `- ${s}`).join("\n");
+  const stat = git(["diff", "--shortstat", `${TARGET_BRANCH}...${branch}`]);
+  const overview = `**What landed:**\n${bullets}`;
+  return stat ? `${overview}\n\n_${stat.replace(/^\s+/, "")}_` : overview;
 }
 
 // Are we running inside a live Supacode session? True only when the CLI is on
@@ -407,6 +439,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         issue.id,
         "sandcastle:picked-up",
         `🏗️ **sandcastle** picked up this issue on branch \`${issue.branch}\`.\n\n` +
+          `🎯 **Goal:** ${issue.title}\n\n` +
           `▶️ **Implementer** is now operating (red-green-refactor).`,
       );
 
@@ -451,14 +484,17 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
 
         // Lifecycle → GitHub: the branch carries implemented work. Distinguish
         // commits that landed this run from work resumed off a prior run.
+        const landed = summarizeBranch(issue.branch);
+        const implementedHeadline =
+          implement.commits.length > 0
+            ? `✅ Implementer committed work on \`${issue.branch}\` ` +
+              `(${implement.commits.length} new commit(s) this run; ${ahead} ahead of \`${TARGET_BRANCH}\`).`
+            : `✅ Branch \`${issue.branch}\` carries completed work from a prior run ` +
+              `(${ahead} commit(s) ahead of \`${TARGET_BRANCH}\`); proceeding to independent review.`;
         postOnce(
           issue.id,
           "sandcastle:implemented",
-          implement.commits.length > 0
-            ? `✅ Implementer committed work on \`${issue.branch}\` ` +
-                `(${implement.commits.length} new commit(s) this run; ${ahead} ahead of \`${TARGET_BRANCH}\`).`
-            : `✅ Branch \`${issue.branch}\` carries completed work from a prior run ` +
-                `(${ahead} commit(s) ahead of \`${TARGET_BRANCH}\`); proceeding to independent review.`,
+          landed ? `${implementedHeadline}\n\n${landed}` : implementedHeadline,
         );
 
         // Lifecycle → GitHub: handing off from implementer to the reviewer. The
@@ -493,10 +529,16 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         // attested the change clean. (A FAIL stays silent here and surfaces as
         // the blocked comment in the gate loop below.)
         if (reviewerComplete) {
+          const refinement =
+            review.commits.length > 0
+              ? `Applied ${review.commits.length} behavior-preserving clarity refinement(s) on top.`
+              : `No changes needed — the slice was already clean.`;
           postOnce(
             issue.id,
             "sandcastle:review-clean",
-            `🔍 Independent reviewer attested \`${issue.branch}\` correct and leak-clean.`,
+            `🔍 Independent reviewer attested \`${issue.branch}\` correct and leak-clean ` +
+              `(no real entity can reach the provider; restore is closed-world; verify pass clean). ` +
+              refinement,
           );
         }
 
@@ -515,7 +557,8 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           postOnce(
             issue.id,
             "sandcastle:web-verify-started",
-            `🌐 **Browser gate** is now operating — scripted Playwright web-verify of \`${issue.branch}\` (${SPA_DIR}/).`,
+            `🌐 **Browser gate** is now operating — scripted Playwright web-verify of \`${issue.branch}\` ` +
+              `(driving \`${ASGI_APP}\` at its \`/ui/*\` routes).`,
           );
           const webVerify = await sandbox.run({
             name: "web-verify",
@@ -526,10 +569,24 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
             // passing it in promptArgs is rejected. {{TARGET_BRANCH}} still resolves.
             promptArgs: {
               BRANCH: issue.branch,
-              SPA_DIR,
+              SPA_MODULE,
+              ASGI_APP,
             },
           });
           webVerifyComplete = webVerify.completionSignal !== undefined;
+
+          // Lifecycle → GitHub: the browser gate attested SPA behavior + the
+          // SPA-side privacy properties clean. (A FAIL stays silent here and
+          // surfaces as the blocked comment in the gate loop below.)
+          if (webVerifyComplete) {
+            postOnce(
+              issue.id,
+              "sandcastle:web-verify-clean",
+              `🌐 Browser gate attested \`${issue.branch}\` — observable web behavior verified and the ` +
+                `SPA-side privacy properties hold (authorized-only re-identification, first-party egress, ` +
+                `audit-on-decrypt). Playwright specs committed as regression tests.`,
+            );
+          }
         }
 
         return {
