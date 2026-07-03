@@ -1000,6 +1000,91 @@ async def edit_entity_surrogate(
 
 
 # ---------------------------------------------------------------------------
+# Entity-list merge endpoint (ADR-0016 / issue #34)
+# ---------------------------------------------------------------------------
+
+
+@app.post("/v1/management/workspaces/{slug}/entities/merge")
+async def merge_entities_by_id(
+    slug: str,
+    request: Request,
+    body: dict,
+    rbac: RbacRegistry = Depends(get_rbac),
+    entity_graph: EntityGraph = Depends(get_entity_graph),
+    mapping: SurrogateMapping = Depends(get_mapping),
+    audit_log: AuditLog = Depends(get_audit_log),
+) -> dict:
+    """Merge two same-kind entities by entity_id (issue #34 / ADR-0016).
+
+    Workspace-scoped complement to POST /v1/management/entities/merge (#26). Accepts
+    entity IDs rather than canonical names, so the entity-list SPA — which operates
+    in surrogate-space and never exposes canonical names — can initiate a merge.
+
+    Semantics are identical to the canonical-name endpoint: loser's surrogate is retired
+    (restorable forever), loser's canonical name folds into winner's variations, all
+    relationships/role assignments re-home onto winner (self-loops dropped, duplicates
+    deduped). Requires the ``admin`` role on the workspace (ADR-0016).
+
+    Body: {winner_id, loser_id}
+    Returns: {winner: {entity_id, kind, canonical_name, variations, active_surrogate,
+              retired_surrogates}, workspace}
+    Errors: 403 without admin role, 404 for unknown entity_id, 422 for cross-kind/org-unit.
+    """
+    _require_role(request, slug, "admin", rbac)
+
+    winner_id = str(body.get("winner_id", ""))
+    loser_id = str(body.get("loser_id", ""))
+
+    if not winner_id or not loser_id:
+        raise HTTPException(status_code=422, detail="winner_id and loser_id are required")
+
+    try:
+        merged = entity_graph.merge_by_ids(
+            workspace=slug,
+            winner_id=winner_id,
+            loser_id=loser_id,
+        )
+    except CrossKindMergeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OrgUnitMergeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    # Sync the surrogate mapping: loser's canonical + inherited variations now
+    # map to the winner's active surrogate (for future blindfold passes).
+    mapping.seed(merged.canonical_name, merged.active_surrogate)
+    for variation in merged.variations:
+        mapping.seed(variation, merged.active_surrogate)
+
+    # Retired surrogates stay recognized as known so they are not re-blindfolded
+    # if encountered in a future outbound prompt.
+    for retired in merged.retired_surrogates:
+        mapping.retire_surrogate(retired)
+
+    audit_log.append(
+        AuditRecord(
+            workspace=slug,
+            event="entity-merged",
+            reason=f"winner_id={winner_id!r}, loser_id={loser_id!r}",
+            identity=_caller_identity(request),
+        )
+    )
+
+    return {
+        "winner": {
+            "entity_id": merged.entity_id,
+            "kind": merged.kind,
+            "canonical_name": merged.canonical_name,
+            "variations": merged.variations,
+            "active_surrogate": merged.active_surrogate,
+            "retired_surrogates": merged.retired_surrogates,
+        },
+        "workspace": slug,
+    }
+
+
+# ---------------------------------------------------------------------------
 # Org-graph endpoint + SPA (ADR-0011 / ADR-0017 / issue #29)
 # ---------------------------------------------------------------------------
 
