@@ -182,3 +182,97 @@ async def test_merge_by_entity_id_denied_without_admin_role():
         app.dependency_overrides.clear()
 
     assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# 5. Merge-by-entity-ID response omits canonical_name (surrogate-space only)
+# ---------------------------------------------------------------------------
+#
+# ADR-0015: the re-identifier role gates real-name disclosure. The merge
+# endpoint requires admin only. When the SPA calls merge via entity_id, it
+# cannot have supplied canonical_name, so returning canonical_name in the
+# response would reveal real names to an admin who lacks re-identifier. The
+# entity_id path must return only surrogate-space fields (no canonical_name,
+# no variations).
+
+
+@pytest.mark.anyio
+async def test_merge_by_entity_id_response_omits_real_names():
+    rbac = _admin_rbac()
+    graph = EntityGraph()
+    mapping = SurrogateMapping()
+    winner = graph.add_entity("person", "acme", "Alice Real", surrogate="Alice Sur")
+    loser = graph.add_entity("person", "acme", "Bob Real", surrogate="Bob Sur")
+    mapping.seed("Alice Real", "Alice Sur")
+    mapping.seed("Bob Real", "Bob Sur")
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_entity_graph] = lambda: graph
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_audit_log] = lambda: AuditLog()
+    try:
+        async with _make_client() as client:
+            resp = await client.post(
+                "/v1/management/entities/merge",
+                json={
+                    "workspace": "acme",
+                    "winner": {"entity_id": winner.entity_id},
+                    "loser": {"entity_id": loser.entity_id},
+                },
+                headers={"x-blindfold-identity": "curator"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    body = resp.json()
+    # canonical_name and variations (real names) must NOT appear in the entity_id-path
+    # response — an admin without re-identifier must not discover real names.
+    assert "canonical_name" not in body["winner"], (
+        "entity_id-path merge response must not expose canonical_name (ADR-0015)"
+    )
+    assert "variations" not in body["winner"], (
+        "entity_id-path merge response must not expose variations (ADR-0015)"
+    )
+    # Surrogate-space fields must still be present
+    assert body["winner"]["active_surrogate"] == "Alice Sur"
+    assert "Bob Sur" in body["winner"]["retired_surrogates"]
+
+
+# ---------------------------------------------------------------------------
+# 6. Edit-surrogate response omits canonical_name (surrogate-space only)
+# ---------------------------------------------------------------------------
+#
+# The PATCH /entities/{entity_id}/surrogate endpoint is always called with
+# entity_id (path param). Returning canonical_name in the response would
+# reveal real names to an admin without re-identifier, violating ADR-0015.
+
+
+@pytest.mark.anyio
+async def test_edit_surrogate_response_omits_real_names():
+    rbac = _admin_rbac()
+    graph = EntityGraph()
+    mapping = SurrogateMapping()
+    entity = graph.add_entity("person", "acme", "Alice Real", surrogate="Alice Sur")
+    mapping.seed("Alice Real", "Alice Sur")
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_entity_graph] = lambda: graph
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_audit_log] = lambda: AuditLog()
+    try:
+        async with _make_client() as client:
+            resp = await client.patch(
+                f"/v1/management/entities/{entity.entity_id}/surrogate",
+                json={"workspace": "acme", "new_surrogate": "Alice-New"},
+                headers={"x-blindfold-identity": "curator"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "canonical_name" not in body, (
+        "edit_surrogate response must not expose canonical_name (ADR-0015)"
+    )
+    assert body["active_surrogate"] == "Alice-New"

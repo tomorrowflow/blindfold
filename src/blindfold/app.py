@@ -761,6 +761,15 @@ async def merge_entities(
     winner_spec = body.get("winner", {})
     loser_spec = body.get("loser", {})
 
+    # Track whether the caller used entity_id (SPA surrogate-space path) or
+    # canonical_name (management-tool path). The SPA never has real names, so
+    # the response must not echo canonical_name back — that would reveal real
+    # entity names to an admin without the re-identifier role (ADR-0015).
+    via_entity_id = bool(
+        (winner_spec.get("entity_id") and not winner_spec.get("canonical_name"))
+        or (loser_spec.get("entity_id") and not loser_spec.get("canonical_name"))
+    )
+
     # Support entity_id as an alternative to canonical_name (SPA operates in
     # surrogate-space and cannot provide real names without re-identifier role).
     if winner_spec.get("entity_id") and not winner_spec.get("canonical_name"):
@@ -822,16 +831,19 @@ async def merge_entities(
         )
     )
 
-    return {
-        "winner": {
-            "kind": merged.kind,
-            "canonical_name": merged.canonical_name,
-            "variations": merged.variations,
-            "active_surrogate": merged.active_surrogate,
-            "retired_surrogates": merged.retired_surrogates,
-        },
-        "workspace": workspace,
+    # When called via entity_id (SPA path), return only surrogate-space data.
+    # Canonical names and variations are real entity names; exposing them here
+    # would allow an admin without re-identifier to discover real names (ADR-0015).
+    winner_payload: dict = {
+        "kind": merged.kind,
+        "active_surrogate": merged.active_surrogate,
+        "retired_surrogates": merged.retired_surrogates,
     }
+    if not via_entity_id:
+        winner_payload["canonical_name"] = merged.canonical_name
+        winner_payload["variations"] = merged.variations
+
+    return {"winner": winner_payload, "workspace": workspace}
 
 
 @app.get("/v1/management/surrogate/{surrogate}/real")
@@ -995,17 +1007,19 @@ async def edit_entity_surrogate(
         )
     )
 
+    # Return only surrogate-space data. canonical_name is a real entity name;
+    # this endpoint requires only admin (not re-identifier), so including it
+    # would reveal real names to admins who lack the unmask right (ADR-0015).
     return {
         "entity_id": entity.entity_id,
         "workspace": workspace,
-        "canonical_name": entity.canonical_name,
         "active_surrogate": entity.active_surrogate,
         "retired_surrogates": entity.retired_surrogates,
         "inconsistent_dependents": [
             {
                 "entity_id": d.entity_id,
-                "canonical_name": d.canonical_name,
                 "kind": d.kind,
+                "active_surrogate": d.active_surrogate,
             }
             for d in dependents
         ],
