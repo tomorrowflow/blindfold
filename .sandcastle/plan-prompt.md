@@ -33,7 +33,11 @@ This loop has **no human gate**. Exclude any issue whose resolution needs a huma
 mark it blocked) if it:
 
 - is labeled `ready-for-human`, or asks for a **policy / RBAC / OpenBao key** decision, or
-- requires **UX / design** judgment (e.g. the org-graph or surrogate editor), or
+- requires **UX / design** judgment whose decision is **not already settled in an accepted
+  ADR** — e.g. the interactive graph-editor *interaction* design (drag-to-merge affordance,
+  confirm dialogs). A backend slice verified at the **Management-API seam**, or a read-only
+  render whose design is fixed by an accepted ADR, is **not** excluded on these grounds; the
+  `ready-for-human` label is the authoritative per-issue HITL signal, or
 - would require changing a **leak-audit** clause or an **ADR** to pass — i.e. the privacy
   contract itself is in question. These must never be auto-worked; a code agent cannot be
   trusted to weaken a privacy property.

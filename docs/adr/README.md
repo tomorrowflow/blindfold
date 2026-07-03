@@ -26,5 +26,10 @@ Vocabulary follows [`../../CONTEXT.md`](../../CONTEXT.md).
 | [0010](0010-learning-loop-async-review.md) | Learning loop: auto-blindfold provisional + async review inbox | Accepted |
 | [0011](0011-management-app-spa-json-api.md) | Management app: SPA over a FastAPI JSON API | Accepted |
 | [0012](0012-voice-diary-concept-reuse.md) | voice-diary: concept reuse + data seed, not coupling | Accepted |
+| [0013](0013-seed-only-sensitive-referents.md) | Seed only sensitive referents — the term/org_unit sensitivity boundary | Accepted |
+| [0014](0014-unify-referents-sensitivity-flag.md) | Unify referents under a single entity with a sensitivity flag | Accepted |
+| [0015](0015-reidentify-is-a-decrypt-operation.md) | Re-identification is a decrypt operation, gated by decrypt rights + workspace tags | Accepted |
+| [0016](0016-merge-collapses-same-kind-entities.md) | Merge collapses two same-kind canonical entities into one | Accepted |
+| [0017](0017-management-graph-renders-in-surrogate-space.md) | Management graph renders in surrogate-space; reveal is the gated re-identify exception | Accepted |
 
 New ADRs: copy [`0000-template.md`](0000-template.md), take the next number.

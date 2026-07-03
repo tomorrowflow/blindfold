@@ -47,8 +47,20 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   surrogates. The authoritative dictionary the deterministic passes match against.
 - **Variation** — a surface form of an entity (full name, first name, initials,
   nickname, misspelling). Resolving variations to one entity is **coreference**.
-- **Relationship** — an edge in the entity graph (person works-at org, alias-of,
-  reports-to). Drives the **coherent surrogate world** and disambiguation.
+- **Merge** — the curator action that collapses two separate canonical **entities**
+  discovered to be the same referent into one. The surviving entity absorbs the
+  other's **variations**, **relationships**, and role assignments; the absorbed
+  entity's **surrogate** is **retired** (kept restorable, never deleted). The
+  inter-entity counterpart to **coreference**, which resolves variations *within* a
+  single entity. _Avoid_: link, dedupe, combine, fold-in.
+- **Relationship** — an edge in the entity graph. Drives the **coherent surrogate
+  world** and disambiguation. The `relation` label is a **controlled vocabulary**, not
+  free text — drift (`employer` vs `works_at` vs `employed-by`) silently breaks the
+  logic that keys off it. Current set: **`employer`** (person → org the person works at;
+  the edge the coherent world reads to align fake email domains) and **`subsidiary_of`**
+  (org → parent org). `alias-of` is **not** a drawable relation — collapsing two entities
+  that are the same referent is **Merge**, not an edge. New relations are added
+  deliberately, only when coherent-world/disambiguation logic consumes them.
 - **Coherent surrogate world** — surrogates whose relationships stay internally
   consistent: a person's fake email domain equals their employer's fake domain;
   locales match; dates are **date-shifted** by a stable per-entity offset.
