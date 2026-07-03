@@ -325,7 +325,7 @@ _ENTITY_LIST_HTML = """<!doctype html>
 <title>Blindfold — Entity List</title>
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 1100px; margin: 0 auto; padding: 1rem; color: #222; }
+  body { font-family: system-ui, sans-serif; max-width: 1200px; margin: 0 auto; padding: 1rem; color: #222; }
   h1 { font-size: 1.3rem; margin-bottom: 0.5rem; }
   .toolbar { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; margin-bottom: 0.75rem; }
   .toolbar label { font-size: 0.9rem; }
@@ -344,9 +344,33 @@ _ENTITY_LIST_HTML = """<!doctype html>
   tr.highlighted td { background: #fffbe6; }
   .kind-person { color: #1f5fa6; font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
   .kind-term { color: #8b5cf6; font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
-  .surrogate { font-family: ui-monospace, monospace; }
+  /* Inline surrogate rename (issue #33) */
+  .surrogate-cell { font-family: ui-monospace, monospace; }
+  .surrogate-text { cursor: pointer; border-bottom: 1px dashed #aaa; }
+  .surrogate-text:hover { color: #1f5fa6; }
+  .surrogate-input { font-family: ui-monospace, monospace; width: 14em; padding: 0.15rem 0.3rem; border: 1px solid #888; border-radius: 3px; font-size: 0.9rem; }
+  .surrogate-input.error { border-color: #b00020; background: #fff0f0; }
+  .rename-error { color: #b00020; font-size: 0.8rem; display: block; margin-top: 0.2rem; }
+  .rename-warn { background: #fffbe6; border: 1px solid #f0d080; border-radius: 3px; padding: 0.4rem 0.6rem; font-size: 0.82rem; margin-top: 0.3rem; }
+  .rename-warn label { display: flex; align-items: flex-start; gap: 0.3rem; cursor: pointer; }
+  button.rename-save { background: #1f7a3f; color: white; border: none; padding: 0.2rem 0.5rem; border-radius: 3px; cursor: pointer; font-size: 0.82rem; margin-top: 0.3rem; }
+  button.rename-save[disabled] { opacity: 0.6; cursor: progress; }
+  button.rename-cancel { background: none; border: 1px solid #aaa; color: #555; padding: 0.2rem 0.5rem; border-radius: 3px; cursor: pointer; font-size: 0.82rem; margin-top: 0.3rem; margin-left: 0.3rem; }
+  /* Edge chips (issue #33) */
+  .edge-chips { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+  .edge-chip { display: inline-flex; align-items: center; gap: 0.25rem; background: #f0f4ff; border: 1px solid #c0cfee; border-radius: 3px; padding: 0.1rem 0.35rem; font-size: 0.8rem; white-space: nowrap; }
+  .chip-label { color: #333; font-family: ui-monospace, monospace; }
+  button.chip-delete { background: none; border: none; color: #888; cursor: pointer; padding: 0 0.1rem; font-size: 0.85rem; line-height: 1; }
+  button.chip-delete:hover { color: #b00020; }
+  button.chip-retarget { background: none; border: none; color: #1f5fa6; cursor: pointer; padding: 0 0.1rem; font-size: 0.78rem; }
+  button.chip-retarget:hover { text-decoration: underline; }
+  /* Re-target picker (issue #33) — kind-constrained to term entities */
+  .retarget-picker { display: flex; align-items: center; gap: 0.3rem; margin-top: 0.2rem; }
+  .retarget-picker select { font-size: 0.82rem; padding: 0.15rem 0.3rem; border: 1px solid #ccc; border-radius: 3px; }
+  button.retarget-confirm { background: #1f5fa6; color: white; border: none; padding: 0.2rem 0.5rem; border-radius: 3px; cursor: pointer; font-size: 0.82rem; }
+  button.retarget-confirm[disabled] { opacity: 0.6; cursor: progress; }
+  button.retarget-cancel { background: none; border: 1px solid #aaa; color: #555; padding: 0.2rem 0.5rem; border-radius: 3px; cursor: pointer; font-size: 0.82rem; }
   .retired { color: #888; font-size: 0.8rem; font-family: ui-monospace, monospace; }
-  .edge-list { color: #444; font-size: 0.82rem; }
   .reveal-badge {
     display: inline-block; background: #c8860a; color: #fff; border: none;
     border-radius: 3px; padding: 0.15rem 0.45rem; font-size: 0.78rem; cursor: pointer;
@@ -374,7 +398,7 @@ _ENTITY_LIST_HTML = """<!doctype html>
       <div class="search-box" id="search-box">
         <input id="real-name-input" type="text" placeholder="Real-name search…" />
         <button class="search-btn" id="search-btn">Search</button>
-        <span class="locked-msg" id="search-locked" style="display:none">🔒 re-identifier role required</span>
+        <span class="locked-msg" id="search-locked" style="display:none">re-identifier role required</span>
       </div>
     </div>
     <div class="error" id="list-error" style="display:none"></div>
@@ -387,8 +411,7 @@ _ENTITY_LIST_HTML = """<!doctype html>
         <tr>
           <th data-col="active_surrogate">Surrogate ↕</th>
           <th data-col="kind">Kind ↕</th>
-          <th data-col="employer">Employer</th>
-          <th data-col="subsidiary_of">Subsidiary-of</th>
+          <th data-col="employer">Edges</th>
           <th data-col="retired_surrogates">Retired surrogates</th>
           <th>Real value</th>
         </tr>
@@ -398,11 +421,14 @@ _ENTITY_LIST_HTML = """<!doctype html>
   </div>
 
 <script type="module">
-// Endpoint base paths (ADR-0011 / issue #32).
-// /v1/management/workspaces/<slug>/entities  — surrogate-space entity list
-// /v1/management/workspaces/<slug>/entities/search  — real-name search (re-identifier role)
-// /v1/management/surrogate/<surrogate>/real — re-identify (re-identifier role, ADR-0015)
+// Endpoint base paths (ADR-0011 / issue #32 / issue #33).
+// /v1/management/workspaces/<slug>/entities          — surrogate-space entity list
+// /v1/management/workspaces/<slug>/entities/search   — real-name search (re-identifier role)
+// /v1/management/workspaces/<slug>/relationships     — edge CRUD (no role required, #27)
+// /v1/management/entities/<id>/surrogate             — inline surrogate rename (admin, PATCH, #28)
+// /v1/management/surrogate/<surrogate>/real          — re-identify (re-identifier role, ADR-0015)
 const ENTITIES_BASE   = "/v1/management/workspaces";
+const MANAGEMENT_ENTITIES_BASE = "/v1/management/entities";
 const REIDENTIFY_BASE = "/v1/management/surrogate";
 
 const ENTITY_LIST_CEILING = 150;
@@ -423,10 +449,8 @@ let allRows    = [];
 let highlighted = new Set();
 let sortCol    = "active_surrogate";
 let sortAsc    = true;
-let canSearch  = false; // true when caller holds re-identifier role (discovered on first load attempt)
+let canSearch  = false;
 
-// Detect re-identifier capability by attempting a search on a known-empty string.
-// If we get 200, caller has the role; if 403, show locked state.
 async function detectSearchCapability(workspace) {
   try {
     const r = await fetch(
@@ -485,7 +509,6 @@ function sortedAndFiltered() {
     if (sortCol === "active_surrogate") { va = a.active_surrogate; vb = b.active_surrogate; }
     else if (sortCol === "kind") { va = a.kind; vb = b.kind; }
     else if (sortCol === "employer") { va = getEdgeSurrogate(a, "employer"); vb = getEdgeSurrogate(b, "employer"); }
-    else if (sortCol === "subsidiary_of") { va = getEdgeSurrogate(a, "subsidiary_of"); vb = getEdgeSurrogate(b, "subsidiary_of"); }
     else if (sortCol === "retired_surrogates") { va = (a.retired_surrogates || []).join(","); vb = (b.retired_surrogates || []).join(","); }
     const cmp = va.localeCompare(vb);
     return sortAsc ? cmp : -cmp;
@@ -493,33 +516,357 @@ function sortedAndFiltered() {
   return rows;
 }
 
+// ---------------------------------------------------------------------------
+// Inline surrogate rename (issue #33)
+// Click on the surrogate text to open an input field. PATCH /entities/{id}/surrogate.
+// 409 → hard reject (red inline field error); 200 with dependents → soft warn + ack.
+// Requires admin role on the workspace; does NOT require re-identifier.
+// ---------------------------------------------------------------------------
+
+function makeSurrogateCell(row) {
+  const cell = document.createElement("td");
+  cell.className = "surrogate-cell";
+
+  const textSpan = document.createElement("span");
+  textSpan.className = "surrogate-text";
+  textSpan.textContent = row.active_surrogate;
+  textSpan.title = "Click to rename surrogate";
+  cell.appendChild(textSpan);
+
+  textSpan.addEventListener("click", () => openRenameForm(row, cell, textSpan));
+  return cell;
+}
+
+function openRenameForm(row, cell, textSpan) {
+  // Avoid double-opening
+  if (cell.querySelector(".surrogate-input")) return;
+
+  textSpan.style.display = "none";
+
+  const input = document.createElement("input");
+  input.type = "text";
+  input.className = "surrogate-input";
+  input.value = row.active_surrogate;
+  cell.appendChild(input);
+
+  const errorSpan = document.createElement("span");
+  errorSpan.className = "rename-error";
+  errorSpan.style.display = "none";
+  cell.appendChild(errorSpan);
+
+  // Soft-warn container (shown when dependents are returned)
+  const warnDiv = document.createElement("div");
+  warnDiv.className = "rename-warn";
+  warnDiv.style.display = "none";
+  const warnLabel = document.createElement("label");
+  const warnCheck = document.createElement("input");
+  warnCheck.type = "checkbox";
+  const warnText = document.createTextNode(" Renaming will affect dependent entities — I acknowledge.");
+  warnLabel.appendChild(warnCheck);
+  warnLabel.appendChild(warnText);
+  warnDiv.appendChild(warnLabel);
+  cell.appendChild(warnDiv);
+
+  const saveBtn = document.createElement("button");
+  saveBtn.className = "rename-save";
+  saveBtn.textContent = "Save";
+  cell.appendChild(saveBtn);
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.className = "rename-cancel";
+  cancelBtn.textContent = "Cancel";
+  cell.appendChild(cancelBtn);
+
+  // Pending rename result when dependents need ack
+  let pendingResult = null;
+
+  async function attemptRename() {
+    const newSurrogate = input.value.trim();
+    if (!newSurrogate || newSurrogate === row.active_surrogate) { closeRenameForm(); return; }
+
+    // If dependents shown and not acknowledged, block
+    if (warnDiv.style.display !== "none" && !warnCheck.checked) {
+      errorSpan.textContent = "Acknowledge the dependent warning before saving.";
+      errorSpan.style.display = "";
+      return;
+    }
+
+    saveBtn.disabled = true;
+    errorSpan.style.display = "none";
+    input.classList.remove("error");
+
+    const workspace = wsSelect.value;
+    try {
+      const r = await fetch(
+        `${MANAGEMENT_ENTITIES_BASE}/${encodeURIComponent(row.entity_id)}/surrogate`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json", "x-blindfold-identity": "" },
+          body: JSON.stringify({ workspace, new_surrogate: newSurrogate }),
+        }
+      );
+      if (r.status === 409) {
+        const body = await r.json();
+        input.classList.add("error");
+        errorSpan.textContent = "Collision: " + (body.detail || "surrogate already in use");
+        errorSpan.style.display = "";
+        saveBtn.disabled = false;
+        return;
+      }
+      if (!r.ok) {
+        errorSpan.textContent = `Error ${r.status}`;
+        errorSpan.style.display = "";
+        saveBtn.disabled = false;
+        return;
+      }
+      const body = await r.json();
+      pendingResult = body;
+
+      if (body.inconsistent_dependents && body.inconsistent_dependents.length > 0) {
+        // Soft warn: show banner, require ack before the rename is considered complete
+        warnDiv.style.display = "";
+        warnCheck.checked = false;
+        saveBtn.disabled = false;
+        // Update the in-memory row so the next ack-save goes through as a no-op rename
+        row.active_surrogate = newSurrogate;
+        input.value = newSurrogate;
+        return;
+      }
+
+      // Clean rename: update row in memory and close
+      row.active_surrogate = newSurrogate;
+      closeRenameForm(newSurrogate);
+    } catch (e) {
+      errorSpan.textContent = String(e);
+      errorSpan.style.display = "";
+      saveBtn.disabled = false;
+    }
+  }
+
+  function closeRenameForm(newValue) {
+    textSpan.textContent = newValue || row.active_surrogate;
+    textSpan.style.display = "";
+    [input, errorSpan, warnDiv, saveBtn, cancelBtn].forEach(el => cell.removeChild(el));
+  }
+
+  saveBtn.addEventListener("click", attemptRename);
+  cancelBtn.addEventListener("click", () => closeRenameForm());
+  input.addEventListener("keydown", e => { if (e.key === "Enter") attemptRename(); if (e.key === "Escape") closeRenameForm(); });
+
+  input.focus();
+  input.select();
+}
+
+// ---------------------------------------------------------------------------
+// Edge chips: one chip per edge for outbound employer/subsidiary_of relations.
+// Each chip has × (delete) and a retarget button (re-target). No primary designation.
+// DELETE /workspaces/{slug}/relationships/{edge_id}
+// POST   /workspaces/{slug}/relationships  (re-target: delete old + create with new target)
+// ---------------------------------------------------------------------------
+
+function makeEdgesCell(row) {
+  const cell = document.createElement("td");
+  const container = document.createElement("div");
+  container.className = "edge-chips";
+  cell.appendChild(container);
+
+  const outboundEdges = (row.edges || []).filter(e => e.direction === "outbound");
+
+  if (outboundEdges.length === 0) return cell;
+
+  for (const edge of outboundEdges) {
+    appendEdgeChip(container, row, edge);
+  }
+  return cell;
+}
+
+function appendEdgeChip(container, row, edge) {
+  const chip = document.createElement("span");
+  chip.className = "edge-chip";
+  chip.dataset.edgeId = edge.edge_id;
+
+  const label = document.createElement("span");
+  label.className = "chip-label";
+  label.textContent = `${edge.relation}: ${edge.other_surrogate}`;
+  chip.appendChild(label);
+
+  const deleteBtn = document.createElement("button");
+  deleteBtn.className = "chip-delete";
+  deleteBtn.textContent = "×";
+  deleteBtn.title = `Remove ${edge.relation} edge`;
+  deleteBtn.addEventListener("click", () => deleteEdge(container, chip, row, edge));
+  chip.appendChild(deleteBtn);
+
+  const retargetBtn = document.createElement("button");
+  retargetBtn.className = "chip-retarget";
+  retargetBtn.textContent = "↔";
+  retargetBtn.title = `Re-target ${edge.relation} edge`;
+  retargetBtn.addEventListener("click", () => retargetEdge(container, chip, row, edge));
+  chip.appendChild(retargetBtn);
+
+  container.appendChild(chip);
+}
+
+async function deleteEdge(container, chip, row, edge) {
+  const workspace = wsSelect.value;
+  try {
+    const r = await fetch(
+      `${ENTITIES_BASE}/${encodeURIComponent(workspace)}/relationships/${encodeURIComponent(edge.edge_id)}`,
+      { method: "DELETE" }
+    );
+    if (!r.ok) { alert(`Delete failed: HTTP ${r.status}`); return; }
+    // Remove chip from the in-memory row and from the DOM
+    row.edges = (row.edges || []).filter(e => e.edge_id !== edge.edge_id);
+    container.removeChild(chip);
+  } catch (e) {
+    alert(String(e));
+  }
+}
+
+// Re-target: show a kind-constrained term picker below the chip.
+// Term is the only valid target kind for employer and subsidiary_of (controlled vocab, #27).
+function retargetEdge(container, chip, row, edge) {
+  // Avoid opening a second picker on the same chip
+  if (chip.querySelector(".retarget-picker")) return;
+
+  const pickerRow = document.createElement("div");
+  pickerRow.className = "retarget-picker";
+
+  const sel = document.createElement("select");
+  // Kind-constrained: only term entities are valid targets
+  const termRows = allRows.filter(r => r.kind === "term" && r.entity_id !== row.entity_id);
+  if (termRows.length === 0) {
+    const opt = document.createElement("option");
+    opt.textContent = "No term entities available";
+    sel.appendChild(opt);
+    sel.disabled = true;
+  } else {
+    for (const t of termRows) {
+      const opt = document.createElement("option");
+      opt.value = t.entity_id;
+      opt.textContent = t.active_surrogate;
+      if (t.entity_id === edge.other_entity_id) opt.selected = true;
+      sel.appendChild(opt);
+    }
+  }
+  pickerRow.appendChild(sel);
+
+  const confirmBtn = document.createElement("button");
+  confirmBtn.className = "retarget-confirm";
+  confirmBtn.textContent = "Apply";
+  pickerRow.appendChild(confirmBtn);
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.className = "retarget-cancel";
+  cancelBtn.textContent = "Cancel";
+  pickerRow.appendChild(cancelBtn);
+
+  chip.appendChild(pickerRow);
+
+  cancelBtn.addEventListener("click", () => chip.removeChild(pickerRow));
+
+  confirmBtn.addEventListener("click", async () => {
+    const newTargetId = sel.value;
+    if (!newTargetId || newTargetId === edge.other_entity_id) { chip.removeChild(pickerRow); return; }
+
+    confirmBtn.disabled = true;
+    const workspace = wsSelect.value;
+
+    // Step 1: delete the old edge
+    try {
+      const delR = await fetch(
+        `${ENTITIES_BASE}/${encodeURIComponent(workspace)}/relationships/${encodeURIComponent(edge.edge_id)}`,
+        { method: "DELETE" }
+      );
+      if (!delR.ok) { alert(`Delete failed: HTTP ${delR.status}`); confirmBtn.disabled = false; return; }
+    } catch (e) { alert(String(e)); confirmBtn.disabled = false; return; }
+
+    // Step 2: create the new edge to the re-targeted term
+    const newTargetRow = allRows.find(r => r.entity_id === newTargetId);
+    try {
+      const createR = await fetch(
+        `${ENTITIES_BASE}/${encodeURIComponent(workspace)}/relationships`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            source_kind: row.kind,
+            source_id: row.entity_id,
+            relation: edge.relation,
+            target_kind: edge.target_kind,
+            target_id: newTargetId,
+          }),
+        }
+      );
+      if (!createR.ok) { alert(`Create failed: HTTP ${createR.status}`); confirmBtn.disabled = false; return; }
+      const newEdgeData = await createR.json();
+
+      // Update in-memory row: swap old edge for new
+      const newEdge = {
+        edge_id: newEdgeData.id,
+        relation: edge.relation,
+        direction: "outbound",
+        other_surrogate: newTargetRow ? newTargetRow.active_surrogate : newTargetId,
+        other_entity_id: newTargetId,
+        target_kind: edge.target_kind,
+      };
+      row.edges = (row.edges || []).filter(e => e.edge_id !== edge.edge_id).concat([newEdge]);
+
+      // Refresh this chip's label and remove picker
+      const label = chip.querySelector(".chip-label");
+      if (label) label.textContent = `${newEdge.relation}: ${newEdge.other_surrogate}`;
+      chip.dataset.edgeId = newEdge.edge_id;
+      // Update the chip's delete/retarget handlers by replacing the chip
+      chip.removeChild(pickerRow);
+      // Swap edge reference on delete/retarget so future clicks use the new edge
+      Object.assign(edge, newEdge);
+    } catch (e) { alert(String(e)); confirmBtn.disabled = false; }
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Table rendering
+// ---------------------------------------------------------------------------
+
 function renderTable() {
   const rows = sortedAndFiltered();
   entityTbody.innerHTML = "";
   for (const row of rows) {
     const tr = document.createElement("tr");
     if (highlighted.has(row.entity_id)) tr.classList.add("highlighted");
-    const employer = getEdgeSurrogate(row, "employer");
-    const subsidiary = getEdgeSurrogate(row, "subsidiary_of");
+
     const retired = (row.retired_surrogates || []).join(", ");
-    tr.innerHTML = `
-      <td class="surrogate">${esc(row.active_surrogate)}</td>
-      <td><span class="kind-${esc(row.kind)}">${esc(row.kind)}</span></td>
-      <td class="edge-list">${esc(employer)}</td>
-      <td class="edge-list">${esc(subsidiary)}</td>
-      <td class="retired">${esc(retired)}</td>
-      <td></td>
-    `;
-    const revealTd = tr.querySelector("td:last-child");
+
+    // Surrogate cell: inline rename (issue #33, requires admin)
+    tr.appendChild(makeSurrogateCell(row));
+
+    // Kind cell (immutable; no delete-entity action per issue #33)
+    const kindTd = document.createElement("td");
+    kindTd.innerHTML = `<span class="kind-${esc(row.kind)}">${esc(row.kind)}</span>`;
+    tr.appendChild(kindTd);
+
+    // Edges cell: chips for all outbound edges (one per edge, no primary, issue #33)
+    tr.appendChild(makeEdgesCell(row));
+
+    // Retired surrogates
+    const retiredTd = document.createElement("td");
+    retiredTd.className = "retired";
+    retiredTd.textContent = retired;
+    tr.appendChild(retiredTd);
+
+    // Real value (reveal badge)
+    const revealTd = document.createElement("td");
     const btn = document.createElement("button");
     btn.className = "reveal-badge" + (canSearch ? "" : " locked");
-    btn.textContent = canSearch ? "Reveal" : "🔒";
+    btn.textContent = canSearch ? "Reveal" : "locked";
     btn.disabled = !canSearch;
     btn.title = canSearch ? "This will be logged" : "re-identifier role required";
     if (canSearch) {
       btn.addEventListener("click", () => revealRow(row, btn, revealTd));
     }
     revealTd.appendChild(btn);
+    tr.appendChild(revealTd);
+
     entityTbody.appendChild(tr);
   }
   entityTable.style.display = rows.length > 0 ? "" : "none";

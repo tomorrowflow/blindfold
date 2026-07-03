@@ -1087,9 +1087,12 @@ def _surrogate_space_rows(
                 continue
             summaries.append(
                 {
+                    "edge_id": edge.id,
                     "relation": edge.relation,
                     "direction": direction,
                     "other_surrogate": surrogate_by_id.get(other_id, ""),
+                    "other_entity_id": other_id,
+                    "target_kind": edge.target_kind,
                 }
             )
         return summaries
