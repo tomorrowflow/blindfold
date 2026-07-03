@@ -276,3 +276,63 @@ async def test_edit_surrogate_response_omits_real_names():
         "edit_surrogate response must not expose canonical_name (ADR-0015)"
     )
     assert body["active_surrogate"] == "Alice-New"
+
+
+# ---------------------------------------------------------------------------
+# 7. Edit-surrogate dependent entries omit canonical_name (surrogate-space only)
+# ---------------------------------------------------------------------------
+#
+# The inconsistent_dependents warning lists coherent-world dependents of the
+# edited entity. Each dependent is a real entity; echoing its canonical_name (or
+# the raw real name anywhere in the entry) would reveal real names to an admin
+# without re-identifier, violating ADR-0015 — the same leak as the top-level
+# response, one level deeper. Guards the strip on the dependents list itself.
+
+
+@pytest.mark.anyio
+async def test_edit_surrogate_dependents_omit_real_names():
+    rbac = _admin_rbac()
+    graph = EntityGraph()
+    mapping = SurrogateMapping()
+    # Org (target of the edit) and a person dependent whose relationship targets it.
+    org = graph.add_entity("term", "acme", "Acme Corp Real", surrogate="Org Sur")
+    person = graph.add_entity("person", "acme", "Alice Real", surrogate="Alice Sur")
+    graph.add_relationship(
+        workspace="acme",
+        source_id=person.entity_id,
+        source_kind="person",
+        relation="employer",
+        target_id=org.entity_id,
+        target_kind="term",
+    )
+    mapping.seed("Acme Corp Real", "Org Sur")
+    mapping.seed("Alice Real", "Alice Sur")
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_entity_graph] = lambda: graph
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_audit_log] = lambda: AuditLog()
+    try:
+        async with _make_client() as client:
+            resp = await client.patch(
+                f"/v1/management/entities/{org.entity_id}/surrogate",
+                json={"workspace": "acme", "new_surrogate": "Org-New"},
+                headers={"x-blindfold-identity": "curator"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    body = resp.json()
+    dependents = body["inconsistent_dependents"]
+    assert len(dependents) == 1, "the person dependent must be reported"
+    dep = dependents[0]
+    assert "canonical_name" not in dep, (
+        "dependent entry must not expose canonical_name (ADR-0015)"
+    )
+    # No real name may appear anywhere in the entry — belt-and-suspenders against
+    # a real value smuggled into any dependent field.
+    assert "Alice Real" not in repr(dep), (
+        "dependent entry must not leak the real name in any field (ADR-0015)"
+    )
+    assert dep["active_surrogate"] == "Alice Sur"

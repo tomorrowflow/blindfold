@@ -538,8 +538,6 @@ inspCloseBtn.addEventListener("click", hideInspector);
 // Per-node reveal badge (ADR-0015 / ADR-0017 / issue #30)
 // ---------------------------------------------------------------------------
 
-let revealCallback = null;
-
 function doReveal(surrogate, onSuccess) {
   revealTarget = { surrogate, onSuccess };
   openDialog(revealAuditBackdrop);
