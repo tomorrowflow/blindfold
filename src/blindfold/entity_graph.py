@@ -239,6 +239,36 @@ class EntityGraph:
                 results.append(entity)
         return results
 
+    def merge_by_ids(
+        self,
+        workspace: str,
+        winner_id: str,
+        loser_id: str,
+    ) -> EntityRecord:
+        """Merge loser into winner by entity_id; same semantics as merge() (ADR-0016).
+
+        Used by the entity-list SPA (issue #34) where only entity_id is available
+        (surrogate-space; no canonical names exposed). Raises CrossKindMergeError,
+        OrgUnitMergeError, or KeyError for unknown/workspace-mismatched IDs.
+        """
+        winner = self.get_by_id(winner_id, workspace)
+        if winner is None:
+            raise KeyError(
+                f"winner not found: entity_id={winner_id!r}, workspace={workspace!r}"
+            )
+        loser = self.get_by_id(loser_id, workspace)
+        if loser is None:
+            raise KeyError(
+                f"loser not found: entity_id={loser_id!r}, workspace={workspace!r}"
+            )
+        return self.merge(
+            workspace=workspace,
+            winner_kind=winner.kind,
+            winner_canonical=winner.canonical_name,
+            loser_kind=loser.kind,
+            loser_canonical=loser.canonical_name,
+        )
+
     def merge(
         self,
         workspace: str,

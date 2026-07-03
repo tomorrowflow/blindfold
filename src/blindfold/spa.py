@@ -21,6 +21,7 @@ REVIEW_INBOX_REJECT_ENDPOINT = "/v1/management/review-inbox/{id}/reject"
 
 ORG_GRAPH_ENDPOINT = "/v1/management/workspaces"
 ENTITY_LIST_ENDPOINT = "/v1/management/workspaces"
+ENTITY_LIST_MERGE_ENDPOINT = "/v1/management/workspaces"
 REIDENTIFY_ENDPOINT = "/v1/management/surrogate"
 
 
@@ -341,7 +342,11 @@ _ENTITY_LIST_HTML = """<!doctype html>
   th { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 2px solid #ddd; cursor: pointer; user-select: none; white-space: nowrap; }
   th:hover { background: #f5f5f5; }
   td { padding: 0.35rem 0.5rem; border-bottom: 1px solid #eee; vertical-align: top; }
+  td.cb-col { width: 2rem; text-align: center; }
+  th.cb-col { width: 2rem; text-align: center; cursor: default; }
+  th.cb-col:hover { background: none; }
   tr.highlighted td { background: #fffbe6; }
+  tr.cb-disabled { opacity: 0.4; pointer-events: none; }
   .kind-person { color: #1f5fa6; font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
   .kind-term { color: #8b5cf6; font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
   .surrogate { font-family: ui-monospace, monospace; }
@@ -356,6 +361,38 @@ _ENTITY_LIST_HTML = """<!doctype html>
   .reveal-badge[disabled] { opacity: 0.6; cursor: progress; }
   .reveal-value { color: #1a1a1a; font-weight: 600; margin-left: 0.4rem; font-size: 0.88rem; }
   .empty { color: #666; font-style: italic; }
+  /* Merge action bar */
+  #merge-bar { display: none; align-items: center; gap: 0.75rem; background: #f0f7ff; border: 1px solid #b0d0f0; border-radius: 4px; padding: 0.5rem 0.75rem; margin-bottom: 0.5rem; }
+  #merge-bar.visible { display: flex; }
+  button.merge-btn { background: #1f5fa6; color: white; border: none; padding: 0.3rem 0.8rem; border-radius: 3px; cursor: pointer; font-size: 0.9rem; font-weight: 600; }
+  button.merge-btn[disabled] { opacity: 0.6; cursor: progress; }
+  #merge-bar-msg { font-size: 0.9rem; color: #333; }
+  /* Merge dialog overlay */
+  #merge-overlay {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45);
+    z-index: 100; align-items: center; justify-content: center;
+  }
+  #merge-overlay.visible { display: flex; }
+  #merge-dialog {
+    background: #fff; border-radius: 6px; padding: 1.5rem; max-width: 640px; width: 90%;
+    box-shadow: 0 4px 16px rgba(0,0,0,.25);
+  }
+  #merge-dialog h2 { font-size: 1.1rem; margin: 0 0 1rem; }
+  .merge-candidates { display: grid; grid-template-columns: 1fr auto 1fr; gap: 0.75rem; align-items: start; margin-bottom: 1rem; }
+  .merge-card { border: 1px solid #ddd; border-radius: 4px; padding: 0.75rem; }
+  .merge-card h3 { font-size: 0.85rem; font-weight: 700; margin: 0 0 0.5rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  .merge-card h3.survivor { color: #1f7a3f; }
+  .merge-card h3.retired-label { color: #b00020; }
+  .merge-card .surrogate { font-family: ui-monospace, monospace; font-size: 0.9rem; margin-bottom: 0.25rem; }
+  .merge-card .variations { font-size: 0.82rem; color: #555; margin-bottom: 0.4rem; }
+  .merge-swap-col { display: flex; align-items: center; justify-content: center; }
+  button.swap-btn { background: #f5f5f5; border: 1px solid #ccc; border-radius: 3px; padding: 0.3rem 0.6rem; cursor: pointer; font-size: 0.9rem; }
+  button.swap-btn:hover { background: #e8e8e8; }
+  .merge-dialog-footer { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 1rem; }
+  button.merge-confirm-btn { background: #1f7a3f; color: white; border: none; padding: 0.4rem 1rem; border-radius: 3px; cursor: pointer; font-weight: 600; }
+  button.merge-confirm-btn[disabled] { opacity: 0.6; cursor: progress; }
+  button.merge-cancel-btn { background: #f5f5f5; border: 1px solid #ccc; padding: 0.4rem 1rem; border-radius: 3px; cursor: pointer; }
+  .merge-error { color: #b00020; font-size: 0.85rem; margin-top: 0.5rem; }
 </style>
 </head>
 <body>
@@ -377,6 +414,10 @@ _ENTITY_LIST_HTML = """<!doctype html>
         <span class="locked-msg" id="search-locked" style="display:none">🔒 re-identifier role required</span>
       </div>
     </div>
+    <div id="merge-bar">
+      <span id="merge-bar-msg"></span>
+      <button class="merge-btn" id="merge-btn">Merge…</button>
+    </div>
     <div class="error" id="list-error" style="display:none"></div>
     <div class="ceiling-msg" id="ceiling-msg" style="display:none">
       More than 150 entities — narrow with surrogate filters or use real-name search to find specific records.
@@ -385,6 +426,7 @@ _ENTITY_LIST_HTML = """<!doctype html>
     <table id="entity-table" style="display:none">
       <thead>
         <tr>
+          <th class="cb-col"></th>
           <th data-col="active_surrogate">Surrogate ↕</th>
           <th data-col="kind">Kind ↕</th>
           <th data-col="employer">Employer</th>
@@ -397,11 +439,41 @@ _ENTITY_LIST_HTML = """<!doctype html>
     </table>
   </div>
 
+  <!-- Merge winner/loser confirm dialog -->
+  <div id="merge-overlay" role="dialog" aria-modal="true" aria-labelledby="merge-dialog-title">
+    <div id="merge-dialog">
+      <h2 id="merge-dialog-title">Confirm merge</h2>
+      <div class="merge-candidates">
+        <div class="merge-card" id="winner-card">
+          <h3 class="survivor">Survivor</h3>
+          <div class="surrogate" id="winner-surrogate"></div>
+          <div class="variations" id="winner-variations"></div>
+          <div id="winner-reveal-area"></div>
+        </div>
+        <div class="merge-swap-col">
+          <button class="swap-btn" id="swap-btn" title="Swap survivor and retired">⇄ Swap</button>
+        </div>
+        <div class="merge-card" id="loser-card">
+          <h3 class="retired-label">Retired</h3>
+          <div class="surrogate" id="loser-surrogate"></div>
+          <div class="variations" id="loser-variations"></div>
+          <div id="loser-reveal-area"></div>
+        </div>
+      </div>
+      <div class="merge-error" id="merge-dialog-error" style="display:none"></div>
+      <div class="merge-dialog-footer">
+        <button class="merge-cancel-btn" id="merge-cancel-btn">Cancel</button>
+        <button class="merge-confirm-btn" id="merge-confirm-btn">Confirm merge</button>
+      </div>
+    </div>
+  </div>
+
 <script type="module">
-// Endpoint base paths (ADR-0011 / issue #32).
-// /v1/management/workspaces/<slug>/entities  — surrogate-space entity list
+// Endpoint base paths (ADR-0011 / issue #32 / issue #34).
+// /v1/management/workspaces/<slug>/entities         — surrogate-space entity list
 // /v1/management/workspaces/<slug>/entities/search  — real-name search (re-identifier role)
-// /v1/management/surrogate/<surrogate>/real — re-identify (re-identifier role, ADR-0015)
+// /v1/management/workspaces/<slug>/entities/merge   — merge by entity_id (admin role, ADR-0016)
+// /v1/management/surrogate/<surrogate>/real         — re-identify (re-identifier role, ADR-0015)
 const ENTITIES_BASE   = "/v1/management/workspaces";
 const REIDENTIFY_BASE = "/v1/management/surrogate";
 
@@ -418,15 +490,35 @@ const ceilingMsg      = document.getElementById("ceiling-msg");
 const loadingMsg      = document.getElementById("loading-msg");
 const entityTable     = document.getElementById("entity-table");
 const entityTbody     = document.getElementById("entity-tbody");
+const mergeBar        = document.getElementById("merge-bar");
+const mergeBarMsg     = document.getElementById("merge-bar-msg");
+const mergeBtn        = document.getElementById("merge-btn");
+const mergeOverlay    = document.getElementById("merge-overlay");
+const winnerSurrogate = document.getElementById("winner-surrogate");
+const winnerVariations= document.getElementById("winner-variations");
+const winnerRevealArea= document.getElementById("winner-reveal-area");
+const loserSurrogate  = document.getElementById("loser-surrogate");
+const loserVariations = document.getElementById("loser-variations");
+const loserRevealArea = document.getElementById("loser-reveal-area");
+const swapBtn         = document.getElementById("swap-btn");
+const mergeDialogError= document.getElementById("merge-dialog-error");
+const mergeCancelBtn  = document.getElementById("merge-cancel-btn");
+const mergeConfirmBtn = document.getElementById("merge-confirm-btn");
 
 let allRows    = [];
 let highlighted = new Set();
 let sortCol    = "active_surrogate";
 let sortAsc    = true;
-let canSearch  = false; // true when caller holds re-identifier role (discovered on first load attempt)
+let canSearch  = false; // true when caller holds re-identifier role
+
+// Checkbox pair-select state (issue #34).
+let checked = []; // array of 0, 1, or 2 entity_ids
+
+// Dialog state: winner/loser designations (entity_id), swappable before confirm.
+let dialogWinnerId = null;
+let dialogLoserId  = null;
 
 // Detect re-identifier capability by attempting a search on a known-empty string.
-// If we get 200, caller has the role; if 403, show locked state.
 async function detectSearchCapability(workspace) {
   try {
     const r = await fetch(
@@ -448,6 +540,8 @@ async function loadEntities(workspace) {
   entityTable.style.display = "none";
   loadingMsg.style.display = "";
   highlighted.clear();
+  checked = [];
+  updateMergeBar();
   try {
     const r = await fetch(`${ENTITIES_BASE}/${encodeURIComponent(workspace)}/entities`);
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
@@ -493,16 +587,65 @@ function sortedAndFiltered() {
   return rows;
 }
 
+// The kind of the first checked entity gates which other rows are selectable.
+function checkedKind() {
+  if (checked.length === 0) return null;
+  const row = allRows.find(r => r.entity_id === checked[0]);
+  return row ? row.kind : null;
+}
+
+function updateMergeBar() {
+  if (checked.length === 2) {
+    const ids = checked.map(id => allRows.find(r => r.entity_id === id));
+    const surrogates = ids.map(r => r ? r.active_surrogate : "?");
+    mergeBarMsg.textContent = `2 entities selected: ${surrogates.join(" + ")}`;
+    mergeBar.classList.add("visible");
+  } else {
+    mergeBar.classList.remove("visible");
+  }
+}
+
+function handleCheckbox(row, cb) {
+  if (cb.checked) {
+    if (checked.length >= 2) { cb.checked = false; return; }
+    checked.push(row.entity_id);
+  } else {
+    checked = checked.filter(id => id !== row.entity_id);
+  }
+  updateMergeBar();
+  // Re-render to apply kind-gating on the remaining checkboxes.
+  renderTable();
+}
+
 function renderTable() {
   const rows = sortedAndFiltered();
   entityTbody.innerHTML = "";
+  const gatingKind = checkedKind();
   for (const row of rows) {
     const tr = document.createElement("tr");
     if (highlighted.has(row.entity_id)) tr.classList.add("highlighted");
+
+    // Checkbox cell (issue #34).
+    const cbTd = document.createElement("td");
+    cbTd.className = "cb-col";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = checked.includes(row.entity_id);
+    // Kind-gate: once a row is checked, disable non-same-kind rows and self-row
+    // if two are already checked and this one isn't among them.
+    const kindBlocked = gatingKind !== null && row.kind !== gatingKind;
+    const capBlocked  = checked.length >= 2 && !checked.includes(row.entity_id);
+    cb.disabled = kindBlocked || capBlocked;
+    if (kindBlocked || capBlocked) { tr.classList.add("cb-disabled"); }
+    cb.addEventListener("change", () => handleCheckbox(row, cb));
+    cbTd.appendChild(cb);
+    tr.appendChild(cbTd);
+
     const employer = getEdgeSurrogate(row, "employer");
     const subsidiary = getEdgeSurrogate(row, "subsidiary_of");
     const retired = (row.retired_surrogates || []).join(", ");
-    tr.innerHTML = `
+    const restCells = document.createElement("template");
+    restCells.innerHTML = `
       <td class="surrogate">${esc(row.active_surrogate)}</td>
       <td><span class="kind-${esc(row.kind)}">${esc(row.kind)}</span></td>
       <td class="edge-list">${esc(employer)}</td>
@@ -510,6 +653,8 @@ function renderTable() {
       <td class="retired">${esc(retired)}</td>
       <td></td>
     `;
+    tr.appendChild(restCells.content);
+
     const revealTd = tr.querySelector("td:last-child");
     const btn = document.createElement("button");
     btn.className = "reveal-badge" + (canSearch ? "" : " locked");
@@ -550,6 +695,133 @@ async function revealRow(row, btn, td) {
     btn.disabled = false;
   }
 }
+
+// Build a reveal badge for the merge dialog (gated by re-identifier role).
+// The badge calls the re-identify endpoint (ADR-0015) and shows the real value
+// inline — every dialog reveal is audited exactly like the table-row reveal.
+function buildDialogRevealBadge(surrogate) {
+  const area = document.createElement("div");
+  if (!canSearch) {
+    const lock = document.createElement("span");
+    lock.className = "reveal-badge locked";
+    lock.textContent = "🔒 Reveal locked";
+    lock.title = "re-identifier role required";
+    area.appendChild(lock);
+    return area;
+  }
+  const btn = document.createElement("button");
+  btn.className = "reveal-badge";
+  btn.textContent = "Reveal";
+  btn.title = "This will be logged";
+  btn.addEventListener("click", async () => {
+    if (!confirm("Revealing the real value will be logged. Continue?")) return;
+    btn.disabled = true;
+    const workspace = wsSelect.value;
+    try {
+      const r = await fetch(
+        `${REIDENTIFY_BASE}/${encodeURIComponent(surrogate)}/real`,
+        { headers: { "x-blindfold-workspace": workspace } }
+      );
+      if (r.status === 403) { btn.disabled = false; return; }
+      if (!r.ok) { btn.disabled = false; return; }
+      const body = await r.json();
+      const val = document.createElement("span");
+      val.className = "reveal-value";
+      val.textContent = body.real;
+      btn.replaceWith(val);
+    } catch (_) {
+      btn.disabled = false;
+    }
+  });
+  area.appendChild(btn);
+  return area;
+}
+
+function populateDialogCard(
+  surrogateEl, variationsEl, revealAreaEl, entityId
+) {
+  const row = allRows.find(r => r.entity_id === entityId);
+  if (!row) return;
+  surrogateEl.textContent = row.active_surrogate;
+  const vars = row.retired_surrogates || [];
+  variationsEl.textContent = vars.length
+    ? `Also known as: ${vars.join(", ")}`
+    : "";
+  revealAreaEl.innerHTML = "";
+  revealAreaEl.appendChild(buildDialogRevealBadge(row.active_surrogate));
+}
+
+function openMergeDialog() {
+  if (checked.length !== 2) return;
+  // Default: first checked = winner, second = loser.
+  // Check order does NOT determine winner/loser — the dialog's Swap and the
+  // Confirm button are the sole authority (issue #34).
+  dialogWinnerId = checked[0];
+  dialogLoserId  = checked[1];
+  refreshDialogCards();
+  mergeDialogError.style.display = "none";
+  mergeConfirmBtn.disabled = false;
+  mergeOverlay.classList.add("visible");
+}
+
+function refreshDialogCards() {
+  populateDialogCard(winnerSurrogate, winnerVariations, winnerRevealArea, dialogWinnerId);
+  populateDialogCard(loserSurrogate,  loserVariations,  loserRevealArea,  dialogLoserId);
+}
+
+function closeMergeDialog() {
+  mergeOverlay.classList.remove("visible");
+  dialogWinnerId = null;
+  dialogLoserId  = null;
+}
+
+swapBtn.addEventListener("click", () => {
+  [dialogWinnerId, dialogLoserId] = [dialogLoserId, dialogWinnerId];
+  refreshDialogCards();
+});
+
+mergeCancelBtn.addEventListener("click", closeMergeDialog);
+
+mergeConfirmBtn.addEventListener("click", async () => {
+  if (!dialogWinnerId || !dialogLoserId) return;
+  mergeConfirmBtn.disabled = true;
+  mergeDialogError.style.display = "none";
+  const workspace = wsSelect.value;
+  try {
+    const r = await fetch(
+      `${ENTITIES_BASE}/${encodeURIComponent(workspace)}/entities/merge`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-blindfold-identity": "" },
+        body: JSON.stringify({ winner_id: dialogWinnerId, loser_id: dialogLoserId }),
+      }
+    );
+    if (!r.ok) {
+      const detail = await r.json().then(b => b.detail || `HTTP ${r.status}`).catch(() => `HTTP ${r.status}`);
+      mergeDialogError.textContent = `Merge failed: ${detail}`;
+      mergeDialogError.style.display = "";
+      mergeConfirmBtn.disabled = false;
+      return;
+    }
+    // Collapse: remove loser row from allRows; clear selection.
+    allRows = allRows.filter(row => row.entity_id !== dialogLoserId);
+    checked = [];
+    closeMergeDialog();
+    updateMergeBar();
+    renderTable();
+  } catch (e) {
+    mergeDialogError.textContent = String(e);
+    mergeDialogError.style.display = "";
+    mergeConfirmBtn.disabled = false;
+  }
+});
+
+mergeBtn.addEventListener("click", openMergeDialog);
+
+// Close dialog on backdrop click.
+mergeOverlay.addEventListener("click", e => {
+  if (e.target === mergeOverlay) closeMergeDialog();
+});
 
 searchBtn.addEventListener("click", async () => {
   const q = realNameInput.value.trim();
