@@ -29,7 +29,13 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from .config import get_settings
-from .entity_graph import CrossKindMergeError, EntityGraph, OrgUnitMergeError, SurrogateCollisionError
+from .entity_graph import (
+    CrossKindMergeError,
+    EntityGraph,
+    EntityRecord,
+    OrgUnitMergeError,
+    SurrogateCollisionError,
+)
 from .reidentify import InMemoryReIdentificationStore, ReIdentificationStore
 from .transit import TransitClient
 from .engine import (
@@ -58,7 +64,7 @@ from .policy import (
     WorkspacePolicies,
 )
 from .rbac import RbacRegistry
-from .relationships import RelationshipStore
+from .relationships import RelationshipEdge, RelationshipStore
 from .review import Allowlist, ReviewInbox
 from .spa import entity_list_html, org_graph_html, review_inbox_html
 from .store import vendored_seed_repository
@@ -1055,6 +1061,51 @@ async def org_graph_spa() -> HTMLResponse:
 # ---------------------------------------------------------------------------
 
 
+def _surrogate_space_rows(
+    rows: list[EntityRecord],
+    all_entities: list[EntityRecord],
+    edges: list[RelationshipEdge],
+) -> list[dict]:
+    """Serialize entity records into surrogate-space rows with edge summaries (issue #32).
+
+    ``rows`` is the subset to serialize; ``all_entities`` supplies the surrogate lookup
+    so an edge summary resolves the other endpoint's surrogate even when that entity is
+    not itself in ``rows`` (e.g. a search hit whose employer was not a hit). Only
+    surrogate-space fields are emitted — canonical_name/variations are never included,
+    so this is decrypt-free (ADR-0017 / ADR-0018).
+    """
+    surrogate_by_id = {e.entity_id: e.active_surrogate for e in all_entities}
+
+    def edge_summaries(entity_id: str) -> list[dict]:
+        summaries = []
+        for edge in edges:
+            if edge.source_id == entity_id:
+                direction, other_id = "outbound", edge.target_id
+            elif edge.target_id == entity_id:
+                direction, other_id = "inbound", edge.source_id
+            else:
+                continue
+            summaries.append(
+                {
+                    "relation": edge.relation,
+                    "direction": direction,
+                    "other_surrogate": surrogate_by_id.get(other_id, ""),
+                }
+            )
+        return summaries
+
+    return [
+        {
+            "entity_id": e.entity_id,
+            "kind": e.kind,
+            "active_surrogate": e.active_surrogate,
+            "retired_surrogates": list(e.retired_surrogates),
+            "edges": edge_summaries(e.entity_id),
+        }
+        for e in rows
+    ]
+
+
 @app.get("/v1/management/workspaces/{slug}/entities")
 async def list_workspace_entities(
     slug: str,
@@ -1073,35 +1124,7 @@ async def list_workspace_entities(
     """
     entities = entity_graph.list_entities(slug)
     edges = relationship_store.list_workspace(slug)
-
-    # Build a surrogate lookup by entity_id for edge summaries.
-    surrogate_by_id: dict[str, str] = {
-        e.entity_id: e.active_surrogate for e in entities
-    }
-
-    def _edge_summaries(entity_id: str) -> list[dict]:
-        summaries = []
-        for edge in edges:
-            if edge.source_id == entity_id:
-                other_sur = surrogate_by_id.get(edge.target_id, "")
-                summaries.append({"relation": edge.relation, "direction": "outbound", "other_surrogate": other_sur})
-            elif edge.target_id == entity_id:
-                other_sur = surrogate_by_id.get(edge.source_id, "")
-                summaries.append({"relation": edge.relation, "direction": "inbound", "other_surrogate": other_sur})
-        return summaries
-
-    return {
-        "entities": [
-            {
-                "entity_id": e.entity_id,
-                "kind": e.kind,
-                "active_surrogate": e.active_surrogate,
-                "retired_surrogates": list(e.retired_surrogates),
-                "edges": _edge_summaries(e.entity_id),
-            }
-            for e in entities
-        ]
-    }
+    return {"entities": _surrogate_space_rows(entities, entities, edges)}
 
 
 @app.get("/v1/management/workspaces/{slug}/entities/search")
@@ -1128,23 +1151,8 @@ async def search_workspace_entities(
     _require_role(request, slug, "re-identifier", rbac)
 
     matches = entity_graph.search_by_real_name(slug, q)
-    edges = relationship_store.list_workspace(slug)
-
     all_entities = entity_graph.list_entities(slug)
-    surrogate_by_id: dict[str, str] = {
-        e.entity_id: e.active_surrogate for e in all_entities
-    }
-
-    def _edge_summaries(entity_id: str) -> list[dict]:
-        summaries = []
-        for edge in edges:
-            if edge.source_id == entity_id:
-                other_sur = surrogate_by_id.get(edge.target_id, "")
-                summaries.append({"relation": edge.relation, "direction": "outbound", "other_surrogate": other_sur})
-            elif edge.target_id == entity_id:
-                other_sur = surrogate_by_id.get(edge.source_id, "")
-                summaries.append({"relation": edge.relation, "direction": "inbound", "other_surrogate": other_sur})
-        return summaries
+    edges = relationship_store.list_workspace(slug)
 
     # Audit every attempt — hit or miss. Never include the real name (q) in the record.
     audit_log.append(
@@ -1156,18 +1164,7 @@ async def search_workspace_entities(
         )
     )
 
-    return {
-        "hits": [
-            {
-                "entity_id": e.entity_id,
-                "kind": e.kind,
-                "active_surrogate": e.active_surrogate,
-                "retired_surrogates": list(e.retired_surrogates),
-                "edges": _edge_summaries(e.entity_id),
-            }
-            for e in matches
-        ]
-    }
+    return {"hits": _surrogate_space_rows(matches, all_entities, edges)}
 
 
 @app.get("/ui/entity-list", response_class=HTMLResponse)
