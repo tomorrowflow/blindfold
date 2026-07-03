@@ -20,12 +20,24 @@ REVIEW_INBOX_CONFIRM_ENDPOINT = "/v1/management/review-inbox/{id}/confirm"
 REVIEW_INBOX_REJECT_ENDPOINT = "/v1/management/review-inbox/{id}/reject"
 
 ORG_GRAPH_ENDPOINT = "/v1/management/workspaces"
+ENTITY_LIST_ENDPOINT = "/v1/management/workspaces"
 REIDENTIFY_ENDPOINT = "/v1/management/surrogate"
 
 
 def review_inbox_html() -> str:
     """Return the SPA bundle as a self-contained HTML page."""
     return _HTML
+
+
+def entity_list_html() -> str:
+    """Return the entity-list SPA bundle as a self-contained HTML page (issue #32).
+
+    Renders a compact table of all entities for one selected workspace. All rows are
+    in surrogate-space — no real names are included. Real-name search is gated by
+    the ``re-identifier`` role and emits an audit event on every attempt (ADR-0018).
+    Per-row Reveal delegates to the re-identify endpoint (ADR-0015).
+    """
+    return _ENTITY_LIST_HTML
 
 
 def org_graph_html() -> str:
@@ -301,6 +313,302 @@ async function loadGraph(workspace) {
 ensureOption(initWs);
 wsSelect.addEventListener("change", () => loadGraph(wsSelect.value));
 loadGraph(initWs);
+</script>
+</body>
+</html>
+"""
+
+_ENTITY_LIST_HTML = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Blindfold — Entity List</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 1100px; margin: 0 auto; padding: 1rem; color: #222; }
+  h1 { font-size: 1.3rem; margin-bottom: 0.5rem; }
+  .toolbar { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: center; margin-bottom: 0.75rem; }
+  .toolbar label { font-size: 0.9rem; }
+  .toolbar input, .toolbar select { padding: 0.3rem 0.5rem; border: 1px solid #ccc; border-radius: 3px; font-size: 0.9rem; }
+  .toolbar .search-box { display: flex; gap: 0.4rem; align-items: center; }
+  .toolbar .search-box input { width: 220px; }
+  button.search-btn { background: #1f5fa6; color: white; border: none; padding: 0.3rem 0.7rem; border-radius: 3px; cursor: pointer; font-size: 0.9rem; }
+  button.search-btn[disabled] { opacity: 0.6; cursor: progress; }
+  .locked-msg { color: #888; font-size: 0.85rem; font-style: italic; }
+  .error { color: #b00020; font-size: 0.9rem; }
+  .ceiling-msg { color: #666; background: #fffbe6; border: 1px solid #f0d080; border-radius: 4px; padding: 0.5rem 0.75rem; font-size: 0.9rem; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  th { text-align: left; padding: 0.4rem 0.5rem; border-bottom: 2px solid #ddd; cursor: pointer; user-select: none; white-space: nowrap; }
+  th:hover { background: #f5f5f5; }
+  td { padding: 0.35rem 0.5rem; border-bottom: 1px solid #eee; vertical-align: top; }
+  tr.highlighted td { background: #fffbe6; }
+  .kind-person { color: #1f5fa6; font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
+  .kind-term { color: #8b5cf6; font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
+  .surrogate { font-family: ui-monospace, monospace; }
+  .retired { color: #888; font-size: 0.8rem; font-family: ui-monospace, monospace; }
+  .edge-list { color: #444; font-size: 0.82rem; }
+  .reveal-badge {
+    display: inline-block; background: #c8860a; color: #fff; border: none;
+    border-radius: 3px; padding: 0.15rem 0.45rem; font-size: 0.78rem; cursor: pointer;
+    margin-left: 0.4rem;
+  }
+  .reveal-badge.locked { background: #bbb; cursor: not-allowed; }
+  .reveal-badge[disabled] { opacity: 0.6; cursor: progress; }
+  .reveal-value { color: #1a1a1a; font-weight: 600; margin-left: 0.4rem; font-size: 0.88rem; }
+  .empty { color: #666; font-style: italic; }
+</style>
+</head>
+<body>
+  <div id="entity-list-app">
+    <h1>Entity list</h1>
+    <div class="toolbar">
+      <label for="ws-select">Workspace:</label>
+      <select id="ws-select"></select>
+      <label for="kind-filter">Kind:</label>
+      <select id="kind-filter">
+        <option value="">All</option>
+        <option value="person">Person</option>
+        <option value="term">Term</option>
+      </select>
+      <input id="surrogate-filter" type="text" placeholder="Filter by surrogate…" />
+      <div class="search-box" id="search-box">
+        <input id="real-name-input" type="text" placeholder="Real-name search…" />
+        <button class="search-btn" id="search-btn">Search</button>
+        <span class="locked-msg" id="search-locked" style="display:none">🔒 re-identifier role required</span>
+      </div>
+    </div>
+    <div class="error" id="list-error" style="display:none"></div>
+    <div class="ceiling-msg" id="ceiling-msg" style="display:none">
+      More than 150 entities — narrow with surrogate filters or use real-name search to find specific records.
+    </div>
+    <p class="empty" id="loading-msg">Loading…</p>
+    <table id="entity-table" style="display:none">
+      <thead>
+        <tr>
+          <th data-col="active_surrogate">Surrogate ↕</th>
+          <th data-col="kind">Kind ↕</th>
+          <th data-col="employer">Employer</th>
+          <th data-col="subsidiary_of">Subsidiary-of</th>
+          <th data-col="retired_surrogates">Retired surrogates</th>
+          <th>Real value</th>
+        </tr>
+      </thead>
+      <tbody id="entity-tbody"></tbody>
+    </table>
+  </div>
+
+<script type="module">
+// Endpoint base paths (ADR-0011 / issue #32).
+// /v1/management/workspaces/<slug>/entities  — surrogate-space entity list
+// /v1/management/workspaces/<slug>/entities/search  — real-name search (re-identifier role)
+// /v1/management/surrogate/<surrogate>/real — re-identify (re-identifier role, ADR-0015)
+const ENTITIES_BASE   = "/v1/management/workspaces";
+const REIDENTIFY_BASE = "/v1/management/surrogate";
+
+const ENTITY_LIST_CEILING = 150;
+
+const wsSelect        = document.getElementById("ws-select");
+const kindFilter      = document.getElementById("kind-filter");
+const surrogateFilter = document.getElementById("surrogate-filter");
+const realNameInput   = document.getElementById("real-name-input");
+const searchBtn       = document.getElementById("search-btn");
+const searchLocked    = document.getElementById("search-locked");
+const listError       = document.getElementById("list-error");
+const ceilingMsg      = document.getElementById("ceiling-msg");
+const loadingMsg      = document.getElementById("loading-msg");
+const entityTable     = document.getElementById("entity-table");
+const entityTbody     = document.getElementById("entity-tbody");
+
+let allRows    = [];
+let highlighted = new Set();
+let sortCol    = "active_surrogate";
+let sortAsc    = true;
+let canSearch  = false; // true when caller holds re-identifier role (discovered on first load attempt)
+
+// Detect re-identifier capability by attempting a search on a known-empty string.
+// If we get 200, caller has the role; if 403, show locked state.
+async function detectSearchCapability(workspace) {
+  try {
+    const r = await fetch(
+      `${ENTITIES_BASE}/${encodeURIComponent(workspace)}/entities/search?q=__probe__`,
+      { headers: { "x-blindfold-workspace": workspace } }
+    );
+    canSearch = (r.status !== 403);
+  } catch (_) {
+    canSearch = false;
+  }
+  searchLocked.style.display = canSearch ? "none" : "";
+  searchBtn.disabled = !canSearch;
+  realNameInput.disabled = !canSearch;
+}
+
+async function loadEntities(workspace) {
+  listError.style.display = "none";
+  ceilingMsg.style.display = "none";
+  entityTable.style.display = "none";
+  loadingMsg.style.display = "";
+  highlighted.clear();
+  try {
+    const r = await fetch(`${ENTITIES_BASE}/${encodeURIComponent(workspace)}/entities`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    allRows = data.entities || [];
+    if (allRows.length > ENTITY_LIST_CEILING) {
+      ceilingMsg.style.display = "";
+      allRows = [];
+    }
+  } catch (e) {
+    listError.textContent = String(e);
+    listError.style.display = "";
+  } finally {
+    loadingMsg.style.display = "none";
+  }
+  await detectSearchCapability(workspace);
+  renderTable();
+}
+
+function getEdgeSurrogate(row, relation) {
+  const edge = (row.edges || []).find(e => e.relation === relation);
+  return edge ? edge.other_surrogate : "";
+}
+
+function sortedAndFiltered() {
+  const kindVal = kindFilter.value;
+  const surVal  = surrogateFilter.value.toLowerCase();
+  let rows = allRows.filter(r => {
+    if (kindVal && r.kind !== kindVal) return false;
+    if (surVal && !r.active_surrogate.toLowerCase().includes(surVal)) return false;
+    return true;
+  });
+  rows.sort((a, b) => {
+    let va = "", vb = "";
+    if (sortCol === "active_surrogate") { va = a.active_surrogate; vb = b.active_surrogate; }
+    else if (sortCol === "kind") { va = a.kind; vb = b.kind; }
+    else if (sortCol === "employer") { va = getEdgeSurrogate(a, "employer"); vb = getEdgeSurrogate(b, "employer"); }
+    else if (sortCol === "subsidiary_of") { va = getEdgeSurrogate(a, "subsidiary_of"); vb = getEdgeSurrogate(b, "subsidiary_of"); }
+    else if (sortCol === "retired_surrogates") { va = (a.retired_surrogates || []).join(","); vb = (b.retired_surrogates || []).join(","); }
+    const cmp = va.localeCompare(vb);
+    return sortAsc ? cmp : -cmp;
+  });
+  return rows;
+}
+
+function renderTable() {
+  const rows = sortedAndFiltered();
+  entityTbody.innerHTML = "";
+  for (const row of rows) {
+    const tr = document.createElement("tr");
+    if (highlighted.has(row.entity_id)) tr.classList.add("highlighted");
+    const employer = getEdgeSurrogate(row, "employer");
+    const subsidiary = getEdgeSurrogate(row, "subsidiary_of");
+    const retired = (row.retired_surrogates || []).join(", ");
+    tr.innerHTML = `
+      <td class="surrogate">${esc(row.active_surrogate)}</td>
+      <td><span class="kind-${esc(row.kind)}">${esc(row.kind)}</span></td>
+      <td class="edge-list">${esc(employer)}</td>
+      <td class="edge-list">${esc(subsidiary)}</td>
+      <td class="retired">${esc(retired)}</td>
+      <td></td>
+    `;
+    const revealTd = tr.querySelector("td:last-child");
+    const btn = document.createElement("button");
+    btn.className = "reveal-badge" + (canSearch ? "" : " locked");
+    btn.textContent = canSearch ? "Reveal" : "🔒";
+    btn.disabled = !canSearch;
+    btn.title = canSearch ? "This will be logged" : "re-identifier role required";
+    if (canSearch) {
+      btn.addEventListener("click", () => revealRow(row, btn, revealTd));
+    }
+    revealTd.appendChild(btn);
+    entityTbody.appendChild(tr);
+  }
+  entityTable.style.display = rows.length > 0 ? "" : "none";
+  if (rows.length === 0 && allRows.length === 0 && ceilingMsg.style.display === "none") {
+    loadingMsg.textContent = "No entities in this workspace.";
+    loadingMsg.style.display = "";
+  }
+}
+
+async function revealRow(row, btn, td) {
+  if (!confirm("Revealing the real value will be logged. Continue?")) return;
+  btn.disabled = true;
+  const workspace = wsSelect.value;
+  try {
+    const r = await fetch(
+      `${REIDENTIFY_BASE}/${encodeURIComponent(row.active_surrogate)}/real`,
+      { headers: { "x-blindfold-workspace": workspace } }
+    );
+    if (r.status === 403) { alert("Access denied — re-identifier role required."); btn.disabled = false; return; }
+    if (!r.ok) { alert(`Error ${r.status}`); btn.disabled = false; return; }
+    const body = await r.json();
+    const val = document.createElement("span");
+    val.className = "reveal-value";
+    val.textContent = body.real;
+    btn.replaceWith(val);
+  } catch (e) {
+    alert(String(e));
+    btn.disabled = false;
+  }
+}
+
+searchBtn.addEventListener("click", async () => {
+  const q = realNameInput.value.trim();
+  if (!q) return;
+  searchBtn.disabled = true;
+  const workspace = wsSelect.value;
+  highlighted.clear();
+  try {
+    const r = await fetch(
+      `${ENTITIES_BASE}/${encodeURIComponent(workspace)}/entities/search?q=${encodeURIComponent(q)}`,
+      { headers: { "x-blindfold-workspace": workspace } }
+    );
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const data = await r.json();
+    for (const hit of (data.hits || [])) highlighted.add(hit.entity_id);
+    renderTable();
+  } catch (e) {
+    listError.textContent = String(e);
+    listError.style.display = "";
+  } finally {
+    searchBtn.disabled = false;
+  }
+});
+
+kindFilter.addEventListener("input", renderTable);
+surrogateFilter.addEventListener("input", renderTable);
+
+document.querySelectorAll("th[data-col]").forEach(th => {
+  th.addEventListener("click", () => {
+    const col = th.dataset.col;
+    if (sortCol === col) { sortAsc = !sortAsc; }
+    else { sortCol = col; sortAsc = true; }
+    renderTable();
+  });
+});
+
+const params = new URLSearchParams(location.search);
+const initWs = params.get("workspace") || "default";
+
+function ensureOption(slug) {
+  if (![...wsSelect.options].some(o => o.value === slug)) {
+    const opt = document.createElement("option");
+    opt.value = opt.textContent = slug;
+    wsSelect.appendChild(opt);
+  }
+  wsSelect.value = slug;
+}
+
+function esc(s) {
+  return String(s || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+ensureOption(initWs);
+wsSelect.addEventListener("change", () => loadEntities(wsSelect.value));
+loadEntities(initWs);
 </script>
 </body>
 </html>

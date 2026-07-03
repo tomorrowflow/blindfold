@@ -60,7 +60,7 @@ from .policy import (
 from .rbac import RbacRegistry
 from .relationships import RelationshipStore
 from .review import Allowlist, ReviewInbox
-from .spa import org_graph_html, review_inbox_html
+from .spa import entity_list_html, org_graph_html, review_inbox_html
 from .store import vendored_seed_repository
 from .surrogates import SurrogateMapping
 from .upstream import UpstreamClient
@@ -1048,3 +1048,133 @@ async def org_graph_spa() -> HTMLResponse:
     every reveal is audited per ADR-0015).
     """
     return HTMLResponse(content=org_graph_html())
+
+
+# ---------------------------------------------------------------------------
+# Entity list endpoint + SPA (ADR-0011 / ADR-0017 / ADR-0018 / issue #32)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/v1/management/workspaces/{slug}/entities")
+async def list_workspace_entities(
+    slug: str,
+    entity_graph: EntityGraph = Depends(get_entity_graph),
+    relationship_store: RelationshipStore = Depends(get_relationship_store),
+) -> dict:
+    """Return surrogate-space entity rows for a workspace (issue #32).
+
+    Like the graph endpoint (ADR-0017), this is decrypt-free and emits no audit
+    events — all data is in surrogate-space (active_surrogate, kind, retired_surrogates).
+    canonical_name and variations are never returned.
+
+    Each row also carries edge summaries: the relation and the other entity's
+    active_surrogate, so the curator can see employer/subsidiary_of context without
+    any real-name exposure.
+    """
+    entities = entity_graph.list_entities(slug)
+    edges = relationship_store.list_workspace(slug)
+
+    # Build a surrogate lookup by entity_id for edge summaries.
+    surrogate_by_id: dict[str, str] = {
+        e.entity_id: e.active_surrogate for e in entities
+    }
+
+    def _edge_summaries(entity_id: str) -> list[dict]:
+        summaries = []
+        for edge in edges:
+            if edge.source_id == entity_id:
+                other_sur = surrogate_by_id.get(edge.target_id, "")
+                summaries.append({"relation": edge.relation, "direction": "outbound", "other_surrogate": other_sur})
+            elif edge.target_id == entity_id:
+                other_sur = surrogate_by_id.get(edge.source_id, "")
+                summaries.append({"relation": edge.relation, "direction": "inbound", "other_surrogate": other_sur})
+        return summaries
+
+    return {
+        "entities": [
+            {
+                "entity_id": e.entity_id,
+                "kind": e.kind,
+                "active_surrogate": e.active_surrogate,
+                "retired_surrogates": list(e.retired_surrogates),
+                "edges": _edge_summaries(e.entity_id),
+            }
+            for e in entities
+        ]
+    }
+
+
+@app.get("/v1/management/workspaces/{slug}/entities/search")
+async def search_workspace_entities(
+    slug: str,
+    q: str,
+    request: Request,
+    rbac: RbacRegistry = Depends(get_rbac),
+    entity_graph: EntityGraph = Depends(get_entity_graph),
+    relationship_store: RelationshipStore = Depends(get_relationship_store),
+    audit_log: AuditLog = Depends(get_audit_log),
+) -> dict:
+    """Real-name search over entities by blind-index equality (issue #32 / ADR-0018).
+
+    Matches canonical name AND variations by exact string equality — no fuzzy, no
+    bulk decrypt. Returns surrogate-space rows for matching entities; the real name
+    (``q``) is never echoed in the response.
+
+    Emits exactly one ``entity-list-searched`` audit event per query, including on a
+    miss — every lookup is traceable regardless of outcome (ADR-0018).
+
+    Requires the ``re-identifier`` role on the workspace (403 without it).
+    """
+    _require_role(request, slug, "re-identifier", rbac)
+
+    matches = entity_graph.search_by_real_name(slug, q)
+    edges = relationship_store.list_workspace(slug)
+
+    all_entities = entity_graph.list_entities(slug)
+    surrogate_by_id: dict[str, str] = {
+        e.entity_id: e.active_surrogate for e in all_entities
+    }
+
+    def _edge_summaries(entity_id: str) -> list[dict]:
+        summaries = []
+        for edge in edges:
+            if edge.source_id == entity_id:
+                other_sur = surrogate_by_id.get(edge.target_id, "")
+                summaries.append({"relation": edge.relation, "direction": "outbound", "other_surrogate": other_sur})
+            elif edge.target_id == entity_id:
+                other_sur = surrogate_by_id.get(edge.source_id, "")
+                summaries.append({"relation": edge.relation, "direction": "inbound", "other_surrogate": other_sur})
+        return summaries
+
+    # Audit every attempt — hit or miss. Never include the real name (q) in the record.
+    audit_log.append(
+        AuditRecord(
+            workspace=slug,
+            event="entity-list-searched",
+            reason=f"hit_count={len(matches)}",
+            identity=_caller_identity(request),
+        )
+    )
+
+    return {
+        "hits": [
+            {
+                "entity_id": e.entity_id,
+                "kind": e.kind,
+                "active_surrogate": e.active_surrogate,
+                "retired_surrogates": list(e.retired_surrogates),
+                "edges": _edge_summaries(e.entity_id),
+            }
+            for e in matches
+        ]
+    }
+
+
+@app.get("/ui/entity-list", response_class=HTMLResponse)
+async def entity_list_spa() -> HTMLResponse:
+    """Serve the entity-list SPA bundle (ADR-0011 / ADR-0017 / ADR-0018 / issue #32).
+
+    Compact table view in surrogate-space. Real-name search and per-row Reveal
+    require the ``re-identifier`` role and emit audit events (ADR-0015, ADR-0018).
+    """
+    return HTMLResponse(content=entity_list_html())

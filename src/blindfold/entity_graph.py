@@ -220,6 +220,25 @@ class EntityGraph:
         """Return all entity records tagged to ``workspace``."""
         return [e for e in self._entities.values() if e.workspace == workspace]
 
+    def search_by_real_name(self, workspace: str, query: str) -> list[EntityRecord]:
+        """Find entities whose canonical name or any variation matches ``query`` exactly.
+
+        This is the blind-index equality path (ADR-0018): exact string match only,
+        no fuzzy, no bulk decrypt. In the in-memory seam this is plain string equality;
+        the Postgres seam uses a derived HMAC column for the same guarantee without
+        touching the encrypted real-value column.
+
+        Returns surrogate-space EntityRecord objects — callers must not expose
+        canonical_name or variations in their HTTP responses.
+        """
+        results: list[EntityRecord] = []
+        for entity in self._entities.values():
+            if entity.workspace != workspace:
+                continue
+            if entity.canonical_name == query or query in entity.variations:
+                results.append(entity)
+        return results
+
     def merge(
         self,
         workspace: str,
