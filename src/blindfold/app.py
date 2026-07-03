@@ -761,6 +761,25 @@ async def merge_entities(
     winner_spec = body.get("winner", {})
     loser_spec = body.get("loser", {})
 
+    # Support entity_id as an alternative to canonical_name (SPA operates in
+    # surrogate-space and cannot provide real names without re-identifier role).
+    if winner_spec.get("entity_id") and not winner_spec.get("canonical_name"):
+        winner_rec = entity_graph.get_by_id(winner_spec["entity_id"], workspace)
+        if winner_rec is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"winner not found: entity_id={winner_spec['entity_id']!r}",
+            )
+        winner_spec = {"kind": winner_rec.kind, "canonical_name": winner_rec.canonical_name}
+    if loser_spec.get("entity_id") and not loser_spec.get("canonical_name"):
+        loser_rec = entity_graph.get_by_id(loser_spec["entity_id"], workspace)
+        if loser_rec is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"loser not found: entity_id={loser_spec['entity_id']!r}",
+            )
+        loser_spec = {"kind": loser_rec.kind, "canonical_name": loser_rec.canonical_name}
+
     try:
         merged = entity_graph.merge(
             workspace=workspace,
