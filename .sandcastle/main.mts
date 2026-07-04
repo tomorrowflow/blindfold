@@ -101,8 +101,9 @@ const SPA_EXISTS = existsSync(SPA_MODULE);
 function branchTouchesSpa(branch: string): boolean {
   if (!SPA_EXISTS) return false;
   try {
-    const out = execSync(
-      `git diff --name-only ${TARGET_BRANCH}...${branch} -- ${SPA_PATHS.join(" ")}`,
+    const out = execFileSync(
+      "git",
+      ["diff", "--name-only", `${TARGET_BRANCH}...${branch}`, "--", ...SPA_PATHS],
       { encoding: "utf8" },
     );
     return out.trim().length > 0;
