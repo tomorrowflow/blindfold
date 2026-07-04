@@ -365,10 +365,10 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   // -------------------------------------------------------------------------
   // Phase 1: Plan
   //
-  // The planning agent (Sonnet — same model as the implementer; the reviewer is the
-  // stronger Opus gate) reads the open issue list,
-  // builds a dependency graph, and selects the issues that can be worked in
-  // parallel right now (i.e., no blocking dependencies on other open issues).
+  // The planning agent (Sonnet — same model as the implementer; the reviewer is
+  // the stronger Opus gate) reads the open issue list, builds a dependency graph,
+  // and selects the issues that can be worked in parallel right now (i.e., no
+  // blocking dependencies on other open issues).
   //
   // It outputs a <plan> JSON block — Output.object parses and validates it.
   // -------------------------------------------------------------------------
