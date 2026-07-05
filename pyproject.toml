@@ -19,6 +19,7 @@ dev = [
     "pytest>=8",
     "anyio>=4",
     "testcontainers>=4.14.2",
+    "playwright>=1.61.0",
 ]
 
 [build-system]
