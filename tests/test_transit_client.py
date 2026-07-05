@@ -117,3 +117,33 @@ def test_transit_sends_vault_token_header():
     )
     client.encrypt("hello")
     assert received_headers.get("x-vault-token") == "my-secret-token"
+
+
+# ---------------------------------------------------------------------------
+# 5. is_root_token — self-lookup identifies a root token by its policy set
+#    (SEC-2 / issue #44: the proxy must refuse to start on a root token).
+# ---------------------------------------------------------------------------
+
+
+def test_transit_is_root_token_true_when_self_lookup_policies_are_root():
+    transport = _make_transit_transport(
+        {"GET /v1/auth/token/lookup-self": {"policies": ["root"]}}
+    )
+    client = TransitClient(
+        addr="http://openbao.test",
+        token="dev-root-token",
+        http=httpx.Client(transport=transport),
+    )
+    assert client.is_root_token() is True
+
+
+def test_transit_is_root_token_false_for_a_scoped_policy_token():
+    transport = _make_transit_transport(
+        {"GET /v1/auth/token/lookup-self": {"policies": ["default", "blindfold-proxy"]}}
+    )
+    client = TransitClient(
+        addr="http://openbao.test",
+        token="blindfold-proxy-token",
+        http=httpx.Client(transport=transport),
+    )
+    assert client.is_root_token() is False
