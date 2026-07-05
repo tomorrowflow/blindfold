@@ -144,6 +144,51 @@ async def test_winner_surrogate_unchanged_after_merge():
 
 
 # ---------------------------------------------------------------------------
+# 3b. Merge audit reason references ids, never real canonical names (SEC-4)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_merge_by_canonical_name_audit_reason_omits_real_names():
+    rbac = _admin_rbac()
+    graph = EntityGraph()
+    mapping = SurrogateMapping()
+    mapping.seed("Alice Smith", "S1")
+    mapping.seed("Alice Jones", "S2")
+    winner = graph.add_entity(kind="person", workspace="acme", canonical_name="Alice Smith", surrogate="S1")
+    loser = graph.add_entity(kind="person", workspace="acme", canonical_name="Alice Jones", surrogate="S2")
+    audit_log = AuditLog()
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_entity_graph] = lambda: graph
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_audit_log] = lambda: audit_log
+    try:
+        async with _make_client() as client:
+            resp = await client.post(
+                "/v1/management/entities/merge",
+                json={
+                    "workspace": "acme",
+                    "winner": {"kind": "person", "canonical_name": "Alice Smith"},
+                    "loser": {"kind": "person", "canonical_name": "Alice Jones"},
+                },
+                headers={"x-blindfold-identity": "alice"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert len(audit_log.records) == 1
+    rec = audit_log.records[0]
+    assert rec.event == "entity-merged"
+    # Audit record must reference ids, never real canonical names (SEC-4).
+    assert "Alice Smith" not in rec.reason
+    assert "Alice Jones" not in rec.reason
+    assert winner.entity_id in rec.reason
+    assert loser.entity_id in rec.reason
+
+
+# ---------------------------------------------------------------------------
 # 4. Loser's surrogate is retired; past exchange restores closed-world
 # ---------------------------------------------------------------------------
 
