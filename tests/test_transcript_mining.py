@@ -14,7 +14,7 @@ upstream provider, no restore, no streaming — just inbox population.
 
 Leak-audit clauses for this slice:
 - A/B/C/D N/A: mining does not touch the request path. There is no upstream,
-  no restore, no streaming, no verify_pass. The privacy property the loop must
+  no restore, no streaming, no leak gate or resolution gate. The privacy property the loop must
   preserve — confirm/reject effects on graph/allowlist — is tested through the
   *existing* management endpoints so the live-traffic guarantees are not bypassed.
 - E covered (stable): re-mining the same novel value across transcripts produces

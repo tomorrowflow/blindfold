@@ -5,13 +5,17 @@
   it injected in an :class:`ExchangeSession`.
 - ``restore_response`` reverses surrogates in the response, *closed-world* (ADR-0006):
   only surrogates actually injected for this exchange are restored.
-- ``verify_pass`` is the post-restore self-check (ADR-0006).
+- ``leak_gate`` is the pre-egress prevention gate (ADR-0020, SEC-5): blocks before
+  ``upstream.send_*``/``stream_messages`` if a known real value is still present.
+- ``resolution_gate`` is the post-restore detection gate (ADR-0020, SEC-6): catches an
+  injected surrogate left unresolved in the client-visible response.
 """
 
 from __future__ import annotations
 
 import copy
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from .detection import detect_l2, detect_pii
@@ -389,35 +393,60 @@ class StreamingRestorer:
         return restored, end
 
 
-def verify_pass(
-    blinded_outbound: dict[str, Any],
-    restored_response: dict[str, Any],
-    session: ExchangeSession,
-    mapping: SurrogateMapping,
-) -> None:
-    """Post-restore self-check (ADR-0006); warns then raises on either failure mode.
+def leak_gate(blinded_outbound: dict[str, Any], mapping: SurrogateMapping) -> None:
+    """Pre-egress leak gate (SEC-5, ADR-0020): the prevention half of the egress split.
 
-    Failure mode 1 (:class:`LeakError`): a real entity value is present in the payload
-    that egresses upstream. Failure mode 2 (:class:`UnresolvedSurrogateError`): an
-    injected surrogate is still present in the client-visible restored response.
+    Raises :class:`LeakError` if a known real entity value is present anywhere in a
+    blindfolded payload about to cross **egress** (before ``upstream.send_*``/
+    ``upstream.stream_messages`` is ever called), so a blindfold-engine miss is caught
+    *before* any byte reaches the provider rather than detected after the fact.
 
-    Each failure is logged at WARNING level naming the offending value before the
-    exception is raised, so the operator is *warned* on a dedicated log surface (the
-    AC's "clear warning") rather than only via the bubbled-up exception traceback.
+    The failure is logged at WARNING level naming the offending value before the
+    exception is raised, so the operator is warned on a dedicated log surface.
     """
     outbound_text = _collect_text(blinded_outbound)
     for real in mapping.real_values():
         if real in outbound_text:
             message = f"real entity value would egress upstream: {real!r}"
-            logger.warning("verify_pass: %s", message)
+            logger.warning("leak_gate: %s", message)
             raise LeakError(message)
 
+
+def resolution_gate(restored_response: dict[str, Any], session: ExchangeSession) -> None:
+    """Post-restore resolution gate (SEC-6, ADR-0020): the detection half of the split.
+
+    Raises :class:`UnresolvedSurrogateError` if an injected surrogate is still present
+    in the client-visible restored payload — the safety net that catches a restore miss
+    after :func:`restore_response`/:func:`restore_chat_completion` has run.
+
+    The failure is logged at WARNING level naming the offending surrogate before the
+    exception is raised, so the operator is warned on a dedicated log surface.
+    """
     restored_text = _collect_text(restored_response)
     for surrogate in session.injected:
         if surrogate in restored_text:
             message = f"injected surrogate left unresolved in response: {surrogate!r}"
-            logger.warning("verify_pass: %s", message)
+            logger.warning("resolution_gate: %s", message)
             raise UnresolvedSurrogateError(message)
+
+
+def walk_string_leaves(value: Any, fn: Callable[[str], None]) -> None:
+    """Walk every string leaf of a nested JSON-shaped ``value``, calling ``fn`` on each.
+
+    The single traversal primitive (ARCH-4) behind every privacy-load-bearing string
+    collector in the request path — dict/list structure is walked once; callers only
+    decide *how the leaves are joined* (NUL for verify-pass precision here, newline for
+    L3's sentence-boundary heuristics in ``app._collect_text_for_l3``), so the join
+    distinction is a documented parameter, not a copy-pasted traversal.
+    """
+    if isinstance(value, str):
+        fn(value)
+    elif isinstance(value, dict):
+        for item in value.values():
+            walk_string_leaves(item, fn)
+    elif isinstance(value, list):
+        for item in value:
+            walk_string_leaves(item, fn)
 
 
 def _collect_text(obj: Any) -> str:
@@ -426,16 +455,5 @@ def _collect_text(obj: Any) -> str:
     Strings are joined with NUL so a value cannot match across two separate fields.
     """
     parts: list[str] = []
-    _collect_into(obj, parts)
+    walk_string_leaves(obj, parts.append)
     return "\x00".join(parts)
-
-
-def _collect_into(obj: Any, parts: list[str]) -> None:
-    if isinstance(obj, str):
-        parts.append(obj)
-    elif isinstance(obj, dict):
-        for value in obj.values():
-            _collect_into(value, parts)
-    elif isinstance(obj, list):
-        for item in obj:
-            _collect_into(item, parts)

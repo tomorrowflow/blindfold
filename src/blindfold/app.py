@@ -1,23 +1,31 @@
 """FastAPI proxy exposing Anthropic- and OpenAI-compatible endpoints.
 
 Request path (tracer-bullet slice), identical for both endpoints:
-  blindfold every hop  ->  L3 candidate-span scan  ->  forward to upstream  ->
-  restore the response  ->  verify pass
+  blindfold every hop  ->  L3 candidate-span scan  ->  pre-egress leak gate  ->
+  forward to upstream  ->  restore the response  ->  post-restore resolution gate
+
+Egress (ADR-0020, issue #47 / SEC-5+SEC-6): the leak gate runs *before*
+``upstream.send_*``/``stream_messages`` so a blindfold-engine miss is prevented at the
+egress boundary rather than only detected after the blinded payload already reached
+the provider. The resolution gate stays after restore, asserting every injected
+surrogate was resolved and no coincidental lookalike was restored.
 
 Streaming path (issue #6): when ``stream: true`` is set, the proxy opens a streaming
 request to the upstream and runs the sliding-window restorer over each SSE
 ``content_block_delta`` text fragment before forwarding it to the client. The tail
 buffer ensures a surrogate split across upstream chunks is restored before any byte
-of it crosses the client-facing boundary (ADR-0006).
+of it crosses the client-facing boundary (ADR-0006). The leak gate runs before the
+stream opens, so the streaming path gets the prevention gate for free; a terminal
+resolution check runs over the accumulated restored text as the stream flushes.
 
 Fail-closed policy (issue #18, ADR-0009): the L3 scan runs over the blindfolded
 text. If L3 is unavailable for a novel candidate, the proxy blocks with a
 structured 503 response and writes an audit record — never a bare 500. The
 per-workspace ``deterministic-only`` opt-in skips L3 entirely (audited), so a
 workspace can keep working during an Ollama outage with known-entity protection
-only (novelty discovery is the documented loss). The same block path also
-replaces #2's interim 500-on-verify_pass-violation: a leak or unresolved surrogate
-returns the structured block + audit instead of a bare 500.
+only (novelty discovery is the documented loss). The same block path also covers a
+leak-gate or resolution-gate violation: a leak or unresolved surrogate returns the
+structured block + audit instead of a bare 500.
 """
 
 from __future__ import annotations
@@ -45,10 +53,12 @@ from .engine import (
     UnresolvedSurrogateError,
     blindfold_chat_completions_payload,
     blindfold_payload,
+    leak_gate,
+    resolution_gate,
     restore_chat_completion,
     restore_response,
     restore_tool_call_json,
-    verify_pass,
+    walk_string_leaves,
 )
 from .l3 import (
     CandidateSpan,
@@ -294,34 +304,49 @@ def _scan_l3_or_block(
     return None
 
 
-def _verify_or_block(
+def _leak_gate_or_block(
     blinded: dict,
-    restored: dict,
-    session: ExchangeSession,
     mapping: SurrogateMapping,
     workspace: str,
     audit_log: AuditLog,
 ) -> JSONResponse | None:
-    """Run :func:`verify_pass`; return a block ``JSONResponse`` if it raised.
+    """Run the pre-egress :func:`leak_gate`; return a block ``JSONResponse`` if it raised.
 
-    Replaces #2's interim bare-500 with the canonical fail-closed block path
-    (ADR-0009 / leak-audit clause F): a verify-pass violation is a privacy bug we
-    caught — surface it as a structured block + audit, never as an opaque 500.
+    Runs before ``upstream.send_*``/``stream_messages`` (ADR-0020, SEC-5): a leaked real
+    value is a prevented privacy bug, not a post-hoc detection — nothing reaches the
+    provider on this path.
     """
     try:
-        verify_pass(blinded, restored, session, mapping)
+        leak_gate(blinded, mapping)
     except LeakError as exc:
         return _blocked_response(
             event="blocked-leak",
-            reason=f"verify_pass detected a real entity value about to egress: {exc}",
+            reason=f"leak_gate detected a real entity value about to egress: {exc}",
             workspace=workspace,
             audit_log=audit_log,
         )
+    return None
+
+
+def _resolution_gate_or_block(
+    restored: dict,
+    session: ExchangeSession,
+    workspace: str,
+    audit_log: AuditLog,
+) -> JSONResponse | None:
+    """Run the post-restore :func:`resolution_gate`; return a block ``JSONResponse`` if raised.
+
+    Replaces #2's interim bare-500 with the canonical fail-closed block path
+    (ADR-0009 / leak-audit clause F): an unresolved surrogate is a privacy bug we
+    caught — surface it as a structured block + audit, never as an opaque 500.
+    """
+    try:
+        resolution_gate(restored, session)
     except UnresolvedSurrogateError as exc:
         return _blocked_response(
             event="blocked-unresolved-surrogate",
             reason=(
-                f"verify_pass detected an injected surrogate left unresolved in "
+                f"resolution_gate detected an injected surrogate left unresolved in "
                 f"the restored response: {exc}"
             ),
             workspace=workspace,
@@ -334,24 +359,14 @@ def _collect_text_for_l3(payload: dict) -> str:
     """Flatten every string in a blindfolded payload into one blob for the L3 scan.
 
     L3 selects candidate spans by walking *text*; the candidate-span engine doesn't
-    care which hop a string came from. Joining with newlines (not NUL) keeps the
-    sentence-boundary heuristics in L3 sensible — capitalized tokens are evaluated
-    in plausible sentence contexts, not glued across unrelated fields.
+    care which hop a string came from. Joining with newlines (not NUL, unlike
+    ``engine._collect_text``) keeps the sentence-boundary heuristics in L3 sensible —
+    capitalized tokens are evaluated in plausible sentence contexts, not glued across
+    unrelated fields.
     """
     parts: list[str] = []
-    _collect_strings(payload, parts)
+    walk_string_leaves(payload, parts.append)
     return "\n".join(parts)
-
-
-def _collect_strings(obj, parts: list[str]) -> None:
-    if isinstance(obj, str):
-        parts.append(obj)
-    elif isinstance(obj, dict):
-        for value in obj.values():
-            _collect_strings(value, parts)
-    elif isinstance(obj, list):
-        for item in obj:
-            _collect_strings(item, parts)
 
 
 @app.post("/v1/messages")
@@ -378,15 +393,19 @@ async def messages(
     if block is not None:
         return block
 
+    block = _leak_gate_or_block(blinded, mapping, workspace, audit_log)
+    if block is not None:
+        return block
+
     if payload.get("stream"):
         return StreamingResponse(
-            _stream_restored(upstream, blinded, forwarded, session),
+            _stream_restored(upstream, blinded, forwarded, session, workspace, audit_log),
             media_type="text/event-stream",
         )
 
     raw_response = await upstream.send_messages(blinded, forwarded)
     restored = restore_response(raw_response, session)
-    block = _verify_or_block(blinded, restored, session, mapping, workspace, audit_log)
+    block = _resolution_gate_or_block(restored, session, workspace, audit_log)
     if block is not None:
         return block
     return restored
@@ -417,11 +436,15 @@ async def chat_completions(
     if block is not None:
         return block
 
+    block = _leak_gate_or_block(blinded, mapping, workspace, audit_log)
+    if block is not None:
+        return block
+
     raw_response = await upstream.send_chat_completions(
         blinded, _forwarded_headers(request)
     )
     restored = restore_chat_completion(raw_response, session)
-    block = _verify_or_block(blinded, restored, session, mapping, workspace, audit_log)
+    block = _resolution_gate_or_block(restored, session, workspace, audit_log)
     if block is not None:
         return block
     return restored
@@ -510,6 +533,8 @@ async def _stream_restored(
     blinded: dict,
     forwarded: dict[str, str],
     session: ExchangeSession,
+    workspace: str,
+    audit_log: AuditLog,
 ) -> AsyncIterator[bytes]:
     """Stream restored SSE bytes to the client.
 
@@ -521,11 +546,18 @@ async def _stream_restored(
     per content_block index, reassembled on ``content_block_stop``, and emitted as
     one restored delta — sliding-window restore over partial_json strings would still
     leak a half-surrogate that straddled a chunk boundary.
+
+    Terminal resolution check (ADR-0020, SEC-6): once the stream flushes, every byte
+    actually emitted to the client is checked via :func:`resolution_gate` — the same
+    post-restore net the buffered path has. A stream can't un-send bytes already on
+    the wire, so a violation here is audited (``blocked-unresolved-surrogate``) and
+    raised rather than the exchange silently completing as if nothing leaked.
     """
     restorer = StreamingRestorer(session)
     # Per-content-block index → accumulated partial_json fragments. Presence in this
     # dict marks the block as a tool_use whose deltas must be held back.
     tool_use_buffers: dict[int, list[str]] = {}
+    emitted: list[bytes] = []
     buffer = ""
     async with upstream.stream_messages(blinded, forwarded) as response:
         async for raw in response.aiter_bytes():
@@ -535,16 +567,37 @@ async def _stream_restored(
                 async for out in _process_sse_event(
                     event, restorer, tool_use_buffers, session
                 ):
+                    emitted.append(out)
                     yield out
         if buffer.strip():
             async for out in _process_sse_event(
                 buffer, restorer, tool_use_buffers, session
             ):
+                emitted.append(out)
                 yield out
         # Flush any held-back tail at end of stream so nothing buffered is lost.
         tail = restorer.flush()
         if tail:
-            yield _emit_text_delta(tail)
+            out = _emit_text_delta(tail)
+            emitted.append(out)
+            yield out
+
+    try:
+        resolution_gate(
+            {"stream": b"".join(emitted).decode("utf-8", errors="replace")}, session
+        )
+    except UnresolvedSurrogateError as exc:
+        audit_log.append(
+            AuditRecord(
+                workspace=workspace,
+                event="blocked-unresolved-surrogate",
+                reason=(
+                    f"resolution_gate detected an injected surrogate left unresolved "
+                    f"in the streamed response: {exc}"
+                ),
+            )
+        )
+        raise
 
 
 async def _process_sse_event(

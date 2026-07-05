@@ -235,3 +235,36 @@ async def test_verify_pass_leak_returns_structured_block_with_audit_not_a_bare_5
         r.workspace == "gamma" and r.event == "blocked-leak"
         for r in audit_log.records
     )
+
+
+@pytest.mark.anyio
+async def test_pre_egress_leak_gate_blocks_before_anything_reaches_upstream():
+    # SEC-5 / issue #47: the leak gate is a *prevention* gate before egress, not a
+    # post-hoc detection after the blinded payload already reached the provider.
+    # Same blindfold-engine miss as above (_LeakyMapping), but this time the stub
+    # upstream MUST record zero requests — the block happens before
+    # upstream.send_messages is ever called (leak-audit clause A: no egress at all).
+    recorded: list[httpx.Request] = []
+    audit_log = get_audit_log()
+    audit_log.records.clear()
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(recorded)
+    app.dependency_overrides[get_mapping] = lambda: _LeakyMapping(leaked_real="Quentin")
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            resp = await client.post(
+                "/v1/messages",
+                json={
+                    "model": "m",
+                    "messages": [{"role": "user", "content": "Brief Quentin now."}],
+                },
+                headers={"x-blindfold-workspace": "gamma"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 503
+    assert resp.json()["error"]["event"] == "blocked-leak"
+    assert recorded == [], "leak gate must block before the payload reaches upstream"

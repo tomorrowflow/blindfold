@@ -19,7 +19,7 @@ import json
 import httpx
 import pytest
 
-from blindfold.app import app, get_upstream_client
+from blindfold.app import app, get_audit_log, get_upstream_client
 from blindfold.store import vendored_seed_repository
 from blindfold.surrogates import SurrogateMapping
 from blindfold.upstream import UpstreamClient
@@ -133,3 +133,68 @@ async def test_streamed_round_trip_restores_surrogate_split_across_two_chunks():
     assert head not in full  # "Hello {head}" was held back until "{tail}" arrived
     # The real value appears in the restored stream.
     assert martin in full
+
+
+@pytest.mark.anyio
+async def test_streaming_terminal_resolution_check_catches_an_unresolved_surrogate():
+    # SEC-6 / issue #47: the streaming path gets the pre-egress leak gate for free, but
+    # also needs its own terminal resolution check — the same net the buffered path has
+    # (post-restore: no injected surrogate left client-visible). An SSE delta type the
+    # restore loop doesn't special-case (e.g. a ``citations_delta``) is passed through
+    # verbatim today, so an injected surrogate embedded in it reaches the client
+    # unresolved. The terminal check must catch this and audit a block, rather than the
+    # exchange completing as if nothing went wrong.
+    mapping = _seeded_mapping()
+    martin = "Martin Bach"
+    martin_surrogate = mapping.surrogate_for(martin)
+    assert martin_surrogate is not None and martin_surrogate != martin
+
+    chunks = [
+        _sse_event(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "citations_delta", "text": martin_surrogate},
+            }
+        ),
+        _sse_event({"type": "content_block_stop", "index": 0}),
+        _sse_event({"type": "message_stop"}),
+    ]
+    recorded: list[httpx.Request] = []
+    audit_log = get_audit_log()
+    audit_log.records.clear()
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_streaming_upstream(
+        chunks, recorded
+    )
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            try:
+                async with client.stream(
+                    "POST",
+                    "/v1/messages",
+                    json={
+                        "model": "claude-3-5-sonnet",
+                        "stream": True,
+                        "messages": [
+                            {"role": "user", "content": f"Greet {martin} for me."}
+                        ],
+                    },
+                    headers={
+                        "x-api-key": "secret-token",
+                        "x-blindfold-workspace": "delta",
+                    },
+                ) as resp:
+                    async for _chunk in resp.aiter_bytes():
+                        pass
+            except Exception:
+                pass
+    finally:
+        app.dependency_overrides.clear()
+
+    assert any(
+        r.workspace == "delta" and r.event == "blocked-unresolved-surrogate"
+        for r in audit_log.records
+    ), f"expected a blocked-unresolved-surrogate audit record; got: {audit_log.records}"

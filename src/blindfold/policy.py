@@ -60,8 +60,9 @@ class AuditRecord:
     alerts) can route on it without parsing free-form reasons:
 
       - ``blocked-l3-unavailable``    — L3 (Ollama) was down; novel candidate present.
-      - ``blocked-leak``              — verify_pass found a real value in the outbound.
-      - ``blocked-unresolved-surrogate`` — verify_pass found an injected surrogate
+      - ``blocked-leak``              — leak_gate found a real value in the outbound
+                                          payload before it egressed.
+      - ``blocked-unresolved-surrogate`` — resolution_gate found an injected surrogate
                                           still in the restored response.
       - ``deterministic-only-pass``   — degraded-mode pass under the opt-in.
       - ``re-identified``             — an authorized identity looked up the real value

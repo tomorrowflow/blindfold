@@ -1,6 +1,6 @@
 # ADR-0006: Restore mechanics — closed-world + verify pass + sliding-window + tool-call reassembly
 
-**Status:** Accepted
+**Status:** Accepted (verify-pass mechanics superseded by [ADR-0020](0020-verify-pass-split-into-egress-gates.md))
 **Date:** 2026-06-17
 
 ## Context
@@ -14,7 +14,9 @@ and must never let a real value leak or leave an injected surrogate unresolved.
 - **Closed-world restore:** restore only surrogates actually injected for *this*
   exchange — never a coincidentally-emitted lookalike.
 - **Verify pass:** after restore, assert no real value leaked and no injected surrogate
-  was left unresolved; warn on failure.
+  was left unresolved; warn on failure. Split into a pre-egress leak gate + post-restore
+  resolution gate by [ADR-0020](0020-verify-pass-split-into-egress-gates.md) — the leak
+  check moved before egress instead of running only after the fact.
 - **Sliding-window streaming restore:** emit the safe prefix while holding back a tail
   buffer at least as long as the longest known surrogate, so surrogates split across
   stream chunks are matched before emitting.

@@ -33,5 +33,6 @@ Vocabulary follows [`../../CONTEXT.md`](../../CONTEXT.md).
 | [0017](0017-management-graph-renders-in-surrogate-space.md) | Management graph renders in surrogate-space; reveal is the gated re-identify exception | Accepted |
 | [0018](0018-entity-list-real-name-search-audit-on-miss.md) | Entity-list real-name search emits audit on every attempt; surrogate-space viewing is decrypt-free | Accepted |
 | [0019](0019-proxy-config-auth-contract.md) | Proxy config & auth contract — env-var split (v1, Anthropic path) | Accepted |
+| [0020](0020-verify-pass-split-into-egress-gates.md) | Split verify pass into a pre-egress leak gate + a post-restore resolution gate (SEC-5/SEC-6) | Accepted |
 
 New ADRs: copy [`0000-template.md`](0000-template.md), take the next number.

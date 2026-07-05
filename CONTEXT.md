@@ -92,8 +92,16 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   mis-flagged as a name), so they're never blindfolded again.
 - **Closed-world restore** — restore only surrogates actually injected for this
   exchange, to avoid restoring a coincidentally-emitted lookalike.
-- **Verify pass** — post-restore assertion that no real entity value leaked into
-  the response and no injected surrogate was left unresolved.
+- **Egress** — the boundary where a blindfolded payload leaves the local machine bound
+  for the upstream provider (`upstream.send_*` / the streaming request). The **pre-
+  egress leak gate** sits at this boundary and enforces "no real entity crosses
+  egress" as a prevention gate, not a post-hoc detection.
+- **Verify pass** — the two-gate safety net around **egress**: the **pre-egress leak
+  gate** blocks *before* a known real value would cross egress; the **post-restore
+  resolution gate** asserts, after restore, that no injected surrogate was left
+  unresolved (and no coincidental lookalike was restored). Together they replace an
+  earlier single post-hoc check that ran only after the blinded payload had already
+  reached the provider.
 - **Sliding-window restore** — streaming restore that holds back a tail buffer (≥
   the longest known surrogate) so surrogates split across stream chunks are matched
   before emitting; tool-call JSON is reassembled before restoring inside it.
@@ -114,7 +122,9 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   Being an Org unit never makes a referent sensitive, and being sensitive never makes it
   structural; a name that is both is recorded as both an Org unit and a Term.
 - The real-value side of the mapping is never stored in plaintext.
-- Restore is closed-world and followed by a verify pass.
+- Restore is closed-world. The pre-egress leak gate blocks a known real value from
+  crossing egress; the post-restore resolution gate catches any surrogate left
+  unresolved afterward.
 
 ## Non-goals
 
