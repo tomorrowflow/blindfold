@@ -1,7 +1,7 @@
 // Parallel Planner with Review — four-phase orchestration loop
 //
 // This template drives a multi-phase workflow:
-//   Phase 1 (Plan):             An opus agent analyzes open issues, builds a
+//   Phase 1 (Plan):             A Sonnet agent analyzes open issues, builds a
 //                               dependency graph, and outputs a <plan> JSON
 //                               listing unblocked issues with branch names.
 //   Phase 2 (Execute + Review): For each issue, a sandbox is created via
@@ -65,6 +65,24 @@ const MODEL_REVIEW = "claude-opus-4-8"; // fail-closed privacy gate — keep str
 const MODEL_WEB_VERIFY = "claude-sonnet-4-6";
 const MODEL_MERGE = "claude-sonnet-4-6";
 
+// ---------------------------------------------------------------------------
+// Trust boundary for autonomous pickup (finding SC-3)
+//
+// Issue bodies AND every comment flow verbatim into the planner and implementer
+// prompts. In a multi-contributor repo a hostile comment is a prompt-injection
+// vector against an agent that writes code and gates merges. The trust gate is:
+// a TRUSTED MAINTAINER applying the `Sandcastle` label. Concretely, enforced
+// host-side (a hard code boundary, not a model instruction):
+//   - LABEL: the `Sandcastle` label must have been APPLIED BY a trusted
+//     maintainer — verified against the issue's label events, not merely its
+//     current label set (anyone with triage rights can add a label).
+//   - BODY: trusted by that same act — applying the label endorses the body.
+//   - COMMENTS: trusted ONLY when authored by a trusted maintainer. Every other
+//     comment is STRIPPED before it reaches a prompt (option (a) for SC-3 AC-3),
+//     and logged here so a human can see exactly what was quarantined.
+// Fail-closed: any error resolving trust denies pickup.
+const TRUSTED_MAINTAINERS = ["tomorrowflow"];
+
 // Hooks run inside the sandbox before the agent starts each iteration.
 // Blindfold is a Python/uv project, so `uv sync` (not npm install) installs the
 // dependency groups declared in pyproject.toml into the worktree's .venv.
@@ -101,8 +119,9 @@ const SPA_EXISTS = existsSync(SPA_MODULE);
 function branchTouchesSpa(branch: string): boolean {
   if (!SPA_EXISTS) return false;
   try {
-    const out = execSync(
-      `git diff --name-only ${TARGET_BRANCH}...${branch} -- ${SPA_PATHS.join(" ")}`,
+    const out = execFileSync(
+      "git",
+      ["diff", "--name-only", `${TARGET_BRANCH}...${branch}`, "--", ...SPA_PATHS],
       { encoding: "utf8" },
     );
     return out.trim().length > 0;
@@ -354,6 +373,101 @@ function reapBranch(branch: string): void {
 }
 
 // ---------------------------------------------------------------------------
+// Trust gate (finding SC-3) — host-side, fail-CLOSED
+// ---------------------------------------------------------------------------
+
+// True iff the issue's `Sandcastle` label was APPLIED BY a trusted maintainer.
+// Reads the issue's label events (who did what), not just the current label set,
+// so a `Sandcastle` label added by anyone outside TRUSTED_MAINTAINERS does NOT
+// authorize autonomous pickup. This is the hard boundary the planner's
+// label-presence filter can't provide. Fail-CLOSED: no repo / any error / no
+// trusted applier → not authorized.
+function sandcastleLabeledByTrusted(id: string): boolean {
+  if (!REPO) return false;
+  try {
+    const out = execFileSync(
+      "gh",
+      [
+        "api",
+        `repos/${REPO}/issues/${id}/events`,
+        "--paginate",
+        "--jq",
+        '.[] | select(.event=="labeled" and .label.name=="Sandcastle") | .actor.login',
+      ],
+      { encoding: "utf8" },
+    );
+    const appliers = out.split("\n").map((s) => s.trim()).filter(Boolean);
+    return appliers.some((a) => TRUSTED_MAINTAINERS.includes(a));
+  } catch {
+    return false;
+  }
+}
+
+// Fetch an issue's comments partitioned by author trust. Untrusted (non-
+// maintainer) comments are LOGGED to the run log — author + a short preview — so
+// a human can see exactly what was quarantined, then dropped: only trusted
+// maintainer comments are returned, formatted for injection into the implementer
+// prompt. This is the "strip untrusted comment text before it reaches a prompt"
+// half of SC-3 (the label-applier check is the other half). Fail-OPEN to empty:
+// if we can't read comments we simply supply none (the body + Agent Brief still
+// carry the contract), never raw untrusted text.
+function trustedCommentContext(id: string): string {
+  if (!REPO) return "";
+  let comments: { author: string; body: string }[] = [];
+  try {
+    const out = execFileSync(
+      "gh",
+      [
+        "issue",
+        "view",
+        id,
+        "--repo",
+        REPO,
+        "--json",
+        "comments",
+        "-q",
+        ".comments[] | {author: .author.login, body: .body} | @json",
+      ],
+      { encoding: "utf8" },
+    );
+    comments = out
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .flatMap((l) => {
+        try {
+          return [JSON.parse(l) as { author: string; body: string }];
+        } catch {
+          return [];
+        }
+      });
+  } catch {
+    return "";
+  }
+
+  const untrusted = comments.filter((c) => !TRUSTED_MAINTAINERS.includes(c.author));
+  if (untrusted.length > 0) {
+    console.warn(
+      `  🔒 issue #${id}: stripped ${untrusted.length} non-maintainer comment(s) from the ` +
+        `agent prompts (prompt-injection guard, finding SC-3). Trusted maintainers: ` +
+        `${TRUSTED_MAINTAINERS.join(", ")}. Quarantined:`,
+    );
+    for (const c of untrusted) {
+      const preview = c.body.replace(/\s+/g, " ").trim().slice(0, 140);
+      console.warn(
+        `       - @${c.author}: ${preview}${c.body.length > 140 ? "…" : ""}`,
+      );
+    }
+  }
+
+  const trusted = comments.filter((c) => TRUSTED_MAINTAINERS.includes(c.author));
+  if (trusted.length === 0) return "";
+  return trusted
+    .map((c) => `### Comment by @${c.author} (trusted maintainer)\n\n${c.body}`)
+    .join("\n\n");
+}
+
+// ---------------------------------------------------------------------------
 // Main loop
 // ---------------------------------------------------------------------------
 
@@ -365,9 +479,10 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   // -------------------------------------------------------------------------
   // Phase 1: Plan
   //
-  // The planning agent (opus, for deeper reasoning) reads the open issue list,
-  // builds a dependency graph, and selects the issues that can be worked in
-  // parallel right now (i.e., no blocking dependencies on other open issues).
+  // The planning agent (Sonnet — same model as the implementer; the reviewer is
+  // the stronger Opus gate) reads the open issue list, builds a dependency graph,
+  // and selects the issues that can be worked in parallel right now (i.e., no
+  // blocking dependencies on other open issues).
   //
   // It outputs a <plan> JSON block — Output.object parses and validates it.
   // -------------------------------------------------------------------------
@@ -403,6 +518,27 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     console.log(`  ${issue.id}: ${issue.title} → ${issue.branch}`);
   }
 
+  // Hard trust gate (finding SC-3): autonomous pickup requires the `Sandcastle`
+  // label to have been applied by a trusted maintainer. The planner already
+  // filters by the label's PRESENCE, but presence is addable by anyone with
+  // triage rights; verifying the APPLIER here makes the boundary a code gate,
+  // not a model instruction. Drop — loudly — any planned issue that fails it.
+  const trustedIssues = issues.filter((issue) => {
+    if (sandcastleLabeledByTrusted(issue.id)) return true;
+    console.warn(
+      `  ⛔ ${issue.id} (${issue.title}) SKIPPED: \`Sandcastle\` label was not applied by a ` +
+        `trusted maintainer (${TRUSTED_MAINTAINERS.join(", ")}). Autonomous pickup denied.`,
+    );
+    return false;
+  });
+
+  if (trustedIssues.length === 0) {
+    console.log(
+      "No issues cleared the trusted-maintainer pickup gate this cycle. Nothing to work on.",
+    );
+    continue;
+  }
+
   // -------------------------------------------------------------------------
   // Phase 2: Execute + Review (behind a fail-closed merge gate)
   //
@@ -424,7 +560,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   // -------------------------------------------------------------------------
 
   const settled = await Promise.allSettled(
-    issues.map(async (issue) => {
+    trustedIssues.map(async (issue) => {
       const sandbox = await sandcastle.createSandbox({
         branch: issue.branch,
         sandbox: docker(),
@@ -443,6 +579,12 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           `▶️ **Implementer** is now operating (red-green-refactor).`,
       );
 
+      // Sanitize comments host-side BEFORE they reach the implementer (SC-3):
+      // only trusted-maintainer comments are passed in, and any non-maintainer
+      // comment is logged (quarantined) to this run's log. The implementer is
+      // told to use this block and NOT to self-fetch raw `--comments`.
+      const trustedComments = trustedCommentContext(issue.id);
+
       try {
         // Run the implementer. `completionSignal` is the matched promise string
         // (default `<promise>COMPLETE</promise>`) or undefined if it never fired
@@ -456,6 +598,8 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
             TASK_ID: issue.id,
             ISSUE_TITLE: issue.title,
             BRANCH: issue.branch,
+            TRUSTED_COMMENTS:
+              trustedComments || "(no comments from a trusted maintainer)",
           },
         });
 
@@ -604,7 +748,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   );
 
   // Pair each outcome back with its issue for gating + reporting.
-  const evaluated = settled.map((outcome, i) => ({ outcome, issue: issues[i]! }));
+  const evaluated = settled.map((outcome, i) => ({ outcome, issue: trustedIssues[i]! }));
 
   // Log any pipelines that threw (network error, sandbox crash, etc.).
   for (const { outcome, issue } of evaluated) {
@@ -697,7 +841,19 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   // The {{BRANCHES}} and {{ISSUES}} prompt arguments are lists that the agent
   // uses to know which branches to merge and which issues to close.
   // -------------------------------------------------------------------------
-  await sandcastle.run({
+  // Capture the target's HEAD BEFORE the merge, so the post-merge re-audit can
+  // diff exactly what the merger introduces — conflict resolutions and the
+  // "fix the issues if tests fail" edits — the one delta no per-branch reviewer
+  // ever saw (finding SC-1). Host-side; "" on any error (→ fail-closed below).
+  const preMergeSha = (() => {
+    try {
+      return execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    } catch {
+      return "";
+    }
+  })();
+
+  const merge = await sandcastle.run({
     hooks,
     sandbox: docker(),
     name: "merger",
@@ -712,18 +868,86 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     },
   });
 
-  console.log("\nBranches merged.");
+  // The merger fires <promise>COMPLETE</promise> only when every branch merged
+  // and the suite is green. An absent signal is fail-CLOSED: we do NOT run the
+  // merged/close/reap lifecycle on a merger that didn't attest completion (SC-1).
+  const mergerComplete = merge.completionSignal !== undefined;
 
-  // Lifecycle → GitHub: these branches cleared the fail-closed gate and were
-  // merged into the target. The merger agent may also close the issues; this is
-  // the orchestration's own once-only attestation that the merge happened.
+  // Re-audit the POST-MERGE tree before blessing it (SC-1). The merger may have
+  // resolved conflicts and mutated code to make tests pass — changes that never
+  // passed the leak-audit gate every other change must clear. Re-run the same
+  // Opus privacy gate over the merge delta (preMergeSha..HEAD). Only a positive
+  // COMPLETE clears it; a withheld signal blocks, exactly like the per-branch
+  // reviewer. Skipped (→ blocked) if the merger didn't complete, we couldn't
+  // capture the base, or the target HEAD didn't actually advance.
+  let reauditClean = false;
+  const postMergeSha = (() => {
+    try {
+      return execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+    } catch {
+      return "";
+    }
+  })();
+
+  if (mergerComplete && preMergeSha && postMergeSha && postMergeSha !== preMergeSha) {
+    console.log("\nBranches merged. Re-auditing the post-merge result (leak-audit gate)…");
+    const reaudit = await sandcastle.run({
+      hooks,
+      sandbox: docker(),
+      name: "merge-reviewer",
+      maxIterations: 1,
+      // Opus — the post-merge tree faces the SAME fail-closed leak-audit gate.
+      agent: sandcastle.claudeCode(MODEL_REVIEW),
+      promptFile: "./.sandcastle/merge-review-prompt.md",
+      promptArgs: {
+        REVIEW_BASE: preMergeSha,
+      },
+    });
+    reauditClean = reaudit.completionSignal !== undefined;
+  } else if (mergerComplete) {
+    console.warn(
+      "\nMerger signaled COMPLETE but the target HEAD did not advance (no base/no new merge commit) — " +
+        "withholding the merge lifecycle (fail-closed).",
+    );
+  }
+
+  const mergeBlessed = mergerComplete && reauditClean;
+
+  if (!mergeBlessed) {
+    // Withhold the ENTIRE merged/close/reap lifecycle — nothing reaches "done"
+    // unless the merge result itself cleared the leak-audit gate. Branch commits
+    // are kept for the next cycle / a human, and the issues are marked blocked.
+    const why = !mergerComplete
+      ? "merger did not signal COMPLETE (merge or tests unfinished)"
+      : "post-merge re-audit withheld attestation (leak-audit / correctness FAIL on the merge result)";
+    console.warn(
+      `  ⊘ Merge lifecycle WITHHELD: ${why}. Branch commits kept; nothing closed or reaped.`,
+    );
+    for (const issue of completedIssues) {
+      setStateLabel(issue.id, "blocked");
+      postOnce(
+        issue.id,
+        `sandcastle:merge-blocked:${mergerComplete ? "reaudit" : "merger"}`,
+        `⛔ **Post-merge gate blocked** the merge of \`${issue.branch}\`: ${why}.\n\n` +
+          `The branch commits are kept and nothing was closed or reaped — sandcastle never ` +
+          `blesses an unaudited merge result (fail-closed, finding SC-1).`,
+      );
+    }
+    continue;
+  }
+
+  console.log("\nBranches merged and the post-merge result re-audited clean.");
+
+  // Lifecycle → GitHub: these branches cleared the fail-closed per-branch gate,
+  // the merger attested completion, AND the merge result itself re-passed the
+  // leak-audit gate. Only now is the merge blessed.
   for (const issue of completedIssues) {
     setStateLabel(issue.id, "merged");
     postOnce(
       issue.id,
       "sandcastle:merged",
       `🎉 Merged \`${issue.branch}\` into \`${TARGET_BRANCH}\` — cleared the implementer + reviewer` +
-        ` (and, when applicable, browser) gates.`,
+        ` (and, when applicable, browser) gates, and the merge result itself re-passed the leak-audit gate.`,
     );
     // Close from the HOST (the sandbox PAT can't write issues). This is the
     // terminal lifecycle step: a merged issue is done.

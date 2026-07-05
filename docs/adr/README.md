@@ -31,5 +31,7 @@ Vocabulary follows [`../../CONTEXT.md`](../../CONTEXT.md).
 | [0015](0015-reidentify-is-a-decrypt-operation.md) | Re-identification is a decrypt operation, gated by decrypt rights + workspace tags | Accepted |
 | [0016](0016-merge-collapses-same-kind-entities.md) | Merge collapses two same-kind canonical entities into one | Accepted |
 | [0017](0017-management-graph-renders-in-surrogate-space.md) | Management graph renders in surrogate-space; reveal is the gated re-identify exception | Accepted |
+| [0018](0018-entity-list-real-name-search-audit-on-miss.md) | Entity-list real-name search emits audit on every attempt; surrogate-space viewing is decrypt-free | Accepted |
+| [0019](0019-proxy-config-auth-contract.md) | Proxy config & auth contract — env-var split (v1, Anthropic path) | Accepted |
 
 New ADRs: copy [`0000-template.md`](0000-template.md), take the next number.
