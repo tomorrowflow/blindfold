@@ -20,15 +20,6 @@ from collections.abc import Iterable
 
 from .detection import Entity
 
-# Plausible fake names used to mint surrogates for novel entities deterministically.
-_SURROGATE_POOL: tuple[str, ...] = (
-    "Clara Hoffmann",
-    "Dieter Kaufmann",
-    "Erika Sommer",
-    "Felix Baumann",
-    "Greta Neumann",
-)
-
 
 def _mint_pii_surrogate(kind: str, index: int) -> str:
     """Return the ``index``-th reserved-namespace surrogate for a PII ``kind``.
@@ -76,14 +67,6 @@ class SurrogateMapping:
     def seed(self, real: str, surrogate: str) -> None:
         self._by_real[real] = surrogate
         self._known_surrogates.add(surrogate)
-
-    def mint(self, real: str) -> str:
-        """Return the surrogate for ``real``, minting a stable one if needed."""
-        if real not in self._by_real:
-            surrogate = self._next_surrogate()
-            self._by_real[real] = surrogate
-            self._known_surrogates.add(surrogate)
-        return self._by_real[real]
 
     def mint_pii(self, kind: str, value: str) -> str:
         """Return a stable reserved-namespace surrogate for L1-detected PII.
@@ -141,9 +124,3 @@ class SurrogateMapping:
             Entity(canonical=reals[0], variations=tuple(reals[1:]), surrogate=surrogate)
             for surrogate, reals in by_surrogate.items()
         ]
-
-    def _next_surrogate(self) -> str:
-        index = len(self._by_real)
-        if index < len(_SURROGATE_POOL):
-            return _SURROGATE_POOL[index]
-        return f"Surrogate Person {index}"

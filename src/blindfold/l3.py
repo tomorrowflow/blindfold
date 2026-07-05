@@ -75,13 +75,10 @@ class L3Adjudication:
     """L3's verdict for a candidate span.
 
     ``is_entity`` is the load-bearing flag: the engine mints a surrogate for
-    confirmed entities, ignores rejections. ``kind`` carries the entity class
-    (person / term / org_unit) when present, so downstream surrogate minting can
-    pick a locale-appropriate fake.
+    confirmed entities, ignores rejections.
     """
 
     is_entity: bool
-    kind: str | None = None
 
 
 class L3Adjudicator(Protocol):

@@ -57,7 +57,7 @@ class _StubAdjudicator:
     def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
         self.calls.append(candidate.text)
         if candidate.text in self._confirm:
-            return L3Adjudication(is_entity=True, kind="person")
+            return L3Adjudication(is_entity=True)
         return L3Adjudication(is_entity=False)
 
 
