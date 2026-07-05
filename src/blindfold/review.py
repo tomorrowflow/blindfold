@@ -20,10 +20,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 # Plausible fake names used to mint **provisional** surrogates. Kept disjoint from
-# the seeded surrogate pool (``surrogates._SURROGATE_POOL`` and the cold-start
-# ``store._mint._PERSON_POOL``) so a rejected provisional never collides with a
-# confirmed entity's surrogate. Falls back to ``"Provisional Surrogate {N}"`` past
-# the pool so the inbox is never blocked by pool exhaustion.
+# the cold-start ``store._mint._PERSON_POOL`` so a rejected provisional never collides
+# with a confirmed entity's surrogate. Falls back to ``"Provisional Surrogate {N}"``
+# past the pool so the inbox is never blocked by pool exhaustion.
 _PROVISIONAL_POOL: tuple[str, ...] = (
     "Alex Brenner",
     "Berta Falke",
