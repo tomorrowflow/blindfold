@@ -96,7 +96,9 @@ A few principles shape the whole system:
 **Stack:** Python / FastAPI, with Postgres for the entity graph, a local LLM for novel-entity
 adjudication, and a self-hosted key-custody service for encryption. The architecture
 narrative, the request flow in full, and the decision log live in
-[`docs/DESIGN.md`](docs/DESIGN.md).
+[`docs/DESIGN.md`](docs/DESIGN.md). This is a Python-only project — any JS/TypeScript
+tooling you see (e.g. under [`.sandcastle/`](.sandcastle/)) is dev-harness-only, not part
+of the shipped build.
 
 ---
 
