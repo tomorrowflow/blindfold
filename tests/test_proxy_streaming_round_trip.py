@@ -11,7 +11,9 @@ Leak-audit clauses asserted here:
   half-surrogate prefix that split the chunk boundary.
 
 N/A this slice: C (no coincidental lookalike in this fixture), E reserved-namespace,
-F fail-closed, G mapping secrecy.
+G mapping secrecy. F fail-closed: no L3 wired here, so (issue #48, SEC-7) each
+workspace exercised below explicitly opts into the documented deterministic-only
+degrade (ADR-0009) rather than relying on there being no pipeline to fail.
 """
 
 import json
@@ -19,10 +21,22 @@ import json
 import httpx
 import pytest
 
-from blindfold.app import app, get_audit_log, get_upstream_client
+from blindfold.app import app, get_audit_log, get_upstream_client, get_workspace_policies
+from blindfold.policy import DEFAULT_WORKSPACE, WorkspacePolicies
 from blindfold.store import vendored_seed_repository
 from blindfold.surrogates import SurrogateMapping
 from blindfold.upstream import UpstreamClient
+
+
+def _deterministic_only_policies(*workspaces: str) -> WorkspacePolicies:
+    # This slice is L1/L2-only (no L3 wired) -- opt the workspace(s) exercised here
+    # into deterministic-only mode so the SEC-7 fail-closed-by-default gate (issue
+    # #48) doesn't block on incidental capitalized words ("Greet") the deterministic
+    # passes already handle correctly.
+    policies = WorkspacePolicies()
+    for workspace in workspaces:
+        policies.opt_in_deterministic_only(workspace)
+    return policies
 
 
 def _seeded_mapping() -> SurrogateMapping:
@@ -92,6 +106,9 @@ async def test_streamed_round_trip_restores_surrogate_split_across_two_chunks():
     recorded: list[httpx.Request] = []
     app.dependency_overrides[get_upstream_client] = lambda: _make_stub_streaming_upstream(
         chunks, recorded
+    )
+    app.dependency_overrides[get_workspace_policies] = lambda: _deterministic_only_policies(
+        DEFAULT_WORKSPACE
     )
     try:
         transport = httpx.ASGITransport(app=app)
@@ -165,6 +182,9 @@ async def test_streaming_terminal_resolution_check_catches_an_unresolved_surroga
     audit_log.records.clear()
     app.dependency_overrides[get_upstream_client] = lambda: _make_stub_streaming_upstream(
         chunks, recorded
+    )
+    app.dependency_overrides[get_workspace_policies] = lambda: _deterministic_only_policies(
+        "delta"
     )
     try:
         transport = httpx.ASGITransport(app=app)

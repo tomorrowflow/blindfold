@@ -15,6 +15,7 @@ agent turns.
 
 from __future__ import annotations
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
@@ -200,8 +201,12 @@ class L3Detector:
                 # Fail-closed (ADR-0009): a novel candidate we couldn't adjudicate
                 # is exactly the case where letting the payload through would risk
                 # leaking an undiscovered entity. Block.
+                # SEC-7 (issue #48): the candidate is, by definition, unresolved —
+                # it may be a real entity value never minted a surrogate. Reference
+                # it by a hashed id (ADR-0009's scrub fallback), never the plaintext.
+                digest = hashlib.sha256(candidate.text.encode("utf-8")).hexdigest()[:12]
                 raise L3Unavailable(
-                    f"L3 adjudication failed for {candidate.text!r}: {exc}"
+                    f"L3 adjudication failed for candidate (ref: hash:{digest}): {exc}"
                 ) from exc
             self._cache.put(candidate, decision)
             results.append((candidate, decision))

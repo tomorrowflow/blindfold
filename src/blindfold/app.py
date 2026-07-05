@@ -18,19 +18,27 @@ of it crosses the client-facing boundary (ADR-0006). The leak gate runs before t
 stream opens, so the streaming path gets the prevention gate for free; a terminal
 resolution check runs over the accumulated restored text as the stream flushes.
 
-Fail-closed policy (issue #18, ADR-0009): the L3 scan runs over the blindfolded
-text. If L3 is unavailable for a novel candidate, the proxy blocks with a
-structured 503 response and writes an audit record — never a bare 500. The
-per-workspace ``deterministic-only`` opt-in skips L3 entirely (audited), so a
-workspace can keep working during an Ollama outage with known-entity protection
-only (novelty discovery is the documented loss). The same block path also covers a
-leak-gate or resolution-gate violation: a leak or unresolved surrogate returns the
-structured block + audit instead of a bare 500.
+Fail-closed policy (issue #18/#48, ADR-0009, SEC-7): the L3 scan runs over the
+blindfolded text. The shipped default has no real L3 wired — ``get_l3_adjudicator``'s
+default (``_UnconfiguredAdjudicator``) honestly reports itself unavailable rather than
+silently classifying every novel candidate as "not an entity", so a novel unresolved
+candidate blocks rather than egressing unscanned. The 503 body carries a stable
+machine code (``blindfold_fail_closed``/sub-reason ``l3_unavailable``), a scrubbed
+reference to the candidate (never the plaintext), and a remedy naming the three
+on-ramps (curate in the review inbox, opt into deterministic-only, or configure L3);
+the identical scrubbed reason is written to the 503 body, the audit record, and the
+log. The per-workspace ``deterministic-only`` opt-in skips the L3 scan entirely
+(audited), so a workspace can keep working with known-entity protection only
+(novelty discovery is the documented loss) — there is no default carve-out; the
+operator must opt in explicitly. The same block path also covers a leak-gate or
+resolution-gate violation: a leak or unresolved surrogate returns the structured
+block + audit instead of a bare 500.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncIterator
 
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -83,6 +91,8 @@ from .surrogates import SurrogateMapping
 from .upstream import UpstreamClient
 
 app = FastAPI(title="Blindfold")
+
+logger = logging.getLogger(__name__)
 
 # Process-wide surrogate mapping built from the entity-graph repository seam (the seeded
 # real->surrogate pairs, including variations), NOT a hardcoded dict. Keeping it a
@@ -149,17 +159,21 @@ _FORWARDED_HEADERS = (
 )
 
 
-class _NullAdjudicator:
-    """Placeholder L3 adjudicator until the real Ollama HTTP client lands.
+class _UnconfiguredAdjudicator:
+    """Default L3 adjudicator until the real Ollama HTTP client lands (SEC-7, #48).
 
-    Returns ``is_entity=False`` for every candidate — i.e. "no novel entities found".
-    Tests that exercise fail-closed override this dependency with an adjudicator that
-    raises (forcing L3Unavailable). Production wiring of a real Ollama client is a
-    follow-up; the fail-closed *policy* (this slice) is independent of that wiring.
+    Raises for every candidate: "no L3 wired" is a form of "L3 unavailable", not
+    "confirmed not an entity". Silently returning ``is_entity=False`` here (the v1
+    shipped default before this fix) meant a novel unresolved candidate was neither
+    protected nor blocked — it egressed unscanned, fail-*open* by contradiction of
+    ADR-0009. The proxy's existing L3Unavailable handling (:func:`L3Detector.detect`)
+    turns this into the actionable, scrubbed 503 block. Wiring a real Ollama client
+    is deferred to v2 (UX-6); this default only needs to be *honest* about not
+    existing, not clever.
     """
 
     def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
-        return L3Adjudication(is_entity=False)
+        raise RuntimeError("no L3 adjudicator is configured")
 
 
 def get_mapping() -> SurrogateMapping:
@@ -189,7 +203,7 @@ def get_l3_detector() -> L3Detector | None:
 
 
 def get_l3_adjudicator() -> L3Adjudicator:
-    return _NullAdjudicator()
+    return _UnconfiguredAdjudicator()
 
 
 def get_workspace_policies() -> WorkspacePolicies:
@@ -252,29 +266,58 @@ def _workspace_slug(request: Request) -> str:
     return request.headers.get(WORKSPACE_HEADER, DEFAULT_WORKSPACE)
 
 
+_DEFAULT_REMEDY = (
+    "To keep working during an L3 outage, opt the workspace into "
+    "deterministic-only mode (ADR-0009). Known entities (L1+L2) "
+    "are still protected; novelty discovery is the documented loss."
+)
+
+# ADR-0009 / SEC-7 (issue #48): the l3-unavailable 503's remedy names all three
+# on-ramps -- curating a candidate is often cheaper than waiting for an Ollama fix.
+_L3_UNAVAILABLE_REMEDY = (
+    "No L3 adjudicator is configured to judge this novel candidate, so it is "
+    "blocked rather than risk an undiscovered entity egressing unscanned. Three "
+    "on-ramps: curate the candidate in the review inbox (learning loop), enable "
+    "the logged per-workspace deterministic-only degrade (ADR-0009; known "
+    "entities via L1+L2 stay protected, novelty discovery is the documented "
+    "loss), or configure L3."
+)
+
+
 def _blocked_response(
-    event: str, reason: str, workspace: str, audit_log: AuditLog
+    event: str,
+    reason: str,
+    workspace: str,
+    audit_log: AuditLog,
+    sub_reason: str,
+    remedy: str = _DEFAULT_REMEDY,
 ) -> JSONResponse:
     """Return the canonical fail-closed block response and write an audit record.
 
     ADR-0009 / leak-audit clause F: every block — L3-unavailable or verify-pass
     violation — produces a structured client-facing body AND an audit record. The
-    body documents the remedy (the per-workspace deterministic-only opt-in) so the
-    client can route around an outage without guessing.
+    body documents the remedy so the client can route around the block without
+    guessing. ``code``/``sub_reason`` are the stable machine-routable pair ADR-0009
+    specifies (``blindfold_fail_closed``/``l3_unavailable`` for the no-L3 case);
+    ``event`` stays for existing callers keying off the finer-grained block reason.
+
+    SEC-3/SEC-7: ``reason`` is already scrubbed by the caller (surrogate or hashed
+    id, never the plaintext) — this is the single funnel every block routes
+    through, so logging it here once guarantees the identical scrubbed string
+    reaches all three sinks: the 503 body, the audit record, and this log line.
     """
+    logger.warning("blindfold_blocked: event=%s workspace=%s reason=%s", event, workspace, reason)
     audit_log.append(AuditRecord(workspace=workspace, event=event, reason=reason))
     return JSONResponse(
         status_code=503,
         content={
             "error": {
                 "type": "blindfold_blocked",
+                "code": "blindfold_fail_closed",
+                "sub_reason": sub_reason,
                 "event": event,
                 "message": reason,
-                "remedy": (
-                    "To keep working during an L3 outage, opt the workspace into "
-                    "deterministic-only mode (ADR-0009). Known entities (L1+L2) "
-                    "are still protected; novelty discovery is the documented loss."
-                ),
+                "remedy": remedy,
                 "workspace": workspace,
             }
         },
@@ -310,6 +353,8 @@ def _scan_l3_or_block(
             ),
             workspace=workspace,
             audit_log=audit_log,
+            sub_reason="l3_unavailable",
+            remedy=_L3_UNAVAILABLE_REMEDY,
         )
     if policy_deterministic_only:
         audit_log.append(
@@ -372,6 +417,7 @@ def _leak_gate_or_block(
             reason=str(exc),
             workspace=workspace,
             audit_log=audit_log,
+            sub_reason="leak_detected",
         )
     return None
 
@@ -399,6 +445,7 @@ def _resolution_gate_or_block(
             ),
             workspace=workspace,
             audit_log=audit_log,
+            sub_reason="unresolved_surrogate",
         )
     return None
 

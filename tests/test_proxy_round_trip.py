@@ -16,9 +16,12 @@ from the same vendored seed. This test stays hermetic (in-process vendored repo,
 Docker); the DB-backed graph is exercised by the testcontainers tests.
 
 N/A this slice (stated explicitly): E reserved-namespace/coherent-world (no PII/
-relationship surrogates), F fail-closed (no detection pipeline to fail), G mapping
-secrecy — real-value columns are plaintext THIS slice; Transit encryption + blind index
-are deferred to #10 (ADR-0008), an intentional ADR-backed deferral, NOT an egress/leak.
+relationship surrogates), G mapping secrecy — real-value columns are plaintext THIS
+slice; Transit encryption + blind index are deferred to #10 (ADR-0008), an intentional
+ADR-backed deferral, NOT an egress/leak. F fail-closed: this slice has no L3 wired, so
+(issue #48, SEC-7) the workspace explicitly opts into the documented deterministic-only
+degrade (ADR-0009) rather than relying on there being "no detection pipeline to fail" —
+the default is now fail-*closed*, not a free ride.
 """
 
 import json
@@ -26,10 +29,22 @@ import json
 import httpx
 import pytest
 
-from blindfold.app import app, get_upstream_client
+from blindfold.app import app, get_upstream_client, get_workspace_policies
+from blindfold.policy import DEFAULT_WORKSPACE, WorkspacePolicies
 from blindfold.store import vendored_seed_repository
 from blindfold.surrogates import SurrogateMapping
 from blindfold.upstream import UpstreamClient
+
+
+def _deterministic_only_policies() -> WorkspacePolicies:
+    # This slice is L1/L2-only (no L3 wired) -- opt the default workspace into
+    # deterministic-only mode so the SEC-7 fail-closed-by-default gate (issue #48)
+    # doesn't block on incidental capitalized words the deterministic passes (and
+    # the surrogates they mint) already handle correctly. See module docstring:
+    # F fail-closed: no L3 wired here, so this opt-in is required (issue #48, SEC-7).
+    policies = WorkspacePolicies()
+    policies.opt_in_deterministic_only(DEFAULT_WORKSPACE)
+    return policies
 
 
 def _seeded_mapping() -> SurrogateMapping:
@@ -113,6 +128,7 @@ async def test_round_trip_blindfolds_every_hop_upstream_and_restores_for_client(
     app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(
         scripted_response, recorded
     )
+    app.dependency_overrides[get_workspace_policies] = _deterministic_only_policies
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
@@ -168,6 +184,7 @@ async def test_round_trip_restore_is_closed_world_for_coincidental_lookalikes():
     app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(
         scripted_response, recorded
     )
+    app.dependency_overrides[get_workspace_policies] = _deterministic_only_policies
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
