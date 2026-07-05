@@ -9,7 +9,8 @@ HTTP 500 from the verify_pass guard added in #2 with a structured block + audit.
 Leak-audit clauses asserted here:
 - A: blocked path -> the stub upstream recorded zero requests (no egress at all).
 - F: L3 unavailable -> block by default; deterministic-only opt-in produces an
-  audited pass; verify-pass violations route to the same structured block + audit.
+  audited pass; leak-gate / resolution-gate violations (the two halves of the former
+  verify pass, split by ADR-0020) route to the same structured block + audit.
 
 N/A this slice: B/C/D (no successful round trip with novel-entity restore in the
 blocked path), E (no PII / coherent-world surrogates), G (no store-touching changes).
@@ -197,13 +198,14 @@ class _LeakyMapping(SurrogateMapping):
 
 
 @pytest.mark.anyio
-async def test_verify_pass_leak_returns_structured_block_with_audit_not_a_bare_500():
+async def test_leak_gate_violation_returns_structured_block_with_audit_not_a_bare_500():
     # AC: "Replace the interim guard from #2 (verify_pass violation raising → HTTP 500)
     # with proper fail-closed block semantics + an audit record."
-    # When the verify pass detects a real entity value about to egress (i.e. the
+    # When the leak gate detects a real entity value about to egress (i.e. the
     # blindfold engine missed it), the proxy MUST emit the structured fail-closed
     # block — same shape as the L3-unavailable block — and write an audit record,
-    # NOT a bare 500.
+    # NOT a bare 500. (The pre-egress prevention property is covered separately by
+    # test_pre_egress_leak_gate_blocks_before_anything_reaches_upstream.)
     recorded: list[httpx.Request] = []
     audit_log = get_audit_log()
     audit_log.records.clear()
