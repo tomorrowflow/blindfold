@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import logging
 from collections.abc import Callable
 from typing import Any
@@ -393,6 +394,23 @@ class StreamingRestorer:
         return restored, end
 
 
+def scrub_entity_reference(real: str, mapping: SurrogateMapping) -> str:
+    """Reference a real entity value by its surrogate, or a hashed id as fallback.
+
+    The shared scrubbing primitive (SEC-3, issue #40): never the plaintext. Used
+    everywhere a real-entity-triggered failure needs to name *which* entity without
+    naming it — leak errors, their 503 bodies, audit records, and logs all route
+    through this so the real value never reaches an error/observability surface.
+    A hashed id covers the case where the leaked value was never minted a surrogate
+    (e.g. a blindfold-engine miss on a value the mapping never saw).
+    """
+    surrogate = mapping.surrogate_for(real)
+    if surrogate is not None:
+        return surrogate
+    digest = hashlib.sha256(real.encode("utf-8")).hexdigest()[:12]
+    return f"hash:{digest}"
+
+
 def leak_gate(blinded_outbound: dict[str, Any], mapping: SurrogateMapping) -> None:
     """Pre-egress leak gate (SEC-5, ADR-0020): the prevention half of the egress split.
 
@@ -401,15 +419,18 @@ def leak_gate(blinded_outbound: dict[str, Any], mapping: SurrogateMapping) -> No
     ``upstream.stream_messages`` is ever called), so a blindfold-engine miss is caught
     *before* any byte reaches the provider rather than detected after the fact.
 
-    The failure is logged at WARNING level naming the offending value before the
-    exception is raised, so the operator is warned on a dedicated log surface.
+    The failure reason is scrubbed (SEC-3, issue #40): it references the offending
+    entity by :func:`scrub_entity_reference`, never the plaintext. That one reason
+    string is what gets logged at WARNING and raised in the exception, so the same
+    scrubbed string is what later reaches the 503 body and the audit record.
     """
     outbound_text = _collect_text(blinded_outbound)
     for real in mapping.real_values():
         if real in outbound_text:
-            message = f"real entity value would egress upstream: {real!r}"
-            logger.warning("leak_gate: %s", message)
-            raise LeakError(message)
+            ref = scrub_entity_reference(real, mapping)
+            reason = f"real entity value would egress upstream (ref: {ref})"
+            logger.warning(reason)
+            raise LeakError(reason)
 
 
 def resolution_gate(restored_response: dict[str, Any], session: ExchangeSession) -> None:

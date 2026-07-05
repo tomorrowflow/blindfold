@@ -18,6 +18,8 @@ blocked path), E (no PII / coherent-world surrogates), G (no store-touching chan
 
 from __future__ import annotations
 
+import logging
+
 import httpx
 import pytest
 
@@ -270,3 +272,52 @@ async def test_pre_egress_leak_gate_blocks_before_anything_reaches_upstream():
     assert resp.status_code == 503
     assert resp.json()["error"]["event"] == "blocked-leak"
     assert recorded == [], "leak gate must block before the payload reaches upstream"
+
+
+@pytest.mark.anyio
+async def test_leak_gate_violation_scrubs_the_real_value_from_body_audit_and_log(
+    caplog,
+):
+    # Issue #40 (SEC-3): a leak_gate violation used to put the real value into the
+    # 503 body, the audit record, AND the process log at WARNING — a privacy bug on
+    # the error/observability surface itself. All three sinks must instead carry one
+    # identical scrubbed reason string that names the entity by surrogate/hashed id.
+    recorded: list[httpx.Request] = []
+    audit_log = get_audit_log()
+    audit_log.records.clear()
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(recorded)
+    app.dependency_overrides[get_mapping] = lambda: _LeakyMapping(leaked_real="Quentin")
+    try:
+        transport = httpx.ASGITransport(app=app)
+        with caplog.at_level(logging.WARNING, logger="blindfold.engine"):
+            async with httpx.AsyncClient(
+                transport=transport, base_url="http://proxy.test"
+            ) as client:
+                resp = await client.post(
+                    "/v1/messages",
+                    json={
+                        "model": "m",
+                        "messages": [{"role": "user", "content": "Brief Quentin now."}],
+                    },
+                    headers={"x-blindfold-workspace": "gamma"},
+                )
+    finally:
+        app.dependency_overrides.clear()
+
+    body_message = resp.json()["error"]["message"]
+    audit_record = next(
+        r
+        for r in audit_log.records
+        if r.workspace == "gamma" and r.event == "blocked-leak"
+    )
+    log_messages = [record.getMessage() for record in caplog.records]
+
+    assert "Quentin" not in body_message
+    assert "Quentin" not in audit_record.reason
+    assert not any("Quentin" in m for m in log_messages), log_messages
+
+    # Diagnosable via the scrubbed reference (no surrogate was ever minted for
+    # "Quentin" here, so it falls back to a hashed id) — and identical everywhere.
+    assert "hash:" in body_message
+    assert body_message == audit_record.reason
+    assert any(body_message in m for m in log_messages), log_messages

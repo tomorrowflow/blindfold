@@ -319,9 +319,12 @@ def _leak_gate_or_block(
     try:
         leak_gate(blinded, mapping)
     except LeakError as exc:
+        # SEC-3 (issue #40): `exc`'s message is already the one scrubbed reason
+        # string leak_gate logged — forward it as-is so the 503 body, the audit
+        # record, and the log line all carry the identical scrubbed reference.
         return _blocked_response(
             event="blocked-leak",
-            reason=f"leak_gate detected a real entity value about to egress: {exc}",
+            reason=str(exc),
             workspace=workspace,
             audit_log=audit_log,
         )
