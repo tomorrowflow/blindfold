@@ -26,6 +26,7 @@ import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { z } from "zod";
 import { execSync, execFileSync } from "node:child_process";
 import { existsSync } from "node:fs";
+import { join, resolve } from "node:path";
 
 // The planner emits its plan as JSON inside <plan> tags; Output.object extracts
 // and validates it against this schema. We use Zod here, but any Standard
@@ -54,16 +55,16 @@ const MAX_ITERATIONS = 10;
 // the provider — so it stays on the strongest model (Opus). Never downgrade a
 // privacy gate to save tokens. If you want to tune cost, move the Sonnet roles,
 // not the reviewer.
-//   - opus   = claude-opus-4-8   ($5/$25 per MTok)
-//   - sonnet = claude-sonnet-4-6 ($3/$15 per MTok)
-//   - haiku  = claude-haiku-4-5  ($1/$5  per MTok) — not used: no role here is
+//   - opus   = claude-opus-4-8 ($5/$25 per MTok)
+//   - sonnet = claude-sonnet-5 ($3/$15 per MTok; $2/$10 intro through 2026-08-31)
+//   - haiku  = claude-haiku-4-5 ($1/$5  per MTok) — not used: no role here is
 //     pure read-only exploration, and the roles that explore also make
 //     consequential decisions (plan graph / write code / gate a merge).
-const MODEL_PLAN = "claude-sonnet-4-6";
-const MODEL_IMPLEMENT = "claude-sonnet-4-6";
+const MODEL_PLAN = "claude-sonnet-5";
+const MODEL_IMPLEMENT = "claude-sonnet-5";
 const MODEL_REVIEW = "claude-opus-4-8"; // fail-closed privacy gate — keep strongest
-const MODEL_WEB_VERIFY = "claude-sonnet-4-6";
-const MODEL_MERGE = "claude-sonnet-4-6";
+const MODEL_WEB_VERIFY = "claude-sonnet-5";
+const MODEL_MERGE = "claude-sonnet-5";
 
 // ---------------------------------------------------------------------------
 // Trust boundary for autonomous pickup (finding SC-3)
@@ -100,6 +101,23 @@ const copyToWorktree: string[] = [];
 const TARGET_BRANCH = execSync("git rev-parse --abbrev-ref HEAD", {
   encoding: "utf8",
 }).trim();
+
+// The repo root — resolved from git rather than assumed to be process.cwd(), so
+// the Supacode worktree-surface path below is correct however the orchestrator
+// is launched. Falls back to cwd if git can't answer.
+const REPO_ROOT = (() => {
+  try {
+    return execSync("git rev-parse --show-toplevel", { encoding: "utf8" }).trim();
+  } catch {
+    return process.cwd();
+  }
+})();
+
+// Where sandcastle lays out its per-issue worktrees. This MUST match the
+// library's own layout (`<repo>/.sandcastle/worktrees/<name>`) exactly, because
+// the Supacode-surface pre-creation below relies on sandcastle finding — and
+// adopting — the worktree it expects to create there.
+const SANDCASTLE_WORKTREES_DIR = join(REPO_ROOT, ".sandcastle", "worktrees");
 
 // The management SPA (ADR-0011). It is NOT a separate `frontend/` build — it's
 // served straight out of FastAPI as a self-contained HTML string in
@@ -372,6 +390,84 @@ function reapBranch(branch: string): void {
   }
 }
 
+// Pre-create a per-issue worktree THROUGH Supacode so it registers as a managed
+// surface — a tab the human can open and watch the agent work in. This is the
+// creation-side mirror of reapBranch()'s Supacode-aware teardown, and it closes
+// the asymmetry that made sandcastle's worktrees invisible in Supacode: the
+// library creates them with a raw `git worktree add`, which Supacode never sees.
+//
+// It works by exploiting sandcastle's own worktree `create`: when a worktree is
+// already checked out on the branch AND lives under `.sandcastle/worktrees/`,
+// sandcastle ADOPTS it (fast-forwarding a clean one) instead of erroring or
+// making its own. So we create it there first, via Supacode, and sandcastle
+// bind-mounts the surface we made. We match the library's layout exactly —
+// `<repo>/.sandcastle/worktrees/<branch with '/'→'-'>` — so the adoption fires.
+//
+// Best-effort + fail-OPEN, and deliberately conservative:
+//   - No Supacode session, or a worktree already on the branch → do nothing;
+//     sandcastle's existing raw-git path (or its adopt-existing path) runs
+//     unchanged. This is a pure upgrade: it only ever ADDS a surface.
+//   - If Supacode places the worktree OUTSIDE the managed dir (which would turn
+//     sandcastle's adopt into a hard collision error), we tear that stray
+//     worktree back down so sandcastle falls back to its own git creation — a
+//     lost surface, never a broken run.
+// Never touches the target's own worktree.
+function ensureSupacodeWorktreeSurface(branch: string): void {
+  if (branch === TARGET_BRANCH) return;
+  if (!supacodeSession()) return; // non-Supacode: raw-git path is unchanged
+  if (worktreePathForBranch(branch)) return; // already has a worktree — adopted as-is
+
+  // Match sandcastle's naming EXACTLY (branch.replace(/\//g, "-")) and location
+  // so its collision check treats the surface we make as its own managed worktree.
+  const worktreeName = branch.replace(/\//g, "-");
+  try {
+    execFileSync(
+      "supacode",
+      [
+        "repo",
+        "worktree-new",
+        "--branch",
+        branch,
+        "--base",
+        TARGET_BRANCH,
+        "--location",
+        SANDCASTLE_WORKTREES_DIR,
+        "--name",
+        worktreeName,
+      ],
+      { stdio: "ignore" },
+    );
+  } catch (err) {
+    // Couldn't create it — sandcastle will make its own via git (no surface).
+    console.warn(
+      `  (Supacode worktree surface for ${branch} not created; sandcastle will make one via git: ${err})`,
+    );
+    return;
+  }
+
+  // Verify it landed UNDER the managed dir. If Supacode ignored --location and
+  // put it elsewhere, sandcastle's adopt-or-fail check would hard-fail on the
+  // collision — so reap the stray worktree and let sandcastle create its own.
+  const created = worktreePathForBranch(branch);
+  if (created && resolve(created).startsWith(resolve(SANDCASTLE_WORKTREES_DIR))) {
+    console.log(
+      `  🏗️ registered Supacode worktree surface for ${branch} (.sandcastle/worktrees/${worktreeName})`,
+    );
+    return;
+  }
+  if (created) {
+    console.warn(
+      `  (Supacode created ${branch}'s worktree at '${created}', outside ${SANDCASTLE_WORKTREES_DIR}; ` +
+        `removing it so sandcastle can create its own — no surface this run)`,
+    );
+    try {
+      execFileSync("git", ["worktree", "remove", "--force", created], { stdio: "ignore" });
+    } catch (err) {
+      console.warn(`  (couldn't reap stray worktree for ${branch}, continuing: ${err})`);
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Trust gate (finding SC-3) — host-side, fail-CLOSED
 // ---------------------------------------------------------------------------
@@ -561,6 +657,12 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
 
   const settled = await Promise.allSettled(
     trustedIssues.map(async (issue) => {
+      // Register the per-issue worktree as a Supacode surface FIRST (when in a
+      // Supacode session), so sandcastle adopts it as its bind-mount target and
+      // the human gets a tab to watch. No-op / fail-OPEN otherwise — see the
+      // helper. Must run before createSandbox, which is what triggers adoption.
+      ensureSupacodeWorktreeSurface(issue.branch);
+
       const sandbox = await sandcastle.createSandbox({
         branch: issue.branch,
         sandbox: docker(),
