@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import socket
 import threading
 import time
@@ -55,6 +56,27 @@ from blindfold.rbac import RbacRegistry
 from blindfold.reidentify import InMemoryReIdentificationStore
 from blindfold.relationships import RelationshipStore
 from blindfold.transit import TransitClient
+
+def _chromium_available() -> bool:
+    """Whether Playwright's Chromium browser binary is installed.
+
+    Mirrors the Docker skip-guard on the testcontainer suites: the wheel adds the
+    Playwright dependency but not the browser binaries (those need an out-of-band
+    ``playwright install chromium``), so this suite is skip-guarded to degrade
+    gracefully rather than error the whole ``uv run pytest`` when they are absent.
+    When Chromium IS installed it never skips, so every leak-audit assertion runs.
+    """
+    try:
+        with sync_playwright() as playwright:
+            return os.path.exists(playwright.chromium.executable_path)
+    except Exception:
+        return False
+
+
+pytestmark = pytest.mark.skipif(
+    not _chromium_available(),
+    reason="Playwright Chromium not installed (run `playwright install chromium`)",
+)
 
 WORKSPACE = "acme"
 REAL_PERSON = "Martin Bach"
