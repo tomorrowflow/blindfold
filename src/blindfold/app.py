@@ -304,6 +304,33 @@ def _scan_l3_or_block(
     return None
 
 
+def _reject_openai_stream() -> JSONResponse:
+    """Reject ``stream:true`` on the OpenAI endpoint with a provider-shaped error (SEC-13).
+
+    v1 has no OpenAI streaming-restore path (unlike ``/v1/messages``, which restores
+    via a sliding-window buffer), so a client requesting ``stream:true`` here got an
+    opaque 500 from the SSE body failing JSON parsing in ``send_chat_completions`` — or
+    worse, a naive fix could forward the un-restored SSE straight through. Rejecting
+    up front, before blindfolding or egress, means nothing reaches the upstream on
+    this path at all. The body shape mirrors OpenAI's own ``invalid_request_error`` so
+    OpenAI-compatible clients handle it the way they handle any other 400.
+    """
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": {
+                "message": (
+                    "stream=true is not supported on this endpoint yet; retry "
+                    "without stream, or without setting it to true."
+                ),
+                "type": "invalid_request_error",
+                "param": "stream",
+                "code": "unsupported_stream",
+            }
+        },
+    )
+
+
 def _leak_gate_or_block(
     blinded: dict,
     mapping: SurrogateMapping,
@@ -423,6 +450,8 @@ async def chat_completions(
     audit_log: AuditLog = Depends(get_audit_log),
 ):
     payload = await request.json()
+    if payload.get("stream"):
+        return _reject_openai_stream()
     workspace = _workspace_slug(request)
     policy = policies.for_workspace(workspace)
 
