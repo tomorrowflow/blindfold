@@ -6,6 +6,14 @@ user controls. It **blindfolds** outbound prompts (replacing real **entities** w
 with clear names while the provider only ever sees plausible fakes. Drivers:
 GDPR/compliance + IP protection. Full architecture and decision log: `docs/DESIGN.md`.
 
+**Deployment model (language note):** the **proxy/interceptor is always local,
+single-owner** — no tenancy, no auth on the proxy itself, transparent *native*
+interception (never provider translation/substitution). The only thing shared across
+machines is the **surrogate DB** (entity graph + mapping + re-identify store). So
+"**shared**" / "**multi-user**" always means *several people sharing one mapping store*,
+never *one gateway serving many tenants*; every access-control concern lives on the
+**management API over the shared store**, not the proxy. Authoritative: ADR-0020.
+
 This file is the project's **ubiquitous language**. Use these terms (not synonyms)
 in issues, tests, code, and docs. If a needed concept isn't here, that's a signal
 to add it via `/grill-with-docs`, not to invent a synonym.

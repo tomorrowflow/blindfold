@@ -1,7 +1,13 @@
 # ADR-0001: LiteLLM gateway with our own restore layer
 
-**Status:** Accepted
+**Status:** Superseded by [ADR-0020](0020-hand-rolled-local-interceptor-drop-litellm.md) (2026-07-04)
 **Date:** 2026-06-17
+
+> **Superseded:** LiteLLM was removed entirely. The always-local/no-tenancy deployment
+> model and native (non-translating) interception falsified this ADR's premise that a
+> hand-rolled proxy "loses provider-format breadth for no gain on the part that matters."
+> Byte-level egress assertion and closed-world streaming restore live *below* LiteLLM's
+> abstraction. See ADR-0020.
 
 ## Context
 
