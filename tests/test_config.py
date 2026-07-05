@@ -36,3 +36,13 @@ def test_settings_openbao_token_is_read_from_env(monkeypatch):
 def test_settings_openbao_token_defaults_to_empty_string(monkeypatch):
     monkeypatch.delenv("BLINDFOLD_OPENBAO_TOKEN", raising=False)
     assert get_settings().openbao_token == ""
+
+
+def test_settings_bootstrap_admin_identity_is_read_from_env(monkeypatch):
+    monkeypatch.setenv("BLINDFOLD_BOOTSTRAP_ADMIN", "operator")
+    assert get_settings().bootstrap_admin_identity == "operator"
+
+
+def test_settings_bootstrap_admin_identity_defaults_to_empty_string(monkeypatch):
+    monkeypatch.delenv("BLINDFOLD_BOOTSTRAP_ADMIN", raising=False)
+    assert get_settings().bootstrap_admin_identity == ""

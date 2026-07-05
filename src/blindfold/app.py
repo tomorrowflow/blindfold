@@ -36,6 +36,7 @@ from collections.abc import AsyncIterator
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
+from .bootstrap import bootstrap_from_vendored_seed
 from .config import get_settings
 from .entity_graph import (
     CrossKindMergeError,
@@ -220,6 +221,23 @@ def get_transit_client() -> TransitClient | None:
     if settings.openbao_token:
         return TransitClient(addr=settings.openbao_addr, token=settings.openbao_token)
     return None
+
+
+# Bootstrap a fresh single-user install from the vendored seed (ADR-0012, issue #43 /
+# UX-1): seed the entity graph + re-identify store from the same seed the mapping
+# already uses, and grant BLINDFOLD_BOOTSTRAP_ADMIN every role so merge/rename/reveal/
+# search/audit/role-grant are reachable out of the box. Re-identify-store seeding only
+# runs when Transit is configured (it needs an encrypt call); bootstrap-admin only runs
+# when the env var is set. Neither introduces an RBAC-bypass path -- _require_role stays
+# the single gate.
+bootstrap_from_vendored_seed(
+    entity_graph=_entity_graph,
+    relationship_store=_relationship_store,
+    reidentify_store=_reidentify_store,
+    rbac=_rbac,
+    transit=get_transit_client(),
+    bootstrap_admin_identity=get_settings().bootstrap_admin_identity,
+)
 
 
 def _forwarded_headers(request: Request) -> dict[str, str]:
