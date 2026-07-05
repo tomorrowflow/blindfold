@@ -8,6 +8,11 @@ Claude Code) point at this proxy via ``ANTHROPIC_BASE_URL`` and authenticate wit
 OpenBao Transit (ADR-0008 / issue #10):
   BLINDFOLD_OPENBAO_ADDR   — OpenBao server address (e.g. http://localhost:8200)
   BLINDFOLD_OPENBAO_TOKEN  — token with blindfold-proxy policy rights
+
+Bootstrap admin (issue #43 / UX-1):
+  BLINDFOLD_BOOTSTRAP_ADMIN — identity granted every role on the vendored seed's
+                              workspace at startup, so a fresh single-user install
+                              isn't RBAC-locked-out of its own workspace.
 """
 
 from __future__ import annotations
@@ -24,6 +29,7 @@ class Settings:
     upstream_base_url: str = DEFAULT_UPSTREAM_BASE_URL
     openbao_addr: str = DEFAULT_OPENBAO_ADDR
     openbao_token: str = ""
+    bootstrap_admin_identity: str = ""
 
 
 def get_settings() -> Settings:
@@ -33,4 +39,5 @@ def get_settings() -> Settings:
         ),
         openbao_addr=os.environ.get("BLINDFOLD_OPENBAO_ADDR", DEFAULT_OPENBAO_ADDR),
         openbao_token=os.environ.get("BLINDFOLD_OPENBAO_TOKEN", ""),
+        bootstrap_admin_identity=os.environ.get("BLINDFOLD_BOOTSTRAP_ADMIN", ""),
     )
