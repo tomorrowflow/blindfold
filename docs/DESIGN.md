@@ -1,7 +1,10 @@
 # Blindfold — Design
 
-**Status:** Design agreed (greenfield). Implementation not started.
-**Last updated:** 2026-06-17
+**Status:** Design agreed; a working proxy (blindfold + restore + verify pass),
+RBAC-gated re-identify, merge, and the management SPAs ship today. See ADR-0020
+for the hand-rolled interceptor decision and `docs/adr/` for what has and hasn't
+landed since.
+**Last updated:** 2026-07-05
 
 ## Purpose
 
@@ -35,26 +38,28 @@ key and is treated as the primary secret.
 ## Architecture
 
 ### Components
-1. **Proxy** (FastAPI + LiteLLM). Serves both **Anthropic `/v1/messages`**
+1. **Proxy** — a hand-rolled FastAPI + httpx interceptor (ADR-0020: LiteLLM was
+   removed; see that ADR for why). Serves both **Anthropic `/v1/messages`**
    (Claude Code via `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`) and
-   **OpenAI `/v1/chat/completions`** (scripts/IDEs). Blindfolds **every hop**
-   (system prompt, user turns, **tool-result messages**), not just the first prompt.
+   **OpenAI `/v1/chat/completions`** (scripts/IDEs) as native passthrough, never
+   format translation. Blindfolds **every hop** (system prompt, user turns,
+   **tool-result messages**), not just the first prompt.
 2. **Detection** (inline, fail-closed):
-   - **L1** deterministic — regex/Presidio for emails, phones, IBANs, IDs.
+   - **L1** deterministic — hand-rolled regex for emails, phones, IBANs, IDs.
    - **L2** curated dictionary — 4-pass, German-aware (exact → normalized via
      unidecode → fuzzy Levenshtein ≤2 → first-name ambiguity), stopwords + dedup.
      *(Algorithm design reused as a concept from voice-diary `entity_detector.py`.)*
-   - **L3** local LLM (Ollama) — **candidate-span adjudication only**: runs on
-     flagged spans (unknown capitalized tokens, fuzzy near-misses, ambiguous
-     names) + small context, **not** the whole payload ⇒ latency decoupled from
-     file size. Tractable on large code.
-   - **Content cache** so unchanged code chunks aren't re-scanned across agent turns.
-3. **Surrogate engine** — locale-aware **plausible** names/orgs (Faker), but
-   **reserved-namespace** for contactable PII (`.example`/`.invalid` domains,
-   reserved phone ranges, test-IBAN ranges) so no routable/colliding PII is
-   created. **Coherent**: a person's fake email domain = employer's fake domain.
-   **Date-shift** by a stable per-entity offset (preserves intervals). Surrogates
-   are **stable once minted**. **Closed-world restore + post-restore verify pass.**
+   - **L3** candidate-span adjudication — selection, context-windowing, and a
+     content cache are implemented, but the adjudicator itself ships as a stub
+     (`_NullAdjudicator`, always "no novel entities"); wiring a real local-LLM
+     (Ollama) client behind the seam is a follow-up, not yet done.
+3. **Surrogate engine** — hand-rolled minting, **reserved-namespace** for
+   contactable PII (`.example`/`.invalid` domains, reserved phone ranges,
+   test-IBAN ranges) so no routable/colliding PII is created. The **coherent**
+   world (fake email domain = employer's fake domain) and **date-shift** were
+   prototyped but never wired into the request path and are deferred past v1
+   (ADR-0005); today's surrogates mint from flat pools. Surrogates are
+   **stable once minted**. **Closed-world restore + post-restore verify pass.**
 4. **Entity graph** (Postgres) — **global registry + workspace tags**
    (one canonical entity per real person/org; workspaces = unit of team access +
    disambiguation + audit). Tables: persons + variations (coreference), org_units
@@ -124,7 +129,7 @@ opt-in** to degrade to deterministic-only and keep working.
 |---|----------|--------|
 | 1 | Threat model | Compliance (GDPR) + IP protection; high stakes |
 | 2 | Entity scope | Person names, orgs, contact PII, IP terms/codenames (all) |
-| 3 | Form factor | LiteLLM proxy; **own** restore layer |
+| 3 | Form factor | Hand-rolled local interceptor; **own** restore layer (ADR-0001 superseded by ADR-0020) |
 | 4 | Traffic scope | Everything incl. coding agents; every hop |
 | 5 | Surrogate style | Realistic fakes + closed-world + verify pass |
 | 6 | Detection timing | Inline always (deterministic full scan + L3) |
@@ -147,8 +152,7 @@ opt-in** to degrade to deterministic-only and keep working.
 2. **Sub-token over-restoration** (restoring a coincidental "Martin" → "Stefan") —
    closed-world + careful sub-token maps + verify pass.
 3. **L3 latency on coding agents** — bounded by content cache + candidate-span, but
-   must be perf-tested.
-4. **LiteLLM supply chain** — pin a clean version (1.82.7/1.82.8 shipped malware).
+   must be perf-tested once a real adjudicator is wired behind the stub.
 
 ## Suggested slices
 - **Slice 0 (tracer bullet):** proxy passthrough on both endpoints + Postgres schema
