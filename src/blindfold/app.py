@@ -794,6 +794,47 @@ async def revoke_workspace_role(
     return {"identity": target_identity, "workspace": slug, "role": role, "action": "revoked"}
 
 
+def _apply_merge_side_effects(
+    *,
+    workspace: str,
+    winner_id: str,
+    loser_id: str,
+    loser_canonical: str,
+    merged: EntityRecord,
+    mapping: SurrogateMapping,
+    audit_log: AuditLog,
+    identity: str,
+) -> None:
+    """Sync the surrogate mapping and audit a completed entity merge.
+
+    Shared by both merge endpoints (by-canonical-name and by-id, ADR-0016) so the
+    seed/retire/audit block is defined once. The audit reason carries only
+    ``winner_id``/``loser_id`` — never real canonical names (SEC-4): an admin without
+    the re-identifier role must not learn real entity names via the audit log.
+    """
+    # Sync the surrogate mapping: loser's canonical + inherited variations now
+    # map to the winner's active surrogate (for future blindfold passes).
+    mapping.seed(loser_canonical, merged.active_surrogate)
+    for variation in merged.variations:
+        mapping.seed(variation, merged.active_surrogate)
+
+    # Retired surrogates stay recognized as known so they are not re-blindfolded
+    # if encountered in a future outbound prompt (e.g., carried over from a past
+    # exchange). Past exchange sessions remain self-contained and restore correctly
+    # via their own ExchangeSession.injected dict (closed-world restore, ADR-0006).
+    for retired in merged.retired_surrogates:
+        mapping.retire_surrogate(retired)
+
+    audit_log.append(
+        AuditRecord(
+            workspace=workspace,
+            event="entity-merged",
+            reason=f"winner_id={winner_id!r}, loser_id={loser_id!r}",
+            identity=identity,
+        )
+    )
+
+
 @app.post("/v1/management/entities/merge")
 async def merge_entities(
     request: Request,
@@ -848,13 +889,21 @@ async def merge_entities(
             )
         loser_spec = {"kind": loser_rec.kind, "canonical_name": loser_rec.canonical_name}
 
+    # Resolve the loser's entity_id for audit logging before merging: the merge
+    # removes the loser from the graph, so it is unreachable by id afterward.
+    loser_canonical = loser_spec.get("canonical_name", "")
+    loser_rec_for_audit = entity_graph.get_by_canonical(
+        workspace, loser_spec.get("kind", ""), loser_canonical
+    )
+    loser_id = loser_rec_for_audit.entity_id if loser_rec_for_audit is not None else ""
+
     try:
         merged = entity_graph.merge(
             workspace=workspace,
             winner_kind=winner_spec.get("kind", ""),
             winner_canonical=winner_spec.get("canonical_name", ""),
             loser_kind=loser_spec.get("kind", ""),
-            loser_canonical=loser_spec.get("canonical_name", ""),
+            loser_canonical=loser_canonical,
         )
     except CrossKindMergeError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -863,31 +912,15 @@ async def merge_entities(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    loser_canonical = loser_spec.get("canonical_name", "")
-
-    # Sync the surrogate mapping: loser's canonical + inherited variations now
-    # map to the winner's active surrogate (for future blindfold passes).
-    mapping.seed(loser_canonical, merged.active_surrogate)
-    for variation in merged.variations:
-        mapping.seed(variation, merged.active_surrogate)
-
-    # Retired surrogates stay recognized as known so they are not re-blindfolded
-    # if encountered in a future outbound prompt (e.g., carried over from a past
-    # exchange). Past exchange sessions remain self-contained and restore correctly
-    # via their own ExchangeSession.injected dict (closed-world restore, ADR-0006).
-    for retired in merged.retired_surrogates:
-        mapping.retire_surrogate(retired)
-
-    audit_log.append(
-        AuditRecord(
-            workspace=workspace,
-            event="entity-merged",
-            reason=(
-                f"winner={winner_spec.get('canonical_name', '')!r}, "
-                f"loser={loser_canonical!r}"
-            ),
-            identity=_caller_identity(request),
-        )
+    _apply_merge_side_effects(
+        workspace=workspace,
+        winner_id=merged.entity_id,
+        loser_id=loser_id,
+        loser_canonical=loser_canonical,
+        merged=merged,
+        mapping=mapping,
+        audit_log=audit_log,
+        identity=_caller_identity(request),
     )
 
     # When called via entity_id (SPA path), return only surrogate-space data.
@@ -1124,6 +1157,11 @@ async def merge_entities_by_id(
     if not winner_id or not loser_id:
         raise HTTPException(status_code=422, detail="winner_id and loser_id are required")
 
+    # Resolve the loser's canonical name for mapping sync before merging: the merge
+    # removes the loser from the graph, so it is unreachable by id afterward.
+    loser_rec_for_sync = entity_graph.get_by_id(loser_id, slug)
+    loser_canonical = loser_rec_for_sync.canonical_name if loser_rec_for_sync is not None else ""
+
     try:
         merged = entity_graph.merge_by_ids(
             workspace=slug,
@@ -1137,24 +1175,15 @@ async def merge_entities_by_id(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    # Sync the surrogate mapping: loser's canonical + inherited variations now
-    # map to the winner's active surrogate (for future blindfold passes).
-    mapping.seed(merged.canonical_name, merged.active_surrogate)
-    for variation in merged.variations:
-        mapping.seed(variation, merged.active_surrogate)
-
-    # Retired surrogates stay recognized as known so they are not re-blindfolded
-    # if encountered in a future outbound prompt.
-    for retired in merged.retired_surrogates:
-        mapping.retire_surrogate(retired)
-
-    audit_log.append(
-        AuditRecord(
-            workspace=slug,
-            event="entity-merged",
-            reason=f"winner_id={winner_id!r}, loser_id={loser_id!r}",
-            identity=_caller_identity(request),
-        )
+    _apply_merge_side_effects(
+        workspace=slug,
+        winner_id=winner_id,
+        loser_id=loser_id,
+        loser_canonical=loser_canonical,
+        merged=merged,
+        mapping=mapping,
+        audit_log=audit_log,
+        identity=_caller_identity(request),
     )
 
     return {
