@@ -112,6 +112,11 @@ to add it via `/grill-with-docs`, not to invent a synonym.
 - **Fail-closed** — when the full detection pipeline can't run, block by default;
   deterministic L1+L2 still protect known entities. A per-workspace opt-in allows
   degrading to deterministic-only.
+- **Scrubbed reason** — a failure reason string that references an offending entity
+  by its surrogate or a hashed id, never the plaintext. The pre-egress leak gate's
+  one scrubbed reason routes identically to the 503 body, the audit record, and the
+  log — a real value that fails to blindfold must not then leak through the error/
+  observability surface meant to report it.
 
 ## Key invariants
 
@@ -121,7 +126,9 @@ to add it via `/grill-with-docs`, not to invent a synonym.
 - Sensitivity (is it blindfolded?) and structure (is it an Org unit?) are independent axes.
   Being an Org unit never makes a referent sensitive, and being sensitive never makes it
   structural; a name that is both is recorded as both an Org unit and a Term.
-- The real-value side of the mapping is never stored in plaintext.
+- The real-value side of the mapping is never stored in plaintext — nor surfaced in
+  plaintext on an error/observability surface. A leak_gate violation's 503 body,
+  audit record, and log line all carry the same **scrubbed reason**.
 - Restore is closed-world. The pre-egress leak gate blocks a known real value from
   crossing egress; the post-restore resolution gate catches any surrogate left
   unresolved afterward.
