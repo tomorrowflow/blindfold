@@ -429,7 +429,7 @@ def leak_gate(blinded_outbound: dict[str, Any], mapping: SurrogateMapping) -> No
         if real in outbound_text:
             ref = scrub_entity_reference(real, mapping)
             reason = f"real entity value would egress upstream (ref: {ref})"
-            logger.warning(reason)
+            logger.warning("leak_gate: %s", reason)
             raise LeakError(reason)
 
 
