@@ -923,33 +923,72 @@ async def reidentify_surrogate(
     workspace the calling identity holds the ``re-identifier`` role on. A multi-workspace
     referent is re-identifiable from any of its workspaces.
 
-    Every call is audited as a ``re-identified`` event. The audit record carries the
-    surrogate (never the plaintext real value — CONTEXT invariant).
+    Every call is audited, attempt or not (SEC-8): a success writes ``re-identified``; a
+    denied caller writes ``re-identify-denied``; a failed lookup/decrypt writes
+    ``re-identify-failed``. Every audit record carries the surrogate and outcome, never
+    the plaintext real value — CONTEXT invariant.
 
     Returns 403 when the caller lacks the role; 404 when the surrogate is not found in
     the requested workspace; 503 when Transit is not configured.
     """
     workspace = _workspace_slug(request)
-    _require_role(request, workspace, "re-identifier", rbac)
+    identity = _caller_identity(request)
+    if not rbac.has_role(identity, workspace, "re-identifier"):
+        audit_log.append(
+            AuditRecord(
+                workspace=workspace,
+                event="re-identify-denied",
+                reason=f"surrogate={surrogate}",
+                identity=identity,
+            )
+        )
+        raise HTTPException(status_code=403, detail="insufficient rights")
 
     ciphertext = await store.surrogate_to_ciphertext(surrogate, workspace)
     if ciphertext is None:
+        audit_log.append(
+            AuditRecord(
+                workspace=workspace,
+                event="re-identify-failed",
+                reason=f"surrogate={surrogate}, outcome=not-found",
+                identity=identity,
+            )
+        )
         raise HTTPException(status_code=404, detail="surrogate not found in this workspace")
 
     if transit is None:
+        audit_log.append(
+            AuditRecord(
+                workspace=workspace,
+                event="re-identify-failed",
+                reason=f"surrogate={surrogate}, outcome=transit-unconfigured",
+                identity=identity,
+            )
+        )
         raise HTTPException(
             status_code=503,
             detail="Transit client not configured; set BLINDFOLD_OPENBAO_ADDR and BLINDFOLD_OPENBAO_TOKEN",
         )
 
-    real = transit.decrypt(ciphertext)
+    try:
+        real = transit.decrypt(ciphertext)
+    except Exception:
+        audit_log.append(
+            AuditRecord(
+                workspace=workspace,
+                event="re-identify-failed",
+                reason=f"surrogate={surrogate}, outcome=decrypt-error",
+                identity=identity,
+            )
+        )
+        raise
 
     audit_log.append(
         AuditRecord(
             workspace=workspace,
             event="re-identified",
             reason=f"surrogate={surrogate}",
-            identity=_caller_identity(request),
+            identity=identity,
         )
     )
     return {"surrogate": surrogate, "real": real, "workspace": workspace}

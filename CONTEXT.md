@@ -25,7 +25,10 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   reversal scoped to one exchange; Re-identify is a deliberate human/admin lookup
   of the **mapping**. Authorized **iff the referent is tagged to a workspace the
   caller holds the `re-identifier` role on** — a multi-workspace referent is
-  re-identifiable from any of its workspaces. Every re-identify is an audit event.
+  re-identifiable from any of its workspaces. Every re-identify **attempt** is an
+  audit event — a denied (no role) or failed (unknown surrogate, Transit
+  unavailable, decrypt error) attempt is audited too, not just a success (SEC-8):
+  an attacker probing for surrogates always leaves a trail.
 - **Entity** — a real-world referent that must be protected: a person, organization,
   contact-PII value (email, phone, IBAN, ID), or IP term/codename. An organization worth
   protecting is realized as a **Term**; an internal **Org unit** is graph structure and is
