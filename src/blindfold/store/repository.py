@@ -12,6 +12,7 @@ of a hardcoded dict. Two implementations share the ``seeded_pairs()`` seam:
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
 
 from ..entity_graph import EntityGraph
@@ -32,6 +33,18 @@ class VendoredSeedRepository:
         """The seed's own workspace slug -- the tag every seeded entity carries."""
         return self._seed.get("workspace", {}).get("slug", "default")
 
+    def _seeded_referents(self) -> Iterator[tuple[str, str, dict[str, Any]]]:
+        """(kind, surrogate, referent) for every seeded person/term, in mint order.
+
+        The single source of the E-stable invariant: every seam that assigns a
+        surrogate to a seeded referent -- the mapping (:meth:`seeded_pairs`), the
+        entity graph, the re-identify store -- mints it here, so they can never
+        disagree on one referent's surrogate.
+        """
+        for kind, key in (("person", "persons"), ("term", "terms")):
+            for index, referent in enumerate(self._seed.get(key, [])):
+                yield kind, mint_surrogate(kind, index), referent
+
     def seeded_pairs(self) -> list[tuple[str, str]]:
         """(real value -> stable surrogate) for every seeded referent.
 
@@ -40,12 +53,10 @@ class VendoredSeedRepository:
         restores to the same real value.
         """
         pairs: list[tuple[str, str]] = []
-        for kind, key in (("person", "persons"), ("term", "terms")):
-            for index, referent in enumerate(self._seed.get(key, [])):
-                surrogate = mint_surrogate(kind, index)
-                pairs.append((referent["canonical_name"], surrogate))
-                for variation in referent.get("variations", []):
-                    pairs.append((variation, surrogate))
+        for _kind, surrogate, referent in self._seeded_referents():
+            pairs.append((referent["canonical_name"], surrogate))
+            for variation in referent.get("variations", []):
+                pairs.append((variation, surrogate))
         return pairs
 
     def seed_entity_graph(
@@ -72,18 +83,16 @@ class VendoredSeedRepository:
         workspace = workspace or self.workspace_slug()
         entity_id_by_canonical: dict[str, str] = {}
         entity_kind_by_canonical: dict[str, str] = {}
-        for kind, key in (("person", "persons"), ("term", "terms")):
-            for index, referent in enumerate(self._seed.get(key, [])):
-                surrogate = mint_surrogate(kind, index)
-                record = graph.add_entity(
-                    kind=kind,
-                    workspace=workspace,
-                    canonical_name=referent["canonical_name"],
-                    variations=list(referent.get("variations", [])),
-                    surrogate=surrogate,
-                )
-                entity_id_by_canonical[referent["canonical_name"]] = record.entity_id
-                entity_kind_by_canonical[referent["canonical_name"]] = kind
+        for kind, surrogate, referent in self._seeded_referents():
+            record = graph.add_entity(
+                kind=kind,
+                workspace=workspace,
+                canonical_name=referent["canonical_name"],
+                variations=list(referent.get("variations", [])),
+                surrogate=surrogate,
+            )
+            entity_id_by_canonical[referent["canonical_name"]] = record.entity_id
+            entity_kind_by_canonical[referent["canonical_name"]] = kind
 
         for assignment in self._seed.get("role_assignments", []):
             person_id = entity_id_by_canonical.get(assignment["person"])
@@ -134,11 +143,9 @@ class VendoredSeedRepository:
         they share their referent's surrogate and real value.
         """
         workspace = workspace or self.workspace_slug()
-        for kind, key in (("person", "persons"), ("term", "terms")):
-            for index, referent in enumerate(self._seed.get(key, [])):
-                surrogate = mint_surrogate(kind, index)
-                ciphertext = transit.encrypt(referent["canonical_name"])
-                store.seed(surrogate, workspace, ciphertext)
+        for _kind, surrogate, referent in self._seeded_referents():
+            ciphertext = transit.encrypt(referent["canonical_name"])
+            store.seed(surrogate, workspace, ciphertext)
 
 
 def vendored_seed_repository() -> VendoredSeedRepository:
