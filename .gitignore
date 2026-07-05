@@ -11,7 +11,7 @@ venv/
 *.egg-info/
 .env
 
-# Node (sandcastle harness deps — package.json/lock are tracked)
+# Node (sandcastle harness deps — package.json/lock live under .sandcastle/, tracked there)
 node_modules/
 
 # graphify output
