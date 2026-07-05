@@ -100,6 +100,40 @@ narrative, the request flow in full, and the decision log live in
 
 ---
 
+## Quickstart
+
+```bash
+uv sync
+uv run blindfold serve
+```
+
+This starts the proxy at `http://127.0.0.1:8000` — **loopback-only by default**
+(SEC-11); pass `--host`/`--port` to bind elsewhere, an explicit opt-in. It runs against
+the vendored in-process entity-graph seed, so there's nothing else to stand up to try
+it end-to-end (Postgres-backed persistence, ADR-0008, is a separate slice — today's
+server keeps its state in-process for the request path).
+
+Point your client at it (see [Usability](#usability) below), and you're blindfolding.
+
+**Optional: OpenBao Transit** (production key custody for the mapping, ADR-0008 —
+needed today only for the re-identify/decrypt path):
+
+```bash
+docker compose -f infra/docker-compose.dev.yml up -d
+./infra/bootstrap-openbao.sh
+export BLINDFOLD_OPENBAO_ADDR=http://localhost:8200
+export BLINDFOLD_OPENBAO_TOKEN=$(bao token create -policy=blindfold-proxy -field=token)
+uv run blindfold serve
+```
+
+Never hand the running proxy the OpenBao **root** token (the `dev-root-token` the
+bootstrap script uses to set up keys/policies) — `blindfold serve` refuses to start
+against a root Transit token (SEC-2) unless you explicitly set `BLINDFOLD_DEV_MODE=1`,
+since root bypasses the `blindfold-proxy`/`-human`/`-admin` policy separation the store's
+RBAC depends on. Mint a scoped token as shown above instead.
+
+---
+
 ## Usability
 
 **Point your tool at the proxy — a ~2-line change, no app rewrite:**

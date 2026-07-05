@@ -46,3 +46,13 @@ def test_settings_bootstrap_admin_identity_is_read_from_env(monkeypatch):
 def test_settings_bootstrap_admin_identity_defaults_to_empty_string(monkeypatch):
     monkeypatch.delenv("BLINDFOLD_BOOTSTRAP_ADMIN", raising=False)
     assert get_settings().bootstrap_admin_identity == ""
+
+
+def test_settings_dev_mode_defaults_false(monkeypatch):
+    monkeypatch.delenv("BLINDFOLD_DEV_MODE", raising=False)
+    assert get_settings().dev_mode is False
+
+
+def test_settings_dev_mode_is_overridable_via_env(monkeypatch):
+    monkeypatch.setenv("BLINDFOLD_DEV_MODE", "1")
+    assert get_settings().dev_mode is True

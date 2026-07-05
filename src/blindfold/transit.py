@@ -67,6 +67,21 @@ class TransitClient:
         encoded = resp.json()["data"]["plaintext"]
         return base64.b64decode(encoded).decode()
 
+    def is_root_token(self) -> bool:
+        """Self-lookup the configured token; True iff it carries the ``root`` policy.
+
+        Used by the startup guard (SEC-2, issue #44): the proxy refuses to run against
+        a root Transit token outside an explicit dev-mode opt-in, since root bypasses
+        every policy (blindfold-proxy/-human/-admin) the store's RBAC separation
+        depends on.
+        """
+        resp = self._http.get(
+            f"{self._addr}/v1/auth/token/lookup-self",
+            headers={"X-Vault-Token": self._token},
+        )
+        resp.raise_for_status()
+        return resp.json()["data"]["policies"] == ["root"]
+
     def blind_index(self, value: str) -> str:
         """Return the HMAC digest of ``value`` for equality lookups over ciphertext columns."""
         encoded = base64.b64encode(value.encode()).decode()
