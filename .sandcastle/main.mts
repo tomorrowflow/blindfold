@@ -120,6 +120,13 @@ const REPO_ROOT = (() => {
 // adopting — the worktree it expects to create there.
 const SANDCASTLE_WORKTREES_DIR = join(REPO_ROOT, ".sandcastle", "worktrees");
 
+// Prompt files live under .sandcastle/. Resolve them against REPO_ROOT (from git),
+// not process.cwd(), so both documented launches work: `npm run sandcastle`
+// (cwd = .sandcastle/, where package.json lives) and `tsx .sandcastle/main.mts`
+// (cwd = repo root). Regression from #46/UX-9, which moved the manifest under
+// .sandcastle/ but left these prompt paths cwd-relative.
+const promptPath = (name: string) => join(REPO_ROOT, ".sandcastle", name);
+
 // The management SPA (ADR-0011). It is NOT a separate `frontend/` build — it's
 // served straight out of FastAPI as a self-contained HTML string in
 // `src/blindfold/spa.py` (review inbox #14 + org-graph #29), mounted by
@@ -593,7 +600,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     // Sonnet: the dependency graph is reasoning, but the slices are precise and
     // the fail-closed reviewer is the real safety net downstream.
     agent: sandcastle.claudeCode(MODEL_PLAN),
-    promptFile: "./.sandcastle/plan-prompt.md",
+    promptFile: promptPath("plan-prompt.md"),
     // Extract and validate the <plan> JSON into a typed object. Throws
     // StructuredOutputError if the tag is missing, the JSON is malformed, or
     // validation fails — which aborts the loop.
@@ -696,7 +703,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           name: "implementer",
           maxIterations: 100,
           agent: sandcastle.claudeCode(MODEL_IMPLEMENT),
-          promptFile: "./.sandcastle/implement-prompt.md",
+          promptFile: promptPath("implement-prompt.md"),
           promptArgs: {
             TASK_ID: issue.id,
             ISSUE_TITLE: issue.title,
@@ -761,7 +768,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           maxIterations: 1,
           // Opus — the fail-closed leak-audit gate stays on the strongest model.
           agent: sandcastle.claudeCode(MODEL_REVIEW),
-          promptFile: "./.sandcastle/review-prompt.md",
+          promptFile: promptPath("review-prompt.md"),
           // TARGET_BRANCH is a sandcastle built-in prompt arg (the host's active
           // branch) and is injected automatically — passing it here is an error.
           // The {{TARGET_BRANCH}} placeholder in the prompt still resolves.
@@ -811,7 +818,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
             name: "web-verify",
             maxIterations: 30,
             agent: sandcastle.claudeCode(MODEL_WEB_VERIFY),
-            promptFile: "./.sandcastle/web-verify-prompt.md",
+            promptFile: promptPath("web-verify-prompt.md"),
             // TARGET_BRANCH is a sandcastle built-in (injected automatically);
             // passing it in promptArgs is rejected. {{TARGET_BRANCH}} still resolves.
             promptArgs: {
@@ -962,7 +969,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     name: "merger",
     maxIterations: 1,
     agent: sandcastle.claudeCode(MODEL_MERGE),
-    promptFile: "./.sandcastle/merge-prompt.md",
+    promptFile: promptPath("merge-prompt.md"),
     promptArgs: {
       // A markdown list of branch names, one per line.
       BRANCHES: completedBranches.map((b) => `- ${b}`).join("\n"),
@@ -1001,7 +1008,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       maxIterations: 1,
       // Opus — the post-merge tree faces the SAME fail-closed leak-audit gate.
       agent: sandcastle.claudeCode(MODEL_REVIEW),
-      promptFile: "./.sandcastle/merge-review-prompt.md",
+      promptFile: promptPath("merge-review-prompt.md"),
       promptArgs: {
         REVIEW_BASE: preMergeSha,
       },
