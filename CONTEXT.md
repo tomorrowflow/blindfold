@@ -103,10 +103,14 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   mis-flagged as a name), so they're never blindfolded again.
 - **Closed-world restore** — restore only surrogates actually injected for this
   exchange, to avoid restoring a coincidentally-emitted lookalike.
-- **Egress** — the boundary where a blindfolded payload leaves the local machine bound
-  for the upstream provider (`upstream.send_*` / the streaming request). The **pre-
-  egress leak gate** sits at this boundary and enforces "no real entity crosses
-  egress" as a prevention gate, not a post-hoc detection.
+- **Egress** — a boundary where data leaves the local machine. Two distinct kinds:
+  (1) **Provider egress** — a *blindfolded* payload leaving for the upstream provider
+  (`upstream.send_*` / the streaming request); the **pre-egress leak gate** sits here
+  and enforces "no real entity crosses egress" as a prevention gate, not post-hoc
+  detection. (2) **Adjudicator egress** — the **L3** call, which carries *un-blindfolded*
+  **candidate spans** (real values, by definition). No leak gate can guard this boundary
+  because the values there are *supposed* to still be real; it is kept safe only by
+  requiring L3 to run **on-device** (a local Ollama model). See the local-only invariant.
 - **Verify pass** — the two-gate safety net around **egress**: the **pre-egress leak
   gate** blocks *before* a known real value would cross egress; the **post-restore
   resolution gate** asserts, after restore, that no injected surrogate was left
@@ -143,6 +147,13 @@ to add it via `/grill-with-docs`, not to invent a synonym.
 - Restore is closed-world. The pre-egress leak gate blocks a known real value from
   crossing egress; the post-restore resolution gate catches any surrogate left
   unresolved afterward.
+- **L3 runs on-device only.** The candidate spans handed to L3 are real, un-blindfolded
+  values, so the adjudicator endpoint is a privacy boundary (**adjudicator egress**). A
+  model that executes remotely (a `:cloud`/remote-execution Ollama model) is **refused at
+  startup** — the operator is informed and the process does not run L3 against it. There
+  is **no override** (unlike the SEC-2 root-token dev-mode escape hatch): sending real
+  candidate spans off-device categorically defeats the product, so this invariant is
+  absolute.
 
 ## Non-goals
 
