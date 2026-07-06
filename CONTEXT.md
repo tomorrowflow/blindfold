@@ -6,6 +6,14 @@ user controls. It **blindfolds** outbound prompts (replacing real **entities** w
 with clear names while the provider only ever sees plausible fakes. Drivers:
 GDPR/compliance + IP protection. Full architecture and decision log: `docs/DESIGN.md`.
 
+**Deployment model (language note):** the **proxy/interceptor is always local,
+single-owner** — no tenancy, no auth on the proxy itself, transparent *native*
+interception (never provider translation/substitution). The only thing shared across
+machines is the **surrogate DB** (entity graph + mapping + re-identify store). So
+"**shared**" / "**multi-user**" always means *several people sharing one mapping store*,
+never *one gateway serving many tenants*; every access-control concern lives on the
+**management API over the shared store**, not the proxy. Authoritative: ADR-0020.
+
 This file is the project's **ubiquitous language**. Use these terms (not synonyms)
 in issues, tests, code, and docs. If a needed concept isn't here, that's a signal
 to add it via `/grill-with-docs`, not to invent a synonym.
@@ -25,7 +33,10 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   reversal scoped to one exchange; Re-identify is a deliberate human/admin lookup
   of the **mapping**. Authorized **iff the referent is tagged to a workspace the
   caller holds the `re-identifier` role on** — a multi-workspace referent is
-  re-identifiable from any of its workspaces. Every re-identify is an audit event.
+  re-identifiable from any of its workspaces. Every re-identify **attempt** is an
+  audit event — a denied (no role) or failed (unknown surrogate, Transit
+  unavailable, decrypt error) attempt is audited too, not just a success (SEC-8):
+  an attacker probing for surrogates always leaves a trail.
 - **Entity** — a real-world referent that must be protected: a person, organization,
   contact-PII value (email, phone, IBAN, ID), or IP term/codename. An organization worth
   protecting is realized as a **Term**; an internal **Org unit** is graph structure and is
@@ -92,10 +103,14 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   mis-flagged as a name), so they're never blindfolded again.
 - **Closed-world restore** — restore only surrogates actually injected for this
   exchange, to avoid restoring a coincidentally-emitted lookalike.
-- **Egress** — the boundary where a blindfolded payload leaves the local machine bound
-  for the upstream provider (`upstream.send_*` / the streaming request). The **pre-
-  egress leak gate** sits at this boundary and enforces "no real entity crosses
-  egress" as a prevention gate, not a post-hoc detection.
+- **Egress** — a boundary where data leaves the local machine. Two distinct kinds:
+  (1) **Provider egress** — a *blindfolded* payload leaving for the upstream provider
+  (`upstream.send_*` / the streaming request); the **pre-egress leak gate** sits here
+  and enforces "no real entity crosses egress" as a prevention gate, not post-hoc
+  detection. (2) **Adjudicator egress** — the **L3** call, which carries *un-blindfolded*
+  **candidate spans** (real values, by definition). No leak gate can guard this boundary
+  because the values there are *supposed* to still be real; it is kept safe only by
+  requiring L3 to run **on-device** (a local Ollama model). See the local-only invariant.
 - **Verify pass** — the two-gate safety net around **egress**: the **pre-egress leak
   gate** blocks *before* a known real value would cross egress; the **post-restore
   resolution gate** asserts, after restore, that no injected surrogate was left
@@ -112,6 +127,11 @@ to add it via `/grill-with-docs`, not to invent a synonym.
 - **Fail-closed** — when the full detection pipeline can't run, block by default;
   deterministic L1+L2 still protect known entities. A per-workspace opt-in allows
   degrading to deterministic-only.
+- **Scrubbed reason** — a failure reason string that references an offending entity
+  by its surrogate or a hashed id, never the plaintext. The pre-egress leak gate's
+  one scrubbed reason routes identically to the 503 body, the audit record, and the
+  log — a real value that fails to blindfold must not then leak through the error/
+  observability surface meant to report it.
 
 ## Key invariants
 
@@ -121,10 +141,19 @@ to add it via `/grill-with-docs`, not to invent a synonym.
 - Sensitivity (is it blindfolded?) and structure (is it an Org unit?) are independent axes.
   Being an Org unit never makes a referent sensitive, and being sensitive never makes it
   structural; a name that is both is recorded as both an Org unit and a Term.
-- The real-value side of the mapping is never stored in plaintext.
+- The real-value side of the mapping is never stored in plaintext — nor surfaced in
+  plaintext on an error/observability surface. A leak_gate violation's 503 body,
+  audit record, and log line all carry the same **scrubbed reason**.
 - Restore is closed-world. The pre-egress leak gate blocks a known real value from
   crossing egress; the post-restore resolution gate catches any surrogate left
   unresolved afterward.
+- **L3 runs on-device only.** The candidate spans handed to L3 are real, un-blindfolded
+  values, so the adjudicator endpoint is a privacy boundary (**adjudicator egress**). A
+  model that executes remotely (a `:cloud`/remote-execution Ollama model) is **refused at
+  startup** — the operator is informed and the process does not run L3 against it. There
+  is **no override** (unlike the SEC-2 root-token dev-mode escape hatch): sending real
+  candidate spans off-device categorically defeats the product, so this invariant is
+  absolute.
 
 ## Non-goals
 

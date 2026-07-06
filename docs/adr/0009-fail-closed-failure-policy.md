@@ -24,6 +24,25 @@ feedback explaining why and how to opt in.
 - The degrade opt-in must be audited and scoped per workspace (ADR-0007/0008).
 - `leak-audit` asserts both: blocked-by-default with L3 down, and an audited
   deterministic-only pass under the opt-in.
+- The blocked-request feedback must be **actionable *and* scrubbed** — reconciling this
+  ADR's "clear feedback" with SEC-3 ("never emit the real value"). The fail-closed 503
+  carries a provider-shaped envelope, a stable machine code (`blindfold_fail_closed`,
+  sub-reason `l3_unavailable`), a **scrubbed** reference to the trigger (candidate-span
+  position or hashed id — never the plaintext), and a remediation hint naming the three
+  on-ramps: curate in the review inbox (learning loop), enable the logged
+  deterministic-only degrade, or configure L3. The identical scrubbed reason string is
+  written to the 503 body, the audit record, and the log (one reason, three sinks).
+- **v1 note (2026-07-04, resolved 2026-07-05 — issue #48, SEC-7):** the shipped default
+  was fail-*open* (no L3 wired, `_NullAdjudicator` forwarded novel entities). Fixed: the
+  default L3 adjudicator (`_UnconfiguredAdjudicator`) now honestly reports itself
+  unavailable instead of silently classifying every novel candidate as "not an entity",
+  so the existing `L3Unavailable` -> 503 block path applies by default too. The 503 now
+  carries the `blindfold_fail_closed`/`l3_unavailable` code + the three-on-ramp remedy,
+  and the candidate reference is scrubbed (hashed id, since a genuinely novel candidate
+  has no surrogate yet) — previously it leaked the plaintext candidate into the body/
+  audit/log. Wiring a real L3 adjudicator (Ollama) is still deferred to v2 (UX-6). No
+  localhost degrade-by-default carve-out — the operator flips the documented opt-in
+  explicitly; existing L1/L2-only test suites now do so too (they have no L3 to lose).
 
 ## Alternatives considered
 

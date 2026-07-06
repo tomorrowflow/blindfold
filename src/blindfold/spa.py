@@ -474,7 +474,9 @@ function positionRevealBadge(nodeElem) {
   const off = nodeElem.renderedWidth() / 2;
   revealBadge.style.left = (rp.x + off - 10) + "px";
   revealBadge.style.top  = (rp.y - nodeElem.renderedHeight() / 2 - 10) + "px";
-  revealBadge.style.display = "";
+  // #reveal-badge's stylesheet rule is `display: none`; clearing the inline style
+  // (rather than setting an explicit visible value) leaves it hidden.
+  revealBadge.style.display = "block";
   revealBadgeBtn.style.display = "";
   revealBadgeLocked.style.display = "none";
 }
@@ -567,9 +569,10 @@ revealConfirmYes.addEventListener("click", async () => {
       { headers: { "x-blindfold-workspace": currentWorkspace } }
     );
     if (r.status === 403) {
-      // Mark badge as locked
+      // Mark badge as locked. #reveal-badge-locked's stylesheet rule is
+      // `display: none`; an explicit visible value is required to show it.
       revealBadgeBtn.style.display = "none";
-      revealBadgeLocked.style.display = "";
+      revealBadgeLocked.style.display = "inline-block";
       if (onSuccess) onSuccess(null, "Access denied — re-identifier role required.");
       return;
     }
@@ -595,7 +598,7 @@ revealBadgeBtn.addEventListener("click", () => {
   doReveal(surrogate, (real, err) => {
     if (err) {
       revealBadgeLocked.textContent = REVEAL_LOCKED_LABEL;
-      revealBadgeLocked.style.display = "";
+      revealBadgeLocked.style.display = "inline-block";
       revealBadgeBtn.style.display = "none";
     } else {
       revealBadgeBtn.textContent = real;
@@ -845,6 +848,11 @@ cy = cytoscape({
   layout: { name: "cose", animate: false },
   elements: [],
 });
+
+// Test-only hook (issue #50 / UX-7): the canvas has no per-node DOM elements, so the
+// committed Playwright suite reads a node's renderedPosition() here to compute a real
+// click target. Never read by app code.
+window.__blindfoldGraph = cy;
 
 // Node select: show inspector + reveal badge
 cy.on("select", "node", evt => {

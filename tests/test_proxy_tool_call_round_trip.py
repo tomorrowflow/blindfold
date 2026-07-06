@@ -19,8 +19,10 @@ Leak-audit clauses asserted here:
 - D: verify pass clean (no real value in egress, no surrogate left in client output).
 
 N/A this slice: C closed-world (single-exchange focus; covered elsewhere), E reserved-
-namespace / coherent world (no PII here), F fail-closed (no L3 in this path), G mapping
-secrecy (plaintext mapping this slice; #10).
+namespace / coherent world (no PII here), G mapping secrecy (plaintext mapping this
+slice; #10). F fail-closed: no L3 wired here, so (issue #48, SEC-7) the default
+workspace explicitly opts into the documented deterministic-only degrade (ADR-0009)
+rather than relying on there being no pipeline to fail.
 """
 
 from __future__ import annotations
@@ -30,10 +32,21 @@ import json
 import httpx
 import pytest
 
-from blindfold.app import app, get_upstream_client
+from blindfold.app import app, get_upstream_client, get_workspace_policies
+from blindfold.policy import DEFAULT_WORKSPACE, WorkspacePolicies
 from blindfold.store import vendored_seed_repository
 from blindfold.surrogates import SurrogateMapping
 from blindfold.upstream import UpstreamClient
+
+
+def _deterministic_only_policies() -> WorkspacePolicies:
+    # This slice is L1/L2-only (no L3 wired) -- opt the default workspace into
+    # deterministic-only mode so the SEC-7 fail-closed-by-default gate (issue #48)
+    # doesn't block on incidental capitalized words ("Email", "Show") the
+    # deterministic passes already handle correctly.
+    policies = WorkspacePolicies()
+    policies.opt_in_deterministic_only(DEFAULT_WORKSPACE)
+    return policies
 
 
 def _seeded_mapping() -> SurrogateMapping:
@@ -115,6 +128,7 @@ async def test_tool_use_input_in_response_is_restored_with_escaping_preserved():
     app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(
         scripted_response, recorded
     )
+    app.dependency_overrides[get_workspace_policies] = _deterministic_only_policies
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
@@ -169,6 +183,7 @@ async def test_tool_use_input_in_assistant_turn_is_blindfolded_outbound():
     app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(
         scripted_response, recorded
     )
+    app.dependency_overrides[get_workspace_policies] = _deterministic_only_policies
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
@@ -275,6 +290,7 @@ async def test_streamed_tool_use_json_is_reassembled_then_restored():
     app.dependency_overrides[get_upstream_client] = lambda: _make_stub_streaming_upstream(
         chunks, recorded
     )
+    app.dependency_overrides[get_workspace_policies] = _deterministic_only_policies
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
@@ -346,6 +362,7 @@ async def test_tool_use_input_round_trip_preserves_json_escape_sequences():
     app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(
         scripted_response, recorded
     )
+    app.dependency_overrides[get_workspace_policies] = _deterministic_only_policies
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(

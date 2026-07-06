@@ -34,5 +34,6 @@ Vocabulary follows [`../../CONTEXT.md`](../../CONTEXT.md).
 | [0018](0018-entity-list-real-name-search-audit-on-miss.md) | Entity-list real-name search emits audit on every attempt; surrogate-space viewing is decrypt-free | Accepted |
 | [0019](0019-proxy-config-auth-contract.md) | Proxy config & auth contract — env-var split (v1, Anthropic path) | Accepted |
 | [0020](0020-verify-pass-split-into-egress-gates.md) | Split verify pass into a pre-egress leak gate + a post-restore resolution gate (SEC-5/SEC-6) | Accepted |
+| [0021](0021-runnable-entrypoint-loopback-and-root-token-guard.md) | Runnable entry point — loopback-bound default + root-token startup guard (UX-2/SEC-11/SEC-2) | Accepted |
 
 New ADRs: copy [`0000-template.md`](0000-template.md), take the next number.

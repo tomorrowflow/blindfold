@@ -11,8 +11,13 @@ venv/
 *.egg-info/
 .env
 
-# Node (sandcastle harness deps — package.json/lock are tracked)
+# Node (sandcastle harness deps — package.json/lock live under .sandcastle/, tracked there)
 node_modules/
+
+# Playwright web-verify suite (tests/web/) run artifacts
+tests/web/test-results/
+tests/web/playwright-report/
+tests/web/blob-report/
 
 # graphify output
 graphify-out/

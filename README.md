@@ -93,10 +93,48 @@ A few principles shape the whole system:
   alone. Detection gets more deterministic, and less dependent on heavier inference, over
   time.
 
-**Stack:** Python / FastAPI, with Postgres for the entity graph, a local LLM for novel-entity
-adjudication, and a self-hosted key-custody service for encryption. The architecture
-narrative, the request flow in full, and the decision log live in
-[`docs/DESIGN.md`](docs/DESIGN.md).
+**Stack:** Python / FastAPI, hand-rolled all the way down (ADR-0020) — today's request
+path keeps the entity graph in-process (Postgres persistence is targeted, ADR-0008) and
+novel-entity adjudication ships as a fail-closed stub pending a real local-LLM client.
+A self-hosted key-custody service (OpenBao Transit) backs the mapping's encryption. The
+architecture narrative, the request flow in full, and the decision log live in
+[`docs/DESIGN.md`](docs/DESIGN.md). This is a Python-only project — any JS/TypeScript
+tooling you see (e.g. under [`.sandcastle/`](.sandcastle/)) is dev-harness-only, not part
+of the shipped build.
+
+---
+
+## Quickstart
+
+```bash
+uv sync
+uv run blindfold serve
+```
+
+This starts the proxy at `http://127.0.0.1:8000` — **loopback-only by default**
+(SEC-11); pass `--host`/`--port` to bind elsewhere, an explicit opt-in. It runs against
+the vendored in-process entity-graph seed, so there's nothing else to stand up to try
+it end-to-end (Postgres-backed persistence, ADR-0008, is a separate slice — today's
+server keeps its state in-process for the request path).
+
+Point your client at it (see [Usability](#usability) below), and you're blindfolding.
+
+**Optional: OpenBao Transit** (production key custody for the mapping, ADR-0008 —
+needed today only for the re-identify/decrypt path):
+
+```bash
+docker compose -f infra/docker-compose.dev.yml up -d
+./infra/bootstrap-openbao.sh
+export BLINDFOLD_OPENBAO_ADDR=http://localhost:8200
+export BLINDFOLD_OPENBAO_TOKEN=$(bao token create -policy=blindfold-proxy -field=token)
+uv run blindfold serve
+```
+
+Never hand the running proxy the OpenBao **root** token (the `dev-root-token` the
+bootstrap script uses to set up keys/policies) — `blindfold serve` refuses to start
+against a root Transit token (SEC-2) unless you explicitly set `BLINDFOLD_DEV_MODE=1`,
+since root bypasses the `blindfold-proxy`/`-human`/`-admin` policy separation the store's
+RBAC depends on. Mint a scoped token as shown above instead.
 
 ---
 
@@ -122,8 +160,11 @@ works in the background:
 - **Management app.** A web UI to review and confirm candidates, merge entities that are
   the same person, edit relationships and the org graph, edit a surrogate, and read the
   audit log of every re-identification.
-- **Warm start.** Seed the entity graph from your existing curated data so your known
-  people and orgs are protected from request #1, rather than learned one leak at a time.
+- **Warm start.** The app bootstraps its entity graph, relationships, and (when
+  OpenBao Transit is configured) the re-identify store from a vendored seed at
+  startup, so a fresh install shows a non-empty, protected workspace from request
+  #1 instead of an empty one learned one leak at a time. Importing your own
+  curated data is future work.
 
 **Works with:** any tool whose endpoint you can point at a URL — CLIs, IDE extensions,
 scripts. **Doesn't work with:** apps whose endpoint can't be redirected (claude.ai web,
@@ -146,8 +187,10 @@ A few terms you'll see throughout (full glossary in [`CONTEXT.md`](CONTEXT.md)):
 dictionary) · **hop** (one message within a request) · **coherent surrogate world**
 (relationship-consistent fakes) · **closed-world restore** · **verify pass**.
 
-> **Status:** design agreed and recorded; implementation in progress. This README
-> describes the intended system.
+> **Status:** design agreed and recorded; a working proxy, RBAC-gated re-identify,
+> merge, and the management SPAs ship today. See [ADR-0020](docs/adr/0020-hand-rolled-local-interceptor-drop-litellm.md)
+> for the hand-rolled interceptor decision and [ADR-0005](docs/adr/0005-surrogate-generation.md)
+> for what the surrogate engine does and doesn't do yet.
 
 ---
 
@@ -158,5 +201,5 @@ security infrastructure used inside a company. See [`NOTICE`](NOTICE) for third-
 attributions.
 
 Blindfold's dependencies impose no copyleft on this code: **OpenBao** (MPL-2.0) is used
-as a separate network service (the Transit engine, not bundled), and **LiteLLM** is MIT.
-Both are fully compatible with Apache-2.0.
+as a separate network service (the Transit engine, not bundled), fully compatible with
+Apache-2.0.

@@ -18,24 +18,33 @@ of it crosses the client-facing boundary (ADR-0006). The leak gate runs before t
 stream opens, so the streaming path gets the prevention gate for free; a terminal
 resolution check runs over the accumulated restored text as the stream flushes.
 
-Fail-closed policy (issue #18, ADR-0009): the L3 scan runs over the blindfolded
-text. If L3 is unavailable for a novel candidate, the proxy blocks with a
-structured 503 response and writes an audit record — never a bare 500. The
-per-workspace ``deterministic-only`` opt-in skips L3 entirely (audited), so a
-workspace can keep working during an Ollama outage with known-entity protection
-only (novelty discovery is the documented loss). The same block path also covers a
-leak-gate or resolution-gate violation: a leak or unresolved surrogate returns the
-structured block + audit instead of a bare 500.
+Fail-closed policy (issue #18/#48, ADR-0009, SEC-7): the L3 scan runs over the
+blindfolded text. The shipped default has no real L3 wired — ``get_l3_adjudicator``'s
+default (``_UnconfiguredAdjudicator``) honestly reports itself unavailable rather than
+silently classifying every novel candidate as "not an entity", so a novel unresolved
+candidate blocks rather than egressing unscanned. The 503 body carries a stable
+machine code (``blindfold_fail_closed``/sub-reason ``l3_unavailable``), a scrubbed
+reference to the candidate (never the plaintext), and a remedy naming the three
+on-ramps (curate in the review inbox, opt into deterministic-only, or configure L3);
+the identical scrubbed reason is written to the 503 body, the audit record, and the
+log. The per-workspace ``deterministic-only`` opt-in skips the L3 scan entirely
+(audited), so a workspace can keep working with known-entity protection only
+(novelty discovery is the documented loss) — there is no default carve-out; the
+operator must opt in explicitly. The same block path also covers a leak-gate or
+resolution-gate violation: a leak or unresolved surrogate returns the structured
+block + audit instead of a bare 500.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncIterator
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
+from .bootstrap import bootstrap_from_vendored_seed
 from .config import get_settings
 from .entity_graph import (
     CrossKindMergeError,
@@ -82,6 +91,8 @@ from .surrogates import SurrogateMapping
 from .upstream import UpstreamClient
 
 app = FastAPI(title="Blindfold")
+
+logger = logging.getLogger(__name__)
 
 # Process-wide surrogate mapping built from the entity-graph repository seam (the seeded
 # real->surrogate pairs, including variations), NOT a hardcoded dict. Keeping it a
@@ -148,17 +159,21 @@ _FORWARDED_HEADERS = (
 )
 
 
-class _NullAdjudicator:
-    """Placeholder L3 adjudicator until the real Ollama HTTP client lands.
+class _UnconfiguredAdjudicator:
+    """Default L3 adjudicator until the real Ollama HTTP client lands (SEC-7, #48).
 
-    Returns ``is_entity=False`` for every candidate — i.e. "no novel entities found".
-    Tests that exercise fail-closed override this dependency with an adjudicator that
-    raises (forcing L3Unavailable). Production wiring of a real Ollama client is a
-    follow-up; the fail-closed *policy* (this slice) is independent of that wiring.
+    Raises for every candidate: "no L3 wired" is a form of "L3 unavailable", not
+    "confirmed not an entity". Silently returning ``is_entity=False`` here (the v1
+    shipped default before this fix) meant a novel unresolved candidate was neither
+    protected nor blocked — it egressed unscanned, fail-*open* by contradiction of
+    ADR-0009. The proxy's existing L3Unavailable handling (:func:`L3Detector.detect`)
+    turns this into the actionable, scrubbed 503 block. Wiring a real Ollama client
+    is deferred to v2 (UX-6); this default only needs to be *honest* about not
+    existing, not clever.
     """
 
     def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
-        return L3Adjudication(is_entity=False)
+        raise RuntimeError("no L3 adjudicator is configured")
 
 
 def get_mapping() -> SurrogateMapping:
@@ -188,7 +203,7 @@ def get_l3_detector() -> L3Detector | None:
 
 
 def get_l3_adjudicator() -> L3Adjudicator:
-    return _NullAdjudicator()
+    return _UnconfiguredAdjudicator()
 
 
 def get_workspace_policies() -> WorkspacePolicies:
@@ -222,6 +237,23 @@ def get_transit_client() -> TransitClient | None:
     return None
 
 
+# Bootstrap a fresh single-user install from the vendored seed (ADR-0012, issue #43 /
+# UX-1): seed the entity graph + re-identify store from the same seed the mapping
+# already uses, and grant BLINDFOLD_BOOTSTRAP_ADMIN every role so merge/rename/reveal/
+# search/audit/role-grant are reachable out of the box. Re-identify-store seeding only
+# runs when Transit is configured (it needs an encrypt call); bootstrap-admin only runs
+# when the env var is set. Neither introduces an RBAC-bypass path -- _require_role stays
+# the single gate.
+bootstrap_from_vendored_seed(
+    entity_graph=_entity_graph,
+    relationship_store=_relationship_store,
+    reidentify_store=_reidentify_store,
+    rbac=_rbac,
+    transit=get_transit_client(),
+    bootstrap_admin_identity=get_settings().bootstrap_admin_identity,
+)
+
+
 def _forwarded_headers(request: Request) -> dict[str, str]:
     return {
         key: value
@@ -234,29 +266,58 @@ def _workspace_slug(request: Request) -> str:
     return request.headers.get(WORKSPACE_HEADER, DEFAULT_WORKSPACE)
 
 
+_DEFAULT_REMEDY = (
+    "To keep working during an L3 outage, opt the workspace into "
+    "deterministic-only mode (ADR-0009). Known entities (L1+L2) "
+    "are still protected; novelty discovery is the documented loss."
+)
+
+# ADR-0009 / SEC-7 (issue #48): the l3-unavailable 503's remedy names all three
+# on-ramps -- curating a candidate is often cheaper than waiting for an Ollama fix.
+_L3_UNAVAILABLE_REMEDY = (
+    "No L3 adjudicator is configured to judge this novel candidate, so it is "
+    "blocked rather than risk an undiscovered entity egressing unscanned. Three "
+    "on-ramps: curate the candidate in the review inbox (learning loop), enable "
+    "the logged per-workspace deterministic-only degrade (ADR-0009; known "
+    "entities via L1+L2 stay protected, novelty discovery is the documented "
+    "loss), or configure L3."
+)
+
+
 def _blocked_response(
-    event: str, reason: str, workspace: str, audit_log: AuditLog
+    event: str,
+    reason: str,
+    workspace: str,
+    audit_log: AuditLog,
+    sub_reason: str,
+    remedy: str = _DEFAULT_REMEDY,
 ) -> JSONResponse:
     """Return the canonical fail-closed block response and write an audit record.
 
     ADR-0009 / leak-audit clause F: every block — L3-unavailable or verify-pass
     violation — produces a structured client-facing body AND an audit record. The
-    body documents the remedy (the per-workspace deterministic-only opt-in) so the
-    client can route around an outage without guessing.
+    body documents the remedy so the client can route around the block without
+    guessing. ``code``/``sub_reason`` are the stable machine-routable pair ADR-0009
+    specifies (``blindfold_fail_closed``/``l3_unavailable`` for the no-L3 case);
+    ``event`` stays for existing callers keying off the finer-grained block reason.
+
+    SEC-3/SEC-7: ``reason`` is already scrubbed by the caller (surrogate or hashed
+    id, never the plaintext) — this is the single funnel every block routes
+    through, so logging it here once guarantees the identical scrubbed string
+    reaches all three sinks: the 503 body, the audit record, and this log line.
     """
+    logger.warning("blindfold_blocked: event=%s workspace=%s reason=%s", event, workspace, reason)
     audit_log.append(AuditRecord(workspace=workspace, event=event, reason=reason))
     return JSONResponse(
         status_code=503,
         content={
             "error": {
                 "type": "blindfold_blocked",
+                "code": "blindfold_fail_closed",
+                "sub_reason": sub_reason,
                 "event": event,
                 "message": reason,
-                "remedy": (
-                    "To keep working during an L3 outage, opt the workspace into "
-                    "deterministic-only mode (ADR-0009). Known entities (L1+L2) "
-                    "are still protected; novelty discovery is the documented loss."
-                ),
+                "remedy": remedy,
                 "workspace": workspace,
             }
         },
@@ -292,6 +353,8 @@ def _scan_l3_or_block(
             ),
             workspace=workspace,
             audit_log=audit_log,
+            sub_reason="l3_unavailable",
+            remedy=_L3_UNAVAILABLE_REMEDY,
         )
     if policy_deterministic_only:
         audit_log.append(
@@ -302,6 +365,33 @@ def _scan_l3_or_block(
             )
         )
     return None
+
+
+def _reject_openai_stream() -> JSONResponse:
+    """Reject ``stream:true`` on the OpenAI endpoint with a provider-shaped error (SEC-13).
+
+    v1 has no OpenAI streaming-restore path (unlike ``/v1/messages``, which restores
+    via a sliding-window buffer), so a client requesting ``stream:true`` here got an
+    opaque 500 from the SSE body failing JSON parsing in ``send_chat_completions`` — or
+    worse, a naive fix could forward the un-restored SSE straight through. Rejecting
+    up front, before blindfolding or egress, means nothing reaches the upstream on
+    this path at all. The body shape mirrors OpenAI's own ``invalid_request_error`` so
+    OpenAI-compatible clients handle it the way they handle any other 400.
+    """
+    return JSONResponse(
+        status_code=400,
+        content={
+            "error": {
+                "message": (
+                    "stream=true is not supported on this endpoint yet; retry "
+                    "without stream, or without setting it to true."
+                ),
+                "type": "invalid_request_error",
+                "param": "stream",
+                "code": "unsupported_stream",
+            }
+        },
+    )
 
 
 def _leak_gate_or_block(
@@ -319,11 +409,15 @@ def _leak_gate_or_block(
     try:
         leak_gate(blinded, mapping)
     except LeakError as exc:
+        # SEC-3 (issue #40): `exc`'s message is already the one scrubbed reason
+        # string leak_gate logged — forward it as-is so the 503 body, the audit
+        # record, and the log line all carry the identical scrubbed reference.
         return _blocked_response(
             event="blocked-leak",
-            reason=f"leak_gate detected a real entity value about to egress: {exc}",
+            reason=str(exc),
             workspace=workspace,
             audit_log=audit_log,
+            sub_reason="leak_detected",
         )
     return None
 
@@ -351,6 +445,7 @@ def _resolution_gate_or_block(
             ),
             workspace=workspace,
             audit_log=audit_log,
+            sub_reason="unresolved_surrogate",
         )
     return None
 
@@ -423,6 +518,8 @@ async def chat_completions(
     audit_log: AuditLog = Depends(get_audit_log),
 ):
     payload = await request.json()
+    if payload.get("stream"):
+        return _reject_openai_stream()
     workspace = _workspace_slug(request)
     policy = policies.for_workspace(workspace)
 
@@ -794,6 +891,47 @@ async def revoke_workspace_role(
     return {"identity": target_identity, "workspace": slug, "role": role, "action": "revoked"}
 
 
+def _apply_merge_side_effects(
+    *,
+    workspace: str,
+    winner_id: str,
+    loser_id: str,
+    loser_canonical: str,
+    merged: EntityRecord,
+    mapping: SurrogateMapping,
+    audit_log: AuditLog,
+    identity: str,
+) -> None:
+    """Sync the surrogate mapping and audit a completed entity merge.
+
+    Shared by both merge endpoints (by-canonical-name and by-id, ADR-0016) so the
+    seed/retire/audit block is defined once. The audit reason carries only
+    ``winner_id``/``loser_id`` — never real canonical names (SEC-4): an admin without
+    the re-identifier role must not learn real entity names via the audit log.
+    """
+    # Sync the surrogate mapping: loser's canonical + inherited variations now
+    # map to the winner's active surrogate (for future blindfold passes).
+    mapping.seed(loser_canonical, merged.active_surrogate)
+    for variation in merged.variations:
+        mapping.seed(variation, merged.active_surrogate)
+
+    # Retired surrogates stay recognized as known so they are not re-blindfolded
+    # if encountered in a future outbound prompt (e.g., carried over from a past
+    # exchange). Past exchange sessions remain self-contained and restore correctly
+    # via their own ExchangeSession.injected dict (closed-world restore, ADR-0006).
+    for retired in merged.retired_surrogates:
+        mapping.retire_surrogate(retired)
+
+    audit_log.append(
+        AuditRecord(
+            workspace=workspace,
+            event="entity-merged",
+            reason=f"winner_id={winner_id!r}, loser_id={loser_id!r}",
+            identity=identity,
+        )
+    )
+
+
 @app.post("/v1/management/entities/merge")
 async def merge_entities(
     request: Request,
@@ -848,13 +986,21 @@ async def merge_entities(
             )
         loser_spec = {"kind": loser_rec.kind, "canonical_name": loser_rec.canonical_name}
 
+    # Resolve the loser's entity_id for audit logging before merging: the merge
+    # removes the loser from the graph, so it is unreachable by id afterward.
+    loser_canonical = loser_spec.get("canonical_name", "")
+    loser_rec_for_audit = entity_graph.get_by_canonical(
+        workspace, loser_spec.get("kind", ""), loser_canonical
+    )
+    loser_id = loser_rec_for_audit.entity_id if loser_rec_for_audit is not None else ""
+
     try:
         merged = entity_graph.merge(
             workspace=workspace,
             winner_kind=winner_spec.get("kind", ""),
             winner_canonical=winner_spec.get("canonical_name", ""),
             loser_kind=loser_spec.get("kind", ""),
-            loser_canonical=loser_spec.get("canonical_name", ""),
+            loser_canonical=loser_canonical,
         )
     except CrossKindMergeError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -863,31 +1009,15 @@ async def merge_entities(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    loser_canonical = loser_spec.get("canonical_name", "")
-
-    # Sync the surrogate mapping: loser's canonical + inherited variations now
-    # map to the winner's active surrogate (for future blindfold passes).
-    mapping.seed(loser_canonical, merged.active_surrogate)
-    for variation in merged.variations:
-        mapping.seed(variation, merged.active_surrogate)
-
-    # Retired surrogates stay recognized as known so they are not re-blindfolded
-    # if encountered in a future outbound prompt (e.g., carried over from a past
-    # exchange). Past exchange sessions remain self-contained and restore correctly
-    # via their own ExchangeSession.injected dict (closed-world restore, ADR-0006).
-    for retired in merged.retired_surrogates:
-        mapping.retire_surrogate(retired)
-
-    audit_log.append(
-        AuditRecord(
-            workspace=workspace,
-            event="entity-merged",
-            reason=(
-                f"winner={winner_spec.get('canonical_name', '')!r}, "
-                f"loser={loser_canonical!r}"
-            ),
-            identity=_caller_identity(request),
-        )
+    _apply_merge_side_effects(
+        workspace=workspace,
+        winner_id=merged.entity_id,
+        loser_id=loser_id,
+        loser_canonical=loser_canonical,
+        merged=merged,
+        mapping=mapping,
+        audit_log=audit_log,
+        identity=_caller_identity(request),
     )
 
     # When called via entity_id (SPA path), return only surrogate-space data.
@@ -920,33 +1050,72 @@ async def reidentify_surrogate(
     workspace the calling identity holds the ``re-identifier`` role on. A multi-workspace
     referent is re-identifiable from any of its workspaces.
 
-    Every call is audited as a ``re-identified`` event. The audit record carries the
-    surrogate (never the plaintext real value — CONTEXT invariant).
+    Every call is audited, attempt or not (SEC-8): a success writes ``re-identified``; a
+    denied caller writes ``re-identify-denied``; a failed lookup/decrypt writes
+    ``re-identify-failed``. Every audit record carries the surrogate and outcome, never
+    the plaintext real value — CONTEXT invariant.
 
     Returns 403 when the caller lacks the role; 404 when the surrogate is not found in
     the requested workspace; 503 when Transit is not configured.
     """
     workspace = _workspace_slug(request)
-    _require_role(request, workspace, "re-identifier", rbac)
+    identity = _caller_identity(request)
+    if not rbac.has_role(identity, workspace, "re-identifier"):
+        audit_log.append(
+            AuditRecord(
+                workspace=workspace,
+                event="re-identify-denied",
+                reason=f"surrogate={surrogate}",
+                identity=identity,
+            )
+        )
+        raise HTTPException(status_code=403, detail="insufficient rights")
 
     ciphertext = await store.surrogate_to_ciphertext(surrogate, workspace)
     if ciphertext is None:
+        audit_log.append(
+            AuditRecord(
+                workspace=workspace,
+                event="re-identify-failed",
+                reason=f"surrogate={surrogate}, outcome=not-found",
+                identity=identity,
+            )
+        )
         raise HTTPException(status_code=404, detail="surrogate not found in this workspace")
 
     if transit is None:
+        audit_log.append(
+            AuditRecord(
+                workspace=workspace,
+                event="re-identify-failed",
+                reason=f"surrogate={surrogate}, outcome=transit-unconfigured",
+                identity=identity,
+            )
+        )
         raise HTTPException(
             status_code=503,
             detail="Transit client not configured; set BLINDFOLD_OPENBAO_ADDR and BLINDFOLD_OPENBAO_TOKEN",
         )
 
-    real = transit.decrypt(ciphertext)
+    try:
+        real = transit.decrypt(ciphertext)
+    except Exception:
+        audit_log.append(
+            AuditRecord(
+                workspace=workspace,
+                event="re-identify-failed",
+                reason=f"surrogate={surrogate}, outcome=decrypt-error",
+                identity=identity,
+            )
+        )
+        raise
 
     audit_log.append(
         AuditRecord(
             workspace=workspace,
             event="re-identified",
             reason=f"surrogate={surrogate}",
-            identity=_caller_identity(request),
+            identity=identity,
         )
     )
     return {"surrogate": surrogate, "real": real, "workspace": workspace}
@@ -1124,6 +1293,11 @@ async def merge_entities_by_id(
     if not winner_id or not loser_id:
         raise HTTPException(status_code=422, detail="winner_id and loser_id are required")
 
+    # Resolve the loser's canonical name for mapping sync before merging: the merge
+    # removes the loser from the graph, so it is unreachable by id afterward.
+    loser_rec_for_sync = entity_graph.get_by_id(loser_id, slug)
+    loser_canonical = loser_rec_for_sync.canonical_name if loser_rec_for_sync is not None else ""
+
     try:
         merged = entity_graph.merge_by_ids(
             workspace=slug,
@@ -1137,24 +1311,15 @@ async def merge_entities_by_id(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    # Sync the surrogate mapping: loser's canonical + inherited variations now
-    # map to the winner's active surrogate (for future blindfold passes).
-    mapping.seed(merged.canonical_name, merged.active_surrogate)
-    for variation in merged.variations:
-        mapping.seed(variation, merged.active_surrogate)
-
-    # Retired surrogates stay recognized as known so they are not re-blindfolded
-    # if encountered in a future outbound prompt.
-    for retired in merged.retired_surrogates:
-        mapping.retire_surrogate(retired)
-
-    audit_log.append(
-        AuditRecord(
-            workspace=slug,
-            event="entity-merged",
-            reason=f"winner_id={winner_id!r}, loser_id={loser_id!r}",
-            identity=_caller_identity(request),
-        )
+    _apply_merge_side_effects(
+        workspace=slug,
+        winner_id=winner_id,
+        loser_id=loser_id,
+        loser_canonical=loser_canonical,
+        merged=merged,
+        mapping=mapping,
+        audit_log=audit_log,
+        identity=_caller_identity(request),
     )
 
     return {

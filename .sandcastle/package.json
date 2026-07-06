@@ -1,6 +1,6 @@
 {
   "scripts": {
-    "sandcastle": "npx tsx .sandcastle/main.mts"
+    "sandcastle": "npx tsx main.mts"
   },
   "dependencies": {
     "zod": "^4.4.3"

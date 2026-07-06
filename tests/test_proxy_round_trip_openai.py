@@ -13,10 +13,12 @@ Leak-audit clauses asserted here:
 - D: the verify pass ran (a clean round trip returns 200; no leak/unresolved error).
 
 N/A this slice (stated explicitly): E reserved-namespace/coherent-world (no PII /
-relationship surrogates), F fail-closed (no detection pipeline yet), G mapping secrecy —
-real-value columns are plaintext THIS slice; Transit + blind index land in #10.
-Streaming responses and tool-call JSON restore are deferred (#11), so this slice covers
-prose only.
+relationship surrogates), G mapping secrecy — real-value columns are plaintext THIS
+slice; Transit + blind index land in #10. Streaming responses and tool-call JSON
+restore are deferred (#11), so this slice covers prose only. F fail-closed: no L3
+wired here, so (issue #48, SEC-7) the workspace explicitly opts into the documented
+deterministic-only degrade (ADR-0009) rather than relying on an implicit "no pipeline
+to fail" — the default is now fail-*closed*.
 """
 
 import json
@@ -24,10 +26,21 @@ import json
 import httpx
 import pytest
 
-from blindfold.app import app, get_upstream_client
+from blindfold.app import app, get_upstream_client, get_workspace_policies
+from blindfold.policy import DEFAULT_WORKSPACE, WorkspacePolicies
 from blindfold.store import vendored_seed_repository
 from blindfold.surrogates import SurrogateMapping
 from blindfold.upstream import UpstreamClient
+
+
+def _deterministic_only_policies() -> WorkspacePolicies:
+    # This slice is L1/L2-only (no L3 wired) -- opt the default workspace into
+    # deterministic-only mode so the SEC-7 fail-closed-by-default gate (issue #48)
+    # doesn't block on incidental capitalized words the deterministic passes (and
+    # the surrogates they mint) already handle correctly.
+    policies = WorkspacePolicies()
+    policies.opt_in_deterministic_only(DEFAULT_WORKSPACE)
+    return policies
 
 
 def _seeded_mapping() -> SurrogateMapping:
@@ -100,6 +113,7 @@ async def test_chat_completions_round_trip_blindfolds_every_hop_and_restores_for
     app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(
         scripted_response, recorded
     )
+    app.dependency_overrides[get_workspace_policies] = _deterministic_only_policies
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
@@ -163,6 +177,7 @@ async def test_chat_completions_restore_is_closed_world_for_coincidental_lookali
     app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(
         scripted_response, recorded
     )
+    app.dependency_overrides[get_workspace_policies] = _deterministic_only_policies
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(

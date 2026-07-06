@@ -14,6 +14,11 @@ Leak-audit clause analysis:
 - G (mapping secrecy) — covered by design: the endpoint decrypts via Transit (stubbed
   at network boundary here); the real value is never stored in the audit record (only
   the surrogate is recorded), honoring the CONTEXT invariant.
+
+SEC-8 (issue #41): a denied (403) or failed (404 / 503 / decrypt exception) re-identify
+attempt writes an audit event too — ``re-identify-denied`` / ``re-identify-failed`` — so
+a probing caller always leaves a trail (ADR-0018's "audit even misses" principle). Every
+such record still carries only the surrogate and outcome, never the plaintext real value.
 """
 
 from __future__ import annotations
@@ -149,6 +154,13 @@ async def test_reidentify_returns_403_without_re_identifier_role():
         app.dependency_overrides.clear()
 
     assert resp.status_code == 403
+    # SEC-8: a denied attempt is audited too, so a probing caller leaves a trail.
+    assert len(audit_log.records) == 1
+    record = audit_log.records[0]
+    assert record.event == "re-identify-denied"
+    assert record.workspace == "default"
+    assert record.identity == "alice"
+    assert surrogate in record.reason
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +196,13 @@ async def test_reidentify_returns_404_when_surrogate_not_in_requested_workspace(
         app.dependency_overrides.clear()
 
     assert resp.status_code == 404
+    # SEC-8: a failed lookup (unknown surrogate in this workspace) is audited too.
+    assert len(audit_log.records) == 1
+    record = audit_log.records[0]
+    assert record.event == "re-identify-failed"
+    assert record.workspace == "ws-b"
+    assert record.identity == "bob"
+    assert surrogate in record.reason
 
 
 # ---------------------------------------------------------------------------
@@ -307,10 +326,60 @@ async def test_reidentify_returns_503_when_transit_not_configured():
         app.dependency_overrides.clear()
 
     assert resp.status_code == 503
+    # SEC-8: a failed attempt (Transit unconfigured) is audited too.
+    assert len(audit_log.records) == 1
+    record = audit_log.records[0]
+    assert record.event == "re-identify-failed"
+    assert record.workspace == "default"
+    assert record.identity == "alice"
+    assert surrogate in record.reason
 
 
 # ---------------------------------------------------------------------------
-# 7. get_transit_client auto-initializes from settings when token is configured
+# 7. A decrypt exception is audited too (SEC-8) and never leaks the ciphertext error
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_reidentify_writes_audit_event_when_decrypt_raises():
+    surrogate = "Clara Hoffmann"
+    ciphertext = "vault:v1:enc:martin"
+
+    rbac = RbacRegistry()
+    rbac.grant("alice", "default", "re-identifier")
+
+    store = _store_with({(surrogate, "default"): ciphertext})
+    # Empty mapping: the stub Transit responds 400, so transit.decrypt() raises.
+    transit = _stub_transit({})
+    audit_log = AuditLog()
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_reidentify_store] = lambda: store
+    app.dependency_overrides[get_transit_client] = lambda: transit
+    app.dependency_overrides[get_audit_log] = lambda: audit_log
+    try:
+        async with _make_client() as client:
+            with pytest.raises(httpx.HTTPStatusError):
+                await client.get(
+                    f"/v1/management/surrogate/{surrogate}/real",
+                    headers={
+                        "x-blindfold-identity": "alice",
+                        "x-blindfold-workspace": "default",
+                    },
+                )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert len(audit_log.records) == 1
+    record = audit_log.records[0]
+    assert record.event == "re-identify-failed"
+    assert record.workspace == "default"
+    assert record.identity == "alice"
+    assert surrogate in record.reason
+
+
+# ---------------------------------------------------------------------------
+# 8. get_transit_client auto-initializes from settings when token is configured
 # ---------------------------------------------------------------------------
 
 

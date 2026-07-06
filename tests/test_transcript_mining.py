@@ -35,12 +35,24 @@ from blindfold.app import (
     get_allowlist,
     get_mapping,
     get_review_inbox,
+    get_workspace_policies,
 )
 from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
 from blindfold.mining import mine_transcripts
+from blindfold.policy import DEFAULT_WORKSPACE, WorkspacePolicies
 from blindfold.review import Allowlist, ReviewInbox
 from blindfold.store import vendored_seed_repository
 from blindfold.surrogates import SurrogateMapping
+
+
+def _deterministic_only_policies() -> WorkspacePolicies:
+    # Live-traffic leg of this test is L1/L2-only (no L3 wired on the request
+    # path) -- opt the default workspace into deterministic-only mode so the
+    # SEC-7 fail-closed-by-default gate (issue #48) doesn't block on "Brief" the
+    # deterministic passes already handle correctly.
+    policies = WorkspacePolicies()
+    policies.opt_in_deterministic_only(DEFAULT_WORKSPACE)
+    return policies
 
 
 def _seeded_mapping() -> SurrogateMapping:
@@ -57,7 +69,7 @@ class _StubAdjudicator:
     def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
         self.calls.append(candidate.text)
         if candidate.text in self._confirm:
-            return L3Adjudication(is_entity=True, kind="person")
+            return L3Adjudication(is_entity=True)
         return L3Adjudication(is_entity=False)
 
 
@@ -284,6 +296,7 @@ async def test_mining_does_not_block_proxy_traffic_running_alongside_it():
     app.dependency_overrides[get_review_inbox] = lambda: inbox
     app.dependency_overrides[get_allowlist] = lambda: allowlist
     app.dependency_overrides[get_upstream_client] = lambda: upstream_client
+    app.dependency_overrides[get_workspace_policies] = _deterministic_only_policies
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(

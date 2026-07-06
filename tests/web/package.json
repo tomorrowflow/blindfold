@@ -1,0 +1,11 @@
+{
+  "name": "blindfold-web-verify",
+  "private": true,
+  "description": "Committed @playwright/test browser gate for the management SPA (issue #50, UX-7). Scoped to tests/web/ (not repo root) per UX-9 (tests/test_repo_hygiene.py forbids a root package.json).",
+  "devDependencies": {
+    "@playwright/test": "^1.48.0"
+  },
+  "scripts": {
+    "test": "playwright test"
+  }
+}

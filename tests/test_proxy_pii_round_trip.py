@@ -10,8 +10,11 @@ Leak-audit clauses asserted here:
 - E reserved-namespace: every PII surrogate that egressed sits inside its reserved /
   non-routable namespace (`.invalid`, NANPA `555-01XX`, ISO 3166 `XX`, `RESERVED`).
 
-N/A this slice: streaming (issue #6/#12), tool-call JSON args (issue #11), L3 + the
-fail-closed gate (issue #7), Transit-encrypted mapping (issue #10) — all out of scope.
+N/A this slice: streaming (issue #6/#12), tool-call JSON args (issue #11), L3 (issue
+#7), Transit-encrypted mapping (issue #10) — all out of scope. F fail-closed: no L3
+wired here, so (issue #48, SEC-7) the default workspace explicitly opts into the
+documented deterministic-only degrade (ADR-0009) rather than relying on there being
+no pipeline to fail.
 """
 
 import json
@@ -19,7 +22,8 @@ import json
 import httpx
 import pytest
 
-from blindfold.app import app, get_upstream_client
+from blindfold.app import app, get_upstream_client, get_workspace_policies
+from blindfold.policy import DEFAULT_WORKSPACE, WorkspacePolicies
 from blindfold.upstream import UpstreamClient
 
 
@@ -61,6 +65,13 @@ async def test_round_trip_blindfolds_contactable_pii_and_restores_for_client():
     app.dependency_overrides[get_upstream_client] = lambda: UpstreamClient(
         base_url="http://upstream.test", client=upstream_client
     )
+    # This slice is L1/PII-only (no L3 wired) -- opt the default workspace into
+    # deterministic-only mode so the SEC-7 fail-closed-by-default gate (issue #48)
+    # doesn't block on incidental capitalized words ("Email", "ID") the deterministic
+    # PII passes already handle correctly.
+    policies = WorkspacePolicies()
+    policies.opt_in_deterministic_only(DEFAULT_WORKSPACE)
+    app.dependency_overrides[get_workspace_policies] = lambda: policies
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(

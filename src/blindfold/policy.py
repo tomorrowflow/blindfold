@@ -67,6 +67,11 @@ class AuditRecord:
       - ``deterministic-only-pass``   — degraded-mode pass under the opt-in.
       - ``re-identified``             — an authorized identity looked up the real value
                                         behind a surrogate (management API, issue #16).
+      - ``re-identify-denied``        — a re-identify call lacked the ``re-identifier``
+                                        role (SEC-8, issue #41).
+      - ``re-identify-failed``        — a re-identify call could not be completed
+                                        (unknown surrogate, Transit unavailable, or a
+                                        decrypt error) (SEC-8, issue #41).
     """
 
     workspace: str

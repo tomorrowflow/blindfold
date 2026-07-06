@@ -1,7 +1,18 @@
 # ADR-0005: Surrogate generation — plausible names + reserved-namespace PII, coherent, date-shifted, stable
 
-**Status:** Accepted
+**Status:** Accepted (design); **not yet wired into the request path** — deferred past v1 (trustworthy single-user localhost). See #25.
 **Date:** 2026-06-17
+
+> **Implementation status (2026-07-04):** The coherent world described below is a
+> design decision, not a live capability. A prototype `SurrogateEngine` faithfully
+> implemented the two hardest clauses (coherent employer-domain inheritance and the
+> stable ±180-day interval-preserving date-shift) but was never wired into any request
+> path, was collision-prone over fixed pools, and covered no contactable PII beyond
+> email domains — so it was deleted rather than parked as dead code (finding ARCH-1/ARCH-6).
+> The live path currently mints from flat pools with no coherent world. Wiring a real
+> minting authority against the store is the v2 work tracked in #25; that issue carries
+> the concrete algorithm (hash-indexed ±180d offset, suffix-strip→slugify→`.invalid`
+> domain derivation) and the prototype's behavioural assertions as acceptance criteria.
 
 ## Context
 
