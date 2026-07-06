@@ -114,6 +114,15 @@ const REPO_ROOT = (() => {
   }
 })();
 
+// Normalize the process working directory to the git root. The sandcastle library
+// resolves git mounts and its worktree layout from process.cwd() (`<cwd>/.git`,
+// `<cwd>/.sandcastle/worktrees`), so launching via `npm run sandcastle` — which runs
+// from `.sandcastle/`, where package.json lives after #46/UX-9 — made it stat
+// `.sandcastle/.git` and throw WorktreeError. Same rationale as deriving REPO_ROOT
+// from git: the harness must behave identically however it is launched. Env is read
+// from the process environment (not a cwd-relative .env), so this does not affect auth.
+if (process.cwd() !== REPO_ROOT) process.chdir(REPO_ROOT);
+
 // Where sandcastle lays out its per-issue worktrees. This MUST match the
 // library's own layout (`<repo>/.sandcastle/worktrees/<name>`) exactly, because
 // the Supacode-surface pre-creation below relies on sandcastle finding — and
