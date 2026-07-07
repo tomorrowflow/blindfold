@@ -17,6 +17,13 @@ Bootstrap admin (issue #43 / UX-1):
 Dev mode (SEC-2 / issue #44):
   BLINDFOLD_DEV_MODE       — explicit opt-in that lets ``blindfold serve`` start
                              against a root Transit token; refused otherwise.
+
+L3 / local-Ollama adjudicator (ADR-0022 / issue #57):
+  BLINDFOLD_OLLAMA_ADDR    — local Ollama daemon address (default: http://localhost:11434)
+  BLINDFOLD_OLLAMA_MODEL   — model tag to adjudicate with; empty means L3 is
+                             unconfigured (fails closed, ADR-0009). A `:cloud`-suffixed
+                             tag names a remotely-executing model and is refused at
+                             startup with no override (the local-only invariant).
 """
 
 from __future__ import annotations
@@ -26,6 +33,7 @@ from dataclasses import dataclass
 
 DEFAULT_UPSTREAM_BASE_URL = "https://api.anthropic.com"
 DEFAULT_OPENBAO_ADDR = "http://localhost:8200"
+DEFAULT_OLLAMA_ADDR = "http://localhost:11434"
 
 
 @dataclass(frozen=True)
@@ -35,6 +43,8 @@ class Settings:
     openbao_token: str = ""
     bootstrap_admin_identity: str = ""
     dev_mode: bool = False
+    ollama_addr: str = DEFAULT_OLLAMA_ADDR
+    ollama_model: str = ""
 
 
 def get_settings() -> Settings:
@@ -46,4 +56,6 @@ def get_settings() -> Settings:
         openbao_token=os.environ.get("BLINDFOLD_OPENBAO_TOKEN", ""),
         bootstrap_admin_identity=os.environ.get("BLINDFOLD_BOOTSTRAP_ADMIN", ""),
         dev_mode=os.environ.get("BLINDFOLD_DEV_MODE", "") not in ("", "0", "false", "False"),
+        ollama_addr=os.environ.get("BLINDFOLD_OLLAMA_ADDR", DEFAULT_OLLAMA_ADDR),
+        ollama_model=os.environ.get("BLINDFOLD_OLLAMA_MODEL", ""),
     )

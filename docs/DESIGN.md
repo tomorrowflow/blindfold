@@ -49,10 +49,11 @@ key and is treated as the primary secret.
    - **L2** curated dictionary — 4-pass, German-aware (exact → normalized via
      unidecode → fuzzy Levenshtein ≤2 → first-name ambiguity), stopwords + dedup.
      *(Algorithm design reused as a concept from voice-diary `entity_detector.py`.)*
-   - **L3** candidate-span adjudication — selection, context-windowing, and a
-     content cache are implemented, but the adjudicator itself ships as a stub
-     (`_NullAdjudicator`, always "no novel entities"); wiring a real local-LLM
-     (Ollama) client behind the seam is a follow-up, not yet done.
+   - **L3** candidate-span adjudication — selection, context-windowing, a
+     bounded content cache, and a real local-Ollama client behind the seam are
+     implemented (ADR-0022): it adjudicates once, in the blindfold mint pass;
+     the pre-egress gate runs the leak gate only. An unconfigured or
+     remotely-executing (`:cloud`) model still fails closed / refuses to start.
 3. **Surrogate engine** — hand-rolled minting, **reserved-namespace** for
    contactable PII (`.example`/`.invalid` domains, reserved phone ranges,
    test-IBAN ranges) so no routable/colliding PII is created. The **coherent**

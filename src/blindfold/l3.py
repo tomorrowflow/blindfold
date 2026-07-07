@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Protocol
 
@@ -93,22 +94,42 @@ class L3Adjudicator(Protocol):
     def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication: ...
 
 
+_DEFAULT_CACHE_MAX_ENTRIES = 4096
+
+
 @dataclass
 class L3ContentCache:
     """Cache adjudications keyed by ``(span_text, context)`` so unchanged chunks of
     text — same span, same surroundings — aren't re-scanned across agent turns
     (ADR-0003). The key is the span + its minimal context, not the whole payload:
-    a candidate in identical context produces an identical decision."""
+    a candidate in identical context produces an identical decision.
 
-    _entries: dict[tuple[str, str], L3Adjudication] = field(default_factory=dict)
+    Keys hold real, un-blindfolded candidate text, so this is an in-memory
+    real-value store (ADR-0022) — bounded by ``max_entries`` with least-recently-used
+    eviction, so a long-running process's memory stays bounded regardless of how many
+    distinct candidates it has ever seen. Never persisted to disk.
+    """
+
+    max_entries: int = _DEFAULT_CACHE_MAX_ENTRIES
+    _entries: "OrderedDict[tuple[str, str], L3Adjudication]" = field(
+        default_factory=OrderedDict
+    )
 
     def get(self, candidate: CandidateSpan) -> L3Adjudication | None:
-        return self._entries.get((candidate.text, candidate.context))
+        key = (candidate.text, candidate.context)
+        if key not in self._entries:
+            return None
+        self._entries.move_to_end(key)
+        return self._entries[key]
 
     def put(
         self, candidate: CandidateSpan, decision: L3Adjudication
     ) -> None:
-        self._entries[(candidate.text, candidate.context)] = decision
+        key = (candidate.text, candidate.context)
+        self._entries[key] = decision
+        self._entries.move_to_end(key)
+        if len(self._entries) > self.max_entries:
+            self._entries.popitem(last=False)
 
 
 def select_candidate_spans(

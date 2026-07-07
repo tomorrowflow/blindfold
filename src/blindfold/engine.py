@@ -455,10 +455,10 @@ def walk_string_leaves(value: Any, fn: Callable[[str], None]) -> None:
     """Walk every string leaf of a nested JSON-shaped ``value``, calling ``fn`` on each.
 
     The single traversal primitive (ARCH-4) behind every privacy-load-bearing string
-    collector in the request path — dict/list structure is walked once; callers only
-    decide *how the leaves are joined* (NUL for verify-pass precision here, newline for
-    L3's sentence-boundary heuristics in ``app._collect_text_for_l3``), so the join
-    distinction is a documented parameter, not a copy-pasted traversal.
+    collector in the request path — dict/list structure is walked once; the caller
+    decides *how the leaves are joined* (``_collect_text`` joins with NUL for verify-pass
+    precision, so a value cannot match across two separate fields), keeping the join a
+    caller's choice rather than a copy-pasted traversal.
     """
     if isinstance(value, str):
         fn(value)

@@ -18,6 +18,7 @@ from blindfold.detection import Entity
 from blindfold.l3 import (
     CandidateSpan,
     L3Adjudication,
+    L3ContentCache,
     L3Detector,
     L3Unavailable,
 )
@@ -176,6 +177,29 @@ def test_l3_unavailable_is_silent_when_no_candidate_spans_exist():
     text = "Please review the documentation."  # no novel capitalized tokens
 
     assert detector.detect(text, known_entities=[]) == []
+
+
+def test_content_cache_is_bounded_and_evicts_the_least_recently_used_entry():
+    # ADR-0022: the content cache is a real-value store (keys are un-blindfolded
+    # candidate text) so it must be bounded, never allowed to grow without limit for
+    # the life of the process. Least-recently-used eviction keeps hot (recurring)
+    # candidates cached while a cold one ages out first.
+    cache = L3ContentCache(max_entries=2)
+    klaus = CandidateSpan(text="Klaus", start=0, end=5, context="ctx-klaus")
+    yasmin = CandidateSpan(text="Yasmin", start=0, end=6, context="ctx-yasmin")
+    priya = CandidateSpan(text="Priya", start=0, end=5, context="ctx-priya")
+    decision = L3Adjudication(is_entity=True)
+
+    cache.put(klaus, decision)
+    cache.put(yasmin, decision)
+    # Touch klaus so it's the most-recently-used of the two; yasmin becomes the
+    # least-recently-used and is the one evicted when the cache is over capacity.
+    cache.get(klaus)
+    cache.put(priya, decision)
+
+    assert cache.get(klaus) is not None
+    assert cache.get(priya) is not None
+    assert cache.get(yasmin) is None
 
 
 def test_deterministic_only_opt_in_skips_l3_entirely():

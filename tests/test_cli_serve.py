@@ -7,7 +7,12 @@ no request-path change.
 from __future__ import annotations
 
 from blindfold.__main__ import main
-from blindfold.serve import DEFAULT_HOST, DEFAULT_PORT, DevModeRequiredError
+from blindfold.serve import (
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    DevModeRequiredError,
+    LocalOnlyModelRequiredError,
+)
 
 
 def test_main_serve_defaults_to_loopback_host_and_port(monkeypatch):
@@ -46,3 +51,15 @@ def test_main_serve_reports_dev_mode_required_error_and_exits_nonzero(monkeypatc
 
     assert exit_code == 1
     assert "refusing to start against a root OpenBao Transit token" in capsys.readouterr().err
+
+
+def test_main_serve_reports_local_only_model_required_error_and_exits_nonzero(monkeypatch, capsys):
+    def _raise(**kwargs):
+        raise LocalOnlyModelRequiredError("refusing to run L3 against a remotely-executing model")
+
+    monkeypatch.setattr("blindfold.__main__.run_server", _raise)
+
+    exit_code = main(["serve"])
+
+    assert exit_code == 1
+    assert "refusing to run L3 against a remotely-executing model" in capsys.readouterr().err
