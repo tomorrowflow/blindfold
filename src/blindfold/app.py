@@ -1,8 +1,15 @@
 """FastAPI proxy exposing Anthropic- and OpenAI-compatible endpoints.
 
 Request path (tracer-bullet slice), identical for both endpoints:
-  blindfold every hop  ->  L3 candidate-span scan  ->  pre-egress leak gate  ->
-  forward to upstream  ->  restore the response  ->  post-restore resolution gate
+  blindfold every hop (L1+L2, and L3 candidate-span mint pass)  ->  pre-egress leak
+  gate  ->  forward to upstream  ->  restore the response  ->  post-restore
+  resolution gate
+
+L3 (ADR-0022, issue #57): adjudicates **once**, inside the blindfold mint pass — a
+confirmed novel candidate mints a provisional surrogate and lands in the review inbox
+(ADR-0010). The pre-egress gate does NOT re-run L3; it reverts to the leak gate over
+known entities only (running L3 again there would double-adjudicate every token and
+re-adjudicate the surrogate the mint pass just minted).
 
 Egress (ADR-0020, issue #47 / SEC-5+SEC-6): the leak gate runs *before*
 ``upstream.send_*``/``stream_messages`` so a blindfold-engine miss is prevented at the
@@ -18,34 +25,35 @@ of it crosses the client-facing boundary (ADR-0006). The leak gate runs before t
 stream opens, so the streaming path gets the prevention gate for free; a terminal
 resolution check runs over the accumulated restored text as the stream flushes.
 
-Fail-closed policy (issue #18/#48, ADR-0009, SEC-7): the L3 scan runs over the
-blindfolded text. The shipped default has no real L3 wired — ``get_l3_adjudicator``'s
-default (``_UnconfiguredAdjudicator``) honestly reports itself unavailable rather than
-silently classifying every novel candidate as "not an entity", so a novel unresolved
-candidate blocks rather than egressing unscanned. The 503 body carries a stable
-machine code (``blindfold_fail_closed``/sub-reason ``l3_unavailable``), a scrubbed
-reference to the candidate (never the plaintext), and a remedy naming the three
-on-ramps (curate in the review inbox, opt into deterministic-only, or configure L3);
-the identical scrubbed reason is written to the 503 body, the audit record, and the
-log. The per-workspace ``deterministic-only`` opt-in skips the L3 scan entirely
-(audited), so a workspace can keep working with known-entity protection only
-(novelty discovery is the documented loss) — there is no default carve-out; the
-operator must opt in explicitly. The same block path also covers a leak-gate or
-resolution-gate violation: a leak or unresolved surrogate returns the structured
-block + audit instead of a bare 500.
+Fail-closed policy (issue #18/#48/#57, ADR-0009, ADR-0022, SEC-7): ``L3Unavailable``
+is now raised from the mint pass. The shipped default has no real L3 wired —
+``get_l3_detector``'s singleton wraps ``_UnconfiguredAdjudicator``, which honestly
+reports itself unavailable rather than silently classifying every novel candidate as
+"not an entity", so a novel unresolved candidate blocks rather than egressing
+unscanned. The 503 body carries a stable machine code (``blindfold_fail_closed``/
+sub-reason ``l3_unavailable``), a scrubbed reference to the candidate (never the
+plaintext), and a remedy naming the three on-ramps (curate in the review inbox, opt
+into deterministic-only, or configure L3); the identical scrubbed reason is written to
+the 503 body, the audit record, and the log. The per-workspace ``deterministic-only``
+opt-in skips L3 entirely (audited) by passing ``None`` in place of the singleton
+detector, so a workspace can keep working with known-entity protection only (novelty
+discovery is the documented loss) — there is no default carve-out; the operator must
+opt in explicitly. The same block path also covers a leak-gate or resolution-gate
+violation: a leak or unresolved surrogate returns the structured block + audit instead
+of a bare 500.
 """
 
 from __future__ import annotations
 
 import json
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from .bootstrap import bootstrap_from_vendored_seed
-from .config import get_settings
+from .config import Settings, get_settings
 from .entity_graph import (
     CrossKindMergeError,
     EntityGraph,
@@ -67,7 +75,6 @@ from .engine import (
     restore_chat_completion,
     restore_response,
     restore_tool_call_json,
-    walk_string_leaves,
 )
 from .l3 import (
     CandidateSpan,
@@ -76,6 +83,7 @@ from .l3 import (
     L3Detector,
     L3Unavailable,
 )
+from .ollama import OllamaAdjudicator
 from .policy import (
     DEFAULT_WORKSPACE,
     AuditLog,
@@ -94,6 +102,37 @@ app = FastAPI(title="Blindfold")
 
 logger = logging.getLogger(__name__)
 
+
+class _UnconfiguredAdjudicator:
+    """Default L3 adjudicator until a real Ollama model is configured (ADR-0009 / #48).
+
+    Raises for every candidate: "no L3 wired" is a form of "L3 unavailable", not
+    "confirmed not an entity". Silently returning ``is_entity=False`` here would mean
+    a novel unresolved candidate was neither protected nor blocked — it would egress
+    unscanned, fail-*open* by contradiction of ADR-0009. The mint pass's existing
+    L3Unavailable handling (:func:`L3Detector.detect`) turns this into the actionable,
+    scrubbed 503 block.
+    """
+
+    def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
+        raise RuntimeError("no L3 adjudicator is configured")
+
+
+def _build_l3_adjudicator(settings: Settings) -> L3Adjudicator:
+    """Build the production L3 adjudicator from ``settings`` (ADR-0022 / issue #57).
+
+    Wires a real local-Ollama client when ``BLINDFOLD_OLLAMA_MODEL`` is configured;
+    otherwise falls back to the honest ``_UnconfiguredAdjudicator`` so the unwired case
+    still fails closed (ADR-0009) rather than fails open. The local-only invariant
+    (refusing a ``:cloud`` model) is enforced at process startup
+    (``serve.refuse_if_cloud_model``), not here — this function only decides which
+    adjudicator to construct, not whether the process is allowed to run.
+    """
+    if not settings.ollama_model:
+        return _UnconfiguredAdjudicator()
+    return OllamaAdjudicator(base_url=settings.ollama_addr, model=settings.ollama_model)
+
+
 # Process-wide surrogate mapping built from the entity-graph repository seam (the seeded
 # real->surrogate pairs, including variations), NOT a hardcoded dict. Keeping it a
 # singleton makes surrogates stable across exchanges within the process (leak-audit
@@ -105,10 +144,18 @@ _mapping = SurrogateMapping.from_pairs(vendored_seed_repository().seeded_pairs()
 # Process-wide review-inbox + allowlist (ADR-0010). The inbox holds provisional
 # candidates awaiting human review; the allowlist holds tokens the user has
 # rejected (never blindfolded again). Tests substitute their own via
-# dependency_overrides[get_review_inbox] / get_allowlist. L3 default is None so
-# pre-existing tests (no novel-candidate adjudication) keep their behavior.
+# dependency_overrides[get_review_inbox] / get_allowlist.
 _review_inbox = ReviewInbox()
 _allowlist = Allowlist()
+
+# Process-wide L3 detector (ADR-0022 / issue #57): a singleton (like `_mapping` /
+# `_review_inbox`) so its content cache persists across turns within the process
+# (ADR-0003) and so L3 has exactly one seam -- the mint pass; the pre-egress gate no
+# longer invokes it at all. Production wiring uses a real local-Ollama client when
+# BLINDFOLD_OLLAMA_MODEL is configured; otherwise the honest _UnconfiguredAdjudicator
+# (ADR-0009) keeps the unwired case fail-closed rather than fail-open. Tests
+# substitute their own detector via dependency_overrides[get_l3_detector].
+_l3_detector = L3Detector(_build_l3_adjudicator(get_settings()))
 
 # Process-wide workspace-policy registry and audit log (ADR-0009). Persistence and
 # RBAC-scoped audit access are out of scope this slice — see policy.py.
@@ -159,23 +206,6 @@ _FORWARDED_HEADERS = (
 )
 
 
-class _UnconfiguredAdjudicator:
-    """Default L3 adjudicator until the real Ollama HTTP client lands (SEC-7, #48).
-
-    Raises for every candidate: "no L3 wired" is a form of "L3 unavailable", not
-    "confirmed not an entity". Silently returning ``is_entity=False`` here (the v1
-    shipped default before this fix) meant a novel unresolved candidate was neither
-    protected nor blocked — it egressed unscanned, fail-*open* by contradiction of
-    ADR-0009. The proxy's existing L3Unavailable handling (:func:`L3Detector.detect`)
-    turns this into the actionable, scrubbed 503 block. Wiring a real Ollama client
-    is deferred to v2 (UX-6); this default only needs to be *honest* about not
-    existing, not clever.
-    """
-
-    def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
-        raise RuntimeError("no L3 adjudicator is configured")
-
-
 def get_mapping() -> SurrogateMapping:
     return _mapping
 
@@ -192,18 +222,15 @@ def get_allowlist() -> Allowlist:
     return _allowlist
 
 
-def get_l3_detector() -> L3Detector | None:
-    """Default: no L3 (a real Ollama client wires here in production).
+def get_l3_detector() -> L3Detector:
+    """The process-global L3 detector singleton (ADR-0022 / issue #57).
 
-    Tests that exercise the learning loop substitute a recording adjudicator via
-    ``app.dependency_overrides[get_l3_detector]``; tests that don't touch L3 keep
-    today's behavior — L1+L2 only — because no adjudicator is wired by default.
+    Tests substitute their own via ``app.dependency_overrides[get_l3_detector]`` — to
+    force an outage (an adjudicator that raises), to script confirmations for the
+    learning loop, or to opt a workspace's *own* test into deterministic-only without
+    touching the shared singleton.
     """
-    return None
-
-
-def get_l3_adjudicator() -> L3Adjudicator:
-    return _UnconfiguredAdjudicator()
+    return _l3_detector
 
 
 def get_workspace_policies() -> WorkspacePolicies:
@@ -324,26 +351,24 @@ def _blocked_response(
     )
 
 
-def _scan_l3_or_block(
-    adjudicator: L3Adjudicator,
-    blinded: dict,
-    mapping: SurrogateMapping,
+def _mint_or_block(
+    mint: Callable[[], tuple[dict, ExchangeSession]],
     workspace: str,
     policy_deterministic_only: bool,
     audit_log: AuditLog,
-) -> JSONResponse | None:
-    """Run the L3 candidate-span scan; return a block ``JSONResponse`` if it failed.
+) -> tuple[dict, ExchangeSession] | JSONResponse:
+    """Run the blindfold mint pass; return a block ``JSONResponse`` if L3 was unavailable.
 
-    Returns ``None`` when the scan was clean (or skipped under deterministic-only),
-    in which case the caller proceeds to upstream. The deterministic-only pass is
-    audited here so the audit record is written exactly once per request, on the
-    one code path that reaches upstream.
+    ADR-0022: L3 adjudicates once, here, in the mint pass — not at the pre-egress gate,
+    which reverts to :func:`_leak_gate_or_block` only. ``mint`` is a zero-arg thunk
+    closing over the already-decided ``l3_detector`` (``None`` under the
+    deterministic-only opt-in, the process-global singleton otherwise) so this helper
+    stays agnostic to the Anthropic vs. OpenAI payload shape. The deterministic-only
+    pass is audited here so the audit record is written exactly once per request, on
+    the one code path that reaches upstream.
     """
-    detector = L3Detector(
-        adjudicator, deterministic_only=policy_deterministic_only
-    )
     try:
-        detector.detect(_collect_text_for_l3(blinded), mapping.entities())
+        result = mint()
     except L3Unavailable as exc:
         return _blocked_response(
             event="blocked-l3-unavailable",
@@ -364,7 +389,7 @@ def _scan_l3_or_block(
                 reason="workspace opted into deterministic-only mode; L3 skipped",
             )
         )
-    return None
+    return result
 
 
 def _reject_openai_stream() -> JSONResponse:
@@ -450,28 +475,13 @@ def _resolution_gate_or_block(
     return None
 
 
-def _collect_text_for_l3(payload: dict) -> str:
-    """Flatten every string in a blindfolded payload into one blob for the L3 scan.
-
-    L3 selects candidate spans by walking *text*; the candidate-span engine doesn't
-    care which hop a string came from. Joining with newlines (not NUL, unlike
-    ``engine._collect_text``) keeps the sentence-boundary heuristics in L3 sensible —
-    capitalized tokens are evaluated in plausible sentence contexts, not glued across
-    unrelated fields.
-    """
-    parts: list[str] = []
-    walk_string_leaves(payload, parts.append)
-    return "\n".join(parts)
-
-
 @app.post("/v1/messages")
 async def messages(
     request: Request,
     upstream: UpstreamClient = Depends(get_upstream_client),
     mapping: SurrogateMapping = Depends(get_mapping),
     inbox: ReviewInbox = Depends(get_review_inbox),
-    l3_detector: L3Detector | None = Depends(get_l3_detector),
-    adjudicator: L3Adjudicator = Depends(get_l3_adjudicator),
+    l3_detector: L3Detector = Depends(get_l3_detector),
     policies: WorkspacePolicies = Depends(get_workspace_policies),
     audit_log: AuditLog = Depends(get_audit_log),
 ):
@@ -479,14 +489,17 @@ async def messages(
     workspace = _workspace_slug(request)
     policy = policies.for_workspace(workspace)
 
-    blinded, session = blindfold_payload(payload, mapping, l3_detector, inbox)
-    forwarded = _forwarded_headers(request)
-
-    block = _scan_l3_or_block(
-        adjudicator, blinded, mapping, workspace, policy.deterministic_only, audit_log
+    effective_l3_detector = None if policy.deterministic_only else l3_detector
+    result = _mint_or_block(
+        lambda: blindfold_payload(payload, mapping, effective_l3_detector, inbox),
+        workspace,
+        policy.deterministic_only,
+        audit_log,
     )
-    if block is not None:
-        return block
+    if isinstance(result, JSONResponse):
+        return result
+    blinded, session = result
+    forwarded = _forwarded_headers(request)
 
     block = _leak_gate_or_block(blinded, mapping, workspace, audit_log)
     if block is not None:
@@ -512,8 +525,7 @@ async def chat_completions(
     upstream: UpstreamClient = Depends(get_upstream_client),
     mapping: SurrogateMapping = Depends(get_mapping),
     inbox: ReviewInbox = Depends(get_review_inbox),
-    l3_detector: L3Detector | None = Depends(get_l3_detector),
-    adjudicator: L3Adjudicator = Depends(get_l3_adjudicator),
+    l3_detector: L3Detector = Depends(get_l3_detector),
     policies: WorkspacePolicies = Depends(get_workspace_policies),
     audit_log: AuditLog = Depends(get_audit_log),
 ):
@@ -523,15 +535,18 @@ async def chat_completions(
     workspace = _workspace_slug(request)
     policy = policies.for_workspace(workspace)
 
-    blinded, session = blindfold_chat_completions_payload(
-        payload, mapping, l3_detector, inbox
+    effective_l3_detector = None if policy.deterministic_only else l3_detector
+    result = _mint_or_block(
+        lambda: blindfold_chat_completions_payload(
+            payload, mapping, effective_l3_detector, inbox
+        ),
+        workspace,
+        policy.deterministic_only,
+        audit_log,
     )
-
-    block = _scan_l3_or_block(
-        adjudicator, blinded, mapping, workspace, policy.deterministic_only, audit_log
-    )
-    if block is not None:
-        return block
+    if isinstance(result, JSONResponse):
+        return result
+    blinded, session = result
 
     block = _leak_gate_or_block(blinded, mapping, workspace, audit_log)
     if block is not None:

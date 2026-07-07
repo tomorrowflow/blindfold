@@ -10,7 +10,13 @@ import argparse
 import sys
 from collections.abc import Sequence
 
-from .serve import DEFAULT_HOST, DEFAULT_PORT, DevModeRequiredError, run_server
+from .serve import (
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    DevModeRequiredError,
+    LocalOnlyModelRequiredError,
+    run_server,
+)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -37,7 +43,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "serve":
         try:
             run_server(host=args.host, port=args.port)
-        except DevModeRequiredError as exc:
+        except (DevModeRequiredError, LocalOnlyModelRequiredError) as exc:
             print(f"blindfold: {exc}", file=sys.stderr)
             return 1
         return 0

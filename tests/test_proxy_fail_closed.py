@@ -15,6 +15,11 @@ ADR-0009 contract: a stable `blindfold_fail_closed`/`l3_unavailable` code, a scr
 (hashed-id) candidate reference — never the plaintext — and a remedy naming all three
 on-ramps (curate in the review inbox, deterministic-only opt-in, or configure L3).
 
+ADR-0022 (issue #57): L3 now adjudicates once, in the blindfold mint pass, so the
+seam to force an outage moved from ``get_l3_adjudicator`` (the old pre-egress scan,
+removed) to ``get_l3_detector`` — override the whole process-global detector with one
+wrapping an adjudicator that raises.
+
 Leak-audit clauses asserted here:
 - A: blocked path -> the stub upstream recorded zero requests (no egress at all).
 - F: L3 unavailable (by explicit override AND by the true production default) ->
@@ -36,12 +41,12 @@ import pytest
 from blindfold.app import (
     app,
     get_audit_log,
-    get_l3_adjudicator,
+    get_l3_detector,
     get_mapping,
     get_upstream_client,
     get_workspace_policies,
 )
-from blindfold.l3 import CandidateSpan, L3Adjudication
+from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
 from blindfold.policy import WorkspacePolicies
 from blindfold.surrogates import SurrogateMapping
 from blindfold.upstream import UpstreamClient
@@ -79,7 +84,7 @@ async def test_proxy_blocks_when_l3_unavailable_for_a_novel_candidate():
     audit_log = get_audit_log()
     audit_log.records.clear()
     app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(recorded)
-    app.dependency_overrides[get_l3_adjudicator] = lambda: _UnavailableAdjudicator()
+    app.dependency_overrides[get_l3_detector] = lambda: L3Detector(_UnavailableAdjudicator())
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
@@ -153,7 +158,7 @@ async def test_per_workspace_deterministic_only_opt_in_produces_an_audited_pass(
     app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(recorded)
     # L3 is forced unavailable to prove the opt-in actually bypasses the L3 call —
     # if the proxy still called L3 for an opted-in workspace, this would block.
-    app.dependency_overrides[get_l3_adjudicator] = lambda: _UnavailableAdjudicator()
+    app.dependency_overrides[get_l3_detector] = lambda: L3Detector(_UnavailableAdjudicator())
     app.dependency_overrides[get_workspace_policies] = lambda: policies
     try:
         transport = httpx.ASGITransport(app=app)
@@ -195,7 +200,7 @@ async def test_block_response_explains_why_and_how_to_opt_into_degraded_mode():
     audit_log = get_audit_log()
     audit_log.records.clear()
     app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(recorded)
-    app.dependency_overrides[get_l3_adjudicator] = lambda: _UnavailableAdjudicator()
+    app.dependency_overrides[get_l3_detector] = lambda: L3Detector(_UnavailableAdjudicator())
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
@@ -241,7 +246,7 @@ async def test_l3_unavailable_503_carries_the_stable_code_and_three_on_ramp_reme
     audit_log = get_audit_log()
     audit_log.records.clear()
     app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(recorded)
-    app.dependency_overrides[get_l3_adjudicator] = lambda: _UnavailableAdjudicator()
+    app.dependency_overrides[get_l3_detector] = lambda: L3Detector(_UnavailableAdjudicator())
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
@@ -282,7 +287,7 @@ async def test_l3_unavailable_scrubs_the_candidate_value_from_body_audit_and_log
     audit_log = get_audit_log()
     audit_log.records.clear()
     app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(recorded)
-    app.dependency_overrides[get_l3_adjudicator] = lambda: _UnavailableAdjudicator()
+    app.dependency_overrides[get_l3_detector] = lambda: L3Detector(_UnavailableAdjudicator())
     try:
         transport = httpx.ASGITransport(app=app)
         with caplog.at_level(logging.WARNING):

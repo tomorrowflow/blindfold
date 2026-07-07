@@ -1,6 +1,11 @@
 """Upstream base URL + OpenBao config is configurable (ADR-0008 / issue #10)."""
 
-from blindfold.config import DEFAULT_OPENBAO_ADDR, DEFAULT_UPSTREAM_BASE_URL, get_settings
+from blindfold.config import (
+    DEFAULT_OLLAMA_ADDR,
+    DEFAULT_OPENBAO_ADDR,
+    DEFAULT_UPSTREAM_BASE_URL,
+    get_settings,
+)
 from blindfold.upstream import UpstreamClient
 
 
@@ -56,3 +61,24 @@ def test_settings_dev_mode_defaults_false(monkeypatch):
 def test_settings_dev_mode_is_overridable_via_env(monkeypatch):
     monkeypatch.setenv("BLINDFOLD_DEV_MODE", "1")
     assert get_settings().dev_mode is True
+
+
+def test_settings_ollama_addr_defaults_to_localhost(monkeypatch):
+    monkeypatch.delenv("BLINDFOLD_OLLAMA_ADDR", raising=False)
+    assert get_settings().ollama_addr == DEFAULT_OLLAMA_ADDR
+
+
+def test_settings_ollama_addr_is_overridable_via_env(monkeypatch):
+    monkeypatch.setenv("BLINDFOLD_OLLAMA_ADDR", "http://ollama.internal:11434")
+    assert get_settings().ollama_addr == "http://ollama.internal:11434"
+
+
+def test_settings_ollama_model_defaults_to_empty_string(monkeypatch):
+    # Empty means L3 is unconfigured (ADR-0009 fail-closed default, ADR-0022).
+    monkeypatch.delenv("BLINDFOLD_OLLAMA_MODEL", raising=False)
+    assert get_settings().ollama_model == ""
+
+
+def test_settings_ollama_model_is_read_from_env(monkeypatch):
+    monkeypatch.setenv("BLINDFOLD_OLLAMA_MODEL", "llama3.1")
+    assert get_settings().ollama_model == "llama3.1"

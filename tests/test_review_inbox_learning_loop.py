@@ -16,6 +16,11 @@ Drives the proxy seam end-to-end:
 L3 (Ollama) is stubbed at the network boundary (the ``_StubAdjudicator``); the
 upstream provider is stubbed at the egress boundary (``httpx.MockTransport``).
 
+ADR-0022 (issue #57): L3 now adjudicates once, in this same mint pass -- there is no
+longer a separate pre-egress L3 re-scan to route around, so these tests simply
+override ``get_l3_detector`` with their own stub-backed detector and leave the
+workspace's fail-closed policy at its default (non-deterministic-only).
+
 Leak-audit clauses for this slice:
 - A covered: stub upstream saw only the provisional surrogate.
 - B covered: the client receives the real value back (closed-world restore).
@@ -39,27 +44,12 @@ from blindfold.app import (
     get_mapping,
     get_review_inbox,
     get_upstream_client,
-    get_workspace_policies,
 )
 from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
-from blindfold.policy import DEFAULT_WORKSPACE, WorkspacePolicies
 from blindfold.review import Allowlist, ReviewInbox
 from blindfold.store import vendored_seed_repository
 from blindfold.surrogates import SurrogateMapping
 from blindfold.upstream import UpstreamClient
-
-
-def _deterministic_only_policies() -> WorkspacePolicies:
-    # This test wires its OWN L3 detector for minting (get_l3_detector override,
-    # below) -- but the SEC-7 fail-closed-by-default gate (issue #48) that guards
-    # the request separately (get_l3_adjudicator, unwired here) would otherwise
-    # re-scan the *already-blindfolded* text and trip on the provisional surrogate
-    # itself (a fresh capitalized token the gate has never seen). Opting the
-    # default workspace into deterministic-only mode skips that redundant gate
-    # scan; it has no effect on the l3_detector minting path under test.
-    policies = WorkspacePolicies()
-    policies.opt_in_deterministic_only(DEFAULT_WORKSPACE)
-    return policies
 
 
 def _seeded_mapping() -> SurrogateMapping:
@@ -121,7 +111,6 @@ async def test_novel_candidate_is_auto_blindfolded_with_provisional_surrogate_an
     app.dependency_overrides[get_review_inbox] = lambda: inbox
     app.dependency_overrides[get_allowlist] = lambda: allowlist
     app.dependency_overrides[get_l3_detector] = lambda: detector
-    app.dependency_overrides[get_workspace_policies] = _deterministic_only_policies
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
@@ -186,7 +175,6 @@ async def test_review_inbox_api_lists_provisional_candidates():
     app.dependency_overrides[get_review_inbox] = lambda: inbox
     app.dependency_overrides[get_allowlist] = lambda: allowlist
     app.dependency_overrides[get_l3_detector] = lambda: detector
-    app.dependency_overrides[get_workspace_policies] = _deterministic_only_policies
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
@@ -249,7 +237,6 @@ async def test_confirm_grows_entity_graph_so_l2_detects_deterministically_therea
     app.dependency_overrides[get_review_inbox] = lambda: inbox
     app.dependency_overrides[get_allowlist] = lambda: allowlist
     app.dependency_overrides[get_l3_detector] = lambda: detector
-    app.dependency_overrides[get_workspace_policies] = _deterministic_only_policies
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
@@ -334,7 +321,6 @@ async def test_reject_grows_allowlist_so_candidate_is_never_blindfolded_again():
     app.dependency_overrides[get_review_inbox] = lambda: inbox
     app.dependency_overrides[get_allowlist] = lambda: allowlist
     app.dependency_overrides[get_l3_detector] = lambda: detector
-    app.dependency_overrides[get_workspace_policies] = _deterministic_only_policies
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
@@ -416,7 +402,6 @@ async def test_provisional_surrogate_round_trips_so_client_sees_real_value_back(
     app.dependency_overrides[get_review_inbox] = lambda: inbox
     app.dependency_overrides[get_allowlist] = lambda: allowlist
     app.dependency_overrides[get_l3_detector] = lambda: detector
-    app.dependency_overrides[get_workspace_policies] = _deterministic_only_policies
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(

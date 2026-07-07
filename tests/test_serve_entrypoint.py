@@ -14,6 +14,8 @@ from blindfold.serve import (
     DEFAULT_HOST,
     DEFAULT_PORT,
     DevModeRequiredError,
+    LocalOnlyModelRequiredError,
+    refuse_if_cloud_model,
     refuse_if_root_token,
     run_server,
 )
@@ -60,6 +62,30 @@ def test_refuse_if_root_token_is_a_noop_with_no_transit_token_configured():
 
 
 # ---------------------------------------------------------------------------
+# 1b. refuse_if_cloud_model — ADR-0022 local-only startup guard, no override
+# ---------------------------------------------------------------------------
+
+
+def test_refuse_if_cloud_model_blocks_a_remotely_executing_model():
+    settings = Settings(ollama_model="qwen3:cloud")
+
+    with pytest.raises(LocalOnlyModelRequiredError):
+        refuse_if_cloud_model(settings)
+
+
+def test_refuse_if_cloud_model_allows_an_ordinary_local_model():
+    settings = Settings(ollama_model="llama3.1")
+
+    refuse_if_cloud_model(settings)
+
+
+def test_refuse_if_cloud_model_is_a_noop_with_no_model_configured():
+    settings = Settings(ollama_model="")
+
+    refuse_if_cloud_model(settings)
+
+
+# ---------------------------------------------------------------------------
 # 2. run_server — wires the guard + the bundled ASGI server (SEC-11 loopback default)
 # ---------------------------------------------------------------------------
 
@@ -91,6 +117,21 @@ def test_run_server_refuses_a_root_token_before_starting_the_asgi_server():
         run_server(
             settings=settings,
             transit_client=_StubTransitClient(root=True),
+            runner=lambda app, **kwargs: calls.append((app, kwargs)),
+        )
+
+    assert calls == []
+
+
+def test_run_server_refuses_a_cloud_model_before_starting_the_asgi_server():
+    # ADR-0022: no override, unlike the root-token guard's dev-mode escape hatch --
+    # sending real candidate spans off-device categorically defeats the product.
+    settings = Settings(ollama_model="qwen3:cloud")
+    calls = []
+
+    with pytest.raises(LocalOnlyModelRequiredError):
+        run_server(
+            settings=settings,
             runner=lambda app, **kwargs: calls.append((app, kwargs)),
         )
 
