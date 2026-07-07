@@ -88,8 +88,14 @@ const TRUSTED_MAINTAINERS = ["tomorrowflow"];
 // Hooks run inside the sandbox before the agent starts each iteration.
 // Blindfold is a Python/uv project, so `uv sync` (not npm install) installs the
 // dependency groups declared in pyproject.toml into the worktree's .venv.
+//
+// timeoutMs (default 60s is too tight): the hook runs INSIDE the Docker sandbox,
+// which doesn't share the host's ~/.cache/uv, so every run is a cold sync that
+// re-downloads the full dependency tree (the Playwright wheel alone is ~40 MB).
+// 10 minutes gives comfortable headroom on a cold cache / slow network. A future
+// optimisation could mount the uv cache into the sandbox to make this fast again.
 const hooks = {
-  sandbox: { onSandboxReady: [{ command: "uv sync" }] },
+  sandbox: { onSandboxReady: [{ command: "uv sync", timeoutMs: 600_000 }] },
 };
 
 // Nothing to pre-copy from the host: the only node_modules in this repo is the
