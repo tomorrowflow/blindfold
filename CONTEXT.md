@@ -79,11 +79,18 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   - **L1** — deterministic regex/PII detection (emails, phones, IBANs, IDs).
   - **L2** — the curated entity-graph dictionary, matched 4-pass (exact, normalized,
     fuzzy, first-name ambiguity), German-aware.
-  - **L3** — local-LLM **candidate-span adjudication** (Ollama), run only on spans
-    the deterministic passes can't resolve.
+  - **L3** — **candidate-span adjudication**, run only on spans the deterministic
+    passes can't resolve. L3 names the *role*, not a model choice: any on-device
+    implementation behind the adjudicator seam (LLM via Ollama today; a small
+    local classifier or a cascade tomorrow) is L3. Full-document ML detection is
+    *not* L3 — that would be a new concept requiring its own term and ADR
+    (ADR-0003 rejected it deliberately).
 - **Candidate span** — a flagged span (unknown capitalized token, fuzzy near-miss,
   ambiguous first name) handed to L3, plus minimal context. L3 cost scales with the
-  number of candidate spans, not payload size.
+  number of candidate spans, not payload size. A span already occupied by an
+  injected **surrogate** is never a candidate span — L3 adjudicates unknown real-world
+  referents, not our own fakes. The exclusion is position-scoped: the same string
+  at a different, unoccupied position can still be a candidate.
 - **Hop** — a single message within a request (system prompt, a user turn, or a
   **tool-result** message). Blindfold rewrites every hop, not just the first prompt.
 - **Workspace** — the scoping unit for team access (RBAC), disambiguation context,
@@ -99,10 +106,29 @@ to add it via `/grill-with-docs`, not to invent a synonym.
 - **Learning loop** — review actions feed the system: **confirm** grows the entity
   graph; **reject** grows the **allowlist**. Bidirectional; makes detection more
   deterministic over time.
-- **Allowlist** — learned tokens marked NOT sensitive (e.g. a code identifier
-  mis-flagged as a name), so they're never blindfolded again.
+- **Allowlist** — tokens marked NOT sensitive (e.g. a code identifier
+  mis-flagged as a name), so they're never flagged as candidates again. Entries
+  arrive two ways: **learned** (a reject verdict from the review inbox) and
+  **seeded** (a curated list of common framework/code tokens shipped with
+  Blindfold). Both carry identical semantics; a registered **Term** always wins
+  over an allowlist entry — the allowlist suppresses novelty discovery, never
+  protection.
+- **Declared tool vocabulary** — the tool names a request itself declares in its
+  tool schemas. Suppressed from L3 candidacy for that request only —
+  session-scoped, never persisted into the **allowlist** (a request must not be
+  able to permanently poison learning by declaring a tool named after a person).
+- **Suppression** — ruling a token out of L3 adjudication (allowlist, declared
+  tool vocabulary, stopwords). Always token-granularity: a region (system
+  prompt, code fence) may inform heuristics but is never skipped wholesale.
+  Suppression never affects L1/L2 protection — a suppressed token that is a
+  known entity is still blindfolded.
 - **Closed-world restore** — restore only surrogates actually injected for this
-  exchange, to avoid restoring a coincidentally-emitted lookalike.
+  exchange, to avoid restoring a coincidentally-emitted lookalike. Closed-world
+  constrains the *referent set*, not the string match: an injected surrogate
+  carrying a bounded morphological suffix (e.g. German genitive "-s") is still
+  in-world and restores with the suffix transferred to the real value; a string
+  that merely *contains* an injected surrogate as a sub-token of an unrelated
+  word is out-of-world and is never restored.
 - **Egress** — a boundary where data leaves the local machine. Two distinct kinds:
   (1) **Provider egress** — a *blindfolded* payload leaving for the upstream provider
   (`upstream.send_*` / the streaming request); the **pre-egress leak gate** sits here
