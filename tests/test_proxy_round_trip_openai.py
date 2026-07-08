@@ -26,7 +26,12 @@ import json
 import httpx
 import pytest
 
-from blindfold.app import app, get_upstream_client, get_workspace_policies
+from blindfold.app import (
+    app,
+    get_openai_upstream_client,
+    get_upstream_client,
+    get_workspace_policies,
+)
 from blindfold.policy import DEFAULT_WORKSPACE, WorkspacePolicies
 from blindfold.store import vendored_seed_repository
 from blindfold.surrogates import SurrogateMapping
@@ -110,7 +115,7 @@ async def test_chat_completions_round_trip_blindfolds_every_hop_and_restores_for
         ],
     }
     recorded: list[httpx.Request] = []
-    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(
+    app.dependency_overrides[get_openai_upstream_client] = lambda: _make_stub_upstream(
         scripted_response, recorded
     )
     app.dependency_overrides[get_workspace_policies] = _deterministic_only_policies
@@ -174,7 +179,7 @@ async def test_chat_completions_restore_is_closed_world_for_coincidental_lookali
         ]
     }
     recorded: list[httpx.Request] = []
-    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(
+    app.dependency_overrides[get_openai_upstream_client] = lambda: _make_stub_upstream(
         scripted_response, recorded
     )
     app.dependency_overrides[get_workspace_policies] = _deterministic_only_policies
@@ -202,6 +207,66 @@ async def test_chat_completions_restore_is_closed_world_for_coincidental_lookali
 
 
 @pytest.mark.anyio
+async def test_chat_completions_egresses_to_dedicated_upstream_while_messages_stays_shared():
+    # Issue #76 (transport sliver of #37): with a dedicated OpenAI upstream client
+    # wired, chat-completions egress goes there while /v1/messages keeps egressing to
+    # the shared upstream -- two independent stub upstreams prove neither request
+    # crosses into the other's egress.
+    chat_completions_response = {
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": "ok from openai upstream"},
+                "finish_reason": "stop",
+            }
+        ]
+    }
+    messages_response = {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "ok from shared upstream"}],
+    }
+    chat_recorded: list[httpx.Request] = []
+    messages_recorded: list[httpx.Request] = []
+    app.dependency_overrides[get_openai_upstream_client] = lambda: _make_stub_upstream(
+        chat_completions_response, chat_recorded
+    )
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(
+        messages_response, messages_recorded
+    )
+    app.dependency_overrides[get_workspace_policies] = _deterministic_only_policies
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            chat_resp = await client.post(
+                "/v1/chat/completions",
+                json={
+                    "model": "gpt-4o-mini",
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+            )
+            messages_resp = await client.post(
+                "/v1/messages",
+                json={
+                    "model": "claude-3",
+                    "max_tokens": 16,
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert chat_resp.status_code == 200
+    assert messages_resp.status_code == 200
+    # Each request egressed exactly to its own stubbed upstream, never the other's.
+    assert len(chat_recorded) == 1
+    assert len(messages_recorded) == 1
+
+
+@pytest.mark.anyio
 async def test_chat_completions_forwards_client_auth_token_upstream():
     scripted_response = {
         "choices": [
@@ -213,7 +278,7 @@ async def test_chat_completions_forwards_client_auth_token_upstream():
         ]
     }
     recorded: list[httpx.Request] = []
-    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(
+    app.dependency_overrides[get_openai_upstream_client] = lambda: _make_stub_upstream(
         scripted_response, recorded
     )
     try:

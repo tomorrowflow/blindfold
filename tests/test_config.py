@@ -82,3 +82,39 @@ def test_settings_ollama_model_defaults_to_empty_string(monkeypatch):
 def test_settings_ollama_model_is_read_from_env(monkeypatch):
     monkeypatch.setenv("BLINDFOLD_OLLAMA_MODEL", "llama3.1")
     assert get_settings().ollama_model == "llama3.1"
+
+
+def test_settings_openai_upstream_base_url_defaults_to_empty_string(monkeypatch):
+    # Empty means "not set" — the OpenAI chat-completions path falls back to the
+    # shared BLINDFOLD_UPSTREAM_BASE_URL (issue #76, transport sliver of #37).
+    monkeypatch.delenv("BLINDFOLD_OPENAI_UPSTREAM_BASE_URL", raising=False)
+    assert get_settings().openai_upstream_base_url == ""
+
+
+def test_settings_openai_upstream_base_url_is_overridable_via_env(monkeypatch):
+    monkeypatch.setenv(
+        "BLINDFOLD_OPENAI_UPSTREAM_BASE_URL", "http://openai-upstream.internal"
+    )
+    assert (
+        get_settings().openai_upstream_base_url == "http://openai-upstream.internal"
+    )
+
+
+def test_openai_upstream_client_falls_back_to_shared_when_dedicated_var_unset(
+    monkeypatch,
+):
+    monkeypatch.delenv("BLINDFOLD_OPENAI_UPSTREAM_BASE_URL", raising=False)
+    monkeypatch.setenv("BLINDFOLD_UPSTREAM_BASE_URL", "http://shared.test")
+    settings = get_settings()
+    client = UpstreamClient.from_openai_settings(settings)
+    assert client.base_url == "http://shared.test"
+
+
+def test_openai_upstream_client_uses_dedicated_var_when_set(monkeypatch):
+    monkeypatch.setenv("BLINDFOLD_UPSTREAM_BASE_URL", "http://shared.test")
+    monkeypatch.setenv(
+        "BLINDFOLD_OPENAI_UPSTREAM_BASE_URL", "http://openai-upstream.test"
+    )
+    settings = get_settings()
+    client = UpstreamClient.from_openai_settings(settings)
+    assert client.base_url == "http://openai-upstream.test"

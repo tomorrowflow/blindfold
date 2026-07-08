@@ -136,3 +136,29 @@ def test_run_server_refuses_a_cloud_model_before_starting_the_asgi_server():
         )
 
     assert calls == []
+
+
+# ---------------------------------------------------------------------------
+# 3. Startup logs the effective OpenAI upstream base URL (issue #76, no secrets)
+# ---------------------------------------------------------------------------
+
+
+def test_run_server_logs_the_shared_upstream_when_dedicated_var_unset(caplog):
+    settings = Settings(upstream_base_url="http://shared.test")
+
+    with caplog.at_level("INFO"):
+        run_server(settings=settings, runner=lambda app, **kwargs: None)
+
+    assert "http://shared.test" in caplog.text
+
+
+def test_run_server_logs_the_dedicated_openai_upstream_when_set(caplog):
+    settings = Settings(
+        upstream_base_url="http://shared.test",
+        openai_upstream_base_url="http://openai-upstream.test",
+    )
+
+    with caplog.at_level("INFO"):
+        run_server(settings=settings, runner=lambda app, **kwargs: None)
+
+    assert "http://openai-upstream.test" in caplog.text

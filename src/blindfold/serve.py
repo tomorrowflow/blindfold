@@ -13,6 +13,7 @@ there is no opt-in here).
 
 from __future__ import annotations
 
+import logging
 from typing import Callable
 
 import uvicorn
@@ -20,6 +21,8 @@ import uvicorn
 from .config import Settings, get_settings
 from .ollama import is_cloud_model
 from .transit import TransitClient
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8000
@@ -98,6 +101,11 @@ def run_server(
     guard before starting the server so a misconfigured deploy never has the ASGI
     server accept traffic in the first place.
     """
+    settings = settings or get_settings()
     refuse_if_root_token(settings, transit_client=transit_client)
     refuse_if_cloud_model(settings)
+    logger.info(
+        "blindfold_startup: openai_upstream_base_url=%s",
+        settings.effective_openai_upstream_base_url,
+    )
     runner(APP_TARGET, host=host, port=port)
