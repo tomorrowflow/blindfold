@@ -231,3 +231,64 @@ async def test_novel_only_prompt_round_trips_with_no_seeded_entity_present():
     # here as garbage entries with no relation to "Priya Nadkarni"/"Ravi Deshmukh").
     inbox_reals = {item.real for item in inbox.list()}
     assert inbox_reals == {"Priya", "Nadkarni", "Ravi", "Deshmukh", "Tuesday"}
+
+
+@pytest.mark.anyio
+async def test_novel_entity_sharing_a_word_with_an_unrelated_seed_surrogate_is_blindfolded():
+    # Guard over-broadness check: the fix for issue #68 must key off surrogates
+    # *actually present in this exchange's result text*, not merely "any word that
+    # ever appeared in any surrogate this (process-global, ADR-0003) mapping has
+    # ever minted". "Vogt" is the second word of "Bernhard Vogt" -- the seed
+    # surrogate for seeded entity "Martin Bach" (store/_mint.py pool order 0) --
+    # but that seed surrogate is never present in *this* exchange's text at all: no
+    # seeded entity is mentioned. A genuinely novel real person who happens to
+    # share the surname "Vogt" must still be discovered and blindfolded by L3 --
+    # a guard keyed on the mapping's full (org-graph-wide) surrogate vocabulary,
+    # decomposed into individual words, would wrongly treat "Vogt" as an
+    # already-injected surrogate fragment and skip it, leaking the real surname to
+    # egress (clause A violation) even though it belongs to an unrelated referent.
+    mapping = _seeded_mapping()
+    inbox = ReviewInbox()
+    adjudicator = _ConfirmAnyNameShapedTokenAdjudicator()
+    detector = L3Detector(adjudicator)
+
+    recorded: list[httpx.Request] = []
+    audit_log = get_audit_log()
+    audit_log.records.clear()
+    app.dependency_overrides[get_upstream_client] = lambda: _make_echo_upstream(recorded)
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_review_inbox] = lambda: inbox
+    app.dependency_overrides[get_l3_detector] = lambda: detector
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            resp = await client.post(
+                "/v1/messages",
+                json={
+                    "model": "m",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "Please schedule a call with Petra Vogt tomorrow.",
+                        }
+                    ],
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+
+    # Clause A: the real surname must never reach egress, even though it happens
+    # to share a word with an unrelated seed surrogate.
+    assert len(recorded) == 1
+    egressed = recorded[0].content.decode("utf-8")
+    assert "Petra" not in egressed
+    assert "Vogt" not in egressed
+
+    # Clause B: closed-world restore hands the real name back to the client.
+    body = resp.json()
+    restored_text = body["content"][0]["text"]
+    assert "Petra Vogt" in restored_text

@@ -235,17 +235,22 @@ def _blindfold_text(
         # namespace (ADR-0022, issue #68). Without this, L3 re-blindfolds the
         # surrogate L2/L1 just injected, and restore only un-nests the L3 layer,
         # leaving the original surrogate stranded and unresolved.
-        injected_surrogate_words = _injected_surrogate_words(mapping, session, inbox)
+        injected_surrogate_ranges = _injected_surrogate_ranges(
+            result, mapping, session, inbox
+        )
         # Re-resolve candidate offsets against the current ``result`` because L2/L1
         # have already rewritten the text out from under L3's original start/end.
         spans: list[tuple[int, int, str, str]] = []
         for candidate, decision in adjudications:
             if not decision.is_entity:
                 continue
-            if candidate.text in injected_surrogate_words:
-                continue
             hit = result.find(candidate.text)
             if hit == -1:
+                continue
+            if any(
+                hit >= start and hit + len(candidate.text) <= end
+                for start, end in injected_surrogate_ranges
+            ):
                 continue
             item = inbox.upsert(candidate.text, candidate.context)
             spans.append(
@@ -259,39 +264,45 @@ def _blindfold_text(
     return result
 
 
-def _injected_surrogate_words(
-    mapping: SurrogateMapping, session: ExchangeSession, inbox: ReviewInbox
-) -> frozenset[str]:
-    """Every token L3 must refuse to treat as a fresh novel candidate.
+def _injected_surrogate_ranges(
+    result: str, mapping: SurrogateMapping, session: ExchangeSession, inbox: ReviewInbox
+) -> list[tuple[int, int]]:
+    """Character ranges in ``result`` a candidate must fall entirely inside to be
+    refused as a fresh novel candidate — i.e. where an already-injected surrogate
+    literally occurs *in this exchange's text*.
 
-    ``select_candidate_spans`` flags single capitalized tokens, but an injected
-    surrogate is usually multi-word (e.g. ``"Bernhard Vogt"``), so each namespace
-    value is decomposed into its individual words as well as kept whole. Spans
-    every surrogate namespace an already-injected surrogate can come from
-    (ADR-0022, issue #68):
-    - surrogates this ``mapping`` has already issued (seed + PII-minted; this
-      already covers a cold-start person/term/org pool entry once it has actually
-      been seeded for a real referent),
-    - surrogates already recorded in ``session`` for this exchange,
-    - provisional surrogates the review inbox has actually minted (this and prior
-      exchanges — the inbox is process-global).
+    Spans every surrogate namespace an already-injected surrogate can come from
+    (ADR-0022, issue #68): surrogates this ``mapping`` has already issued (seed +
+    PII-minted), surrogates already recorded in ``session`` for this exchange, and
+    provisional surrogates the review inbox has actually minted (this and prior
+    exchanges — the inbox is process-global).
 
-    Deliberately keyed on surrogates *actually issued/injected*, not the full
-    static pool constants: a pool has unused slots (e.g. the next cold-start name
-    never yet assigned to any referent), and a genuinely novel candidate can
-    coincidentally share a word with one (e.g. "Iris" vs. the unused pool entry
-    "Iris Hartmann"). Excluding the whole pool regardless of use would silently
-    skip blindfolding that novel candidate — an un-blindfolded real entity
-    reaching egress, exactly the privacy bug this project treats as unacceptable.
+    Keyed on where those surrogate values actually appear in ``result``, not on a
+    global decomposition into individual words: ``select_candidate_spans`` flags
+    single capitalized tokens, but an injected surrogate is usually multi-word
+    (e.g. ``"Bernhard Vogt"``), and word-level set membership would also match an
+    unrelated real value that merely shares a word with *some* surrogate this
+    (process-global) mapping has ever minted for a different referent — e.g. a
+    genuinely novel "Petra Vogt" colliding with the unrelated seed surrogate
+    "Bernhard Vogt". That would silently skip blindfolding the real surname,
+    exactly the privacy bug this project treats as unacceptable. Requiring the
+    candidate's own hit position to fall inside an actual occurrence of the full
+    surrogate value in ``result`` keeps the multi-word/single-token match without
+    that global word-collision risk.
     """
     values: set[str] = set(mapping.known_surrogates())
     values.update(session.injected)
     values.update(item.provisional_surrogate for item in inbox.list())
-    words: set[str] = set()
+    ranges: list[tuple[int, int]] = []
     for value in values:
-        words.add(value)
-        words.update(value.split())
-    return frozenset(words)
+        start = 0
+        while True:
+            idx = result.find(value, start)
+            if idx == -1:
+                break
+            ranges.append((idx, idx + len(value)))
+            start = idx + 1
+    return ranges
 
 
 def restore_response(
