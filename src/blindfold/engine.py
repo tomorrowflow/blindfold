@@ -14,8 +14,10 @@
 from __future__ import annotations
 
 import copy
+import functools
 import hashlib
 import logging
+import re
 from collections.abc import Callable
 from typing import Any
 
@@ -360,13 +362,44 @@ def restore_chat_completion(
     return out
 
 
+# ADR-0024: the closed set of German morphological suffixes restore transfers onto
+# the real value. A reviewed list — growing it is a code change with tests, not a
+# runtime tuning knob. Longest-first so alternation prefers "en"/"'s" over their
+# single-character prefixes.
+_SUFFIXES: tuple[str, ...] = ("'s", "en", "s", "n", "'")
+_MAX_SUFFIX_LEN = max(len(s) for s in _SUFFIXES)
+
+
+@functools.lru_cache(maxsize=None)
+def _surrogate_pattern(surrogate: str) -> re.Pattern[str]:
+    """Word-boundary match for ``surrogate``, optionally followed by one closed-set suffix.
+
+    Boundaries are asserted as "not adjacent to a word character" (``(?<!\\w)`` /
+    ``(?!\\w)``) rather than ``\\b``: a reserved-namespace PII surrogate can start with
+    a non-word character (``"+1-555-0100"``), and plain ``\\b`` only fires on a
+    word/non-word *transition* — it would wrongly refuse to match a phone surrogate
+    preceded by whitespace, since neither side of that position is a word character.
+    The not-adjacent-to-a-word-char form matches whenever the match isn't glued to a
+    longer alphanumeric run on either side, which is what actually kills sub-token
+    over-restoration: a surrogate that is merely a prefix of a longer unrelated word
+    (``"Weber"`` inside ``"Weberei"``) is still followed by a word character, so the
+    whole pattern fails to match at that position — the word is left untouched rather
+    than half-restored.
+    """
+    suffix_alt = "|".join(re.escape(s) for s in _SUFFIXES)
+    return re.compile(rf"(?<!\w){re.escape(surrogate)}(?:{suffix_alt})?(?!\w)")
+
+
 def _restore_text(text: str, session: ExchangeSession) -> str:
     result = text
     # Longest surrogate first for safe exact replacement.
     for surrogate, real in sorted(
         session.injected.items(), key=lambda kv: len(kv[0]), reverse=True
     ):
-        result = result.replace(surrogate, real)
+        result = _surrogate_pattern(surrogate).sub(
+            lambda m, real=real, surrogate=surrogate: real + m.group(0)[len(surrogate):],
+            result,
+        )
     return result
 
 
@@ -403,14 +436,22 @@ class StreamingRestorer:
     Holds back a tail buffer at least as long as the longest injected surrogate so a
     surrogate split across stream chunks is matched and restored before emission. The
     restore stays closed-world: only surrogates recorded in ``session`` are reversed.
+
+    ADR-0024: the tail also carries headroom for the longest closed-set suffix, so a
+    suffix itself split across a chunk boundary isn't judged absent before the rest of
+    it has arrived — that race would emit the bare real value now and a stray suffix
+    character later, silently losing the sub-token distinction the boundary match is
+    there to make.
     """
 
     def __init__(self, session: ExchangeSession) -> None:
         self._session = session
         self._buffer = ""
-        # Tail held back equals the longest injected surrogate; 0 means nothing to
-        # protect (no surrogates injected -> emit chunks unchanged).
-        self._tail = max((len(s) for s in session.injected), default=0)
+        # Tail held back equals the longest injected surrogate plus the longest
+        # possible suffix; 0 means nothing to protect (no surrogates injected -> emit
+        # chunks unchanged).
+        longest_surrogate = max((len(s) for s in session.injected), default=0)
+        self._tail = longest_surrogate + _MAX_SUFFIX_LEN if longest_surrogate else 0
 
     def feed(self, chunk: str) -> str:
         """Buffer ``chunk``, restore in-place, and return the safe prefix to emit."""
@@ -433,19 +474,24 @@ class StreamingRestorer:
     def _restore_prefix(self, safe_len: int) -> tuple[str, int]:
         """Restore the buffer's safe prefix, extending if a match straddles ``safe_len``.
 
-        A surrogate may start within the safe prefix and extend into the tail; in that
-        case we restore the full match (and consume up to its end), preserving the
-        sliding-window invariant.
+        A surrogate (plus a possible closed-set suffix, ADR-0024) may start within the
+        safe prefix and extend into the tail; in that case we restore the full match
+        (and consume up to its end), preserving the sliding-window invariant. Matching
+        against the word-boundary pattern (not a bare substring search) is what lets a
+        candidate starting in the safe prefix correctly resolve its suffix/no-suffix
+        boundary decision — the ``_tail`` headroom guarantees enough trailing buffer is
+        already present to do so conclusively.
         """
         end = safe_len
         for surrogate in sorted(self._session.injected, key=len, reverse=True):
+            pattern = _surrogate_pattern(surrogate)
             search_start = 0
             while search_start < safe_len:
-                hit = self._buffer.find(surrogate, search_start)
-                if hit == -1 or hit >= safe_len:
+                match = pattern.search(self._buffer, search_start)
+                if match is None or match.start() >= safe_len:
                     break
-                end = max(end, hit + len(surrogate))
-                search_start = hit + 1
+                end = max(end, match.end())
+                search_start = match.start() + 1
         restored = _restore_text(self._buffer[:end], self._session)
         return restored, end
 
@@ -496,12 +542,20 @@ def resolution_gate(restored_response: dict[str, Any], session: ExchangeSession)
     in the client-visible restored payload — the safety net that catches a restore miss
     after :func:`restore_response`/:func:`restore_chat_completion` has run.
 
+    Uses the same word-boundary + closed-set-suffix match as restore (ADR-0024, via
+    :func:`_surrogate_pattern`) rather than plain substring containment: a surrogate
+    that is merely a sub-token of an unrelated word (``"Weber"`` inside ``"Weberei"``)
+    was never actually a reference to it, so flagging it here would fail-close a
+    response restore correctly left alone. The gate stays free to be stricter than the
+    restorer in general (that's its job); it just must not be strict on a string that
+    was never a restore target.
+
     The failure is logged at WARNING level naming the offending surrogate before the
     exception is raised, so the operator is warned on a dedicated log surface.
     """
     restored_text = _collect_text(restored_response)
     for surrogate in session.injected:
-        if surrogate in restored_text:
+        if _surrogate_pattern(surrogate).search(restored_text):
             message = f"injected surrogate left unresolved in response: {surrogate!r}"
             logger.warning("resolution_gate: %s", message)
             raise UnresolvedSurrogateError(message)

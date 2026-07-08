@@ -16,6 +16,7 @@ import logging
 import pytest
 
 from blindfold.engine import (
+    ExchangeSession,
     LeakError,
     UnresolvedSurrogateError,
     blindfold_payload,
@@ -141,6 +142,31 @@ def test_resolution_gate_raises_when_an_injected_surrogate_is_left_unresolved():
     anna_surrogate = mapping.surrogate_for("Anna Schmidt")
     # Restore failed to reverse the injected surrogate (it is still client-visible).
     unrestored = {"content": [{"type": "text", "text": f"{anna_surrogate} replied."}]}
+
+    with pytest.raises(UnresolvedSurrogateError):
+        resolution_gate(unrestored, session)
+
+
+def test_resolution_gate_does_not_false_positive_on_a_sub_token_containment():
+    # ADR-0024: restore correctly leaves "Weberei" untouched (surrogate "Weber" is
+    # merely its prefix, not a reference to the surrogate). The resolution gate must
+    # not treat that coincidental substring as a left-unresolved surrogate — it would
+    # otherwise fail-close a benign response that was never a restore target.
+    session = ExchangeSession()
+    session.record("Weber", "Müller")
+    clean = {"content": [{"type": "text", "text": "Die Weberei war geschlossen."}]}
+
+    # Should not raise.
+    resolution_gate(clean, session)
+
+
+def test_resolution_gate_still_raises_when_a_suffixed_surrogate_is_left_unresolved():
+    # A stricter detector than the restorer is fine (issue #75 acceptance criterion),
+    # but it must still catch a genuinely unresolved injected surrogate that carries
+    # a closed-set suffix — not just the bare form.
+    session = ExchangeSession()
+    session.record("Weber", "Müller")
+    unrestored = {"content": [{"type": "text", "text": "Webers report was thorough."}]}
 
     with pytest.raises(UnresolvedSurrogateError):
         resolution_gate(unrestored, session)
