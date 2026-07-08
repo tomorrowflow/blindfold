@@ -140,6 +140,37 @@ def test_pupa_subset_entities_are_literal_substrings_of_their_user_query():
             )
 
 
+def _assert_record_round_trip_is_leak_clean(record: dict[str, Any]) -> None:
+    """Assert clauses A, B, and D for one PUPA record's blindfold -> restore round trip.
+
+    Shared by the bounded and full-corpus tests so the leak-audit assertions live in
+    exactly one place. Clause D (clean verify pass) is enforced inside
+    ``_blindfold_and_round_trip`` via ``leak_gate``/``resolution_gate``.
+    """
+    blinded, mapping, session, restored = _blindfold_and_round_trip(record)
+
+    # Clause A: no real entity value is present in what was about to egress.
+    blinded_text = json.dumps(blinded, ensure_ascii=False)
+    for real in mapping.real_values():
+        assert real not in blinded_text, (
+            f"record {record['conversation_hash']}: real entity {real!r} "
+            "present in the blindfolded outbound payload"
+        )
+
+    # Clause B: the client-visible restored response carries the real values back,
+    # not the surrogates.
+    restored_text = json.dumps(restored, ensure_ascii=False)
+    for surrogate, real in session.injected.items():
+        assert surrogate not in restored_text, (
+            f"record {record['conversation_hash']}: surrogate {surrogate!r} "
+            "still present after restore"
+        )
+        assert real in restored_text, (
+            f"record {record['conversation_hash']}: real value {real!r} "
+            "missing from the restored client response"
+        )
+
+
 def test_pupa_bounded_subset_round_trip_blindfolds_every_record_with_no_leak():
     """The primary corpus property (acceptance criterion #2), bounded for CI speed:
     over the first {_BOUNDED_RECORD_COUNT} PUPA records, every seeded real entity is
@@ -149,31 +180,10 @@ def test_pupa_bounded_subset_round_trip_blindfolds_every_record_with_no_leak():
     assert len(records) == _BOUNDED_RECORD_COUNT
 
     for record in records:
-        blinded, mapping, session, restored = _blindfold_and_round_trip(record)
-
-        # Clause A: no real entity value is present in what was about to egress.
-        blinded_text = json.dumps(blinded, ensure_ascii=False)
-        for real in mapping.real_values():
-            assert real not in blinded_text, (
-                f"record {record['conversation_hash']}: real entity {real!r} "
-                "present in the blindfolded outbound payload"
-            )
-
-        # Clause B: the client-visible restored response carries the real values back,
-        # not the surrogates.
-        restored_text = json.dumps(restored, ensure_ascii=False)
-        for surrogate, real in session.injected.items():
-            assert surrogate not in restored_text, (
-                f"record {record['conversation_hash']}: surrogate {surrogate!r} "
-                "still present after restore"
-            )
-            assert real in restored_text, (
-                f"record {record['conversation_hash']}: real value {real!r} "
-                "missing from the restored client response"
-            )
+        _assert_record_round_trip_is_leak_clean(record)
 
 
-def _docker_style_full_corpus_reason() -> str:
+def _full_corpus_skip_reason() -> str:
     return (
         f"full PUPA corpus run is opt-in — set {_FULL_CORPUS_ENV_VAR}=1 to run all "
         "vendored records (acceptance criterion #3)"
@@ -182,7 +192,7 @@ def _docker_style_full_corpus_reason() -> str:
 
 @pytest.mark.full_pupa_corpus
 @pytest.mark.skipif(
-    not os.environ.get(_FULL_CORPUS_ENV_VAR), reason=_docker_style_full_corpus_reason()
+    not os.environ.get(_FULL_CORPUS_ENV_VAR), reason=_full_corpus_skip_reason()
 )
 def test_pupa_full_corpus_round_trip_is_opt_in_and_leak_clean():
     """Same property as the bounded test, over the WHOLE vendored subset. Opt-in via
@@ -193,19 +203,7 @@ def test_pupa_full_corpus_round_trip_is_opt_in_and_leak_clean():
     assert len(records) > _BOUNDED_RECORD_COUNT  # actually exercises more than the default
 
     for record in records:
-        blinded, mapping, session, restored = _blindfold_and_round_trip(record)
-
-        blinded_text = json.dumps(blinded, ensure_ascii=False)
-        for real in mapping.real_values():
-            assert real not in blinded_text, (
-                f"record {record['conversation_hash']}: real entity {real!r} "
-                "present in the blindfolded outbound payload"
-            )
-
-        restored_text = json.dumps(restored, ensure_ascii=False)
-        for surrogate, real in session.injected.items():
-            assert surrogate not in restored_text
-            assert real in restored_text
+        _assert_record_round_trip_is_leak_clean(record)
 
 
 def test_pupa_corpus_restore_is_closed_world_for_a_cross_record_surrogate():
