@@ -25,6 +25,12 @@ def is_cloud_model(model: str) -> bool:
     return tag.lower().endswith("cloud")
 
 
+# Issue #69: a cold Ollama model load measured 6.35s live (warm ~0.67s); httpx's
+# implicit default (5s) is too tight and spuriously fail-closes the first request
+# after startup/eviction. This is deliberately generous headroom above that measured
+# cold-load figure, not a tuned SLO -- ADR-0022 sets no latency budget for this call.
+DEFAULT_ADJUDICATOR_TIMEOUT_SECONDS = 30.0
+
 _PROMPT_TEMPLATE = (
     "You are adjudicating whether a flagged span of text names a real-world entity "
     "that must be protected: a person's name, an organization/company name, or an "
@@ -44,11 +50,15 @@ class OllamaAdjudicator:
     """
 
     def __init__(
-        self, base_url: str, model: str, http: httpx.Client | None = None
+        self,
+        base_url: str,
+        model: str,
+        http: httpx.Client | None = None,
+        timeout: float = DEFAULT_ADJUDICATOR_TIMEOUT_SECONDS,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model
-        self._http = http or httpx.Client(base_url=self._base_url)
+        self._http = http or httpx.Client(base_url=self._base_url, timeout=timeout)
 
     def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
         prompt = _PROMPT_TEMPLATE.format(context=candidate.context, text=candidate.text)
