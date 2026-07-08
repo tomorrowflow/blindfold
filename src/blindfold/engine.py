@@ -228,11 +228,21 @@ def _blindfold_text(
     # blocking — the request never stalls waiting on the reviewer.
     if l3_detector is not None and inbox is not None:
         adjudications = l3_detector.detect(result, mapping.entities())
+        # A surrogate injected earlier in this same pass (L2 dict match, L1 PII, or
+        # by a prior hop already recorded in ``session``) must never be treated as a
+        # fresh novel candidate — mirrors the L1 PII guard just above
+        # (``mapping.is_known_surrogate``), generalized across every surrogate
+        # namespace (ADR-0022, issue #68). Without this, L3 re-blindfolds the
+        # surrogate L2/L1 just injected, and restore only un-nests the L3 layer,
+        # leaving the original surrogate stranded and unresolved.
+        injected_surrogate_words = _injected_surrogate_words(mapping, session, inbox)
         # Re-resolve candidate offsets against the current ``result`` because L2/L1
         # have already rewritten the text out from under L3's original start/end.
         spans: list[tuple[int, int, str, str]] = []
         for candidate, decision in adjudications:
             if not decision.is_entity:
+                continue
+            if candidate.text in injected_surrogate_words:
                 continue
             hit = result.find(candidate.text)
             if hit == -1:
@@ -247,6 +257,41 @@ def _blindfold_text(
             result = result[:start] + surrogate + result[end:]
             session.record(surrogate, real)
     return result
+
+
+def _injected_surrogate_words(
+    mapping: SurrogateMapping, session: ExchangeSession, inbox: ReviewInbox
+) -> frozenset[str]:
+    """Every token L3 must refuse to treat as a fresh novel candidate.
+
+    ``select_candidate_spans`` flags single capitalized tokens, but an injected
+    surrogate is usually multi-word (e.g. ``"Bernhard Vogt"``), so each namespace
+    value is decomposed into its individual words as well as kept whole. Spans
+    every surrogate namespace an already-injected surrogate can come from
+    (ADR-0022, issue #68):
+    - surrogates this ``mapping`` has already issued (seed + PII-minted; this
+      already covers a cold-start person/term/org pool entry once it has actually
+      been seeded for a real referent),
+    - surrogates already recorded in ``session`` for this exchange,
+    - provisional surrogates the review inbox has actually minted (this and prior
+      exchanges — the inbox is process-global).
+
+    Deliberately keyed on surrogates *actually issued/injected*, not the full
+    static pool constants: a pool has unused slots (e.g. the next cold-start name
+    never yet assigned to any referent), and a genuinely novel candidate can
+    coincidentally share a word with one (e.g. "Iris" vs. the unused pool entry
+    "Iris Hartmann"). Excluding the whole pool regardless of use would silently
+    skip blindfolding that novel candidate — an un-blindfolded real entity
+    reaching egress, exactly the privacy bug this project treats as unacceptable.
+    """
+    values: set[str] = set(mapping.known_surrogates())
+    values.update(session.injected)
+    values.update(item.provisional_surrogate for item in inbox.list())
+    words: set[str] = set()
+    for value in values:
+        words.add(value)
+        words.update(value.split())
+    return frozenset(words)
 
 
 def restore_response(

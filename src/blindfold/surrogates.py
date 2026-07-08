@@ -96,6 +96,15 @@ class SurrogateMapping:
         """
         return value in self._known_surrogates
 
+    def known_surrogates(self) -> frozenset[str]:
+        """Every surrogate this mapping has issued (seeded + PII-minted).
+
+        Exposed for the L3 candidate guard (ADR-0022, issue #68): a surrogate
+        already minted for one hop must never be handed to L3 as a fresh novel
+        candidate on a later hop.
+        """
+        return frozenset(self._known_surrogates)
+
     def retire_surrogate(self, surrogate: str) -> None:
         """Keep a retired surrogate recognized so it is not re-blindfolded if encountered.
 
