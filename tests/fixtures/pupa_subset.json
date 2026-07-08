@@ -1,0 +1,366 @@
+{
+  "_provenance": {
+    "dataset": "Columbia-NLP/PUPA",
+    "dataset_url": "https://huggingface.co/datasets/Columbia-NLP/PUPA",
+    "paper": "PAPILLON: Privacy Preservation from Internet-based and Local Language Model Ensembles (arXiv:2410.17127)",
+    "paper_code": "https://github.com/siyan-sylvia-li/PAPILLON",
+    "license": "MIT (per the dataset card on HuggingFace)",
+    "huggingface_revision_sha": "9981b49b6ced0033988a224b6712895ebf119294",
+    "source_config": "pupa_new",
+    "source_file": "PUPA_New.csv",
+    "source_file_sha256": "72d7659c717706bc987f0d296d9714f63db5e75c6645376ec75380e6638b8f91",
+    "record_count": 40,
+    "selection_methodology": "Deterministic prefix of PUPA_New.csv row order at the pinned revision, after de-duplicating by conversation_hash and keeping only rows whose user_query is 40-1200 chars. Per row, `entities` is extracted from the source `pii_units` column (a `||`-joined list of PII-flagged substrings from the paper's Presidio+LLM pipeline) by: dropping already-redacted `presidio_anonymized_*` placeholder entries, comma-joined multi-item entries, entries <3 or >60 chars, and secret/handle-shaped entries (contain `@`/`://`, or >=4 digits); locating each remaining candidate as a literal, case-insensitive, word-boundary match inside user_query and keeping the exact-cased substring found; and requiring that substring be cleanly re-tokenizable by the same `\\w+` token model blindfold.detection.detect_l2 uses (rejects entities containing punctuation, e.g. curly apostrophes, that would split across an internal token boundary -- a documented boundary of the current L2 dictionary matcher, not a bug this corpus is meant to exercise). First 40 qualifying rows kept. Reproducible against the pinned revision; would need updating only if PUPA_New.csv changes.",
+    "fields_kept": "conversation_hash, predicted_category, user_query, entities. target_response, redacted_query, and the raw pii_units column are intentionally NOT vendored to minimize the footprint of real third-party PII carried into this repo.",
+    "privacy_note": "user_query retains real third-party PII (names, orgs, locations) from the original WildChat-sourced user-LLM interactions, exactly as flagged by the dataset's own PII pipeline. This is the intended reuse the MIT-licensed dataset was published for (privacy-preservation research) -- this issue adopts it as a real-world corpus for Blindfold's leak audit (issue #77). No email/URL/secret-shaped pii_units were promoted into `entities`, though such strings may remain incidentally in the surrounding user_query prose."
+  },
+  "records": [
+    {
+      "conversation_hash": "3c3016b3eeae5650cbcbe2fc50fa27be",
+      "predicted_category": "job, visa, and other applications",
+      "user_query": "Send a friendly e-mail opening to Sara telling her thank you for calling me back so quickly, taking the time to discuss with me FRC's IPAEP, and for your immediate willingness to make reasonable accommodations to help break down the barriers caused by my disabilities so that I can have equal access to your program. Your kindness and compassion is appreicated.",
+      "entities": [
+        "Sara",
+        "IPAEP",
+        "FRC"
+      ]
+    },
+    {
+      "conversation_hash": "60a1ca7745a9cb545c0da0e917af05ab",
+      "predicted_category": "quoted emails and messages",
+      "user_query": "中译英：除此，在我辅导运营的新闻系微信公众号“艺传新闻小助手”中，通过刘的新闻采写、文章排版等实践能够感受到自我们相识以来刘对于新闻专业能力的稳步提升。虽然在专业性表达能力上还有提升的空间，但刘在辅导过程中的理解消化能力是值得肯定的。",
+      "entities": [
+        "艺传新闻小助手"
+      ]
+    },
+    {
+      "conversation_hash": "7fee7c3149e0f30dc005e17e010afdc1",
+      "predicted_category": "financial and corporate info",
+      "user_query": "simplyfy the meaning of \"1. (1) This Act may be called the Income-tax Act, 1961. (2) It extends to the whole of India. (3) Save as otherwise provided in this Act, it shall come into force on the 1st day of April, 1962. \" \" *Amendments made by the Finance Act, 2023, notwithstanding the dates from which they come into effect, have been printed in italics enclosed with bold square brackets. Amendments made by the Finance Act, 2022, coming into force from 1-4-2023 have been printed in italics and enclosed with medium square brackets.",
+      "entities": [
+        "India"
+      ]
+    },
+    {
+      "conversation_hash": "d2254dfb7a20342e6997bc70346ac5cf",
+      "predicted_category": "job, visa, and other applications",
+      "user_query": "@NarendraModi in real life Napisz za mnie zgloszenie i Zgłoś film na jaki temat mam zglosic na youtube",
+      "entities": [
+        "NarendraModi"
+      ]
+    },
+    {
+      "conversation_hash": "fc6d30a33f1855d90349d2a28d1e0310",
+      "predicted_category": "job, visa, and other applications",
+      "user_query": "After the prior steps have been completed, follow below to submit to PacD for review and approval. 1) Click on the \"Save\" button located at the top of the page. 2) Click on the \"Submit\" button also located at the top of the page. If any information is missing or incorrect, the system will throw a validation error, as shown below. Please make the necessary corrections, and then save and submit the form again.",
+      "entities": [
+        "PacD"
+      ]
+    },
+    {
+      "conversation_hash": "fdcef442e48c75e822d587f72a2a60a4",
+      "predicted_category": "financial and corporate info",
+      "user_query": "please translate this into English: \"pero yo hubiera esperado que el llamado a Yoda actualice ese dato, por que si no, no este cambio no tiene mucho sentido, pues estariamos diciendo en algunos registros que el usuario ahora tiene un tipo de subscripcion 24/7 y en otros, que la subcripsion sigue siendo SSEDSM2, con lo cual se estaria rompiendo la integridad del sistema y caeriamos en un 'depende de donde se toma la informacion', basicamente estariamos trabajando con dos sistemas.\"",
+      "entities": [
+        "Yoda"
+      ]
+    },
+    {
+      "conversation_hash": "ca1fc587affc0ccb6dc1457a3c8abb6d",
+      "predicted_category": "financial and corporate info",
+      "user_query": "Boost Your Etsy Sales with Tailored Digital Marketing Strategies, minimalist tone, generate SEO's, tips, how you can sell, strategies, platform to use to sell like stan store, keywords for instagram",
+      "entities": [
+        "stan store"
+      ]
+    },
+    {
+      "conversation_hash": "3e6ce573575a10d350e8053562500303",
+      "predicted_category": "job, visa, and other applications",
+      "user_query": "Breakfast: McDONALDS FOOD CALORIES PROTEIN (g) FATS (g) CARBS (g) Restaurant Total Lunch: WENDY’S FOOD CALORIES PROTEIN (g) FATS (g) CARBS (g) Restaurant Total Dinner: TACO BELL FOOD CALORIES PROTEIN (g) FATS (g) CARBS (g) Restaurant Total Breakfast: Burger King FOOD CALORIES PROTEIN (g) FATS (g) CARBS (g) Restaurant Total Lunch: SUBWAY FOOD CALORIES PROTEIN (g) FATS (g) CARBS (g) Restaurant Total Dinner: K.F.C. FOOD CALORIES PROTEIN (g) FATS (g) CARBS (g) Restaurant Total Day 1 Totals Day 2 Totals Weekend Totals Protein Protein Protein Fats Fats Fats Carbs Carbs Carbs Calories Calories Calories",
+      "entities": [
+        "Burger King",
+        "SUBWAY",
+        "McDONALDS",
+        "TACO BELL"
+      ]
+    },
+    {
+      "conversation_hash": "2c9dd417dd9b5e69152352ec17162741",
+      "predicted_category": "financial and corporate info",
+      "user_query": "ChatGPT is a chatbot from OpenAI that has recently taken the world by storm, and there's a new app that lets you access it on a Mac. Here's how to get started. OpenAI launched ChatGPT in November, built on the company's GPT-3 machine learning models. Companies such as Microsoft have integrated it while others — including Google — fear it. It has various applications to answer questions and generate text, and a new app has appeared that brings it to the Mac menu bar. Created by Jordi Bruin, MacGPT is a macOS app available for free, though people can add their own price to help support the developer. Once a user logs in with their OpenAI credentials, they can click the menu bar icon to start a conversation. It's also possible to assign it a keyboard shortcut to activate MacGPT without needing a mouse or trackpad. 翻译中文",
+      "entities": [
+        "Jordi Bruin"
+      ]
+    },
+    {
+      "conversation_hash": "6d685b426887ab668b83d5b7aae884b4",
+      "predicted_category": "job, visa, and other applications",
+      "user_query": "Dear Ms Sharon , I am Ravikrishnan working as Mechanical manager in Boom General Contractors , I am having 20 + years of experience in construction . with reference to the requirement posted in linkedin , forwarding my resume for yoyr reference , request you to conisder My resume - prepare a mail",
+      "entities": [
+        "linkedin",
+        "Boom General Contractors",
+        "Ravikrishnan",
+        "Ms Sharon"
+      ]
+    },
+    {
+      "conversation_hash": "815d40ee062d5cf2a36c13f12527e45e",
+      "predicted_category": "job, visa, and other applications",
+      "user_query": "Please translate in American English the following Romanian text: “EXCURSIE PENTRU 2 PERSOANE ÎN AUSTRIA (1500 EURO)\"",
+      "entities": [
+        "AUSTRIA"
+      ]
+    },
+    {
+      "conversation_hash": "34ba0ade14625d6c5139cdaf17e4b17c",
+      "predicted_category": "financial and corporate info",
+      "user_query": "Story prompt: It is 1908. Irish author Bram Stoker is made aware of a seemingly insignificant series of short novels that have gained positive attraction. The novels consist of a morally grey heroic figure and their travels across the world. Despite the original character and unique setting, it was everything else that wasn’t original. The hero encountered the likes of Sherlock Holmes, a character created by Sir Arthur Conan Doyle. In other instances, this figure traveled through time with the very same time machine featured in H.G. Wells' story \"The Time Machine\", or perhaps traveled alongside Ebenezer Scrooge. This author even wrote stories where his character and Sherlock Holmes involved in the affairs of the Jane Austen novel \"Pride and Prejudice\" and did battles with Mr. Hyde or encountering Frankenstein’s monster from Mary Shelly's \"Frankenstein\" and Count Dracula, Stoker’s own creation. Instead of being standalone stories, an unknown author had thought to mix his own original ideas with the works of others.",
+      "entities": [
+        "Mary Shelly",
+        "Stoker",
+        "Sir Arthur Conan Doyle",
+        "Jane Austen"
+      ]
+    },
+    {
+      "conversation_hash": "2f0da891b9ef896248b6a997f917e32d",
+      "predicted_category": "job, visa, and other applications",
+      "user_query": "Hi Salar/ Waqas, Well noted. We will arrange for testing once receive the board samples you sent. Would you please also advise the demand and delivery location for measure jig (one free jig per factory location), so that we can send them to you as soon as possible. Thanks for your attention to this matter 是什么意思",
+      "entities": [
+        "Salar",
+        "Waqas"
+      ]
+    },
+    {
+      "conversation_hash": "9452eebb7225144efe8a632822c075e3",
+      "predicted_category": "job, visa, and other applications",
+      "user_query": "New Year’s Eve party in Suffolk County Long Island New York",
+      "entities": [
+        "Suffolk"
+      ]
+    },
+    {
+      "conversation_hash": "da0b9aef8f596959c59211a037d4b8a0",
+      "predicted_category": "healthcare information",
+      "user_query": "1.Why did April feel like she was back in a foster home when she arrived at the Radcliff house? 2.Was the kind of lifestyle the Radcliffs had what April wanted all along? How can you tell? 3.When April introduced Cheryl to the people at the Radcliffs’ gathering, why was April so embarrassed? 4.Why do you think Mother Radcliff wanted April to introduce Cheryl to Heather Langdon? 5.Do you agree with April’s view that “Life is what you make it”, and that she and Cheryl simply worked hard and got to where they were? Or do you agree with Cheryl, who says that they are able to be where they are now because they were lucky and had a lot of opportunities that “…other Indians didn’t get”? Explain why you think that. answer these questions based on chater 9 of the novel “In Search of April Raintree”",
+      "entities": [
+        "Indians"
+      ]
+    },
+    {
+      "conversation_hash": "e81b95fb2d01c26abf6939584f5b5991",
+      "predicted_category": "healthcare information",
+      "user_query": "“Jason is a young man who is a former model and a skilled guitar player. He is friendly, polite, modest, sweet, naive, and impulsive. He is also a trans man who changed his name from Jennifer. He has a fear of thunder and is left-handed. He loves sports and fitness, and he has a lean and muscular body. He is in a loving relationship with someone who inspired his transition. He has brown eyes, dark hair, and a serious expression.” Write a short IMDB profile for Jason as though he were a current actor. Detail the roles he has had over his years in cinema, and what he has brought to each performance.",
+      "entities": [
+        "Jennifer"
+      ]
+    },
+    {
+      "conversation_hash": "9feafae3a2969f3e13672f60f86b4afd",
+      "predicted_category": "job, visa, and other applications",
+      "user_query": "Grace has been in Montana _____ a year. during after since for",
+      "entities": [
+        "Montana"
+      ]
+    },
+    {
+      "conversation_hash": "da550cc7f5dd7fae1c96a5107f63970f",
+      "predicted_category": "healthcare information",
+      "user_query": "Write me an fictional nbc breaking news about an Großgermanisches Reich under Hermann Göring ‘s upcoming war justification on United States of America and England that soon happened",
+      "entities": [
+        "Hermann Göring",
+        "Großgermanisches Reich",
+        "nbc",
+        "United States of America"
+      ]
+    },
+    {
+      "conversation_hash": "acec67e1295a525fe1743b055cfd1423",
+      "predicted_category": "quoted emails and messages",
+      "user_query": "Re-organize this paragraph (Today, I discussed with Prof Wang regard to my paper, and he gives some comments and agrees to submit it)",
+      "entities": [
+        "Prof Wang"
+      ]
+    },
+    {
+      "conversation_hash": "31976483bac1235403fc8fd8819f01ee",
+      "predicted_category": "job, visa, and other applications",
+      "user_query": "What to do if im clicking i feel horny and Monika says Oh! I'm sorry, Daniil. I can only guess how distracting that must be. If it becomes too much. maybe you should take a minute to... Ahem... De-stress... Just make sure you think only about me!",
+      "entities": [
+        "Daniil"
+      ]
+    },
+    {
+      "conversation_hash": "a86c9ccc2f0219b18d9db8f323c8aace",
+      "predicted_category": "quoted emails and messages",
+      "user_query": "wants to send a mail to the customer saying that i checked the mentioned SR below and found that it's with scheduling team now, if you need any update you can contact our Customer Support team at the following: Dell EMC Customer Support Center directly at: USA: 800-SVC4EMC (800-782-4362) Canada: 800-543-4782 Worldwide: <PRESIDIO_ANONYMIZED_PHONE_NUMBER>",
+      "entities": [
+        "Dell EMC"
+      ]
+    },
+    {
+      "conversation_hash": "eeb15753fb16296c028c049ccc7442a1",
+      "predicted_category": "quoted emails and messages",
+      "user_query": "Write a blog post in 2015 where Willy Wonka Candy Company rebrands, reinstating their iconic 1971 logo, while sadly discontinuing the Chocolate Nice Cream, Millionares Shortbread and Creme Brulee chocolate bars, but reassures fans that the traditional Wonka Bar is still available and also suggests trying Laffy Taffy, Nerds and other Wonka products",
+      "entities": [
+        "Willy Wonka Candy Company",
+        "Wonka"
+      ]
+    },
+    {
+      "conversation_hash": "fea2023f4c4b7c760561e024ef1cf83e",
+      "predicted_category": "job, visa, and other applications",
+      "user_query": "The story of the russian company rostelecom",
+      "entities": [
+        "rostelecom"
+      ]
+    },
+    {
+      "conversation_hash": "54e2fe22b90fa6d67074c0dccdf6ead3",
+      "predicted_category": "financial and corporate info",
+      "user_query": "Tell us about the measures of the Government of Nepal in the field of financial policy after covid in detail",
+      "entities": [
+        "Nepal"
+      ]
+    },
+    {
+      "conversation_hash": "2459baae3de4bf1465794ff059a42e8d",
+      "predicted_category": "quoted emails and messages",
+      "user_query": "Dear Davide, Hope you are doing well. He Have a pressure from our client to close this mater ASAP. Now more than 3 months have passed, but no feedback from you regarding expected date for delivery of the PMG under warranty.",
+      "entities": [
+        "Davide"
+      ]
+    },
+    {
+      "conversation_hash": "ffb3c7c1838dcbb0554f08ce7f026a85",
+      "predicted_category": "financial and corporate info",
+      "user_query": "Tell me the location of van Cleef production sites",
+      "entities": [
+        "van Cleef"
+      ]
+    },
+    {
+      "conversation_hash": "2b6c4a14aad4c9cb96f619348cd4f078",
+      "predicted_category": "job, visa, and other applications",
+      "user_query": "A personal statement for the position of a Research Intern for Economic and Social Program at Africa Policy Research Institute",
+      "entities": [
+        "Africa"
+      ]
+    },
+    {
+      "conversation_hash": "87fc8026d0cc18dec5cc33e236c79cbc",
+      "predicted_category": "job, visa, and other applications",
+      "user_query": "přepiš tento text, aby zněl více akademicky: Lindt Nuxor jsou pralinky vyrobené z mléčné čokolády Gianduja – oříškového krému, který se vyrábí v italské oblasti Piedmonte - a uvnitř pralinky se nachází celé jádro lískových oříšků. Na trh byl uveden ve dvou variantách – v mléčné a hořké.",
+      "entities": [
+        "Lindt Nuxor",
+        "Piedmonte"
+      ]
+    },
+    {
+      "conversation_hash": "631c91573f3f0475c1f2a41f43893b3a",
+      "predicted_category": "financial and corporate info",
+      "user_query": "Write a letter in an official tone to the National Bureau of Special Intelligence Control asking after their findings that the signal has data that surveillance means have been used and unlawfully, ask them to submit their findings to the relevant Prosecutor's office whether in Plovdiv or Sofia. Also ask them to 1. Conduct a investigation on the findings and 2. To conduct an investigation and inquiry on GDBOP and the police.",
+      "entities": [
+        "GDBOP",
+        "Plovdiv",
+        "Sofia"
+      ]
+    },
+    {
+      "conversation_hash": "674c3e884cb05d081b69eb34c5951dff",
+      "predicted_category": "job, visa, and other applications",
+      "user_query": "need one Oman's 53rd National Day wishing sultan and Omani nation",
+      "entities": [
+        "Omani",
+        "Oman"
+      ]
+    },
+    {
+      "conversation_hash": "f5d27755b1ea6fbf42364d09df6cf472",
+      "predicted_category": "job, visa, and other applications",
+      "user_query": "rewrite this sentense:Hi TRisha, I hope you are doing well. YEs that's completely normal, no worries, nothing is let to hazard, you will find the full spectrum of your revenue ( variables, bonus, prime d;interessemetns et participations, etc) in your personal profile in People@Renault Bien cordialement, Mickael",
+      "entities": [
+        "TRisha",
+        "Mickael"
+      ]
+    },
+    {
+      "conversation_hash": "60c8dd362c44fe567027acb66a86d5f9",
+      "predicted_category": "healthcare information",
+      "user_query": "Is this overwrought: The disquiet of the three am bustle that only a hospital could generate, other infants crying in distress, machines sounding off alarms, paediatricians rushing to save the lives of fragile babies; Max barely registered it anymore. Lily was finally five months old , and possessing the strength and vitality of the median three month old child. “My bean is now a little cucumber.” he announced as he admired how far she’d progressed, as she unleashed a tiny giggle into the air. Max gave a hearty chuckle as his readjusted the squirming Lily in his lap. “Finally, we’re going home , all the way back to California. And Mr bear her gets the aisle seat , huh?” Max winked at Lily, her entire face enlightening with the promise of a jovial, healthy day, her pulse steady, her respiration clear and sparkling with life. \"Laugh away bean, the sound is glorious, I bet it could actually cure some cancer, send some kids home\" .",
+      "entities": [
+        "Max",
+        "California",
+        "Lily"
+      ]
+    },
+    {
+      "conversation_hash": "2bc9034d3c10d8f0e401658528be4129",
+      "predicted_category": "job, visa, and other applications",
+      "user_query": "I'm using antDesign with ReactJS, i need the second col to have marginTop: '30px' when the screen size is sm or smaller. \"<Row justify=\"space-around\" align=\"middle\"> <Col xs={24} sm={24} md={12}> <p style={{ color: '#5E4AE3', padding: '0' }}> زد من دخلك </p> <Title level={1} style={{ color: '#DDDCDC', marginTop: '-10' }}>قم بالمهام البسيطة وتقاضى الأجر!</Title> <p style={{ color: '#DDDCDC' }}> كل ما عليك فعله هو تقييم الخدمات التجارية عبر الإنترنت وسندفع لك المال مقابل كل تقييم تقوم به، <br /> فقط قم بعمل حساب جديد ويمكنك البدء في تنفيذ المهام على الفور! </p> <Button type=\"primary\" shape=\"round\" size=\"large\" icon={<ArrowRightOutlined />} onClick={showModal}> سجّل الأن </Button> </Col> <Col xs={24} sm={24} md={12}> <img src={heroimg} alt=\"كريبتو تاسكي\" style={{ width: \"100%\", maxHeight: '400px', objectFit: \"cover\" }} /> </Col> </Row>\"",
+      "entities": [
+        "كريبتو تاسكي"
+      ]
+    },
+    {
+      "conversation_hash": "501de111292ef4145c5c80f94d90aaa0",
+      "predicted_category": "job, visa, and other applications",
+      "user_query": "how I can add a date range filter to datatables using Hermawan DataTables library in codeigniter 4",
+      "entities": [
+        "Hermawan"
+      ]
+    },
+    {
+      "conversation_hash": "134b5bd56a85b66d29323680832cf1bc",
+      "predicted_category": "job, visa, and other applications",
+      "user_query": "can you give me a 4 paragraph summary about jonah van beijnen?",
+      "entities": [
+        "jonah van beijnen"
+      ]
+    },
+    {
+      "conversation_hash": "e1baca865c873fb61f8b923c3fe7b503",
+      "predicted_category": "financial and corporate info",
+      "user_query": "Using this promt, can you suggest talking points for how Harold Budd's work shaped communities in LA and also in London with Brian Eno? This fellowship, endowed in honor of Adrienne Fried Block, shall be given to support scholarly research leading to publication on topics that illuminate musical life in large urban communities. Preference shall be given to projects that focus on the interconnections among the groups and organizations present in these metropolitan settings and their participation in the wide range of genres that inform the musical life and culture of their cities.",
+      "entities": [
+        "Adrienne Fried Block",
+        "Brian Eno",
+        "London",
+        "Harold Budd"
+      ]
+    },
+    {
+      "conversation_hash": "22b8e7354dbe36b2762cc314c53ae3c4",
+      "predicted_category": "job, visa, and other applications",
+      "user_query": "write me a clause for resolutation paper our topic is United Nations Commission on Science and Technology for Development (UNCSTD): Ethical considerations in artificial intelligence: Establishing guidelines for responsible AI usage and my country is belarus",
+      "entities": [
+        "belarus"
+      ]
+    },
+    {
+      "conversation_hash": "e6af2690b4622ce2f62bd2ed363861bc",
+      "predicted_category": "job, visa, and other applications",
+      "user_query": "What specifically has drawn me to apply for the role of Associate Africa at Luminate and how does it connect to my professional journey",
+      "entities": [
+        "Luminate"
+      ]
+    },
+    {
+      "conversation_hash": "090bcf3b5450f941bfbfe6ceb615f88b",
+      "predicted_category": "job, visa, and other applications",
+      "user_query": "請翻譯此段英文成中文:This SAMSUNG SOLUTIONS ADDENDUM (“Addendum”) is entered into between Visa Worldwide Pte. Limited (Reg No. 200719281K) (“Visa”)",
+      "entities": [
+        "SAMSUNG",
+        "Visa"
+      ]
+    },
+    {
+      "conversation_hash": "bbb0d5e75d24e51e8d24bd09abd31de4",
+      "predicted_category": "job, visa, and other applications",
+      "user_query": "\"Hello, I'm seeking inspiration for blog content on our sustainable travel website, which focuses on promoting eco-friendly experiences in the breathtaking landscapes of Costa Rica. We aim to inspire travelers to explore Costa Rica responsibly while highlighting initiatives that prioritize conservation and community engagement. Could you please generate blog ideas that showcase unique eco-adventures, sustainable accommodations, local conservation efforts, and tips for responsible travel in Costa Rica? We want our content to resonate with environmentally conscious travelers, offering them valuable insights into immersive experiences that leave a positive impact on both the environment and local communities. Thank you for your creativity and assistance in crafting engaging blog topics that reflect our commitment to sustainable travel in Costa Rica!\"",
+      "entities": [
+        "Costa Rica"
+      ]
+    }
+  ]
+}

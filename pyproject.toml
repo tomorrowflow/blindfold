@@ -33,3 +33,6 @@ packages = ["src/blindfold"]
 pythonpath = ["src"]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = [
+    "full_pupa_corpus: opt-in full-PUPA-corpus leak-audit run (issue #77); set BLINDFOLD_FULL_PUPA_CORPUS=1 or select with -m",
+]
