@@ -44,9 +44,11 @@ _PROMPT_TEMPLATE = (
 class OllamaAdjudicator:
     """Real local-Ollama client behind the :class:`~blindfold.l3.L3Adjudicator` seam.
 
-    Synchronous (the mint pass calls it inline; ADR-0022 sets no latency SLO for this
-    slice). Inject ``http=httpx.Client(transport=httpx.MockTransport(...))`` in tests —
-    the same seam-stub pattern as :class:`~blindfold.transit.TransitClient`.
+    Synchronous (uses ``httpx.Client``); the mint pass runs it off the event loop via
+    ``run_in_threadpool`` (issue #69) so a slow/cold L3 call can't starve other in-flight
+    requests, and ADR-0022 sets no latency SLO for this slice. Inject
+    ``http=httpx.Client(transport=httpx.MockTransport(...))`` in tests — the same
+    seam-stub pattern as :class:`~blindfold.transit.TransitClient`.
     """
 
     def __init__(
