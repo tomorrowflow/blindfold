@@ -41,6 +41,11 @@ discovery is the documented loss) — there is no default carve-out; the operato
 opt in explicitly. The same block path also covers a leak-gate or resolution-gate
 violation: a leak or unresolved surrogate returns the structured block + audit instead
 of a bare 500.
+
+Non-blocking mint pass (issue #69): the mint pass calls a synchronous adjudicator
+(``OllamaAdjudicator`` uses a synchronous ``httpx.Client``), so ``_mint_or_block`` runs
+it via ``run_in_threadpool`` rather than inline — a single slow/cold L3 call no longer
+holds the one uvicorn event loop and starves other in-flight requests.
 """
 
 from __future__ import annotations
@@ -50,6 +55,7 @@ import logging
 from collections.abc import AsyncIterator, Callable
 
 from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
 from .bootstrap import bootstrap_from_vendored_seed
@@ -361,7 +367,7 @@ def _blocked_response(
     )
 
 
-def _mint_or_block(
+async def _mint_or_block(
     mint: Callable[[], tuple[dict, ExchangeSession]],
     workspace: str,
     policy_deterministic_only: bool,
@@ -376,9 +382,16 @@ def _mint_or_block(
     stays agnostic to the Anthropic vs. OpenAI payload shape. The deterministic-only
     pass is audited here so the audit record is written exactly once per request, on
     the one code path that reaches upstream.
+
+    Issue #69 (carved out of the #58 L3-performance umbrella): ``mint`` runs the L3
+    candidate-span adjudicator, a synchronous call (``OllamaAdjudicator`` uses a
+    synchronous ``httpx.Client``). Calling it inline here — as this used to — blocks
+    the one uvicorn event loop for the call's whole duration, starving every other
+    in-flight request. ``run_in_threadpool`` moves the blocking call to a worker
+    thread so the event loop stays free to service other requests concurrently.
     """
     try:
-        result = mint()
+        result = await run_in_threadpool(mint)
     except L3Unavailable as exc:
         return _blocked_response(
             event="blocked-l3-unavailable",
@@ -500,7 +513,7 @@ async def messages(
     policy = policies.for_workspace(workspace)
 
     effective_l3_detector = None if policy.deterministic_only else l3_detector
-    result = _mint_or_block(
+    result = await _mint_or_block(
         lambda: blindfold_payload(payload, mapping, effective_l3_detector, inbox),
         workspace,
         policy.deterministic_only,
@@ -546,7 +559,7 @@ async def chat_completions(
     policy = policies.for_workspace(workspace)
 
     effective_l3_detector = None if policy.deterministic_only else l3_detector
-    result = _mint_or_block(
+    result = await _mint_or_block(
         lambda: blindfold_chat_completions_payload(
             payload, mapping, effective_l3_detector, inbox
         ),

@@ -96,6 +96,21 @@ def test_ollama_adjudicator_propagates_a_local_outage_so_l3_fails_closed():
     assert raised
 
 
+def test_ollama_adjudicator_sets_an_explicit_timeout_not_httpxs_implicit_default():
+    # Issue #69 (carved out of the #58 L3-performance umbrella): a cold Ollama model
+    # load measured 6.35s live, but the production httpx.Client was built with no
+    # explicit timeout, so it inherited httpx's implicit 5s default -- the first
+    # request after startup/eviction raised a timeout, spuriously fail-closing
+    # (l3_unavailable 503) even though nothing was actually wrong. When no ``http``
+    # is injected (the production path), the client's timeout must be explicit and
+    # deliberately longer than httpx's 5s implicit default.
+    adjudicator = OllamaAdjudicator(base_url="http://localhost:11434", model="llama3.1")
+
+    timeout = adjudicator._http.timeout
+    assert timeout.connect > 5.0
+    assert timeout.read > 5.0
+
+
 def test_is_cloud_model_flags_the_colon_cloud_tag_suffix():
     # ADR-0022 local-only invariant: the `:cloud` tag is today's signal that an Ollama
     # model executes remotely, even when the daemon itself is reached over loopback.
