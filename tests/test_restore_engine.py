@@ -164,6 +164,27 @@ def test_restore_does_not_transfer_a_suffix_outside_the_closed_set():
     assert text == "Müllerxyz report."
 
 
+def test_restore_writes_the_real_value_literally_even_with_regex_metacharacters():
+    # Leak-audit clause B: real values are arbitrary user data and may contain regex
+    # replacement-template metacharacters (backslash-group refs, "\g<0>", "$&"). Restore
+    # substitutes via a match callback, so the real value is written verbatim — never
+    # interpreted as a re.sub replacement template (which would corrupt or crash on such
+    # input). Pins that invariant against a future "simplify to pattern.sub(real, ...)".
+    real = r"A\1\g<0>$&B"
+    session = _session_with({"Müller": real})
+
+    provider_response = {
+        "content": [{"type": "text", "text": "Ask Müller, then Müllers file."}]
+    }
+
+    restored = restore_response(provider_response, session)
+
+    text = restored["content"][0]["text"]
+    # Bare occurrence restores to the real value verbatim; the genitive occurrence
+    # transfers the "-s" onto the same verbatim real value.
+    assert text == f"Ask {real}, then {real}s file."
+
+
 def test_restore_does_not_mutate_the_input_response():
     mapping, session = _exchange()
     anna_surrogate = mapping.surrogate_for("Anna Schmidt")
