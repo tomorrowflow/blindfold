@@ -214,6 +214,16 @@ def get_upstream_client() -> UpstreamClient:
     return UpstreamClient.from_settings(get_settings())
 
 
+def get_openai_upstream_client() -> UpstreamClient:
+    """The client ``POST /v1/chat/completions`` egresses through (issue #76).
+
+    Uses the dedicated ``BLINDFOLD_OPENAI_UPSTREAM_BASE_URL`` when set, falling back
+    to the shared upstream var otherwise -- ``/v1/messages`` always uses
+    :func:`get_upstream_client` (the shared var), untouched by this slice.
+    """
+    return UpstreamClient.from_openai_settings(get_settings())
+
+
 def get_review_inbox() -> ReviewInbox:
     return _review_inbox
 
@@ -522,7 +532,7 @@ async def messages(
 @app.post("/v1/chat/completions")
 async def chat_completions(
     request: Request,
-    upstream: UpstreamClient = Depends(get_upstream_client),
+    upstream: UpstreamClient = Depends(get_openai_upstream_client),
     mapping: SurrogateMapping = Depends(get_mapping),
     inbox: ReviewInbox = Depends(get_review_inbox),
     l3_detector: L3Detector = Depends(get_l3_detector),

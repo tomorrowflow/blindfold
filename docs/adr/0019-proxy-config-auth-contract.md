@@ -28,6 +28,7 @@ Two follow-up decisions were deferred to later issues:
 | `ANTHROPIC_BASE_URL` | client → proxy | Claude Code (and other Anthropic SDK clients) redirect to the proxy by setting this. Not read by the proxy itself. |
 | `ANTHROPIC_AUTH_TOKEN` | client → proxy | Credential the client sends; the proxy forwards it upstream without adding its own. Not read by the proxy itself. |
 | `BLINDFOLD_UPSTREAM_BASE_URL` | proxy → upstream | Where the proxy forwards blindfolded requests. Defaults to `https://api.anthropic.com`. Overridden in tests to point at a stub upstream. |
+| `BLINDFOLD_OPENAI_UPSTREAM_BASE_URL` | proxy → upstream | Dedicated egress for `/v1/chat/completions` only (issue #76). Empty (default) falls back to `BLINDFOLD_UPSTREAM_BASE_URL`. `/v1/messages` is untouched — always the shared var. |
 
 The proxy **never holds** a separate upstream credential of its own. The inbound
 client credential is the upstream credential.
@@ -56,6 +57,10 @@ headers beyond this pass-through.
   `authorization` headers and assert they arrive at the stub upstream unchanged.
 - **Both v2 deferrals are additive.** When #37 and #38 land, they extend this contract
   rather than replacing it — the env-var names and forwarding list are stable.
+- **Update (issue #76):** the dedicated-base-URL half of the #37 deferral is resolved —
+  `BLINDFOLD_OPENAI_UPSTREAM_BASE_URL` (proxy → upstream, `/v1/chat/completions` only;
+  empty falls back to the shared `BLINDFOLD_UPSTREAM_BASE_URL`, i.e. today's behavior).
+  The inbound-auth-policy half stays parked in #37; header forwarding is unchanged.
 
 ## Alternatives considered
 

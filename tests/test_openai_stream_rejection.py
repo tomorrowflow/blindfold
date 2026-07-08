@@ -26,7 +26,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from blindfold.app import app, get_upstream_client
+from blindfold.app import app, get_openai_upstream_client
 from blindfold.upstream import UpstreamClient
 
 
@@ -45,7 +45,9 @@ def _make_stub_upstream(recorded: list[httpx.Request]) -> UpstreamClient:
 @pytest.mark.anyio
 async def test_chat_completions_rejects_stream_true_with_provider_shaped_error():
     recorded: list[httpx.Request] = []
-    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(recorded)
+    app.dependency_overrides[get_openai_upstream_client] = lambda: _make_stub_upstream(
+        recorded
+    )
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(

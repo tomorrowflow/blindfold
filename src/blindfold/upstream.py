@@ -29,6 +29,16 @@ class UpstreamClient:
     def from_settings(cls, settings: Settings) -> "UpstreamClient":
         return cls(base_url=settings.upstream_base_url)
 
+    @classmethod
+    def from_openai_settings(cls, settings: Settings) -> "UpstreamClient":
+        """Build the client ``POST /v1/chat/completions`` egresses through.
+
+        Uses the dedicated ``BLINDFOLD_OPENAI_UPSTREAM_BASE_URL`` when set (issue #76,
+        transport sliver of #37); falls back to the shared upstream var otherwise, so
+        an unconfigured dedicated var reproduces today's behavior exactly.
+        """
+        return cls(base_url=settings.effective_openai_upstream_base_url)
+
     async def send_messages(
         self, payload: dict, headers: dict[str, str]
     ) -> dict:

@@ -18,6 +18,12 @@ Dev mode (SEC-2 / issue #44):
   BLINDFOLD_DEV_MODE       — explicit opt-in that lets ``blindfold serve`` start
                              against a root Transit token; refused otherwise.
 
+Dedicated OpenAI upstream (transport sliver of #37 / issue #76):
+  BLINDFOLD_OPENAI_UPSTREAM_BASE_URL — where ``POST /v1/chat/completions`` egresses.
+                              Empty (default) means "not set": that path falls back to
+                              the shared ``BLINDFOLD_UPSTREAM_BASE_URL``, i.e. today's
+                              behavior. ``/v1/messages`` always uses the shared var.
+
 L3 / local-Ollama adjudicator (ADR-0022 / issue #57):
   BLINDFOLD_OLLAMA_ADDR    — local Ollama daemon address (default: http://localhost:11434)
   BLINDFOLD_OLLAMA_MODEL   — model tag to adjudicate with; empty means L3 is
@@ -45,6 +51,16 @@ class Settings:
     dev_mode: bool = False
     ollama_addr: str = DEFAULT_OLLAMA_ADDR
     ollama_model: str = ""
+    openai_upstream_base_url: str = ""
+
+    @property
+    def effective_openai_upstream_base_url(self) -> str:
+        """Where ``POST /v1/chat/completions`` egresses (issue #76).
+
+        The dedicated var when set; the shared upstream var otherwise, so an
+        unconfigured dedicated var reproduces today's behavior exactly.
+        """
+        return self.openai_upstream_base_url or self.upstream_base_url
 
 
 def get_settings() -> Settings:
@@ -58,4 +74,5 @@ def get_settings() -> Settings:
         dev_mode=os.environ.get("BLINDFOLD_DEV_MODE", "") not in ("", "0", "false", "False"),
         ollama_addr=os.environ.get("BLINDFOLD_OLLAMA_ADDR", DEFAULT_OLLAMA_ADDR),
         ollama_model=os.environ.get("BLINDFOLD_OLLAMA_MODEL", ""),
+        openai_upstream_base_url=os.environ.get("BLINDFOLD_OPENAI_UPSTREAM_BASE_URL", ""),
     )
