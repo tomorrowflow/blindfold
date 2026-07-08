@@ -35,5 +35,8 @@ Vocabulary follows [`../../CONTEXT.md`](../../CONTEXT.md).
 | [0019](0019-proxy-config-auth-contract.md) | Proxy config & auth contract — env-var split (v1, Anthropic path) | Accepted |
 | [0020](0020-verify-pass-split-into-egress-gates.md) | Split verify pass into a pre-egress leak gate + a post-restore resolution gate (SEC-5/SEC-6) | Accepted |
 | [0021](0021-runnable-entrypoint-loopback-and-root-token-guard.md) | Runnable entry point — loopback-bound default + root-token startup guard (UX-2/SEC-11/SEC-2) | Accepted |
+| [0022](0022-wire-l3-adjudicator-local-ollama.md) | Wire the L3 adjudicator (local Ollama) — single mint-pass, local-only, fail-closed | Accepted |
+| [0023](0023-l3-suppression-token-granularity.md) | L3 suppression for coding-agent traffic — token-granularity only | Accepted |
+| [0024](0024-inflection-robust-restore-bounded-suffixes.md) | Inflection-robust restore — word-boundary matching + bounded German suffix set | Accepted |
 
 New ADRs: copy [`0000-template.md`](0000-template.md), take the next number.

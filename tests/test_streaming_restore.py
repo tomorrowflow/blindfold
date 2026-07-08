@@ -36,6 +36,55 @@ def test_streaming_restore_reassembles_a_surrogate_split_across_two_chunks():
     assert "Bert" not in emitted[0]
 
 
+def test_streaming_restore_transfers_a_closed_set_suffix_split_across_chunks():
+    # ADR-0024: the suffix can itself straddle a chunk boundary; the sliding window
+    # must hold back enough tail to see it before deciding there's no suffix at all.
+    session = _session_with({"Müller": "Weber"})
+    restorer = StreamingRestorer(session)
+
+    emitted: list[str] = []
+    emitted.append(restorer.feed("Report by Müll"))
+    emitted.append(restorer.feed("ers, filed today."))
+    emitted.append(restorer.flush())
+
+    joined = "".join(emitted)
+    assert joined == "Report by Webers, filed today."
+
+
+def test_streaming_restore_holds_back_enough_tail_for_a_suffix_split_mid_suffix():
+    # ADR-0024: the chunk boundary lands *inside* the two-character "en" suffix
+    # itself (after the bare surrogate, before the "n" arrives). A tail sized to only
+    # the surrogate's own length would "confirm" and resolve this occurrence one
+    # character too early, conclude there's no suffix, and leak the bare surrogate
+    # unrestored in this chunk's emitted output.
+    session = _session_with({"Müller": "Weber"})
+    restorer = StreamingRestorer(session)
+
+    emitted: list[str] = []
+    emitted.append(restorer.feed("Report by Müllere"))
+    emitted.append(restorer.feed("n, filed today."))
+    emitted.append(restorer.flush())
+
+    joined = "".join(emitted)
+    assert joined == "Report by Weberen, filed today."
+    assert "Müller" not in joined
+
+
+def test_streaming_restore_leaves_a_sub_token_containment_untouched_across_chunks():
+    # ADR-0024 / DESIGN.md Top Risk #2: "Müller" is a sub-token of the unrelated word
+    # "Müllerei" — must stay untouched even when the word arrives split across chunks.
+    session = _session_with({"Müller": "Weber"})
+    restorer = StreamingRestorer(session)
+
+    emitted: list[str] = []
+    emitted.append(restorer.feed("Die Müll"))
+    emitted.append(restorer.feed("erei war geschlossen."))
+    emitted.append(restorer.flush())
+
+    joined = "".join(emitted)
+    assert joined == "Die Müllerei war geschlossen."
+
+
 def test_streaming_restore_is_closed_world_for_coincidental_lookalikes():
     # Only "Berta Vogel" was injected this exchange. A surrogate-shaped token the
     # provider emits on its own ("Tobias Lehmann") must NOT be restored.
