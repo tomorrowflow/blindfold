@@ -162,8 +162,9 @@ def select_candidate_spans(
     ``declared_tools`` (ADR-0023) suppresses a request's own declared tool
     vocabulary (``tools[].name`` / ``tools[].function.name``) from candidacy for
     that request only — never persisted, never state on this function or its
-    caller. Checked after ``known_surfaces`` so a declared name that is also a
-    registered Term or entity-graph surface is still blindfolded (L2 wins).
+    caller. Suppression only removes L3 novelty discovery: a declared name that
+    is also a registered Term or entity-graph surface is still blindfolded by the
+    deterministic L1/L2 passes, which run before L3 (L2 wins).
     """
     known_surfaces = _known_surfaces(known_entities)
     candidates: list[CandidateSpan] = []
