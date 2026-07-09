@@ -143,9 +143,11 @@ def detect_l2(text: str, entities: list[Entity]) -> list[DetectedSpan]:
     surfaces = _index_surfaces(entities)
     surfaces_normalized = _index_normalized_surfaces(entities)
     fuzzy_surfaces = _fuzzy_surface_index(entities)
-    max_window_tokens = _max_surface_token_count(entities)
+    max_window_tokens = max(
+        _max_surface_token_count(entities), _max_fuzzy_reach_tokens(fuzzy_surfaces)
+    )
     raw: list[DetectedSpan] = []
-    for token_text, token_start, token_end, window_tokens in _walk_token_windows(
+    for token_text, token_start, token_end in _walk_token_windows(
         text, max_window_tokens
     ):
         exact_match = _pick(surfaces.get(token_text))
@@ -160,9 +162,7 @@ def detect_l2(text: str, entities: list[Entity]) -> list[DetectedSpan]:
             pass_name = "first_name" if ambiguous else "normalized"
             raw.append(_span(token_start, token_end, surface, entity, pass_name))
             continue
-        if window_tokens > 1 or token_text.lower() in _STOPWORDS:
-            # Fuzzy surfaces are single-token only (_fuzzy_surface_index skips
-            # multi-token variations), so a multi-token window can never fuzzy-match.
+        if token_text.lower() in _STOPWORDS:
             continue
         fuzzy = _fuzzy_match(token_text, fuzzy_surfaces)
         if fuzzy is not None:
@@ -318,8 +318,10 @@ def _index_normalized_surfaces(
 def _max_surface_token_count(entities: list[Entity]) -> int:
     """Longest known surface's token count, or 1 if there is nothing to match.
 
-    No surface can ever match a window longer than itself, so this is the exact
-    upper bound `_walk_token_windows` needs -- typically <=4 in practice.
+    No exact/normalized surface can ever match a window longer than itself, so this
+    bounds those two passes exactly -- typically <=4 in practice. The fuzzy pass has
+    its own, independent bound (see ``_max_fuzzy_reach_tokens``); the walk must be
+    capped by the larger of the two.
     """
     longest = 1
     for entity in entities:
@@ -328,19 +330,34 @@ def _max_surface_token_count(entities: list[Entity]) -> int:
     return longest
 
 
+def _max_fuzzy_reach_tokens(fuzzy_surfaces: list[tuple[str, Entity, str]]) -> int:
+    """Longest window (in tokens) the fuzzy pass could still match, or 1 if none.
+
+    Fuzzy surfaces are single-token (no spaces, see ``_fuzzy_surface_index``), but
+    a query window can still span *multiple* text tokens and fuzzy-match one --
+    e.g. a typo that inserts whitespace into a name ("Wegner" mistyped as
+    "We gner"). Removing each of a window's ``k - 1`` embedded spaces costs at
+    least one edit apiece (no cheaper operation collapses two characters at once),
+    so a ``k``-token window can only be within ``_FUZZY_MAX_DISTANCE`` edits of a
+    space-free surface when ``k - 1 <= _FUZZY_MAX_DISTANCE``. That bound holds
+    regardless of any exact/normalized surface's own token count.
+    """
+    if not fuzzy_surfaces:
+        return 1
+    return 1 + _FUZZY_MAX_DISTANCE
+
+
 def _walk_token_windows(text: str, max_window_tokens: int):
-    """Yield (joined_text, start, end, window_tokens) for runs of 1..max_window_tokens.
+    """Yield (joined_text, start, end) for runs of 1..max_window_tokens tokens.
 
     Matching against multi-token surfaces ("Enervia AG", "Stefan Wegner") needs the
     detector to consider windows of adjacent tokens, separated by single spaces in
-    the canonical surface form. Capping window length at the longest known surface's
-    token count (``max_window_tokens``) turns the walk from O(n^3) into O(n *
-    max_window_tokens): no surface can ever match a longer window, so the cap is
-    behavior-preserving, not an approximation.
+    the canonical surface form. Capping window length at ``max_window_tokens`` turns
+    the walk from O(n^3) into O(n * max_window_tokens).
     """
     tokens = [(m.group(0), m.start(), m.end()) for m in _TOKEN_RE.finditer(text)]
     for i in range(len(tokens)):
         end_j = min(i + max_window_tokens, len(tokens))
         for j in range(i, end_j):
             joined = " ".join(t[0] for t in tokens[i : j + 1])
-            yield joined, tokens[i][1], tokens[j][2], j - i + 1
+            yield joined, tokens[i][1], tokens[j][2]
