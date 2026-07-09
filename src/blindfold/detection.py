@@ -143,8 +143,11 @@ def detect_l2(text: str, entities: list[Entity]) -> list[DetectedSpan]:
     surfaces = _index_surfaces(entities)
     surfaces_normalized = _index_normalized_surfaces(entities)
     fuzzy_surfaces = _fuzzy_surface_index(entities)
+    max_window_tokens = _max_surface_token_count(entities)
     raw: list[DetectedSpan] = []
-    for token_text, token_start, token_end in _walk_token_windows(text):
+    for token_text, token_start, token_end, window_tokens in _walk_token_windows(
+        text, max_window_tokens
+    ):
         exact_match = _pick(surfaces.get(token_text))
         if exact_match is not None:
             entity, surface, ambiguous = exact_match
@@ -157,7 +160,9 @@ def detect_l2(text: str, entities: list[Entity]) -> list[DetectedSpan]:
             pass_name = "first_name" if ambiguous else "normalized"
             raw.append(_span(token_start, token_end, surface, entity, pass_name))
             continue
-        if token_text.lower() in _STOPWORDS:
+        if window_tokens > 1 or token_text.lower() in _STOPWORDS:
+            # Fuzzy surfaces are single-token only (_fuzzy_surface_index skips
+            # multi-token variations), so a multi-token window can never fuzzy-match.
             continue
         fuzzy = _fuzzy_match(token_text, fuzzy_surfaces)
         if fuzzy is not None:
@@ -310,15 +315,32 @@ def _index_normalized_surfaces(
     return by_norm
 
 
-def _walk_token_windows(text: str):
-    """Yield (joined_text, start, end) for every contiguous run of 1..N tokens.
+def _max_surface_token_count(entities: list[Entity]) -> int:
+    """Longest known surface's token count, or 1 if there is nothing to match.
+
+    No surface can ever match a window longer than itself, so this is the exact
+    upper bound `_walk_token_windows` needs -- typically <=4 in practice.
+    """
+    longest = 1
+    for entity in entities:
+        for surface in (entity.canonical, *entity.variations):
+            longest = max(longest, len(_TOKEN_RE.findall(surface)))
+    return longest
+
+
+def _walk_token_windows(text: str, max_window_tokens: int):
+    """Yield (joined_text, start, end, window_tokens) for runs of 1..max_window_tokens.
 
     Matching against multi-token surfaces ("Enervia AG", "Stefan Wegner") needs the
     detector to consider windows of adjacent tokens, separated by single spaces in
-    the canonical surface form.
+    the canonical surface form. Capping window length at the longest known surface's
+    token count (``max_window_tokens``) turns the walk from O(n^3) into O(n *
+    max_window_tokens): no surface can ever match a longer window, so the cap is
+    behavior-preserving, not an approximation.
     """
     tokens = [(m.group(0), m.start(), m.end()) for m in _TOKEN_RE.finditer(text)]
     for i in range(len(tokens)):
-        for j in range(i, len(tokens)):
+        end_j = min(i + max_window_tokens, len(tokens))
+        for j in range(i, end_j):
             joined = " ".join(t[0] for t in tokens[i : j + 1])
-            yield joined, tokens[i][1], tokens[j][2]
+            yield joined, tokens[i][1], tokens[j][2], j - i + 1
