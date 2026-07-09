@@ -228,20 +228,20 @@ def _fuzzy_surface_index(entities: list[Entity]) -> list[tuple[str, Entity, str]
 def _fuzzy_match(
     token_text: str, fuzzy_surfaces: list[tuple[str, Entity, str]]
 ) -> tuple[Entity, str] | None:
+    """Best Levenshtein-≤2 surface for ``token_text``, or ``None`` if none qualifies.
+
+    Candidacy requires case-sensitive first-character agreement with the surface (see
+    the ``_FUZZY_MIN_SURFACE_LEN`` block for why that is a correctness rule, not a knob).
+    """
     if len(token_text) < _FUZZY_MIN_SURFACE_LEN:
         return None
     needle = _normalize(token_text)
     best: tuple[int, Entity, str] | None = None
     for normalized_surface, entity, surface in fuzzy_surfaces:
         if token_text[0] != surface[0]:
-            # issue #85: case-sensitive first-character agreement. Levenshtein
-            # distance is computed on the case-folded forms, so it alone can't tell
-            # a genuine near-miss ("Wegnerr" of "Wegner") from a lowercase common
-            # token that merely happens to sit within 2 edits of a capitalized name
-            # Variation ("darwin"/"martini"/"marlin" of "Martin") -- typo tolerance
-            # doesn't need a different (or differently-cased) initial letter, so
-            # anchoring on it closes off that whole false-positive class without
-            # narrowing genuine same-case near-misses.
+            # issue #85: distance runs on the case-folded forms, so it alone can't tell
+            # a genuine near-miss ("Wegnerr" of "Wegner") from a lowercase common token
+            # 2 edits from a capitalized Variation ("darwin"/"martini" of "Martin").
             continue
         if abs(len(needle) - len(normalized_surface)) > _FUZZY_MAX_DISTANCE:
             continue
