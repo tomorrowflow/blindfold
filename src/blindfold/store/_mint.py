@@ -60,6 +60,49 @@ _POOLS: dict[str, tuple[str, ...]] = {
     "org_unit": _ORG_POOL,
 }
 
+# Pool for learn-time re-mints (issue #81): once a surrogate has been flattened into
+# ``SurrogateMapping``'s real -> surrogate registry, the referent's original kind
+# (person/term/org_unit) is no longer tracked there, so a replacement can't be drawn
+# from a kind-specific pool. Kept disjoint (distinct given names/word tokens) from
+# every other pool above and from review.py's ``_PROVISIONAL_POOL`` so a replacement
+# never collides with an already-active surrogate from another pool.
+_REPLACEMENT_POOL: tuple[str, ...] = (
+    "Ruth Vollmer",
+    "Wolfgang Ehrlich",
+    "Sabine Krug",
+    "Norbert Beckmann",
+    "Ottilie Rathke",
+    "Kurt Steinmetz",
+    "Waltraud Nickel",
+    "Lorenz Bruckner",
+)
+
+
+def _replacement_pool_entry(position: int) -> str:
+    if position < len(_REPLACEMENT_POOL):
+        return _REPLACEMENT_POOL[position]
+    return f"Replacement Surrogate {position}"
+
+
+def next_replacement_surrogate(
+    start_position: int, known_values: Iterable[str]
+) -> tuple[str, int]:
+    """The first mint-time-disjoint replacement at or after ``start_position``, and
+    the cursor position to resume from on the next call (issue #81).
+
+    Mirrors :func:`_next_provisional` in ``review.py``: walks ``_REPLACEMENT_POOL``
+    (falling back to a numbered surrogate once exhausted), skipping any entry that
+    collides with ``known_values`` -- the same closed-world set the pre-egress leak
+    gate consults -- so a re-minted replacement can never itself be stale on arrival.
+    """
+    known = list(known_values)
+    position = start_position
+    while True:
+        candidate = _replacement_pool_entry(position)
+        position += 1
+        if not collides_with_known_entity(candidate, known):
+            return candidate, position
+
 
 def _pool_entry(kind: str, position: int) -> str:
     """The candidate surrogate at raw ``position`` in ``kind``'s pool (or its numbered

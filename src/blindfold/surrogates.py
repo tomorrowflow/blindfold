@@ -19,6 +19,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from .detection import Entity
+from .store._mint import next_replacement_surrogate
 
 
 def _mint_pii_surrogate(kind: str, index: int) -> str:
@@ -54,6 +55,10 @@ class SurrogateMapping:
         self._by_real: dict[str, str] = {}
         self._known_surrogates: set[str] = set()
         self._pii_counters: dict[str, int] = {}
+        # Learn-time disjointness (issue #81): cursor into store._mint's
+        # replacement pool, shared across every seed() call on this mapping so a
+        # skipped/assigned entry is never reused for a later retirement.
+        self._replacement_pool_position: int = 0
 
     @classmethod
     def from_pairs(cls, pairs: Iterable[tuple[str, str]]) -> "SurrogateMapping":
@@ -64,9 +69,42 @@ class SurrogateMapping:
             mapping.seed(real, surrogate)
         return mapping
 
-    def seed(self, real: str, surrogate: str) -> None:
+    def seed(self, real: str, surrogate: str) -> list[tuple[str, str, str]]:
+        """Seed a real -> surrogate pair; retire any active surrogate ``real``
+        newly invalidates (issue #81, learn-time disjointness).
+
+        When ``real`` is a value this mapping has never seen before (a newly
+        learned entity or Variation, via the learning loop's confirm or a
+        curation edit such as merge), any *other* referent's currently active
+        surrogate that contains ``real`` as a substring is now stale -- the
+        same closed-world set the pre-egress leak gate consults via
+        :meth:`real_values` would flag it the next time that surrogate is
+        injected. Such a surrogate is retired (kept recognized, never reused)
+        and the affected referent is re-minted a disjoint replacement.
+
+        Returns the list of ``(affected_real, retired_surrogate, replacement)``
+        triples so callers/tests can observe what was invalidated; empty when
+        ``real`` isn't new or invalidates nothing.
+        """
+        is_new_real = real not in self._by_real
         self._by_real[real] = surrogate
         self._known_surrogates.add(surrogate)
+
+        invalidated: list[tuple[str, str, str]] = []
+        if not is_new_real or not real:
+            return invalidated
+
+        for other_real, other_surrogate in list(self._by_real.items()):
+            if other_real == real or real not in other_surrogate:
+                continue
+            replacement, self._replacement_pool_position = next_replacement_surrogate(
+                self._replacement_pool_position, self._by_real.keys()
+            )
+            self._known_surrogates.add(other_surrogate)  # retire: stay recognized
+            self._by_real[other_real] = replacement
+            self._known_surrogates.add(replacement)
+            invalidated.append((other_real, other_surrogate, replacement))
+        return invalidated
 
     def mint_pii(self, kind: str, value: str) -> str:
         """Return a stable reserved-namespace surrogate for L1-detected PII.
