@@ -17,7 +17,10 @@ the management-store slice (ADR-0008/0011).
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
+
+from .store._mint import collides_with_known_entity
 
 # Plausible fake names used to mint **provisional** surrogates. Kept disjoint from
 # the cold-start ``store._mint._PERSON_POOL`` so a rejected provisional never collides
@@ -68,28 +71,39 @@ class ReviewInbox:
         # learning loop's two stores (entity graph / allowlist) own re-detection
         # from then on.
         self._by_real: dict[str, str] = {}
-        # Monotonic counter for stable id + surrogate pool index; doesn't reset on
-        # remove() so a removed-then-re-added item still gets a fresh id.
+        # Monotonic counter for stable item ids; doesn't reset on remove() so a
+        # removed-then-re-added item still gets a fresh id.
         self._minted: int = 0
+        # Raw provisional-pool cursor (issue #80): separate from ``_minted`` because
+        # a collision-skipped pool entry consumes a pool position without ever
+        # becoming an item, and skipped entries are never reused for a later item.
+        self._pool_position: int = 0
 
-    def upsert(self, real: str, context: str) -> ReviewItem:
+    def upsert(
+        self, real: str, context: str, known_values: Iterable[str] = ()
+    ) -> ReviewItem:
         """Add (or reuse) a provisional inbox entry for ``real`` and return it.
 
         The provisional surrogate is minted here (not by the engine) so the inbox
         is the single owner of the provisional registry — confirm/reject can
         cleanly promote/drop entries without leaving stale entries in the main
-        ``SurrogateMapping``.
+        ``SurrogateMapping``. Mint-time disjointness (issue #80): ``known_values``
+        is the closed-world set of known entities' canonical names + Variations
+        (the same set the pre-egress leak gate checks); a pool entry that contains
+        one as a substring is skipped, never assigned to any item.
         """
         existing_id = self._by_real.get(real)
         if existing_id is not None:
             return self._items[existing_id]
-        index = self._minted
+        item_id = str(self._minted + 1)
         self._minted += 1
-        item_id = str(index + 1)
+        surrogate, self._pool_position = _next_provisional(
+            self._pool_position, known_values
+        )
         item = ReviewItem(
             id=item_id,
             real=real,
-            provisional_surrogate=_mint_provisional(index),
+            provisional_surrogate=surrogate,
             context=context,
         )
         self._items[item_id] = item
@@ -129,7 +143,21 @@ class Allowlist:
         return frozenset(self._tokens)
 
 
-def _mint_provisional(index: int) -> str:
-    if index < len(_PROVISIONAL_POOL):
-        return _PROVISIONAL_POOL[index]
-    return f"Provisional Surrogate {index}"
+def _provisional_pool_entry(position: int) -> str:
+    if position < len(_PROVISIONAL_POOL):
+        return _PROVISIONAL_POOL[position]
+    return f"Provisional Surrogate {position}"
+
+
+def _next_provisional(
+    start_position: int, known_values: Iterable[str]
+) -> tuple[str, int]:
+    """The first mint-time-disjoint entry at or after ``start_position``, and the
+    cursor position to resume from on the next call (issue #80)."""
+    known = list(known_values)
+    position = start_position
+    while True:
+        candidate = _provisional_pool_entry(position)
+        position += 1
+        if not collides_with_known_entity(candidate, known):
+            return candidate, position

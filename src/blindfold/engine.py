@@ -254,7 +254,9 @@ def _blindfold_text(
                 for start, end in injected_surrogate_ranges
             ):
                 continue
-            item = inbox.upsert(candidate.text, candidate.context)
+            item = inbox.upsert(
+                candidate.text, candidate.context, known_values=mapping.real_values()
+            )
             spans.append(
                 (hit, hit + len(candidate.text), item.provisional_surrogate, candidate.text)
             )

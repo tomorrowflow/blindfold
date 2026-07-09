@@ -63,5 +63,9 @@ def mine_transcripts(
         for candidate, decision in detector.detect(transcript, known_entities):
             if not decision.is_entity:
                 continue
-            proposed.append(inbox.upsert(candidate.text, candidate.context))
+            proposed.append(
+                inbox.upsert(
+                    candidate.text, candidate.context, known_values=mapping.real_values()
+                )
+            )
     return MiningReport(transcripts_scanned=scanned, proposed=proposed)

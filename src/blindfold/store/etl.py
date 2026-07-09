@@ -15,6 +15,7 @@ blind-index columns. The plain ``run_etl`` path leaves those columns NULL.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -30,6 +31,22 @@ _MIGRATIONS_SQL = Path(__file__).with_name("migrations.sql").read_text(encoding=
 
 _KIND_TABLE = {"person": "persons", "term": "terms", "org_unit": "org_units"}
 _KIND_NAME_COL = {"person": "canonical_name", "term": "canonical_name", "org_unit": "name"}
+_ENTITY_KEYS = (("person", "persons"), ("term", "terms"))
+
+
+def _known_entity_values(seed: dict[str, Any]) -> list[str]:
+    """Every canonical name and Variation seeded across persons + terms.
+
+    Mirrors ``VendoredSeedRepository._known_entity_values`` (issue #80) so the
+    Postgres ETL and the in-process repository walk the same mint-time-disjoint
+    pool and compute identical surrogates.
+    """
+    values: list[str] = []
+    for _kind, key in _ENTITY_KEYS:
+        for referent in seed.get(key, []):
+            values.append(referent["canonical_name"])
+            values.extend(referent.get("variations", []))
+    return values
 
 
 async def apply_migrations(conn: asyncpg.Connection) -> None:
@@ -47,6 +64,8 @@ async def load_seed(conn: asyncpg.Connection, seed: dict[str, Any]) -> None:
         ws["name"],
     )
 
+    known_values = _known_entity_values(seed)
+
     for index, person in enumerate(seed.get("persons", [])):
         person_id = await conn.fetchval(
             "INSERT INTO persons (workspace_id, canonical_name) VALUES ($1, $2) "
@@ -62,7 +81,7 @@ async def load_seed(conn: asyncpg.Connection, seed: dict[str, Any]) -> None:
                 person_id,
                 variation,
             )
-        await _store_surrogate(conn, ws_id, "person", person_id, index)
+        await _store_surrogate(conn, ws_id, "person", person_id, index, known_values)
 
     for index, term in enumerate(seed.get("terms", [])):
         term_id = await conn.fetchval(
@@ -79,7 +98,7 @@ async def load_seed(conn: asyncpg.Connection, seed: dict[str, Any]) -> None:
                 term_id,
                 variation,
             )
-        await _store_surrogate(conn, ws_id, "term", term_id, index)
+        await _store_surrogate(conn, ws_id, "term", term_id, index, known_values)
 
     # Org units: the seed lists parents before children, so resolving parent_id by name as
     # we go always finds an already-inserted parent (self-referential FK).
@@ -128,7 +147,12 @@ async def load_seed(conn: asyncpg.Connection, seed: dict[str, Any]) -> None:
 
 
 async def _store_surrogate(
-    conn: asyncpg.Connection, ws_id: int, kind: str, referent_id: int, index: int
+    conn: asyncpg.Connection,
+    ws_id: int,
+    kind: str,
+    referent_id: int,
+    index: int,
+    known_values: Iterable[str] = (),
 ) -> None:
     # DO NOTHING keeps the first-minted surrogate on re-run (E-stable); minting is also
     # deterministic so the value is identical regardless.
@@ -139,7 +163,7 @@ async def _store_surrogate(
         ws_id,
         kind,
         referent_id,
-        mint_surrogate(kind, index),
+        mint_surrogate(kind, index, known_values),
     )
 
 

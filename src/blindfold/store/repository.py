@@ -19,7 +19,7 @@ from ..entity_graph import EntityGraph
 from ..reidentify import InMemoryReIdentificationStore
 from ..relationships import RelationshipStore
 from ..transit import TransitClient
-from ._mint import mint_surrogate
+from ._mint import mint_surrogates
 from ._seed import load_vendored_seed
 
 
@@ -33,6 +33,21 @@ class VendoredSeedRepository:
         """The seed's own workspace slug -- the tag every seeded entity carries."""
         return self._seed.get("workspace", {}).get("slug", "default")
 
+    def _known_entity_values(self) -> list[str]:
+        """Every canonical name and Variation seeded across ALL kinds.
+
+        The closed-world set mint-time disjointness (issue #80) checks a candidate
+        surrogate against -- the same set ``SurrogateMapping.real_values()`` exposes
+        to the pre-egress leak gate, computed upfront (not incrementally) so a
+        referent seeded EARLIER never collides with one seeded LATER either.
+        """
+        values: list[str] = []
+        for _kind, key in (("person", "persons"), ("term", "terms")):
+            for referent in self._seed.get(key, []):
+                values.append(referent["canonical_name"])
+                values.extend(referent.get("variations", []))
+        return values
+
     def _seeded_referents(self) -> Iterator[tuple[str, str, dict[str, Any]]]:
         """(kind, surrogate, referent) for every seeded person/term, in mint order.
 
@@ -41,9 +56,12 @@ class VendoredSeedRepository:
         entity graph, the re-identify store -- mints it here, so they can never
         disagree on one referent's surrogate.
         """
+        known_values = self._known_entity_values()
         for kind, key in (("person", "persons"), ("term", "terms")):
-            for index, referent in enumerate(self._seed.get(key, [])):
-                yield kind, mint_surrogate(kind, index), referent
+            referents = self._seed.get(key, [])
+            surrogates = mint_surrogates(kind, len(referents), known_values)
+            for surrogate, referent in zip(surrogates, referents):
+                yield kind, surrogate, referent
 
     def seeded_pairs(self) -> list[tuple[str, str]]:
         """(real value -> stable surrogate) for every seeded referent.

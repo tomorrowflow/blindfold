@@ -10,9 +10,17 @@ deterministic by (kind, position-in-seed) so that:
 
 Coherent surrogate world / reserved-namespace PII (ADR-0005, leak-audit clause E) is out
 of scope this slice; these are merely plausible, collision-free stand-ins.
+
+Mint-time disjointness (issue #80): a candidate pool/fallback entry is rejected if it
+contains a known entity's canonical name or a Variation as a substring -- the same
+closed-world set the pre-egress leak gate (``engine.leak_gate``) checks via
+``mapping.real_values()``, so mint and gate can never disagree. A rejected entry is
+skipped, never reused for a later referent (:func:`mint_surrogates`).
 """
 
 from __future__ import annotations
+
+from collections.abc import Iterable
 
 _PERSON_POOL: tuple[str, ...] = (
     "Bernhard Vogt",
@@ -53,13 +61,57 @@ _POOLS: dict[str, tuple[str, ...]] = {
 }
 
 
-def mint_surrogate(kind: str, index: int) -> str:
-    """Return the stable surrogate for the ``index``-th referent of ``kind``.
-
-    Deterministic: same (kind, index) always yields the same value. Falls back to a
-    numbered surrogate once the plausible-name pool is exhausted, so it never collides.
+def _pool_entry(kind: str, position: int) -> str:
+    """The candidate surrogate at raw ``position`` in ``kind``'s pool (or its numbered
+    fallback once the pool is exhausted). Pure function of (kind, position) -- no
+    collision-skipping -- so :func:`mint_surrogates` can walk positions deterministically.
     """
     pool = _POOLS.get(kind, ())
-    if index < len(pool):
-        return pool[index]
-    return f"{kind.title()} Surrogate {index}"
+    if position < len(pool):
+        return pool[position]
+    return f"{kind.title()} Surrogate {position}"
+
+
+def collides_with_known_entity(candidate: str, known_values: Iterable[str]) -> bool:
+    """True if ``candidate`` contains any known entity value as a substring.
+
+    Mirrors ``engine.leak_gate``'s own check (``real in outbound_text``) so a
+    candidate that passes here can never trip the leak gate once minted and
+    injected. ``known_values`` is the closed-world set of canonical names and
+    Variations -- the same set ``SurrogateMapping.real_values()`` exposes.
+    """
+    return any(known and known in candidate for known in known_values)
+
+
+def mint_surrogates(kind: str, count: int, known_values: Iterable[str] = ()) -> list[str]:
+    """Return ``count`` deterministic, mint-time-disjoint surrogates for ``kind``, in order.
+
+    Walks the plausible-name pool (falling back to numbered surrogates once exhausted),
+    skipping any entry that collides with ``known_values`` (issue #80). A skipped entry
+    is never reused for a later referent, and every non-colliding entry keeps the exact
+    position it would have had without collision-skipping -- so this is a strict
+    superset-preserving refinement of the old positional ``mint_surrogate``: E-stable
+    for every referent whose assigned entry never collides.
+    """
+    known = list(known_values)
+    result: list[str] = []
+    position = 0
+    while len(result) < count:
+        candidate = _pool_entry(kind, position)
+        position += 1
+        if collides_with_known_entity(candidate, known):
+            continue
+        result.append(candidate)
+    return result
+
+
+def mint_surrogate(kind: str, index: int, known_values: Iterable[str] = ()) -> str:
+    """Return the stable, mint-time-disjoint surrogate for the ``index``-th referent
+    of ``kind``, given the full ``known_values`` closed-world set (issue #80).
+
+    A thin single-referent wrapper over :func:`mint_surrogates` for callers (the
+    Postgres ETL) that mint one referent at a time rather than a whole kind's batch;
+    it recomputes the same deterministic walk from position 0 each call, so it agrees
+    with :func:`mint_surrogates` on every index.
+    """
+    return mint_surrogates(kind, index + 1, known_values)[index]
