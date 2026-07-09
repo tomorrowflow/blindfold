@@ -152,9 +152,10 @@ def select_candidate_spans(
     """Flag the unknown capitalized tokens in ``text``, with minimal context.
 
     Tokens already covered by an entity-graph surface (canonical or any variation)
-    are L2's territory and are NOT re-flagged here. Sentence-starter function words
-    are filtered to keep the candidate set small (a quality optimisation, not a
-    privacy one — L3 would reject "Please" anyway, but pre-filtering saves a call).
+    are L2's territory and are NOT re-flagged here. Closed-class function words
+    (the EN+DE stopword list, ADR-0023) are filtered to keep the candidate set
+    small (a quality optimisation, not a privacy one — L3 would reject "Please"
+    anyway, but pre-filtering saves a call and a content-cache slot).
     Tokens the user has rejected (ADR-0010 allowlist) are filtered too — over-
     redaction is the quality bug the learning loop fixes.
     """
