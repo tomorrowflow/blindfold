@@ -148,6 +148,7 @@ def select_candidate_spans(
     text: str,
     known_entities: list[Entity],
     allowlist: "Allowlist | None" = None,
+    declared_tools: frozenset[str] = frozenset(),
 ) -> list[CandidateSpan]:
     """Flag the unknown capitalized tokens in ``text``, with minimal context.
 
@@ -158,6 +159,11 @@ def select_candidate_spans(
     anyway, but pre-filtering saves a call and a content-cache slot).
     Tokens the user has rejected (ADR-0010 allowlist) are filtered too — over-
     redaction is the quality bug the learning loop fixes.
+    ``declared_tools`` (ADR-0023) suppresses a request's own declared tool
+    vocabulary (``tools[].name`` / ``tools[].function.name``) from candidacy for
+    that request only — never persisted, never state on this function or its
+    caller. Checked after ``known_surfaces`` so a declared name that is also a
+    registered Term or entity-graph surface is still blindfolded (L2 wins).
     """
     known_surfaces = _known_surfaces(known_entities)
     candidates: list[CandidateSpan] = []
@@ -168,6 +174,8 @@ def select_candidate_spans(
         if token in known_surfaces:
             continue
         if allowlist is not None and allowlist.contains(token):
+            continue
+        if token in declared_tools:
             continue
         start, end = match.start(), match.end()
         context = _context_window(text, start, end)
@@ -217,13 +225,16 @@ class L3Detector:
         self._allowlist = allowlist
 
     def detect(
-        self, text: str, known_entities: list[Entity]
+        self,
+        text: str,
+        known_entities: list[Entity],
+        declared_tools: frozenset[str] = frozenset(),
     ) -> list[tuple[CandidateSpan, L3Adjudication]]:
         if self._deterministic_only:
             return []
         results: list[tuple[CandidateSpan, L3Adjudication]] = []
         for candidate in select_candidate_spans(
-            text, known_entities, self._allowlist
+            text, known_entities, self._allowlist, declared_tools
         ):
             cached = self._cache.get(candidate)
             if cached is not None:

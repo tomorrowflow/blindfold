@@ -77,6 +77,8 @@ from .engine import (
     UnresolvedSurrogateError,
     blindfold_chat_completions_payload,
     blindfold_payload,
+    extract_declared_tools_chat_completions,
+    extract_declared_tools_messages,
     leak_gate,
     resolution_gate,
     restore_chat_completion,
@@ -521,8 +523,11 @@ async def messages(
     policy = policies.for_workspace(workspace)
 
     effective_l3_detector = None if policy.deterministic_only else l3_detector
+    declared_tools = extract_declared_tools_messages(payload)
     result = await _mint_or_block(
-        lambda: blindfold_payload(payload, mapping, effective_l3_detector, inbox),
+        lambda: blindfold_payload(
+            payload, mapping, effective_l3_detector, inbox, declared_tools
+        ),
         workspace,
         policy.deterministic_only,
         audit_log,
@@ -567,9 +572,10 @@ async def chat_completions(
     policy = policies.for_workspace(workspace)
 
     effective_l3_detector = None if policy.deterministic_only else l3_detector
+    declared_tools = extract_declared_tools_chat_completions(payload)
     result = await _mint_or_block(
         lambda: blindfold_chat_completions_payload(
-            payload, mapping, effective_l3_detector, inbox
+            payload, mapping, effective_l3_detector, inbox, declared_tools
         ),
         workspace,
         policy.deterministic_only,

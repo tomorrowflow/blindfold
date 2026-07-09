@@ -52,6 +52,7 @@ def blindfold_payload(
     mapping: SurrogateMapping,
     l3_detector: L3Detector | None = None,
     inbox: ReviewInbox | None = None,
+    declared_tools: frozenset[str] = frozenset(),
 ) -> tuple[dict[str, Any], ExchangeSession]:
     """Return a blindfolded copy of an Anthropic Messages ``payload`` plus the session.
 
@@ -62,17 +63,24 @@ def blindfold_payload(
     adjudicator are auto-blindfolded with a provisional surrogate (ADR-0010) and
     recorded in ``inbox`` for async human review (confirm grows the entity graph;
     reject grows the allowlist).
+
+    ``declared_tools`` (ADR-0023, issue #72) is the set of tool names this request
+    itself declares (see :func:`extract_declared_tools_messages`) — suppressed from
+    L3 candidacy for every hop of this request only. Never persisted, never state
+    on ``l3_detector``.
     """
     session = ExchangeSession()
     out = copy.deepcopy(payload)
 
     system = out.get("system")
     if system is not None:
-        out["system"] = _blindfold_system(system, mapping, session, l3_detector, inbox)
+        out["system"] = _blindfold_system(
+            system, mapping, session, l3_detector, inbox, declared_tools
+        )
 
     for message in out.get("messages", []):
         message["content"] = _blindfold_content(
-            message.get("content"), mapping, session, l3_detector, inbox
+            message.get("content"), mapping, session, l3_detector, inbox, declared_tools
         )
 
     return out, session
@@ -83,22 +91,67 @@ def blindfold_chat_completions_payload(
     mapping: SurrogateMapping,
     l3_detector: L3Detector | None = None,
     inbox: ReviewInbox | None = None,
+    declared_tools: frozenset[str] = frozenset(),
 ) -> tuple[dict[str, Any], ExchangeSession]:
     """Return a blindfolded copy of an OpenAI Chat Completions ``payload`` plus the session.
 
     Every hop is rewritten — system / user / assistant / tool messages alike (ADR-0002).
     Mirrors :func:`blindfold_payload`, sharing :func:`_blindfold_text` so a real entity
     that appears in either format produces the same surrogate.
+
+    ``declared_tools`` (ADR-0023, issue #72) — see :func:`extract_declared_tools_chat_completions`.
     """
     session = ExchangeSession()
     out = copy.deepcopy(payload)
 
     for message in out.get("messages", []):
         message["content"] = _blindfold_content(
-            message.get("content"), mapping, session, l3_detector, inbox
+            message.get("content"), mapping, session, l3_detector, inbox, declared_tools
         )
 
     return out, session
+
+
+def extract_declared_tools_messages(payload: dict[str, Any]) -> frozenset[str]:
+    """Extract the declared tool vocabulary from an Anthropic Messages ``payload``.
+
+    Reads ``tools[].name``. Defensive: a missing/non-list ``tools``, a non-dict
+    entry, or an entry without a string ``name`` is ignored — an empty vocabulary
+    reproduces today's behavior exactly (ADR-0023, issue #72).
+    """
+    return _extract_declared_tools(payload, lambda tool: tool.get("name"))
+
+
+def extract_declared_tools_chat_completions(payload: dict[str, Any]) -> frozenset[str]:
+    """Extract the declared tool vocabulary from an OpenAI Chat Completions ``payload``.
+
+    Reads ``tools[].function.name``. Same defensive handling as
+    :func:`extract_declared_tools_messages`.
+    """
+
+    def _name(tool: dict[str, Any]) -> Any:
+        function = tool.get("function")
+        if not isinstance(function, dict):
+            return None
+        return function.get("name")
+
+    return _extract_declared_tools(payload, _name)
+
+
+def _extract_declared_tools(
+    payload: dict[str, Any], get_name: Callable[[dict[str, Any]], Any]
+) -> frozenset[str]:
+    tools = payload.get("tools")
+    if not isinstance(tools, list):
+        return frozenset()
+    names: set[str] = set()
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        name = get_name(tool)
+        if isinstance(name, str):
+            names.add(name)
+    return frozenset(names)
 
 
 def _blindfold_system(
@@ -107,12 +160,13 @@ def _blindfold_system(
     session: ExchangeSession,
     l3_detector: L3Detector | None,
     inbox: ReviewInbox | None,
+    declared_tools: frozenset[str] = frozenset(),
 ) -> Any:
     if isinstance(system, str):
-        return _blindfold_text(system, mapping, session, l3_detector, inbox)
+        return _blindfold_text(system, mapping, session, l3_detector, inbox, declared_tools)
     if isinstance(system, list):
         return [
-            _blindfold_block(block, mapping, session, l3_detector, inbox)
+            _blindfold_block(block, mapping, session, l3_detector, inbox, declared_tools)
             for block in system
         ]
     return system
@@ -124,12 +178,13 @@ def _blindfold_content(
     session: ExchangeSession,
     l3_detector: L3Detector | None,
     inbox: ReviewInbox | None,
+    declared_tools: frozenset[str] = frozenset(),
 ) -> Any:
     if isinstance(content, str):
-        return _blindfold_text(content, mapping, session, l3_detector, inbox)
+        return _blindfold_text(content, mapping, session, l3_detector, inbox, declared_tools)
     if isinstance(content, list):
         return [
-            _blindfold_block(block, mapping, session, l3_detector, inbox)
+            _blindfold_block(block, mapping, session, l3_detector, inbox, declared_tools)
             for block in content
         ]
     return content
@@ -141,17 +196,18 @@ def _blindfold_block(
     session: ExchangeSession,
     l3_detector: L3Detector | None,
     inbox: ReviewInbox | None,
+    declared_tools: frozenset[str] = frozenset(),
 ) -> Any:
     if not isinstance(block, dict):
         return block
     block_type = block.get("type")
     if block_type == "text" and isinstance(block.get("text"), str):
         block["text"] = _blindfold_text(
-            block["text"], mapping, session, l3_detector, inbox
+            block["text"], mapping, session, l3_detector, inbox, declared_tools
         )
     elif block_type == "tool_result":
         block["content"] = _blindfold_content(
-            block.get("content"), mapping, session, l3_detector, inbox
+            block.get("content"), mapping, session, l3_detector, inbox, declared_tools
         )
     elif block_type == "tool_use":
         # Tool-call JSON (issue #11): the assistant's prior tool_use.input is echoed
@@ -159,7 +215,7 @@ def _blindfold_block(
         # and blindfold any real entity inside its structured args so clause A holds
         # across every hop, not just text blocks.
         block["input"] = _blindfold_json_value(
-            block.get("input"), mapping, session, l3_detector, inbox
+            block.get("input"), mapping, session, l3_detector, inbox, declared_tools
         )
     return block
 
@@ -170,18 +226,19 @@ def _blindfold_json_value(
     session: ExchangeSession,
     l3_detector: L3Detector | None,
     inbox: ReviewInbox | None,
+    declared_tools: frozenset[str] = frozenset(),
 ) -> Any:
     """Recursively rewrite every string leaf in a JSON-shaped value via L1+L2."""
     if isinstance(value, str):
-        return _blindfold_text(value, mapping, session, l3_detector, inbox)
+        return _blindfold_text(value, mapping, session, l3_detector, inbox, declared_tools)
     if isinstance(value, dict):
         return {
-            k: _blindfold_json_value(v, mapping, session, l3_detector, inbox)
+            k: _blindfold_json_value(v, mapping, session, l3_detector, inbox, declared_tools)
             for k, v in value.items()
         }
     if isinstance(value, list):
         return [
-            _blindfold_json_value(item, mapping, session, l3_detector, inbox)
+            _blindfold_json_value(item, mapping, session, l3_detector, inbox, declared_tools)
             for item in value
         ]
     return value
@@ -193,6 +250,7 @@ def _blindfold_text(
     session: ExchangeSession,
     l3_detector: L3Detector | None = None,
     inbox: ReviewInbox | None = None,
+    declared_tools: frozenset[str] = frozenset(),
 ) -> str:
     """Rewrite ``text`` by replacing every L2-detected entity span with its surrogate.
 
@@ -229,7 +287,7 @@ def _blindfold_text(
     # land in the review inbox for async human review. Auto-blindfold is non-
     # blocking — the request never stalls waiting on the reviewer.
     if l3_detector is not None and inbox is not None:
-        adjudications = l3_detector.detect(result, mapping.entities())
+        adjudications = l3_detector.detect(result, mapping.entities(), declared_tools)
         # A surrogate injected earlier in this same pass (L2 dict match, L1 PII, or
         # by a prior hop already recorded in ``session``) must never be treated as a
         # fresh novel candidate — mirrors the L1 PII guard just above
