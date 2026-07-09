@@ -64,6 +64,10 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   entity's **surrogate** is **retired** (kept restorable, never deleted). The
   inter-entity counterpart to **coreference**, which resolves variations *within* a
   single entity. _Avoid_: link, dedupe, combine, fold-in.
+- **Retired surrogate** — a surrogate no longer minted into new exchanges but kept
+  permanently restorable and re-identifiable, so historical exchanges never break.
+  Retirement is a one-way state produced by **Merge** (the absorbed entity's
+  surrogate retires); it is never deletion. _Avoid_: deleted, orphaned, stale.
 - **Relationship** — an edge in the entity graph. Drives the **coherent surrogate
   world** and disambiguation. The `relation` label is a **controlled vocabulary**, not
   free text — drift (`employer` vs `works_at` vs `employed-by`) silently breaks the
@@ -99,6 +103,11 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   **Re-identify** resolves only if the referent is tagged to a workspace the caller
   is authorized on. The surrogate stays globally stable (one referent → one
   surrogate everywhere); what is workspace-scoped is the *right to unmask it*.
+- **Novel entity** — an entity encountered in traffic that is not yet in the
+  **entity graph**: not a known entity, not one of its **variations**, not
+  **allowlist**ed. L3's verdict on a **candidate span** decides whether a span
+  denotes one; it enters the world with a **provisional surrogate** and is
+  confirmed or rejected through the **review inbox**.
 - **Review inbox** — the queue of **provisional**ly-blindfolded novel candidates
   awaiting human confirmation.
 - **Provisional surrogate** — the fake auto-minted for a novel entity at request
