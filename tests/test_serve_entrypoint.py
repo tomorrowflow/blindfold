@@ -7,6 +7,9 @@ blindfold/restore/verify-pass/fail-closed request-path invariants are untouched.
 
 from __future__ import annotations
 
+import subprocess
+import sys
+
 import pytest
 
 from blindfold.config import Settings
@@ -162,3 +165,27 @@ def test_run_server_logs_the_dedicated_openai_upstream_when_set(caplog):
         run_server(settings=settings, runner=lambda app, **kwargs: None)
 
     assert "http://openai-upstream.test" in caplog.text
+
+
+def test_run_server_startup_line_reaches_a_real_unconfigured_process():
+    # issue #82: the startup log call landed on a module logger before anything
+    # configures logging, so a real `blindfold serve` launch silently drops it
+    # (Python's logging module has no handler -> no output, INFO or otherwise).
+    # A pytest caplog fixture masks this (it installs its own handler), so this
+    # spawns a bare interpreter with no pytest logging machinery attached at all.
+    script = (
+        "from blindfold.serve import run_server\n"
+        "from blindfold.config import Settings\n"
+        "run_server(\n"
+        "    settings=Settings(upstream_base_url='http://shared.test'),\n"
+        "    runner=lambda app, **kwargs: None,\n"
+        ")\n"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert "http://shared.test" in (result.stdout + result.stderr)
