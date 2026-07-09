@@ -146,6 +146,58 @@ async def test_seed_is_loaded_at_startup_into_the_real_process_allowlist():
     assert "Ollama" in recorded[0].content.decode("utf-8")
 
 
+@pytest.mark.anyio
+async def test_novel_candidate_alongside_seeded_token_still_fail_closes():
+    # Clause F: suppression is token-scoped, not a blanket L3 bypass. A genuine
+    # novel candidate ("Zolfgang") sharing traffic with a seeded token ("Ollama")
+    # must still fail-close when the adjudicator is unavailable -- the seed only
+    # removes *its own* token from candidacy, never the others. Like the startup
+    # test above, this deliberately does NOT override get_l3_detector /
+    # get_allowlist, so the real (test-env) _UnconfiguredAdjudicator adjudicates:
+    # "Ollama" is suppressed by the seed, but "Zolfgang" reaches L3 and blocks.
+    mapping = SurrogateMapping.from_pairs(vendored_seed_repository().seeded_pairs())
+    scripted_response = {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "Acknowledged."}],
+        "model": "claude-3-5-sonnet",
+        "stop_reason": "end_turn",
+    }
+    recorded: list[httpx.Request] = []
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(
+        scripted_response, recorded
+    )
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_review_inbox] = lambda: ReviewInbox()
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            resp = await client.post(
+                "/v1/messages",
+                json={
+                    "model": "m",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "check Ollama and also Zolfgang today.",
+                        }
+                    ],
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    # Fail-closed: the novel candidate could not be scanned, so the request is
+    # blocked rather than egressing an undiscovered entity unscanned.
+    assert resp.status_code == 503
+    # Clause A / F: nothing egressed at all -- not the novel token, not even the
+    # allowlisted one. The block happens before any upstream call.
+    assert recorded == []
+
+
 class _NeverAnEntityAdjudicator:
     """Stub for Ollama: confirms nothing -- isolates this test from the pre-existing,
     unrelated gap where the just-injected surrogate's own sub-tokens get offered to
