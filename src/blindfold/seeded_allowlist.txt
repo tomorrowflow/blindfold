@@ -1,0 +1,35 @@
+# Seeded allowlist (ADR-0023, issue #71). Evidence-first: the exact tokens a real
+# one-shot `claude -p` session minted through the proxy (gemma4:e4b) on 2026-07-09,
+# filtered by the ADR-0023 curation rule -- public vendor/framework/tool identifiers,
+# implausible as a protected referent when unregistered. One token per line; blank
+# lines and #-comments ignored. Semantics identical to a learned reject (ADR-0010):
+# suppresses novelty discovery only, never protection (a registered Term equal to a
+# seeded token is still blindfolded).
+#
+# AI vendors / models
+Claude
+Anthropic
+Sonnet
+Opus
+Haiku
+Fable
+Gemini
+Llama
+Mistral
+Cohere
+Ollama
+#
+# Languages / frameworks / dev infrastructure
+React
+Git
+Linear
+Grafana
+Prisma
+Express
+Tailwind
+Django
+Recharts
+Electron
+Mac
+Windows
+Next
