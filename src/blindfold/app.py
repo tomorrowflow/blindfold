@@ -691,6 +691,13 @@ async def _stream_restored(
     ``StreamingRestorer`` so a surrogate split across upstream chunks is held back
     until matched, and re-emits restored ``content_block_delta`` events.
 
+    A text block's held-back tail is flushed when *that block's own*
+    ``content_block_stop`` arrives (issue #84) — emitted as a ``content_block_delta``
+    addressed to that block's index, before the stop event is forwarded. This keeps
+    Messages-API ordering valid (nothing after a block's own stop, nothing after
+    ``message_stop``) and keeps the restorer from carrying text across a block
+    boundary, since a surrogate can never span two content blocks.
+
     For ``tool_use`` blocks (issue #11), ``input_json_delta`` fragments are held back
     per content_block index, reassembled on ``content_block_stop``, and emitted as
     one restored delta — sliding-window restore over partial_json strings would still
@@ -706,6 +713,10 @@ async def _stream_restored(
     # Per-content-block index → accumulated partial_json fragments. Presence in this
     # dict marks the block as a tool_use whose deltas must be held back.
     tool_use_buffers: dict[int, list[str]] = {}
+    # Indices that have received at least one text_delta and not yet been flushed by
+    # their own content_block_stop (issue #84) -- the restorer's held-back tail must
+    # be attributed to the block it came from, not a hardcoded index.
+    text_block_indices: set[int] = set()
     emitted: list[bytes] = []
     buffer = ""
     async with upstream.stream_messages(blinded, forwarded) as response:
@@ -714,17 +725,19 @@ async def _stream_restored(
             while "\n\n" in buffer:
                 event, buffer = buffer.split("\n\n", 1)
                 async for out in _process_sse_event(
-                    event, restorer, tool_use_buffers, session
+                    event, restorer, tool_use_buffers, text_block_indices, session
                 ):
                     emitted.append(out)
                     yield out
         if buffer.strip():
             async for out in _process_sse_event(
-                buffer, restorer, tool_use_buffers, session
+                buffer, restorer, tool_use_buffers, text_block_indices, session
             ):
                 emitted.append(out)
                 yield out
-        # Flush any held-back tail at end of stream so nothing buffered is lost.
+        # Safety-net flush: every text block's own content_block_stop already flushed
+        # the restorer's held-back tail (see below), so this is a no-op in the normal
+        # case. It only catches a stream that ends without a matching stop event.
         tail = restorer.flush()
         if tail:
             out = _emit_text_delta(tail)
@@ -753,6 +766,7 @@ async def _process_sse_event(
     event: str,
     restorer: StreamingRestorer,
     tool_use_buffers: dict[int, list[str]],
+    text_block_indices: set[int],
     session: ExchangeSession,
 ) -> AsyncIterator[bytes]:
     """Split one SSE event into ``event:`` / ``data:`` lines and rewrite text/tool deltas."""
@@ -780,6 +794,7 @@ async def _process_sse_event(
         index = payload.get("index", 0)
         delta = payload.get("delta", {})
         if delta.get("type") == "text_delta" and isinstance(delta.get("text"), str):
+            text_block_indices.add(index)
             restored_text = restorer.feed(delta["text"])
             if restored_text:
                 yield _emit_text_delta(restored_text, index=index)
@@ -799,6 +814,16 @@ async def _process_sse_event(
             assembled = "".join(tool_use_buffers.pop(index))
             restored_json = _restore_tool_use_json(assembled, session)
             yield _emit_input_json_delta(restored_json, index=index)
+            yield (event + "\n\n").encode("utf-8")
+            return
+        if index in text_block_indices:
+            # Flush this text block's held-back tail -- addressed to its own index,
+            # before forwarding its content_block_stop (issue #84). A surrogate can't
+            # span two content blocks, so the restorer carries nothing into the next.
+            text_block_indices.discard(index)
+            tail = restorer.flush()
+            if tail:
+                yield _emit_text_delta(tail, index=index)
             yield (event + "\n\n").encode("utf-8")
             return
 

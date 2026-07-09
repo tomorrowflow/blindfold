@@ -14,6 +14,12 @@ N/A this slice: C (no coincidental lookalike in this fixture), E reserved-namesp
 G mapping secrecy. F fail-closed: no L3 wired here, so (issue #48, SEC-7) each
 workspace exercised below explicitly opts into the documented deterministic-only
 degrade (ADR-0009) rather than relying on there being no pipeline to fail.
+
+Issue #84 adds a second scenario: a thinking block (index 0) precedes the text block
+(index 1) that carries the split surrogate. Beyond A/B/D above, that test also asserts
+Messages-API ordering -- the synthesized tail delta is addressed to the text block's
+own index and emitted before that block's ``content_block_stop``, never stitched on
+with a hardcoded index after ``message_stop`` has already reached the client.
 """
 
 import json
@@ -149,6 +155,156 @@ async def test_streamed_round_trip_restores_surrogate_split_across_two_chunks():
     assert martin_surrogate not in full
     assert head not in full  # "Hello {head}" was held back until "{tail}" arrived
     # The real value appears in the restored stream.
+    assert martin in full
+
+
+def _parsed_sse_events(raw: bytes) -> list[dict]:
+    """Split raw SSE bytes into their parsed ``data:`` JSON payloads, in wire order."""
+    events = []
+    for event in raw.decode("utf-8").split("\n\n"):
+        if not event.strip():
+            continue
+        data_line = None
+        for line in event.split("\n"):
+            if line.startswith("data:"):
+                data_line = line[len("data:") :].strip()
+        if data_line:
+            events.append(json.loads(data_line))
+    return events
+
+
+@pytest.mark.anyio
+async def test_streamed_text_block_holdback_flushed_at_its_own_stop_with_correct_index():
+    # Issue #84: a response starting with a thinking block (index 0) followed by the
+    # text block (index 1) that carries the surrogate. The held-back tail must be
+    # flushed as part of restoring *that* block -- addressed to index 1, emitted
+    # before that block's own content_block_stop, and therefore well before
+    # message_stop -- never as a hardcoded-index-0 delta stitched on after the whole
+    # upstream stream (including message_stop) has already reached the client.
+    mapping = _seeded_mapping()
+    martin = "Martin Bach"
+    martin_surrogate = mapping.surrogate_for(martin)
+    assert martin_surrogate is not None and martin_surrogate != martin
+
+    head_len = len(martin_surrogate) // 2
+    head, tail = martin_surrogate[:head_len], martin_surrogate[head_len:]
+    chunks = [
+        _sse_event(
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "thinking", "thinking": ""},
+            }
+        ),
+        _sse_event(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": "pondering..."},
+            }
+        ),
+        _sse_event({"type": "content_block_stop", "index": 0}),
+        _sse_event(
+            {
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {"type": "text", "text": ""},
+            }
+        ),
+        _sse_event(
+            {
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {"type": "text_delta", "text": f"Hello {head}"},
+            }
+        ),
+        _sse_event(
+            {
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {"type": "text_delta", "text": f"{tail}, welcome."},
+            }
+        ),
+        _sse_event({"type": "content_block_stop", "index": 1}),
+        _sse_event(
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn"}}
+        ),
+        _sse_event({"type": "message_stop"}),
+    ]
+    recorded: list[httpx.Request] = []
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_streaming_upstream(
+        chunks, recorded
+    )
+    app.dependency_overrides[get_workspace_policies] = lambda: _deterministic_only_policies(
+        DEFAULT_WORKSPACE
+    )
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            received: list[bytes] = []
+            async with client.stream(
+                "POST",
+                "/v1/messages",
+                json={
+                    "model": "claude-3-5-sonnet",
+                    "stream": True,
+                    "messages": [
+                        {"role": "user", "content": f"Greet {martin} for me."}
+                    ],
+                },
+                headers={"x-api-key": "secret-token"},
+            ) as resp:
+                assert resp.status_code == 200
+                async for chunk in resp.aiter_bytes():
+                    received.append(chunk)
+    finally:
+        app.dependency_overrides.clear()
+
+    events = _parsed_sse_events(b"".join(received))
+
+    # The held-back tail must be addressed to the text block's own index (1), never
+    # the thinking block's index (0).
+    text_deltas = [
+        e
+        for e in events
+        if e.get("type") == "content_block_delta"
+        and e.get("delta", {}).get("type") == "text_delta"
+    ]
+    assert text_deltas, "expected at least one restored text_delta"
+    assert all(e["index"] == 1 for e in text_deltas)
+
+    # Messages-API ordering: the synthesized tail delta for block 1 must be emitted
+    # before that block's own content_block_stop, and nothing appears after
+    # message_stop.
+    stop_1_pos = next(
+        i
+        for i, e in enumerate(events)
+        if e.get("type") == "content_block_stop" and e.get("index") == 1
+    )
+    last_text_delta_pos = max(
+        i
+        for i, e in enumerate(events)
+        if e.get("type") == "content_block_delta"
+        and e.get("delta", {}).get("type") == "text_delta"
+    )
+    assert last_text_delta_pos < stop_1_pos
+
+    message_stop_pos = next(
+        i for i, e in enumerate(events) if e.get("type") == "message_stop"
+    )
+    assert message_stop_pos == len(events) - 1
+
+    # --- Clause A: only the surrogate egressed; the real value never crossed the wire. ---
+    assert len(recorded) == 1
+    egressed = recorded[0].content.decode("utf-8")
+    assert martin not in egressed
+    assert martin_surrogate in egressed
+
+    # --- Clause B + D (streaming): real value visible to client, surrogate never is. ---
+    full = b"".join(received).decode("utf-8")
+    assert martin_surrogate not in full
     assert martin in full
 
 
