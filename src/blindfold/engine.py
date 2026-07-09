@@ -83,6 +83,8 @@ def blindfold_payload(
             message.get("content"), mapping, session, l3_detector, inbox, declared_tools
         )
 
+    _blindfold_tools_messages(out.get("tools"), mapping, session)
+
     return out, session
 
 
@@ -108,6 +110,8 @@ def blindfold_chat_completions_payload(
         message["content"] = _blindfold_content(
             message.get("content"), mapping, session, l3_detector, inbox, declared_tools
         )
+
+    _blindfold_tools_chat_completions(out.get("tools"), mapping, session)
 
     return out, session
 
@@ -152,6 +156,51 @@ def _extract_declared_tools(
         if isinstance(name, str):
             names.add(name)
     return frozenset(names)
+
+
+def _blindfold_tools_messages(
+    tools: Any, mapping: SurrogateMapping, session: ExchangeSession
+) -> None:
+    """Rewrite each tool's free-text ``description`` in place (Messages shape, ADR-0023 §3)."""
+    _blindfold_tool_descriptions(tools, mapping, session, lambda tool: tool)
+
+
+def _blindfold_tools_chat_completions(
+    tools: Any, mapping: SurrogateMapping, session: ExchangeSession
+) -> None:
+    """Rewrite each tool's free-text ``description`` in place (Chat Completions shape)."""
+    _blindfold_tool_descriptions(
+        tools, mapping, session, lambda tool: tool.get("function")
+    )
+
+
+def _blindfold_tool_descriptions(
+    tools: Any,
+    mapping: SurrogateMapping,
+    session: ExchangeSession,
+    get_container: Callable[[dict[str, Any]], Any],
+) -> None:
+    """Rewrite the free-text ``description`` field ``get_container`` locates, in place.
+
+    Deterministic-only (L1+L2 via :func:`_blindfold_text` with no ``l3_detector``/
+    ``inbox``): L3 candidate-span adjudication never runs over tool schema prose
+    (ADR-0023 §3). A registered Term hits the same :class:`SurrogateMapping`, so it
+    mints/reuses the same surrogate as the same Term in message text (restore
+    coherence). Every other tool schema key (``name``, ``input_schema``/
+    ``parameters``) is never touched. Defensive like :func:`_extract_declared_tools`:
+    a missing/non-list ``tools``, a non-dict entry, a container ``get_container``
+    can't locate, or a missing/non-string ``description`` is left alone.
+    """
+    if not isinstance(tools, list):
+        return
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        container = get_container(tool)
+        if isinstance(container, dict) and isinstance(container.get("description"), str):
+            container["description"] = _blindfold_text(
+                container["description"], mapping, session
+            )
 
 
 def _blindfold_system(
