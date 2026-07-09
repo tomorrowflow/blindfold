@@ -104,6 +104,11 @@ def run_server(
     settings = settings or get_settings()
     refuse_if_root_token(settings, transit_client=transit_client)
     refuse_if_cloud_model(settings)
+    # A no-op if the process already configured logging (e.g. an embedding app, or
+    # pytest's own log capture); otherwise this is the only thing standing between
+    # the line below and Python's logging module silently dropping it (issue #82 —
+    # `blindfold serve` emitted it on a module logger with no handler attached yet).
+    logging.basicConfig(level=logging.INFO)
     logger.info(
         "blindfold_startup: openai_upstream_base_url=%s",
         settings.effective_openai_upstream_base_url,
