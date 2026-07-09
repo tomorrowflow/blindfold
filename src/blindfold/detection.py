@@ -104,6 +104,15 @@ _FUZZY_MAX_DISTANCE = 2
 # becomes a near-miss of every other 4-letter token). Voice-diary's detector applies
 # the same length floor.
 _FUZZY_MIN_SURFACE_LEN = 5
+# Fuzzy candidacy also requires the token and surface to share a case-sensitive
+# first character (see _fuzzy_match) -- pinned by
+# test_fuzzy_pass_ignores_lowercase_common_token_within_two_edits_of_a_capitalized_variation
+# and its martini-class sibling in test_l2_detection.py (issue #85). Levenshtein
+# distance runs on case-folded forms, so it alone can't tell a genuine near-miss
+# ("Wegnerr" of "Wegner") from a common lowercase token that merely sits within 2
+# edits of a capitalized name Variation ("darwin"/"martini"/"marlin" of "Martin").
+# Not a tuning knob: typo tolerance doesn't need a different (or differently-cased)
+# initial letter, so anchoring on it is a correctness rule, not a threshold to tweak.
 
 # German + English function words that must never be flagged. Curated to cover the
 # common false-positive sources for the fuzzy pass — short verbs, articles, modals,
@@ -224,6 +233,16 @@ def _fuzzy_match(
     needle = _normalize(token_text)
     best: tuple[int, Entity, str] | None = None
     for normalized_surface, entity, surface in fuzzy_surfaces:
+        if token_text[0] != surface[0]:
+            # issue #85: case-sensitive first-character agreement. Levenshtein
+            # distance is computed on the case-folded forms, so it alone can't tell
+            # a genuine near-miss ("Wegnerr" of "Wegner") from a lowercase common
+            # token that merely happens to sit within 2 edits of a capitalized name
+            # Variation ("darwin"/"martini"/"marlin" of "Martin") -- typo tolerance
+            # doesn't need a different (or differently-cased) initial letter, so
+            # anchoring on it closes off that whole false-positive class without
+            # narrowing genuine same-case near-misses.
+            continue
         if abs(len(needle) - len(normalized_surface)) > _FUZZY_MAX_DISTANCE:
             continue
         distance = _bounded_levenshtein(needle, normalized_surface, _FUZZY_MAX_DISTANCE)

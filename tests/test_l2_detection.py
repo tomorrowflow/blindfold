@@ -135,6 +135,39 @@ def test_fuzzy_pass_ignores_distant_words_outside_levenshtein_two():
     assert detect_l2(text, [stefan]) == []
 
 
+def test_fuzzy_pass_ignores_lowercase_common_token_within_two_edits_of_a_capitalized_variation():
+    # issue #85: "darwin" (env block token, Platform: darwin) is Levenshtein 2 from
+    # the seeded Variation "Martin" (of "Martin Bach") and was fuzzy-flagged, so every
+    # Claude Code request corrupted its own environment block on egress -- over-
+    # masking, not a leak, but it broke context on every exchange. The fuzzy pass now
+    # requires the candidate token's first character to case-match the surface's
+    # first character: a lowercase mid-sentence token can never fuzzy-match a
+    # capitalized name Variation, closing off this whole false-positive class.
+    martin = Entity(
+        canonical="Martin Bach",
+        variations=("Martin", "Bach"),
+        surrogate="Bernhard Vogt",
+    )
+    text = "Platform: darwin"
+
+    assert detect_l2(text, [martin]) == []
+
+
+def test_fuzzy_pass_ignores_martini_class_collisions_with_a_capitalized_variation():
+    # issue #85: "martini"/"marlin" share their first letter with "Martin" case-
+    # insensitively but not case-sensitively (lowercase 'm' vs capitalized 'M') --
+    # the fuzzy pass must reject the whole class, not just first-letter mismatches
+    # like "darwin".
+    martin = Entity(
+        canonical="Martin Bach",
+        variations=("Martin", "Bach"),
+        surrogate="Bernhard Vogt",
+    )
+    text = "charwin martini marlin"
+
+    assert detect_l2(text, [martin]) == []
+
+
 def test_german_stopwords_are_not_flagged_even_under_fuzzy_pass():
     # German-aware stopwords (CONTEXT.md / ADR-0003 "stopwords + dedup"). Without the
     # stoplist, the fuzzy pass would flag the German function word "wegen" ("because of"
