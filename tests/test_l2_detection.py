@@ -80,6 +80,47 @@ def test_fuzzy_pass_matches_near_miss_within_levenshtein_two():
     assert {s.pass_name for s in spans} == {"fuzzy"}
 
 
+def test_fuzzy_pass_matches_a_near_miss_that_spans_two_tokens():
+    # A typo can insert whitespace into a single-token surface ("Wegner" mistyped
+    # as "We gner") without changing the Levenshtein distance from the surface by
+    # more than the space itself: "we gner" -> "wegner" is one deletion. The fuzzy
+    # pass must still catch this -- skipping every multi-token window would let a
+    # known entity's misspelled real value cross the L2 boundary unblindfolded
+    # (issue #83 regression: the window-length cap must not also narrow *which*
+    # windows are fuzzy-eligible).
+    stefan = Entity(
+        canonical="Stefan Wegner",
+        variations=("Stefan", "Stef", "Wegner"),
+        surrogate="Bernhard Vogt",
+    )
+    text = "Did We gner send the patch?"
+
+    spans = detect_l2(text, [stefan])
+
+    flagged = {text[s.start : s.end] for s in spans}
+    assert flagged == {"We gner"}
+    assert {s.surrogate for s in spans} == {"Bernhard Vogt"}
+    assert {s.pass_name for s in spans} == {"fuzzy"}
+
+
+def test_fuzzy_pass_matches_a_near_miss_that_spans_two_tokens_against_a_single_token_surface():
+    # Same inserted-whitespace typo as above, but the *only* known surface is
+    # single-token ("Wegner", no multi-token canonical/variation in play at all).
+    # The window-length cap (bounded by the longest known surface, issue #83) must
+    # still be wide enough for the fuzzy pass to reach a 2-token window -- capping
+    # it at the longest *exact-match* surface's token count (here: 1) would starve
+    # the fuzzy pass entirely and let the real value leak unblindfolded.
+    wegner = Entity(canonical="Wegner", variations=(), surrogate="Bernhard Vogt")
+    text = "Did We gner send the patch?"
+
+    spans = detect_l2(text, [wegner])
+
+    flagged = {text[s.start : s.end] for s in spans}
+    assert flagged == {"We gner"}
+    assert {s.surrogate for s in spans} == {"Bernhard Vogt"}
+    assert {s.pass_name for s in spans} == {"fuzzy"}
+
+
 def test_fuzzy_pass_ignores_distant_words_outside_levenshtein_two():
     # "Wagner" is 3 edits from any surface ("Wegner"/"Stefan"/"Stef"/"Stefan Wegner"
     # at the closest, 1 substitution; "Wagner" vs "Wegner" is actually 1, so use
