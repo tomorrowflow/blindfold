@@ -10,18 +10,28 @@ tests assert what crossed that seam, never internal call shapes (leak-audit).
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 import pytest
 
 from blindfold.detection import Entity
+from blindfold.engine import blindfold_payload
 from blindfold.l3 import (
     CandidateSpan,
     L3Adjudication,
     L3ContentCache,
     L3Detector,
     L3Unavailable,
+    _SENTENCE_STOPWORDS,
+    select_candidate_spans,
 )
+from blindfold.surrogates import SurrogateMapping
+
+# Mirrors the shape L3 candidate detection matches on (an initial-cap word) — used
+# only to measure the *un-suppressed* flood a fixture would produce, as a baseline
+# for the "material drop" assertion below. Not a call into l3.py's internals.
+_TITLE_CASE_WORD_RE = re.compile(r"\b[A-ZÄÖÜ][a-zäöüß]+\b")
 
 
 @dataclass
@@ -84,6 +94,87 @@ def test_l3_does_not_re_flag_entities_already_covered_by_l2():
 
     flagged = sorted(call.text for call in adjudicator.calls)
     assert flagged == ["Yasmin"]
+
+
+def test_stopwords_cover_closed_class_function_words_beyond_sentence_starters():
+    # ADR-0023 "expanded stopwords" layer: the closed-class function-word list
+    # (EN+DE) must cover more than sentence-starters — prepositions, auxiliaries,
+    # and WH-pronouns are essentially never entity names, so they must never
+    # reach L3 candidacy either. The old ~30-token set only had sentence-starters/
+    # articles/a few pronouns, so "For", "Is", "Für", and "Ist" were still flagged.
+    text = "For the record, Is Klaus still traveling? Für alle: Ist Yasmin da?"
+
+    candidates = select_candidate_spans(text, known_entities=[])
+
+    flagged = sorted(candidate.text for candidate in candidates)
+    assert flagged == ["Klaus", "Yasmin"]
+
+
+def test_registered_entity_colliding_with_a_stopword_is_still_blindfolded():
+    # Acceptance criterion (issue #70) / ADR-0023: suppression is token-granularity
+    # only and never affects L1/L2 — a registered Term or entity-graph surface
+    # always wins over the stopword list. "Will" is a real closed-class entry now
+    # (English future auxiliary, German modal "will") but is also a plausible
+    # first name; a workspace that has registered "Will" as a known entity must
+    # still have it blindfolded on every hop, unaffected by L3 suppression.
+    assert "Will" in _SENTENCE_STOPWORDS
+    mapping = SurrogateMapping.from_pairs([("Will", "Renate Kestler")])
+    payload = {
+        "model": "claude-3-5-sonnet",
+        "system": "Will is the point of contact for the finance rollout.",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Please loop in Will on this thread."}
+                ],
+            }
+        ],
+    }
+
+    blinded, _session = blindfold_payload(payload, mapping)
+
+    surrogate = mapping.surrogate_for("Will")
+    assert surrogate is not None
+    assert "Will" not in blinded["system"]
+    assert surrogate in blinded["system"]
+    assert "Will" not in blinded["messages"][0]["content"][0]["text"]
+    assert surrogate in blinded["messages"][0]["content"][0]["text"]
+
+
+def test_candidate_span_count_drops_materially_over_a_representative_agentic_system_prompt():
+    # Acceptance criterion (issue #70): candidate-span count over a representative
+    # agentic system prompt drops materially once L3 stopwords cover the real
+    # closed-class function-word list, not just sentence-starters. This is the
+    # candidate-span flood ADR-0023 names — instructional prose sprinkled with
+    # capitalized sentence-starters and connectives ("Before", "If", "Although",
+    # "Since", ...) that used to reach L3 as unknown candidates. The two genuine
+    # novel names ("Klaus", "Yasmin") must still surface — suppression is a
+    # quality optimisation, never a protection loss.
+    fixture = (
+        "You are an autonomous coding assistant embedded in the user's editor. "
+        "Before you make any changes, you should read the relevant files and "
+        "understand what is being asked. If you are unsure about an instruction, "
+        "ask for clarification instead of guessing. Do not delete files without "
+        "confirmation from the user, and do not commit code that has not been "
+        "tested. When you are done with a task, summarize what you changed and "
+        "why. Please make sure that Klaus is copied on any message about the "
+        "finance rollout, and that Yasmin approves the final release before it "
+        "ships. For every request, you must first check whether the change is "
+        "within scope, and you should never assume that a prior turn's context "
+        "is still valid without verifying it again. Although the environment is "
+        "sandboxed, you should still be careful, and although mistakes can be "
+        "undone, they cost time. Since the user trusts you with their codebase, "
+        "act accordingly."
+    )
+    raw_capitalized_tokens = _TITLE_CASE_WORD_RE.findall(fixture)
+
+    candidates = select_candidate_spans(fixture, known_entities=[])
+
+    # The flood: 9 capitalized function-word occurrences alongside the 2 real names.
+    assert len(raw_capitalized_tokens) == 11
+    # Materially fewer candidates reach L3 — only the genuine novel names remain.
+    assert sorted(candidate.text for candidate in candidates) == ["Klaus", "Yasmin"]
 
 
 def test_l3_cost_scales_with_candidate_span_count_not_payload_size():

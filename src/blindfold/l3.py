@@ -19,6 +19,8 @@ import hashlib
 import re
 from collections import OrderedDict
 from dataclasses import dataclass, field
+from functools import lru_cache
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from .detection import Entity
@@ -33,19 +35,29 @@ _CONTEXT_WINDOW = 40
 
 _CAPITALIZED_RE = re.compile(r"\b[A-ZÄÖÜ][a-zäöüß]+\b")
 
-# Common sentence-starters and capitalized function words that must not be flagged as
-# candidate entities. The L3 LLM could filter these too, but pre-filtering avoids
-# wasting an adjudicator call (and a content-cache slot) on every "The"/"Please".
-_SENTENCE_STOPWORDS: frozenset[str] = frozenset(
-    (
-        "The", "This", "That", "These", "Those",
-        "A", "An", "And", "Or", "But", "If", "When", "While", "Then",
-        "Please", "Thanks", "Hello", "Hi",
-        "We", "You", "They", "He", "She", "It", "I",
-        "Der", "Die", "Das", "Ein", "Eine", "Und", "Oder", "Aber",
-        "Bitte", "Danke", "Hallo",
-    )
-)
+_STOPWORDS_PATH = Path(__file__).with_name("l3_stopwords_en_de.txt")
+
+
+@lru_cache(maxsize=1)
+def _load_sentence_stopwords() -> frozenset[str]:
+    """Load the closed-class function-word list (EN+DE, ADR-0023) from the packaged
+    data file — articles, pronouns, prepositions, conjunctions, auxiliaries, and
+    common capitalized adverbs. The L3 LLM could filter these too, but pre-filtering
+    avoids wasting an adjudicator call (and a content-cache slot) on every "The"/
+    "Please". Function words are essentially never entity names, so this is a pure
+    quality win — it never affects L1/L2 protection (a registered Term or
+    entity-graph surface always wins regardless of stopword status).
+    """
+    words = []
+    for line in _STOPWORDS_PATH.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        words.append(line)
+    return frozenset(words)
+
+
+_SENTENCE_STOPWORDS: frozenset[str] = _load_sentence_stopwords()
 
 
 class L3Unavailable(Exception):
