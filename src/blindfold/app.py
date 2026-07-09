@@ -12,7 +12,7 @@ known entities only (running L3 again there would double-adjudicate every token 
 re-adjudicate the surrogate the mint pass just minted).
 
 Egress (ADR-0020, issue #47 / SEC-5+SEC-6): the leak gate runs *before*
-``upstream.send_*``/``stream_messages`` so a blindfold-engine miss is prevented at the
+``upstream.send_*``/``open_stream`` so a blindfold-engine miss is prevented at the
 egress boundary rather than only detected after the blinded payload already reached
 the provider. The resolution gate stays after restore, asserting every injected
 surrogate was resolved and no coincidental lookalike was restored.
@@ -46,6 +46,20 @@ Non-blocking mint pass (issue #69): the mint pass calls a synchronous adjudicato
 (``OllamaAdjudicator`` uses a synchronous ``httpx.Client``), so ``_mint_or_block`` runs
 it via ``run_in_threadpool`` rather than inline — a single slow/cold L3 call no longer
 holds the one uvicorn event loop and starves other in-flight requests.
+
+Upstream boundary errors (issue #86): ``UpstreamClient`` gives its ``httpx.AsyncClient``
+explicit connect/read timeouts (no more inheriting httpx's implicit 5s default) and maps
+transport/HTTP errors to the structured ``UpstreamError`` (distinct from
+``blindfold_fail_closed`` — this is an availability/contract failure, not a privacy
+block). On the buffered paths this is caught around ``upstream.send_*`` and turned into
+a ``blindfold_upstream_error`` JSON response. On the streaming path,
+``upstream.open_stream`` performs the connect + receives response headers *before* the
+handler constructs the client-facing ``StreamingResponse``, so a connect/TTFB failure
+still gets the same structured JSON response instead of a 200-then-broken-stream. Once
+bytes are flowing, a mid-stream transport error inside ``_stream_restored`` is caught,
+logged, and audited (``upstream-stream-disconnected``) — the stream just ends cleanly
+rather than raising a raw traceback through the ASGI stack, and the resolution gate
+still runs over whatever was actually emitted.
 """
 
 from __future__ import annotations
@@ -54,6 +68,7 @@ import json
 import logging
 from collections.abc import AsyncIterator, Callable
 
+import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
@@ -105,7 +120,7 @@ from .review import Allowlist, ReviewInbox
 from .spa import entity_list_html, org_graph_html, review_inbox_html
 from .store import vendored_seed_repository
 from .surrogates import SurrogateMapping
-from .upstream import UpstreamClient
+from .upstream import UpstreamClient, UpstreamError
 
 app = FastAPI(title="Blindfold")
 
@@ -377,6 +392,37 @@ def _blocked_response(
     )
 
 
+def _upstream_error_response(exc: UpstreamError, workspace: str, audit_log: AuditLog) -> JSONResponse:
+    """Return the structured upstream-boundary error response (issue #86).
+
+    Mirrors :func:`_blocked_response`'s body+audit+log funnel (SEC-7 / #48) but with a
+    deliberately distinct ``type``/``code``: an upstream connect/TTFB failure or an
+    upstream HTTP error is an availability/contract bug, not a privacy violation, so
+    it must never be confused with ``blindfold_fail_closed`` by a client parsing the
+    error shape. ``exc``'s message is already scrubbed -- it carries only the
+    transport-level failure shape, never payload content (see ``UpstreamError``).
+    """
+    logger.warning(
+        "blindfold_upstream_error: workspace=%s sub_reason=%s reason=%s",
+        workspace,
+        exc.sub_reason,
+        exc,
+    )
+    audit_log.append(AuditRecord(workspace=workspace, event="upstream-error", reason=str(exc)))
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "error": {
+                "type": "blindfold_upstream_error",
+                "code": "blindfold_upstream_error",
+                "sub_reason": exc.sub_reason,
+                "message": str(exc),
+                "workspace": workspace,
+            }
+        },
+    )
+
+
 async def _mint_or_block(
     mint: Callable[[], tuple[dict, ExchangeSession]],
     workspace: str,
@@ -460,7 +506,7 @@ def _leak_gate_or_block(
 ) -> JSONResponse | None:
     """Run the pre-egress :func:`leak_gate`; return a block ``JSONResponse`` if it raised.
 
-    Runs before ``upstream.send_*``/``stream_messages`` (ADR-0020, SEC-5): a leaked real
+    Runs before ``upstream.send_*``/``open_stream`` (ADR-0020, SEC-5): a leaked real
     value is a prevented privacy bug, not a post-hoc detection — nothing reaches the
     provider on this path.
     """
@@ -542,12 +588,19 @@ async def messages(
         return block
 
     if payload.get("stream"):
+        try:
+            upstream_response = await upstream.open_stream(blinded, forwarded)
+        except UpstreamError as exc:
+            return _upstream_error_response(exc, workspace, audit_log)
         return StreamingResponse(
-            _stream_restored(upstream, blinded, forwarded, session, workspace, audit_log),
+            _stream_restored(upstream_response, session, workspace, audit_log),
             media_type="text/event-stream",
         )
 
-    raw_response = await upstream.send_messages(blinded, forwarded)
+    try:
+        raw_response = await upstream.send_messages(blinded, forwarded)
+    except UpstreamError as exc:
+        return _upstream_error_response(exc, workspace, audit_log)
     restored = restore_response(raw_response, session)
     block = _resolution_gate_or_block(restored, session, workspace, audit_log)
     if block is not None:
@@ -589,9 +642,12 @@ async def chat_completions(
     if block is not None:
         return block
 
-    raw_response = await upstream.send_chat_completions(
-        blinded, _forwarded_headers(request)
-    )
+    try:
+        raw_response = await upstream.send_chat_completions(
+            blinded, _forwarded_headers(request)
+        )
+    except UpstreamError as exc:
+        return _upstream_error_response(exc, workspace, audit_log)
     restored = restore_chat_completion(raw_response, session)
     block = _resolution_gate_or_block(restored, session, workspace, audit_log)
     if block is not None:
@@ -678,14 +734,19 @@ async def reject_review_item(
 
 
 async def _stream_restored(
-    upstream: UpstreamClient,
-    blinded: dict,
-    forwarded: dict[str, str],
+    upstream_response: httpx.Response,
     session: ExchangeSession,
     workspace: str,
     audit_log: AuditLog,
 ) -> AsyncIterator[bytes]:
     """Stream restored SSE bytes to the client.
+
+    ``upstream_response`` has already been opened via
+    :meth:`~blindfold.upstream.UpstreamClient.open_stream` — headers were received
+    (and any connect/TTFB failure reported as a structured JSON error) before the
+    caller constructed the ``StreamingResponse`` wrapping this generator (issue #86).
+    This function owns closing it (``aclose``) once the body is fully consumed or the
+    generator is torn down early.
 
     Parses upstream SSE events line-by-line, feeds ``text_delta`` payloads through a
     ``StreamingRestorer`` so a surrogate split across upstream chunks is held back
@@ -719,8 +780,8 @@ async def _stream_restored(
     text_block_indices: set[int] = set()
     emitted: list[bytes] = []
     buffer = ""
-    async with upstream.stream_messages(blinded, forwarded) as response:
-        async for raw in response.aiter_bytes():
+    try:
+        async for raw in upstream_response.aiter_bytes():
             buffer += raw.decode("utf-8")
             while "\n\n" in buffer:
                 event, buffer = buffer.split("\n\n", 1)
@@ -743,6 +804,28 @@ async def _stream_restored(
             out = _emit_text_delta(tail)
             emitted.append(out)
             yield out
+    except httpx.HTTPError as exc:
+        # Mid-stream disconnect (issue #86): bytes were already flowing to the
+        # client (the 200 + SSE headers are long committed), so there is no
+        # structured-JSON-error seam left to use -- unlike the connect/TTFB failure
+        # UpstreamClient.open_stream reports before this generator ever starts. The
+        # stream just ends cleanly here instead of letting the transport error raise
+        # through the ASGI stack as a raw traceback; whatever was actually emitted
+        # still goes through the resolution gate below.
+        logger.warning(
+            "blindfold_upstream_stream_disconnected: workspace=%s reason=%s",
+            workspace,
+            exc,
+        )
+        audit_log.append(
+            AuditRecord(
+                workspace=workspace,
+                event="upstream-stream-disconnected",
+                reason=str(exc),
+            )
+        )
+    finally:
+        await upstream_response.aclose()
 
     try:
         resolution_gate(

@@ -6,7 +6,7 @@
 - ``restore_response`` reverses surrogates in the response, *closed-world* (ADR-0006):
   only surrogates actually injected for this exchange are restored.
 - ``leak_gate`` is the pre-egress prevention gate (ADR-0020, SEC-5): blocks before
-  ``upstream.send_*``/``stream_messages`` if a known real value is still present.
+  ``upstream.send_*``/``open_stream`` if a known real value is still present.
 - ``resolution_gate`` is the post-restore detection gate (ADR-0020, SEC-6): catches an
   injected surrogate left unresolved in the client-visible response.
 """
@@ -627,7 +627,7 @@ def leak_gate(blinded_outbound: dict[str, Any], mapping: SurrogateMapping) -> No
 
     Raises :class:`LeakError` if a known real entity value is present anywhere in a
     blindfolded payload about to cross **egress** (before ``upstream.send_*``/
-    ``upstream.stream_messages`` is ever called), so a blindfold-engine miss is caught
+    ``upstream.open_stream`` is ever called), so a blindfold-engine miss is caught
     *before* any byte reaches the provider rather than detected after the fact.
 
     The failure reason is scrubbed (SEC-3, issue #40): it references the offending
