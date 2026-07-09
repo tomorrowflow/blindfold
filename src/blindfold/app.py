@@ -58,6 +58,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 
+from .allowlist_seed import load_seeded_allowlist_tokens
 from .bootstrap import bootstrap_from_vendored_seed
 from .config import Settings, get_settings
 from .entity_graph import (
@@ -149,19 +150,26 @@ _mapping = SurrogateMapping.from_pairs(vendored_seed_repository().seeded_pairs()
 
 # Process-wide review-inbox + allowlist (ADR-0010). The inbox holds provisional
 # candidates awaiting human review; the allowlist holds tokens the user has
-# rejected (never blindfolded again). Tests substitute their own via
+# rejected (never blindfolded again), plus the curated seeded allowlist (ADR-0023,
+# issue #71) loaded at startup with identical semantics -- both suppress novelty
+# discovery only, never protection. Tests substitute their own via
 # dependency_overrides[get_review_inbox] / get_allowlist.
 _review_inbox = ReviewInbox()
 _allowlist = Allowlist()
+for _seeded_token in load_seeded_allowlist_tokens():
+    _allowlist.add(_seeded_token)
+del _seeded_token
 
 # Process-wide L3 detector (ADR-0022 / issue #57): a singleton (like `_mapping` /
 # `_review_inbox`) so its content cache persists across turns within the process
 # (ADR-0003) and so L3 has exactly one seam -- the mint pass; the pre-egress gate no
 # longer invokes it at all. Production wiring uses a real local-Ollama client when
 # BLINDFOLD_OLLAMA_MODEL is configured; otherwise the honest _UnconfiguredAdjudicator
-# (ADR-0009) keeps the unwired case fail-closed rather than fail-open. Tests
-# substitute their own detector via dependency_overrides[get_l3_detector].
-_l3_detector = L3Detector(_build_l3_adjudicator(get_settings()))
+# (ADR-0009) keeps the unwired case fail-closed rather than fail-open. Wired with
+# `_allowlist` (issue #71) so a seeded or learned reject actually suppresses
+# candidacy in production, not just in tests that build their own detector+allowlist
+# pair. Tests substitute their own detector via dependency_overrides[get_l3_detector].
+_l3_detector = L3Detector(_build_l3_adjudicator(get_settings()), allowlist=_allowlist)
 
 # Process-wide workspace-policy registry and audit log (ADR-0009). Persistence and
 # RBAC-scoped audit access are out of scope this slice — see policy.py.
