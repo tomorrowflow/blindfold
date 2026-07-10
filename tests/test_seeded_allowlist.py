@@ -42,10 +42,14 @@ from blindfold.store import vendored_seed_repository
 from blindfold.surrogates import SurrogateMapping
 from blindfold.upstream import UpstreamClient
 
-# The negative test set from the trusted 2026-07-09 curation comment: minted live,
-# but generic capitalized prose that could plausibly be a real project/person name.
-# Must stay out of the seed -- the curation rule is identifier-based, not
-# "looks generic".
+# The negative test set from the trusted curation comments (2026-07-09 and the
+# 2026-07-10 live review-inbox run, issue #87): minted live, but generic
+# capitalized prose that could plausibly be a real project/person name. Must
+# stay out of the seed -- the curation rule is identifier-based, not "looks
+# generic". The 2026-07-10 entries (Single/Tools/Darwin/Transit/Mythos) are the
+# generic-word class issue #87 explicitly declines to seed -- that class is the
+# L3 adjudicator's job (sibling issue #88), not the allowlist's; "Transit" in
+# particular could plausibly be a deployment's own secret.
 _CURATION_REJECTS = {
     "Session",
     "Subagents",
@@ -54,6 +58,11 @@ _CURATION_REJECTS = {
     "Platform",
     "Server",
     "Automated",
+    "Single",
+    "Tools",
+    "Darwin",
+    "Transit",
+    "Mythos",
 }
 
 
@@ -83,6 +92,38 @@ def test_seeded_token_is_never_flagged_as_an_l3_candidate_span():
 
     flagged = {c.text for c in candidates}
     assert flagged.isdisjoint({"Claude", "Ollama", "React"})
+
+
+def test_newly_seeded_public_tool_identifiers_are_never_flagged_as_l3_candidate_spans():
+    # Acceptance criterion (issue #87): the framework/tool identifiers that
+    # over-triggered in the 2026-07-10 live review-inbox run (Vue, Playwright,
+    # Supabase, Postgres, Blindfold, Sandcastle, Supacode) must be suppressed
+    # the same way React/Claude/Ollama already are. FastAPI/OpenBao are seeded
+    # too but omitted from this sentence: their embedded internal capitals mean
+    # _CAPITALIZED_RE never matches them as a single token in the first place
+    # (a pre-existing candidate-selection property, unrelated to the seed).
+    allowlist = Allowlist()
+    for token in load_seeded_allowlist_tokens():
+        allowlist.add(token)
+
+    text = (
+        "Vue and Playwright wired up against Supabase and Postgres today; "
+        "Blindfold and Sandcastle logged it, and Supacode reviewed the diff."
+    )
+    candidates = select_candidate_spans(text, known_entities=[], allowlist=allowlist)
+
+    flagged = {c.text for c in candidates}
+    assert flagged.isdisjoint(
+        {
+            "Vue",
+            "Playwright",
+            "Supabase",
+            "Postgres",
+            "Blindfold",
+            "Sandcastle",
+            "Supacode",
+        }
+    )
 
 
 def _make_stub_upstream(scripted_response: dict, recorded: list[httpx.Request]):
@@ -260,6 +301,60 @@ async def test_registered_term_equal_to_seeded_token_is_still_blindfolded():
     assert "Northwind Analytics" in egressed
     # Clause B/D: the client gets the real value back, closed-world restored.
     assert "Anthropic" in resp.json()["content"][0]["text"]
+
+
+@pytest.mark.anyio
+async def test_registered_term_equal_to_a_newly_seeded_token_is_still_blindfolded():
+    # Acceptance criterion (issue #87): the same Term-always-wins guarantee
+    # extends to the identifiers newly seeded in this slice, not just the
+    # pre-existing ones. A workspace whose own protected Term happens to be
+    # named "Supabase" must still see it blindfolded.
+    assert "Supabase" in load_seeded_allowlist_tokens()
+    mapping = SurrogateMapping.from_pairs([("Supabase", "Northwind Datastore")])
+    allowlist = Allowlist()
+    for token in load_seeded_allowlist_tokens():
+        allowlist.add(token)
+    detector = L3Detector(_NeverAnEntityAdjudicator(), allowlist=allowlist)
+    scripted_response = {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "Acknowledged, Northwind Datastore."}],
+        "model": "claude-3-5-sonnet",
+        "stop_reason": "end_turn",
+    }
+    recorded: list[httpx.Request] = []
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(
+        scripted_response, recorded
+    )
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_review_inbox] = lambda: ReviewInbox()
+    app.dependency_overrides[get_l3_detector] = lambda: detector
+    app.dependency_overrides[get_allowlist] = lambda: allowlist
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            resp = await client.post(
+                "/v1/messages",
+                json={
+                    "model": "m",
+                    "messages": [
+                        {"role": "user", "content": "Supabase migration finished."}
+                    ],
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    egressed = recorded[0].content.decode("utf-8")
+    # Clause A: the real Term never crossed egress; only its surrogate did.
+    assert "Supabase" not in egressed
+    assert "Northwind Datastore" in egressed
+    # Clause B/D: the client gets the real value back, closed-world restored.
+    assert "Supabase" in resp.json()["content"][0]["text"]
 
 
 def test_learned_reject_still_suppresses_candidacy_alongside_seeded_tokens():

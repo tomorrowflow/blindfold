@@ -33,3 +33,14 @@ Electron
 Mac
 Windows
 Next
+Vue
+Playwright
+Supabase
+Postgres
+FastAPI
+OpenBao
+#
+# Blindfold's own identifiers (project + tooling), public once shipped
+Blindfold
+Sandcastle
+Supacode
