@@ -33,9 +33,18 @@ DEFAULT_ADJUDICATOR_TIMEOUT_SECONDS = 30.0
 
 _PROMPT_TEMPLATE = (
     "You are adjudicating whether a flagged span of text names a real-world entity "
-    "that must be protected: a person's name, an organization/company name, or an "
-    "internal codename or project name. Respond with strict JSON only, of the exact "
-    'shape {{"is_entity": true}} or {{"is_entity": false}} — no other text.\n\n'
+    "that must be protected: a SPECIFIC, private or sensitive real person, "
+    "organization/company, or secret project/initiative — not merely a capitalized "
+    "word. Reject the span (is_entity: false) if it is either of these:\n"
+    "- a common dictionary word that is capitalized only because of its position in "
+    "a sentence or heading (e.g. Single, Tools, Lead);\n"
+    "- a well-known PUBLIC software, framework, operating system, library, or tool "
+    "name (e.g. Vue, Playwright, Darwin, Postgres) — even when it is also a generic "
+    "word, treat it as public software, not a protected referent.\n"
+    "Only answer is_entity: true for a specific, private/sensitive real person, "
+    "organization, or secret project/initiative that fails both rejection rules "
+    "above. Respond with strict JSON only, of the exact shape "
+    '{{"is_entity": true}} or {{"is_entity": false}} — no other text.\n\n'
     "Context: {context}\n"
     "Flagged span: {text}\n"
 )

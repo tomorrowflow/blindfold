@@ -16,7 +16,7 @@ import json
 import httpx
 
 from blindfold.l3 import CandidateSpan, L3Adjudication
-from blindfold.ollama import OllamaAdjudicator, is_cloud_model
+from blindfold.ollama import _PROMPT_TEMPLATE, OllamaAdjudicator, is_cloud_model
 
 
 def test_ollama_adjudicator_sends_the_candidate_and_context_and_confirms_an_entity():
@@ -47,6 +47,29 @@ def test_ollama_adjudicator_sends_the_candidate_and_context_and_confirms_an_enti
     assert sent["model"] == "llama3.1"
     assert candidate.text in sent["prompt"]
     assert candidate.context in sent["prompt"]
+
+
+def test_adjudicator_prompt_requires_a_specific_sensitive_referent_and_rejects_common_words_and_public_software():
+    # Issue #88 (semantic half of the precision fix, sibling to #87's allowlist half):
+    # the prior prompt's "an internal codename or project name" clause invited the
+    # model to flag any capitalized techy/prose word (Single, Tools, Darwin, Transit,
+    # Mythos -- live 2026-07-10 evidence). The prompt must now explicitly instruct
+    # rejection of (a) common dictionary words capitalized only by sentence/heading
+    # position and (b) well-known public software/framework/OS/library/tool names,
+    # requiring instead a specific, private/sensitive real person, organization, or
+    # secret project/initiative -- while keeping the strict-JSON contract and the
+    # candidate text/context interpolation unchanged (still covered by the sibling
+    # "sends the candidate and context" test above).
+    prompt = _PROMPT_TEMPLATE.format(context="ctx", text="span")
+    lowered = prompt.lower()
+
+    assert "common" in lowered and "word" in lowered
+    assert "public" in lowered
+    assert "software" in lowered or "framework" in lowered or "tool" in lowered
+    assert "specific" in lowered
+    assert "sensitive" in lowered
+    assert '{"is_entity": true}' in prompt
+    assert '{"is_entity": false}' in prompt
 
 
 def test_ollama_adjudicator_rejects_a_non_entity_candidate():
