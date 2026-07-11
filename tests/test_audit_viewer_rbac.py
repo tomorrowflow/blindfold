@@ -88,6 +88,27 @@ def test_rbac_grant_unknown_role_still_raises():
         reg.grant("alice", "ws-a", "editor")
 
 
+def test_rbac_list_identity_returns_assignments_across_all_workspaces():
+    # list_identity(identity) returns ALL role assignments that identity holds,
+    # grouped across every workspace it has at least one role on.
+    reg = RbacRegistry()
+    reg.grant("alice", "ws-a", "viewer")
+    reg.grant("alice", "ws-b", "re-identifier")
+    reg.grant("bob", "ws-a", "admin")  # should NOT appear in alice's list
+    assignments = reg.list_identity("alice")
+    workspaces = {a.workspace for a in assignments}
+    assert workspaces == {"ws-a", "ws-b"}
+    identities = {a.identity for a in assignments}
+    assert identities == {"alice"}  # only alice's assignments
+
+
+def test_rbac_list_identity_returns_empty_for_unknown_identity():
+    reg = RbacRegistry()
+    reg.grant("bob", "ws-a", "viewer")
+    assignments = reg.list_identity("carol")  # carol has no role anywhere
+    assert assignments == []
+
+
 # ---------------------------------------------------------------------------
 # 2. Audit viewer — GET /v1/management/audit
 # ---------------------------------------------------------------------------

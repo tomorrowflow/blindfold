@@ -11,4 +11,10 @@ export {
   ScrollText,
   ShieldCheck,
   Settings,
+  // Shell chrome (issue #95)
+  Building2,
+  ChevronDown,
+  Check,
+  Lock,
+  X,
 } from "lucide-react";

@@ -1181,6 +1181,30 @@ async def list_audit_events(
     return {"events": events}
 
 
+@app.get("/v1/management/workspaces")
+async def list_caller_workspaces(
+    request: Request,
+    rbac: RbacRegistry = Depends(get_rbac),
+) -> dict:
+    """List workspaces the calling identity holds at least one role on (issue #95).
+
+    Identity-scoped; no role gate on this endpoint itself — the response is derived
+    entirely from the caller's own assignments. An identity with zero roles anywhere
+    receives an empty list (never a 403 that would leak workspace existence).
+    Response: ``{"workspaces": [{"slug": ..., "roles": [...]}]}``.
+    """
+    identity = _caller_identity(request)
+    assignments = rbac.list_identity(identity)
+    # Group by workspace slug; preserve insertion order for stable ordering.
+    workspace_roles: dict[str, list[str]] = {}
+    for a in assignments:
+        workspace_roles.setdefault(a.workspace, []).append(a.role)
+    workspaces = [
+        {"slug": slug, "roles": roles} for slug, roles in workspace_roles.items()
+    ]
+    return {"workspaces": workspaces}
+
+
 @app.get("/v1/management/workspaces/{slug}/roles")
 async def list_workspace_roles(
     slug: str,

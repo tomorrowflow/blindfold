@@ -51,3 +51,7 @@ class RbacRegistry:
 
     def list_workspace(self, workspace: str) -> list[RoleAssignment]:
         return [a for a in self._assignments.values() if a.workspace == workspace]
+
+    def list_identity(self, identity: str) -> list[RoleAssignment]:
+        """Return all role assignments held by *identity* across every workspace."""
+        return [a for a in self._assignments.values() if a.identity == identity]

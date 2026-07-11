@@ -46,6 +46,10 @@ REAL_ORG = "Initech GmbH"
 ORG_SURROGATE = "Pinnacle Corp"
 CIPHERTEXT = "vault:v1:enc:martin-bach"
 
+# Second workspace for multi-workspace switcher tests (issue #95):
+# carol holds a role on "beta"; alice has no role on "beta"; bob has no role on either.
+WORKSPACE_BETA = "beta"
+
 
 def _stub_transit() -> TransitClient:
     def handler(request: httpx.Request) -> httpx.Response:
@@ -78,6 +82,10 @@ def build_app():
     # authorized auditor would) to assert on audit records, independent of the
     # browser page under test.
     rbac.grant("alice", WORKSPACE, "viewer")
+    rbac.grant("alice", WORKSPACE, "curator")
+    # carol holds a role only on the second workspace — switcher must not show "acme"
+    # to carol, and must not show "beta" to alice (multi-workspace fixture, issue #95).
+    rbac.grant("carol", WORKSPACE_BETA, "viewer")
 
     audit_log = AuditLog()
     reidentify_store = InMemoryReIdentificationStore({(PERSON_SURROGATE, WORKSPACE): CIPHERTEXT})
