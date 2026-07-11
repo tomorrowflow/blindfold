@@ -99,6 +99,23 @@ body {
 .bf-nav-label {
   overflow: hidden;
   text-overflow: ellipsis;
+  flex: 1;
+}
+
+.bf-nav-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 4px;
+  background: var(--bf-accent-lime);
+  color: var(--bf-chrome-navy);
+  border-radius: 9999px;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  line-height: 1;
+  flex-shrink: 0;
 }
 
 .bf-topbar {
@@ -1362,4 +1379,101 @@ body {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
+}
+
+/* -----------------------------------------------------------------------
+   Review inbox (issue #99)
+   ----------------------------------------------------------------------- */
+
+.bf-review-inbox-list {
+  list-style: none;
+  margin: 16px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.bf-review-inbox-item {
+  background: var(--bf-card);
+  border: 1px solid var(--bf-border-soft);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+
+.bf-review-inbox-item-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.bf-review-inbox-item-real {
+  font-weight: 600;
+  color: var(--bf-ink);
+}
+
+.bf-review-inbox-item-surrogate {
+  font-family: var(--bf-font-mono);
+  font-size: 0.875rem;
+  color: #6b7589;
+}
+
+.bf-review-inbox-item-context {
+  margin: 6px 0 0;
+  color: #4b5468;
+  font-size: 0.875rem;
+}
+
+.bf-review-inbox-item-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.bf-review-inbox-error {
+  color: var(--bf-red);
+  font-size: 0.875rem;
+}
+
+.bf-review-inbox-empty {
+  color: var(--bf-ok);
+  font-weight: 500;
+}
+
+.bf-btn-outline {
+  background: transparent;
+  border: 1px solid var(--bf-border);
+  color: var(--bf-ink);
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-family: inherit;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+.bf-btn-outline:hover {
+  background: var(--bf-canvas);
+}
+
+.bf-btn-lime {
+  background: var(--bf-accent-lime);
+  border: 1px solid var(--bf-accent-lime);
+  color: var(--bf-chrome-navy);
+  border-radius: 6px;
+  padding: 6px 14px;
+  font-family: inherit;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.bf-btn-lime:hover {
+  filter: brightness(0.95);
+}
+
+.bf-btn-outline[disabled],
+.bf-btn-lime[disabled] {
+  opacity: 0.6;
+  cursor: progress;
 }

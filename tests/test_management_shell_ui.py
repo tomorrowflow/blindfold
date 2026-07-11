@@ -85,14 +85,26 @@ async def test_ui_assets_are_served_from_the_vendored_bundle():
 
 
 @pytest.mark.anyio
-async def test_legacy_embedded_spa_routes_are_unaffected_by_the_shell_fallback():
-    # ADR-0011's embedded pages remain untouched (retired later, per the issue) —
-    # each must still return ITS OWN page, not the new shell's index.html.
+async def test_legacy_embedded_spa_routes_still_pending_migration_are_unaffected():
+    # org-graph and entity-list are still ADR-0011 embedded pages (their own
+    # migration issues, #97/#98) — each must still return ITS OWN page, not the
+    # new shell's index.html.
     async with _client() as client:
-        review_inbox_resp = await client.get("/ui/review-inbox")
         org_graph_resp = await client.get("/ui/org-graph")
         entity_list_resp = await client.get("/ui/entity-list")
 
-    for resp in (review_inbox_resp, org_graph_resp, entity_list_resp):
+    for resp in (org_graph_resp, entity_list_resp):
         assert resp.status_code == 200
         assert 'id="bf-shell-root"' not in resp.text
+
+
+@pytest.mark.anyio
+async def test_legacy_review_inbox_route_is_retired_and_falls_back_to_the_shell():
+    # Issue #99 migrates the review inbox into the shell's /ui/inbox route —
+    # the old embedded page is retired, so its URL now resolves like any other
+    # unknown /ui/* path: the shell's index.html (client-side routing takes it
+    # from there, same as any deep link/reload).
+    async with _client() as client:
+        resp = await client.get("/ui/review-inbox")
+    assert resp.status_code == 200
+    assert 'id="bf-shell-root"' in resp.text

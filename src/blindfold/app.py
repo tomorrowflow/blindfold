@@ -117,7 +117,7 @@ from .policy import (
 from .rbac import RbacRegistry
 from .relationships import RelationshipEdge, RelationshipStore
 from .review import Allowlist, ReviewInbox
-from .spa import entity_list_html, org_graph_html, review_inbox_html
+from .spa import entity_list_html, org_graph_html
 from .status import (
     BlockHistory,
     CachedHealthProbe,
@@ -841,17 +841,6 @@ async def chat_completions(
     if block is not None:
         return block
     return restored
-
-
-@app.get("/ui/review-inbox", response_class=HTMLResponse)
-async def review_inbox_spa() -> HTMLResponse:
-    """Serve the review-inbox SPA bundle (ADR-0011 / issue #14).
-
-    Thin Vue 3 page that consumes :func:`list_review_inbox`,
-    :func:`confirm_review_item` and :func:`reject_review_item` over the JSON
-    management API — the "API is the tested seam" boundary the SPA reads from.
-    """
-    return HTMLResponse(content=review_inbox_html())
 
 
 @app.get("/v1/management/review-inbox")

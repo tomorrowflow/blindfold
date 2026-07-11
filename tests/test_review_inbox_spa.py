@@ -1,21 +1,17 @@
-"""Review-inbox SPA seam (ADR-0011 / issue #14): a thin reactive UI over the
-JSON management API exposed by :mod:`blindfold.app`.
+"""Review-inbox management-API seam (ADR-0011 / ADR-0010): the JSON boundary
+the review-inbox frontend consumes.
 
-The SPA is a single-file Vue 3 page served by FastAPI. It lists the inbox of
-**provisional**ly-blindfolded **candidate**s minted by the learning loop, and
-exposes **confirm** (grows the entity graph) and **reject** (grows the
-allowlist) actions wired to the existing JSON management endpoints
+The frontend used to be a single-file Vue 3 page served by FastAPI at
+``/ui/review-inbox`` (issue #14); it's now the React view in the unified shell
+at ``/ui/inbox`` (issue #99). Neither frontend owns any behavior of its own —
+both are thin reactive UIs over the same JSON management endpoints
 (``/v1/management/review-inbox`` + ``…/{id}/confirm`` + ``…/{id}/reject``).
-
-The JSON API is the tested seam (ADR-0011): browser-side reactive behaviour is
-verified observationally by ``browser-verify`` against the running SPA; this
-suite asserts the SPA is served, names the right endpoints, embeds the
-ubiquitous review-inbox language, and that the **same** confirm/reject calls
-the SPA issues produce the documented graph/allowlist effects through the
-FastAPI test client.
+This suite asserts that seam directly: confirm/reject calls produce the
+documented graph/allowlist effects, and a triaged item reactively drops out of
+the next list call — the same JSON behavior either frontend renders.
 
 Leak-audit clauses for this slice:
-- A/B/C/D/E/F/G N/A: the SPA never reaches the proxy request path. It only
+- A/B/C/D/E/F/G N/A: this seam never reaches the proxy request path. It only
   reads inbox metadata (real value + provisional surrogate the user owns) and
   writes confirm/reject; no provider egress, no surrogate restore, no L3.
 """
@@ -32,11 +28,6 @@ from blindfold.app import (
     get_review_inbox,
 )
 from blindfold.review import Allowlist, ReviewInbox
-from blindfold.spa import (
-    REVIEW_INBOX_CONFIRM_ENDPOINT,
-    REVIEW_INBOX_LIST_ENDPOINT,
-    REVIEW_INBOX_REJECT_ENDPOINT,
-)
 from blindfold.store import vendored_seed_repository
 from blindfold.surrogates import SurrogateMapping
 
@@ -46,55 +37,11 @@ def _seeded_mapping() -> SurrogateMapping:
 
 
 @pytest.mark.anyio
-async def test_review_inbox_spa_is_served_as_html_with_a_mount_point():
-    # ADR-0011: a React/Vue SPA over the FastAPI JSON API. We serve the bundle
-    # as a single HTML page so the user can open it in a browser without a
-    # separate dev server. Asserts the route returns text/html and contains a
-    # mount point the client-side framework attaches to.
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(
-        transport=transport, base_url="http://proxy.test"
-    ) as client:
-        resp = await client.get("/ui/review-inbox")
-    assert resp.status_code == 200
-    assert "text/html" in resp.headers.get("content-type", "")
-    body = resp.text
-    assert "<!doctype html>" in body.lower()
-    assert 'id="review-inbox-app"' in body
-
-
-@pytest.mark.anyio
-async def test_review_inbox_spa_references_the_management_json_endpoints_it_consumes():
-    # ADR-0011: the JSON API is the clean boundary the SPA consumes — the SPA
-    # bundle must actually call the documented list / confirm / reject endpoints.
-    # If the routes are renamed and the SPA isn't updated, this catches it.
-    transport = httpx.ASGITransport(app=app)
-    async with httpx.AsyncClient(
-        transport=transport, base_url="http://proxy.test"
-    ) as client:
-        resp = await client.get("/ui/review-inbox")
-    body = resp.text
-    assert REVIEW_INBOX_LIST_ENDPOINT in body
-    # confirm/reject endpoints are templated with an item id — the substring
-    # the SPA composes around encodeURIComponent(id) is the stable prefix.
-    confirm_prefix = REVIEW_INBOX_CONFIRM_ENDPOINT.split("{id}")[0]
-    reject_prefix = REVIEW_INBOX_REJECT_ENDPOINT.split("{id}")[0]
-    assert confirm_prefix in body
-    assert reject_prefix in body
-    # Project's ubiquitous language ("review inbox" / "confirm" / "reject" /
-    # "provisional surrogate") surfaces in the UI, not "anonymize"/"mask"/etc.
-    assert "review inbox" in body.lower()
-    assert "provisional" in body.lower()
-    for forbidden in ("anonymize", "anonymise", "mask", "redact", "de-anonymize"):
-        assert forbidden not in body.lower(), f"{forbidden!r} is not project language"
-
-
-@pytest.mark.anyio
-async def test_spa_post_action_removes_item_from_subsequent_list_so_ui_can_reactively_drop_it():
-    # The SPA is reactive: after a successful confirm/reject POST, the triaged
-    # item is no longer in the inbox. The next list call (the SPA's source of
-    # truth when refreshing, or what an external observer would see) returns
-    # the inbox without it. That's the seam Vue's reactive list re-renders off.
+async def test_post_action_removes_item_from_subsequent_list_so_ui_can_reactively_drop_it():
+    # The frontend is reactive: after a successful confirm/reject POST, the
+    # triaged item is no longer in the inbox. The next list call (the frontend's
+    # source of truth when refreshing, or what an external observer would see)
+    # returns the inbox without it. That's the seam either frontend re-renders off.
     inbox = ReviewInbox()
     mapping = _seeded_mapping()
     allowlist = Allowlist()
@@ -138,12 +85,12 @@ async def test_spa_post_action_removes_item_from_subsequent_list_so_ui_can_react
 
 
 @pytest.mark.anyio
-async def test_spa_confirm_reject_calls_grow_entity_graph_and_allowlist_at_api_seam():
+async def test_confirm_reject_calls_grow_entity_graph_and_allowlist_at_api_seam():
     # Acceptance criterion #3: actions produce the same graph/allowlist effects
-    # verified at the API seam. The SPA does nothing more than fire the same
-    # confirm/reject POSTs covered by the learning-loop tests; this asserts that
-    # the management seam — as the SPA hits it — grows the SurrogateMapping on
-    # confirm and the Allowlist on reject.
+    # verified at the API seam. The frontend does nothing more than fire the
+    # same confirm/reject POSTs covered by the learning-loop tests; this asserts
+    # that the management seam — as the frontend hits it — grows the
+    # SurrogateMapping on confirm and the Allowlist on reject.
     inbox = ReviewInbox()
     mapping = _seeded_mapping()
     allowlist = Allowlist()
@@ -171,7 +118,7 @@ async def test_spa_confirm_reject_calls_grow_entity_graph_and_allowlist_at_api_s
     finally:
         app.dependency_overrides.clear()
 
-    # API responses use the documented action verbs the SPA shows the user.
+    # API responses use the documented action verbs the frontend shows the user.
     assert confirm_resp.status_code == 200
     assert confirm_resp.json()["action"] == "confirmed"
     assert reject_resp.status_code == 200
