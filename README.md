@@ -197,6 +197,13 @@ works in the background:
   startup, so a fresh install shows a non-empty, protected workspace from request
   #1 instead of an empty one learned one leak at a time. Importing your own
   curated data is future work.
+- **Status.** `GET /v1/status` reports Protected/Degraded, dependency health
+  (upstream, L3, Transit, store), recent fail-closed blocks, the review-inbox
+  count, and non-secret config — the contract behind the management app's Home
+  view and the future menu bar item. Deliberately outside `/v1/management/*`: no
+  auth/workspace headers required (the security boundary is the loopback-only
+  bind), and the payload is scrubbed by construction — never entity content,
+  never secrets.
 
 **Works with:** any tool whose endpoint you can point at a URL — CLIs, IDE extensions,
 scripts. **Doesn't work with:** apps whose endpoint can't be redirected (claude.ai web,

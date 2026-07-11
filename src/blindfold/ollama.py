@@ -17,12 +17,35 @@ import json
 import httpx
 
 from .l3 import CandidateSpan, L3Adjudication
+from .status import DependencyHealth
 
 
 def is_cloud_model(model: str) -> bool:
     """True if ``model`` names a remotely-executing Ollama model (the ``:cloud`` tag)."""
     _, _, tag = model.partition(":")
     return tag.lower().endswith("cloud")
+
+
+# Issue #92: /v1/status's l3 dependency probe -- a lightweight local-daemon liveness
+# check, distinct from adjudicate(). GET /api/tags sends no candidate-span content (no
+# adjudicator egress), so it's safe to run on every cache-miss poll. The failure detail
+# is a fixed, scrubbed string (never the httpx exception's own text, which could echo
+# request internals) -- matching the issue's own contract example verbatim.
+DEFAULT_PING_TIMEOUT_SECONDS = 5.0
+
+
+def ping_ollama(
+    base_url: str, http: httpx.Client | None = None, timeout: float = DEFAULT_PING_TIMEOUT_SECONDS
+) -> DependencyHealth:
+    """Lightweight Ollama liveness probe (issue #92) -- GET ``{base_url}/api/tags``."""
+    url = f"{base_url.rstrip('/')}/api/tags"
+    client = http or httpx.Client(timeout=timeout)
+    try:
+        response = client.get(url)
+        response.raise_for_status()
+    except httpx.HTTPError:
+        return DependencyHealth(healthy=False, detail="ollama unreachable")
+    return DependencyHealth(healthy=True)
 
 
 # Issue #69: a cold Ollama model load measured 6.35s live (warm ~0.67s); httpx's

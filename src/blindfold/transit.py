@@ -15,6 +15,8 @@ import base64
 
 import httpx
 
+from .status import DependencyHealth
+
 _MAPPING_KEY = "blindfold-mapping"
 _BLIND_INDEX_KEY = "blindfold-blind-index"
 _HMAC_ALGORITHM = "sha2-256"
@@ -81,6 +83,20 @@ class TransitClient:
         )
         resp.raise_for_status()
         return resp.json()["data"]["policies"] == ["root"]
+
+    def health_check(self) -> DependencyHealth:
+        """Lightweight OpenBao liveness probe (issue #92) -- GET ``/v1/sys/health``.
+
+        Unauthenticated (no token header needed) -- confirms the daemon answers
+        without touching key material. The failure detail is a fixed, scrubbed
+        string, never the httpx exception's own text.
+        """
+        try:
+            response = self._http.get(f"{self._addr}/v1/sys/health")
+            response.raise_for_status()
+        except httpx.HTTPError:
+            return DependencyHealth(healthy=False, detail="openbao unreachable")
+        return DependencyHealth(healthy=True)
 
     def blind_index(self, value: str) -> str:
         """Return the HMAC digest of ``value`` for equality lookups over ciphertext columns."""

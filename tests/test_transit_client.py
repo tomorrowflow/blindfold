@@ -147,3 +147,37 @@ def test_transit_is_root_token_false_for_a_scoped_policy_token():
         http=httpx.Client(transport=transport),
     )
     assert client.is_root_token() is False
+
+
+# ---------------------------------------------------------------------------
+# 6. health_check — /v1/status's transit dependency probe (issue #92)
+# ---------------------------------------------------------------------------
+
+
+def test_transit_health_check_reports_healthy_when_the_daemon_answers():
+    from blindfold.status import DependencyHealth
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/sys/health"
+        return httpx.Response(200, json={"initialized": True, "sealed": False})
+
+    client = TransitClient(
+        addr="http://openbao.test",
+        token="blindfold-proxy-token",
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    assert client.health_check() == DependencyHealth(healthy=True)
+
+
+def test_transit_health_check_reports_unhealthy_scrubbed_detail_when_unreachable():
+    from blindfold.status import DependencyHealth
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    client = TransitClient(
+        addr="http://openbao.test",
+        token="blindfold-proxy-token",
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    assert client.health_check() == DependencyHealth(healthy=False, detail="openbao unreachable")
