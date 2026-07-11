@@ -64,16 +64,36 @@ REAL_ORG = "Initech GmbH"
 ORG_SURROGATE = "Pinnacle Corp"
 CIPHERTEXT = "vault:v1:enc:martin-bach"
 
+# A second, same-kind person sharing REAL_PERSON's real name — the design brief's own
+# "planted duplicate" (entity-list-view-design-brief.md §4): drives the entity-list
+# shell's same-kind merge-candidate picker (issue #97) and a real-name search that
+# must highlight BOTH surrogate rows (ADR-0018's multi-match delta), not just one.
+PERSON2_SURROGATE = "Devin Novak"
+CIPHERTEXT_PERSON2 = "vault:v1:enc:martin-bach-2"
+
+# A second term entity — the entity list's edge re-target picker needs a second
+# same-kind (term) candidate to point an `employer` chip at (issue #97).
+REAL_ORG2 = "Initech GmbH Holding"
+ORG2_SURROGATE = "Meridian Group"
+CIPHERTEXT_ORG2 = "vault:v1:enc:initech-holding"
+
 # Second workspace for multi-workspace switcher tests (issue #95):
 # carol holds a role on "beta"; alice has no role on "beta"; bob has no role on either.
 WORKSPACE_BETA = "beta"
 
 
 def _stub_transit() -> TransitClient:
+    plaintext_by_ciphertext = {
+        CIPHERTEXT: REAL_PERSON,
+        CIPHERTEXT_PERSON2: REAL_PERSON,
+        CIPHERTEXT_ORG2: REAL_ORG2,
+    }
+
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        if body.get("ciphertext") == CIPHERTEXT:
-            plaintext = base64.b64encode(REAL_PERSON.encode()).decode()
+        real = plaintext_by_ciphertext.get(body.get("ciphertext"))
+        if real is not None:
+            plaintext = base64.b64encode(real.encode()).decode()
             return httpx.Response(200, json={"data": {"plaintext": plaintext}})
         return httpx.Response(400, json={"errors": ["no such ciphertext"]})
 
@@ -88,11 +108,23 @@ def build_app():
     graph = EntityGraph()
     person = graph.add_entity("person", WORKSPACE, REAL_PERSON, surrogate=PERSON_SURROGATE)
     org = graph.add_entity("term", WORKSPACE, REAL_ORG, surrogate=ORG_SURROGATE)
+    person2 = graph.add_entity("person", WORKSPACE, REAL_PERSON, surrogate=PERSON2_SURROGATE)
+    org2 = graph.add_entity("term", WORKSPACE, REAL_ORG2, surrogate=ORG2_SURROGATE)
 
     relationship_store = RelationshipStore()
     relationship_store.create(
         WORKSPACE, "person", person.entity_id, "employer", "term", org.entity_id
     )
+    relationship_store.create(
+        WORKSPACE, "person", person2.entity_id, "employer", "term", org.entity_id
+    )
+    # EntityGraph keeps its own internal relationship set (merge's edge re-homing,
+    # edit_surrogate's coherent-world "inconsistent_dependents" warning) separate from
+    # the RelationshipStore instance the /relationships CRUD endpoint (edge chips) uses.
+    # Seed both so renaming the org's surrogate legitimately surfaces the dependent
+    # soft-warn the entity-list shell's rename UI (issue #97) exercises end to end.
+    graph.add_relationship(WORKSPACE, person.entity_id, "person", "employer", org.entity_id, "term")
+    graph.add_relationship(WORKSPACE, person2.entity_id, "person", "employer", org.entity_id, "term")
 
     rbac = RbacRegistry()
     rbac.grant("alice", WORKSPACE, "re-identifier")
@@ -101,12 +133,30 @@ def build_app():
     # browser page under test.
     rbac.grant("alice", WORKSPACE, "viewer")
     rbac.grant("alice", WORKSPACE, "curator")
+    # Structural entity-list edits (rename, merge) are gated on `admin` by the shipped
+    # backend (app.py::edit_entity_surrogate / merge_entities_by_id) — a pre-existing
+    # RBAC-vocabulary gap from the settled curator/re-identifier split (ADR-0028) that
+    # this migration slice does not re-wire (see commit notes). Granted here so the
+    # shell's structural-curation specs can exercise the real endpoints end to end.
+    rbac.grant("alice", WORKSPACE, "admin")
     # carol holds a role only on the second workspace — switcher must not show "acme"
     # to carol, and must not show "beta" to alice (multi-workspace fixture, issue #95).
     rbac.grant("carol", WORKSPACE_BETA, "viewer")
+    # dave holds ONLY curator on "acme" — no re-identifier, no admin, no viewer. Drives
+    # the entity-list shell's "locked without re-identifier while structural curation
+    # stays available" acceptance criterion (issue #97): a curator can reach the
+    # workspace (unlike bob, who holds no role anywhere) but Reveal/real-name search
+    # must show the locked state.
+    rbac.grant("dave", WORKSPACE, "curator")
 
     audit_log = AuditLog()
-    reidentify_store = InMemoryReIdentificationStore({(PERSON_SURROGATE, WORKSPACE): CIPHERTEXT})
+    reidentify_store = InMemoryReIdentificationStore(
+        {
+            (PERSON_SURROGATE, WORKSPACE): CIPHERTEXT,
+            (PERSON2_SURROGATE, WORKSPACE): CIPHERTEXT_PERSON2,
+            (ORG2_SURROGATE, WORKSPACE): CIPHERTEXT_ORG2,
+        }
+    )
     transit = _stub_transit()
 
     app.dependency_overrides[get_entity_graph] = lambda: graph
