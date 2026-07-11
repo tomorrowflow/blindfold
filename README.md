@@ -98,8 +98,11 @@ path keeps the entity graph in-process (Postgres persistence is targeted, ADR-00
 novel-entity adjudication ships as a fail-closed stub pending a real local-LLM client.
 A self-hosted key-custody service (OpenBao Transit) backs the mapping's encryption. The
 architecture narrative, the request flow in full, and the decision log live in
-[`docs/DESIGN.md`](docs/DESIGN.md). This is a Python-only project — any JS/TypeScript
-tooling you see (e.g. under [`.sandcastle/`](.sandcastle/)) is dev-harness-only, not part
+[`docs/DESIGN.md`](docs/DESIGN.md). Runtime is Python-only — no Node at install or run
+time. The one exception is `frontend/`, the management SPA's Vite+React source
+(ADR-0026): built once and vendored as a static bundle served at `/ui/` (see
+[Management app build](#management-app-build) below). Any other JS/TypeScript tooling
+you see (e.g. under [`.sandcastle/`](.sandcastle/)) is dev-harness-only, not part
 of the shipped build.
 
 ---
@@ -135,6 +138,35 @@ bootstrap script uses to set up keys/policies) — `blindfold serve` refuses to 
 against a root Transit token (SEC-2) unless you explicitly set `BLINDFOLD_DEV_MODE=1`,
 since root bypasses the `blindfold-proxy`/`-human`/`-admin` policy separation the store's
 RBAC depends on. Mint a scoped token as shown above instead.
+
+---
+
+## Management app build
+
+The management app shell (ADR-0026) is a Vite+React app, source in [`frontend/`](frontend/),
+**committed as a built static bundle** at `src/blindfold/ui_dist/` and served by
+`blindfold serve` at `/ui/`. Node is a **dev dependency only** — a clean venv running an
+installed wheel needs no Node at all, because the bundle is already vendored in the
+repo/package like the fonts and icons it embeds.
+
+**Dev loop** (editing the shell itself):
+
+```bash
+uv run blindfold serve       # the API, on 127.0.0.1:8000
+cd frontend && npm install && npm run dev   # the SPA, proxying /v1/* to the API above
+```
+
+**Regenerating the vendored bundle** (after changing anything under `frontend/src/`):
+
+```bash
+cd frontend
+npm install
+npm run build                # writes straight into ../src/blindfold/ui_dist/
+```
+
+Commit the resulting `src/blindfold/ui_dist/` changes alongside your `frontend/` source
+change — packaging (`uv build` / CI) does not rebuild the frontend itself, it just picks
+up whatever is already committed there.
 
 ---
 

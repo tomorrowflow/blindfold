@@ -118,6 +118,7 @@ from .rbac import RbacRegistry
 from .relationships import RelationshipEdge, RelationshipStore
 from .review import Allowlist, ReviewInbox
 from .spa import entity_list_html, org_graph_html, review_inbox_html
+from .ui import shell_router, ui_assets_app
 from .store import vendored_seed_repository
 from .surrogates import SurrogateMapping
 from .upstream import UpstreamClient, UpstreamError
@@ -1710,3 +1711,12 @@ async def entity_list_spa() -> HTMLResponse:
     require the ``re-identifier`` role and emit audit events (ADR-0015, ADR-0018).
     """
     return HTMLResponse(content=entity_list_html())
+
+
+# ---------------------------------------------------------------------------
+# Management SPA shell (ADR-0026, issue #93) — mounted last so its /ui/* catch-all
+# never shadows a legacy embedded route registered above.
+# ---------------------------------------------------------------------------
+
+app.mount("/ui/assets", ui_assets_app, name="ui-assets")
+app.include_router(shell_router)
