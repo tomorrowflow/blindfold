@@ -30,6 +30,13 @@ L3 / local-Ollama adjudicator (ADR-0022 / issue #57):
                              unconfigured (fails closed, ADR-0009). A `:cloud`-suffixed
                              tag names a remotely-executing model and is refused at
                              startup with no override (the local-only invariant).
+
+Serve bind address (ADR-0021 / ADR-0027, issue #91):
+  BLINDFOLD_HOST           — bind host `blindfold serve` reports itself at (default:
+                             127.0.0.1, matching the loopback-only default). Read by
+                             the request path to build a block response's
+                             `management_url` deep link -- never hardcoded.
+  BLINDFOLD_PORT           — bind port, same purpose (default: 8000).
 """
 
 from __future__ import annotations
@@ -40,6 +47,8 @@ from dataclasses import dataclass
 DEFAULT_UPSTREAM_BASE_URL = "https://api.anthropic.com"
 DEFAULT_OPENBAO_ADDR = "http://localhost:8200"
 DEFAULT_OLLAMA_ADDR = "http://localhost:11434"
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 8000
 
 
 @dataclass(frozen=True)
@@ -52,6 +61,8 @@ class Settings:
     ollama_addr: str = DEFAULT_OLLAMA_ADDR
     ollama_model: str = ""
     openai_upstream_base_url: str = ""
+    host: str = DEFAULT_HOST
+    port: int = DEFAULT_PORT
 
     @property
     def effective_openai_upstream_base_url(self) -> str:
@@ -75,4 +86,6 @@ def get_settings() -> Settings:
         ollama_addr=os.environ.get("BLINDFOLD_OLLAMA_ADDR", DEFAULT_OLLAMA_ADDR),
         ollama_model=os.environ.get("BLINDFOLD_OLLAMA_MODEL", ""),
         openai_upstream_base_url=os.environ.get("BLINDFOLD_OPENAI_UPSTREAM_BASE_URL", ""),
+        host=os.environ.get("BLINDFOLD_HOST", DEFAULT_HOST),
+        port=int(os.environ.get("BLINDFOLD_PORT", DEFAULT_PORT)),
     )

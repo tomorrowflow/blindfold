@@ -340,6 +340,30 @@ _DEFAULT_REMEDY = (
     "are still protected; novelty discovery is the documented loss."
 )
 
+# ADR-0027 (issue #91): every current sub_reason routes a block to the management
+# app's Home/Status page -- the review inbox is never a block target (novel entities
+# are protected non-blocking by design, ADR-0010). Keyed by sub_reason (rather than a
+# single constant) so a future sub_reason can target a different deep link without
+# reshaping the funnel.
+_MANAGEMENT_URL_PATH_BY_SUB_REASON = {
+    "l3_unavailable": "/ui/status",
+    "leak_detected": "/ui/status",
+    "unresolved_surrogate": "/ui/status",
+}
+_DEFAULT_MANAGEMENT_URL_PATH = "/ui/status"
+
+
+def _management_url(sub_reason: str, settings: Settings) -> str:
+    """Deep link into the management app's Home/Status page (ADR-0027).
+
+    Derived from the actual serve host/port (``settings.host``/``settings.port``,
+    loopback default per ADR-0021) -- never hardcoded, so it stays correct whether
+    the operator bound loopback or opted into a non-default bind.
+    """
+    path = _MANAGEMENT_URL_PATH_BY_SUB_REASON.get(sub_reason, _DEFAULT_MANAGEMENT_URL_PATH)
+    return f"http://{settings.host}:{settings.port}{path}"
+
+
 # ADR-0009 / SEC-7 (issue #48): the l3-unavailable 503's remedy names all three
 # on-ramps -- curating a candidate is often cheaper than waiting for an Ollama fix.
 _L3_UNAVAILABLE_REMEDY = (
@@ -372,10 +396,20 @@ def _blocked_response(
     SEC-3/SEC-7: ``reason`` is already scrubbed by the caller (surrogate or hashed
     id, never the plaintext) — this is the single funnel every block routes
     through, so logging it here once guarantees the identical scrubbed string
-    reaches all three sinks: the 503 body, the audit record, and this log line.
+    reaches all three sinks: the 503 body's ``reason`` field, the audit record, and
+    this log line.
+
+    ADR-0027 (issue #91): a block strands the user's prompt mid-exchange, so the body
+    also carries a human-actionable ``message`` (most clients, Claude Code included,
+    render an API error's ``message`` verbatim — the in-tool delivery channel) and a
+    ``management_url`` deep link into the management app's Home/Status page. Built
+    from the same scrubbed ``reason`` — the scrubbed-reason invariant applies to
+    ``message`` verbatim too, never entity plaintext.
     """
     logger.warning("blindfold_blocked: event=%s workspace=%s reason=%s", event, workspace, reason)
     audit_log.append(AuditRecord(workspace=workspace, event=event, reason=reason))
+    management_url = _management_url(sub_reason, get_settings())
+    message = f"Blindfold blocked this request: {reason} Fix or review at {management_url}"
     return JSONResponse(
         status_code=503,
         content={
@@ -384,8 +418,10 @@ def _blocked_response(
                 "code": "blindfold_fail_closed",
                 "sub_reason": sub_reason,
                 "event": event,
-                "message": reason,
+                "message": message,
+                "reason": reason,
                 "remedy": remedy,
+                "management_url": management_url,
                 "workspace": workspace,
             }
         },

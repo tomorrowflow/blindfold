@@ -18,14 +18,12 @@ from typing import Callable
 
 import uvicorn
 
-from .config import Settings, get_settings
+from .config import DEFAULT_HOST, DEFAULT_PORT, Settings, get_settings
 from .ollama import is_cloud_model
 from .transit import TransitClient
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8000
 APP_TARGET = "blindfold.app:app"
 
 

@@ -118,3 +118,22 @@ def test_openai_upstream_client_uses_dedicated_var_when_set(monkeypatch):
     settings = get_settings()
     client = UpstreamClient.from_openai_settings(settings)
     assert client.base_url == "http://openai-upstream.test"
+
+
+def test_settings_host_and_port_default_to_loopback(monkeypatch):
+    # ADR-0021: the runnable entry point binds loopback by default. The 503 block
+    # body's management_url (ADR-0027 / issue #91) is derived from these same
+    # settings, so they must default to the identical loopback host/port.
+    monkeypatch.delenv("BLINDFOLD_HOST", raising=False)
+    monkeypatch.delenv("BLINDFOLD_PORT", raising=False)
+    settings = get_settings()
+    assert settings.host == "127.0.0.1"
+    assert settings.port == 8000
+
+
+def test_settings_host_and_port_are_overridable_via_env(monkeypatch):
+    monkeypatch.setenv("BLINDFOLD_HOST", "0.0.0.0")
+    monkeypatch.setenv("BLINDFOLD_PORT", "9000")
+    settings = get_settings()
+    assert settings.host == "0.0.0.0"
+    assert settings.port == 9000

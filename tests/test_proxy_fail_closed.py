@@ -307,7 +307,13 @@ async def test_l3_unavailable_scrubs_the_candidate_value_from_body_audit_and_log
     finally:
         app.dependency_overrides.clear()
 
-    body_message = resp.json()["error"]["message"]
+    error = resp.json()["error"]
+    # ADR-0027 (issue #91): the body's `reason` key carries the exact scrubbed
+    # technical string this test pins (unchanged contract); `message` is a
+    # human-actionable superset built from it -- see
+    # tests/test_blocked_response_actionable_message.py for that field's own
+    # scrubbed-reason assertions.
+    body_reason = error["reason"]
     audit_record = next(
         r
         for r in audit_log.records
@@ -315,13 +321,14 @@ async def test_l3_unavailable_scrubs_the_candidate_value_from_body_audit_and_log
     )
     log_messages = [record.getMessage() for record in caplog.records]
 
-    assert "Quentin" not in body_message
+    assert "Quentin" not in body_reason
+    assert "Quentin" not in error["message"]
     assert "Quentin" not in audit_record.reason
     assert not any("Quentin" in m for m in log_messages), log_messages
 
-    assert "hash:" in body_message
-    assert body_message == audit_record.reason
-    assert any(body_message in m for m in log_messages), log_messages
+    assert "hash:" in body_reason
+    assert body_reason == audit_record.reason
+    assert any(body_reason in m for m in log_messages), log_messages
 
 
 class _LeakyMapping(SurrogateMapping):
@@ -455,7 +462,11 @@ async def test_leak_gate_violation_scrubs_the_real_value_from_body_audit_and_log
     finally:
         app.dependency_overrides.clear()
 
-    body_message = resp.json()["error"]["message"]
+    error = resp.json()["error"]
+    # ADR-0027 (issue #91): `reason` carries the exact scrubbed technical string
+    # this test pins (unchanged contract); `message` is a human-actionable
+    # superset built from it.
+    body_reason = error["reason"]
     audit_record = next(
         r
         for r in audit_log.records
@@ -463,12 +474,13 @@ async def test_leak_gate_violation_scrubs_the_real_value_from_body_audit_and_log
     )
     log_messages = [record.getMessage() for record in caplog.records]
 
-    assert "Quentin" not in body_message
+    assert "Quentin" not in body_reason
+    assert "Quentin" not in error["message"]
     assert "Quentin" not in audit_record.reason
     assert not any("Quentin" in m for m in log_messages), log_messages
 
     # Diagnosable via the scrubbed reference (no surrogate was ever minted for
     # "Quentin" here, so it falls back to a hashed id) — and identical everywhere.
-    assert "hash:" in body_message
-    assert body_message == audit_record.reason
-    assert any(body_message in m for m in log_messages), log_messages
+    assert "hash:" in body_reason
+    assert body_reason == audit_record.reason
+    assert any(body_reason in m for m in log_messages), log_messages
