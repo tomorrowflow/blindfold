@@ -61,12 +61,14 @@ def _recording_transit() -> TransitClient:
     )
 
 
-def test_bootstrap_admin_grants_viewer_re_identifier_and_admin():
+def test_bootstrap_admin_grants_the_canonical_four_role_set():
+    # ADR-0028: bootstrap_admin grants every canonical role, curator included.
     rbac = RbacRegistry()
 
     bootstrap_admin(rbac, "operator", "default")
 
     assert rbac.has_role("operator", "default", "viewer")
+    assert rbac.has_role("operator", "default", "curator")
     assert rbac.has_role("operator", "default", "re-identifier")
     assert rbac.has_role("operator", "default", "admin")
 
