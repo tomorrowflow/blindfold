@@ -1380,6 +1380,8 @@ async def merge_entities(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     _apply_merge_side_effects(
         workspace=workspace,
@@ -1682,6 +1684,8 @@ async def merge_entities_by_id(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     _apply_merge_side_effects(
         workspace=slug,

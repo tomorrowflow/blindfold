@@ -5,6 +5,7 @@ import { TopBar } from "./TopBar";
 import { WorkspaceProvider } from "./WorkspaceContext";
 import { ToastProvider } from "./ToastContext";
 import { ToastOutlet } from "./ToastOutlet";
+import { PreferencesProvider } from "./PreferencesContext";
 
 export function Shell() {
   const [collapsed, setCollapsed] = useState(false);
@@ -12,14 +13,16 @@ export function Shell() {
   return (
     <ToastProvider>
       <WorkspaceProvider>
-        <div className="bf-shell">
-          <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((v) => !v)} />
-          <TopBar />
-          <main className="bf-main">
-            <Outlet />
-          </main>
-        </div>
-        <ToastOutlet />
+        <PreferencesProvider>
+          <div className="bf-shell">
+            <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((v) => !v)} />
+            <TopBar />
+            <main className="bf-main">
+              <Outlet />
+            </main>
+          </div>
+          <ToastOutlet />
+        </PreferencesProvider>
       </WorkspaceProvider>
     </ToastProvider>
   );

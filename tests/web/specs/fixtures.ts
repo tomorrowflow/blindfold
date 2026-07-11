@@ -5,10 +5,16 @@ export const REAL_PERSON = "Martin Bach";
 export const PERSON_SURROGATE = "Clara Hoffmann";
 export const REAL_ORG = "Initech GmbH";
 export const ORG_SURROGATE = "Pinnacle Corp";
+// Planted duplicate (same real name as REAL_PERSON) + a second term — see
+// serve_fixture.py's docstring on PERSON2_SURROGATE/ORG2_SURROGATE (issue #97).
+export const PERSON2_SURROGATE = "Devin Novak";
+export const REAL_ORG2 = "Initech GmbH Holding";
+export const ORG2_SURROGATE = "Meridian Group";
 
 type Fixtures = {
-  alicePage: Page; // holds re-identifier + viewer on WORKSPACE
-  bobPage: Page; // holds no role on WORKSPACE (unauthorized)
+  alicePage: Page; // holds re-identifier + viewer + curator + admin on WORKSPACE
+  bobPage: Page; // holds no role anywhere (unauthorized; sees no workspace at all)
+  davePage: Page; // holds ONLY curator on WORKSPACE — no re-identifier, no admin
 };
 
 export const test = base.extend<Fixtures>({
@@ -23,6 +29,14 @@ export const test = base.extend<Fixtures>({
   bobPage: async ({ browser }, use) => {
     const context = await browser.newContext({
       extraHTTPHeaders: { "x-blindfold-identity": "bob" },
+    });
+    const page = await context.newPage();
+    await use(page);
+    await context.close();
+  },
+  davePage: async ({ browser }, use) => {
+    const context = await browser.newContext({
+      extraHTTPHeaders: { "x-blindfold-identity": "dave" },
     });
     const page = await context.newPage();
     await use(page);
@@ -46,6 +60,24 @@ export async function auditEventsFor(baseURL: string, event: string, identity: s
   return (body.events as Array<{ event: string; identity: string; reason: string }>).filter(
     (r) => r.event === event && r.identity === identity
   );
+}
+
+/** Resolve an entity-list row by its CURRENT surrogate label and pin it to a stable
+ * `data-testid="entity-row-<id>"` locator (set on the `<tr>` itself). A plain
+ * `page.locator("tr", { hasText: surrogate })` re-evaluates on every action; once
+ * inline rename replaces the surrogate `<span>` with an `<input>`, the span's text
+ * disappears from the row's text content (an input's `value` isn't part of DOM/CSS
+ * text content) and the locator stops resolving mid-test. Scoped to `.bf-surrogate-text`
+ * so an edge chip elsewhere on the page mentioning the same surrogate (e.g. as
+ * someone's employer) never matches a different row (issue #97).
+ */
+export async function rowByCurrentSurrogate(page: Page, surrogate: string) {
+  const testId = await page
+    .locator("tr")
+    .filter({ has: page.locator(".bf-surrogate-text", { hasText: surrogate }) })
+    .getAttribute("data-testid");
+  if (!testId) throw new Error(`no entity row found for surrogate ${surrogate}`);
+  return page.getByTestId(testId);
 }
 
 /** Click a Cytoscape node by its label. The graph renders to a <canvas> with no

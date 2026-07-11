@@ -247,9 +247,14 @@ class EntityGraph:
     ) -> EntityRecord:
         """Merge loser into winner by entity_id; same semantics as merge() (ADR-0016).
 
-        Used by the entity-list SPA (issue #34) where only entity_id is available
-        (surrogate-space; no canonical names exposed). Raises CrossKindMergeError,
-        OrgUnitMergeError, or KeyError for unknown/workspace-mismatched IDs.
+        Used by the entity-list SPA (issue #34/#97) where only entity_id is available
+        (surrogate-space; no canonical names exposed). Resolves winner/loser by id
+        directly — NOT by delegating to merge()'s canonical-name lookup, which cannot
+        tell two same-named entities apart (the design brief's own "planted duplicate"
+        scenario, entity-list-view-design-brief.md §4) and would silently resolve both
+        sides to the same record, deleting the winner instead of the loser. Raises
+        CrossKindMergeError, OrgUnitMergeError, or KeyError for unknown/workspace-
+        mismatched IDs, or ValueError if winner_id == loser_id.
         """
         winner = self.get_by_id(winner_id, workspace)
         if winner is None:
@@ -261,13 +266,8 @@ class EntityGraph:
             raise KeyError(
                 f"loser not found: entity_id={loser_id!r}, workspace={workspace!r}"
             )
-        return self.merge(
-            workspace=workspace,
-            winner_kind=winner.kind,
-            winner_canonical=winner.canonical_name,
-            loser_kind=loser.kind,
-            loser_canonical=loser.canonical_name,
-        )
+        self._check_mergeable_kinds(winner.kind, loser.kind)
+        return self._merge_records(workspace, winner, loser)
 
     def merge(
         self,
@@ -288,15 +288,7 @@ class EntityGraph:
           contradictions are kept.
         - Loser entity is removed from the graph.
         """
-        for kind in (winner_kind, loser_kind):
-            if kind not in ENTITY_KINDS:
-                raise OrgUnitMergeError(
-                    f"org-unit merges are not supported; kind={kind!r} is not a valid entity kind"
-                )
-        if winner_kind != loser_kind:
-            raise CrossKindMergeError(
-                f"cross-kind merge rejected: winner_kind={winner_kind!r} != loser_kind={loser_kind!r}"
-            )
+        self._check_mergeable_kinds(winner_kind, loser_kind)
 
         winner = self.get_by_canonical(workspace, winner_kind, winner_canonical)
         if winner is None:
@@ -308,9 +300,29 @@ class EntityGraph:
             raise KeyError(
                 f"loser not found: workspace={workspace!r}, kind={loser_kind!r}, canonical={loser_canonical!r}"
             )
+        return self._merge_records(workspace, winner, loser)
 
+    def _check_mergeable_kinds(self, winner_kind: str, loser_kind: str) -> None:
+        for kind in (winner_kind, loser_kind):
+            if kind not in ENTITY_KINDS:
+                raise OrgUnitMergeError(
+                    f"org-unit merges are not supported; kind={kind!r} is not a valid entity kind"
+                )
+        if winner_kind != loser_kind:
+            raise CrossKindMergeError(
+                f"cross-kind merge rejected: winner_kind={winner_kind!r} != loser_kind={loser_kind!r}"
+            )
+
+    def _merge_records(
+        self, workspace: str, winner: EntityRecord, loser: EntityRecord
+    ) -> EntityRecord:
         winner_id = winner.entity_id
         loser_id = loser.entity_id
+
+        if winner_id == loser_id:
+            raise ValueError(
+                f"cannot merge an entity with itself: entity_id={winner_id!r}"
+            )
 
         # Loser's canonical name folds in as a variation of the winner.
         if loser.canonical_name not in winner.variations and loser.canonical_name != winner.canonical_name:
