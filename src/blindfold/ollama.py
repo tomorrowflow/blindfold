@@ -38,9 +38,10 @@ def ping_ollama(
     base_url: str, http: httpx.Client | None = None, timeout: float = DEFAULT_PING_TIMEOUT_SECONDS
 ) -> DependencyHealth:
     """Lightweight Ollama liveness probe (issue #92) -- GET ``{base_url}/api/tags``."""
-    client = http or httpx.Client(base_url=base_url.rstrip("/"), timeout=timeout)
+    url = f"{base_url.rstrip('/')}/api/tags"
+    client = http or httpx.Client(timeout=timeout)
     try:
-        response = client.get(f"{base_url.rstrip('/')}/api/tags")
+        response = client.get(url)
         response.raise_for_status()
     except httpx.HTTPError:
         return DependencyHealth(healthy=False, detail="ollama unreachable")
