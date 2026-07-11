@@ -1,0 +1,124 @@
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#bf-shell-root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--bf-font-sans);
+  color: var(--bf-ink);
+  background: var(--bf-canvas);
+}
+
+.bf-shell {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  grid-template-rows: var(--bf-topbar-height) 1fr;
+  grid-template-areas:
+    "sidebar topbar"
+    "sidebar main";
+  height: 100vh;
+}
+
+.bf-sidebar {
+  grid-area: sidebar;
+  width: var(--bf-sidebar-width-expanded);
+  background: var(--bf-chrome-navy);
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  transition: width 150ms ease;
+  overflow: hidden;
+}
+
+.bf-sidebar[data-collapsed="true"] {
+  width: var(--bf-sidebar-width-collapsed);
+}
+
+.bf-sidebar-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  color: #fff;
+  padding: 16px;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.bf-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px;
+  flex: 1;
+}
+
+.bf-nav-divider {
+  height: 1px;
+  background: var(--bf-chrome-navy-alt);
+  margin: 8px 12px;
+}
+
+.bf-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  color: #cfd6e4;
+  text-decoration: none;
+  white-space: nowrap;
+  position: relative;
+  border-left: 3px solid transparent;
+}
+
+.bf-nav-item:hover {
+  background: var(--bf-chrome-navy-alt);
+  color: #fff;
+}
+
+.bf-nav-item[aria-current="page"] {
+  background: var(--bf-chrome-navy-alt);
+  color: #fff;
+  border-left-color: var(--bf-accent-lime);
+}
+
+.bf-nav-item svg {
+  flex-shrink: 0;
+}
+
+.bf-nav-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.bf-topbar {
+  grid-area: topbar;
+  background: var(--bf-card);
+  border-bottom: 1px solid var(--bf-border);
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+}
+
+.bf-main {
+  grid-area: main;
+  overflow: auto;
+  padding: 24px;
+}
+
+.bf-card {
+  background: var(--bf-card);
+  border: 1px solid var(--bf-border-soft);
+  border-radius: 8px;
+  padding: 24px;
+}

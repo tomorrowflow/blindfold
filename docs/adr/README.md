@@ -38,6 +38,7 @@ Vocabulary follows [`../../CONTEXT.md`](../../CONTEXT.md).
 | [0022](0022-wire-l3-adjudicator-local-ollama.md) | Wire the L3 adjudicator (local Ollama) — single mint-pass, local-only, fail-closed | Accepted |
 | [0023](0023-l3-suppression-token-granularity.md) | L3 suppression for coding-agent traffic — token-granularity only | Accepted |
 | [0024](0024-inflection-robust-restore-bounded-suffixes.md) | Inflection-robust restore — word-boundary matching + bounded German suffix set | Accepted |
+| [0026](0026-management-spa-built-bundle-one-process.md) | Management SPA rebuild — Vite+React, vendored built bundle, one process | Accepted |
 | [0027](0027-blocked-503s-carry-actionable-message-and-management-url.md) | Blocked 503s carry an actionable message + management_url deep link, never a synthetic 200 | Accepted |
 | [0028](0028-canonical-rbac-role-vocabulary.md) | Canonical RBAC role vocabulary — viewer, curator, re-identifier, admin | Accepted |
 

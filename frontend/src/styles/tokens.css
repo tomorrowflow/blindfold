@@ -1,0 +1,50 @@
+/* Design tokens (ADR-0026, issue #93) — variant-A, the set confirmed by the final
+   design (Claude Design project 1b6e3a05-9854-4edd-bde5-9e422210854e). Semantic
+   `--bf-*` custom properties only; components never hardcode a hex value. */
+:root {
+  /* Surfaces */
+  --bf-canvas: #eef0f3;
+  --bf-card: #ffffff;
+  --bf-border: #dbe0e7;
+  --bf-border-soft: #e8ebf0;
+  --bf-ink: #1b2330;
+
+  /* Shell chrome (sidebar/top bar) */
+  --bf-chrome-navy: #1b2330;
+  --bf-chrome-navy-alt: #2a3444;
+
+  /* Real-space / audited (reserved, ADR-0015/ADR-0018 re-identify surfaces) */
+  --bf-ochre: #b07f20;
+  --bf-ochre-bg: #faf6ec;
+  --bf-ochre-border: #e6d6a8;
+  --bf-ochre-strong: #7c2d12;
+
+  /* Entity kind: person */
+  --bf-person: #2f5fb0;
+  --bf-person-bg: #eaf1fb;
+
+  /* Entity kind: term */
+  --bf-term: #5b4494;
+  --bf-term-bg: #efeaf7;
+
+  /* Curator / learning-loop actions */
+  --bf-curator: #237a52;
+  --bf-curator-bg: #e7f3ec;
+
+  /* Status */
+  --bf-ok: #1f8a5b;
+  --bf-red: #b3261e;
+
+  /* Accent (active-nav inset bar) */
+  --bf-accent-lime: #5aa574;
+
+  /* Type */
+  --bf-font-sans:
+    "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --bf-font-mono: "IBM Plex Mono", ui-monospace, monospace;
+
+  /* Shell layout */
+  --bf-sidebar-width-expanded: 248px;
+  --bf-sidebar-width-collapsed: 72px;
+  --bf-topbar-height: 56px;
+}
