@@ -536,3 +536,199 @@ body {
 .bf-toast-dismiss:hover {
   color: #fff;
 }
+
+/* -----------------------------------------------------------------------
+   Home/Status view (issue #96)
+   ----------------------------------------------------------------------- */
+
+.bf-status-view h1 {
+  margin: 0 0 16px;
+}
+
+.bf-status-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 16px 20px;
+  border-radius: 8px;
+  margin-bottom: 20px;
+}
+
+.bf-status-banner--protected {
+  background: #eaf7f0;
+  border: 1px solid var(--bf-ok);
+  color: var(--bf-ok);
+}
+
+.bf-status-banner--degraded {
+  background: #fdecec;
+  border: 1px solid var(--bf-red);
+  color: var(--bf-red);
+}
+
+.bf-status-banner-detail {
+  margin: 4px 0 0;
+  color: var(--bf-ink);
+  font-size: 0.875rem;
+}
+
+.bf-dependency-cards {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 12px;
+  margin-bottom: 20px;
+}
+
+.bf-dependency-card {
+  background: var(--bf-card);
+  border: 1px solid var(--bf-border-soft);
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.bf-dependency-card--unhealthy {
+  border-color: var(--bf-red);
+}
+
+.bf-dependency-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.bf-dependency-card-identifier {
+  font-family: var(--bf-font-mono);
+  font-size: 0.8125rem;
+  color: #6b7589;
+  margin: 6px 0;
+  word-break: break-all;
+}
+
+.bf-dependency-card-health {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8125rem;
+}
+
+.bf-dependency-card--healthy .bf-dependency-card-health {
+  color: var(--bf-ok);
+}
+
+.bf-dependency-card--unhealthy .bf-dependency-card-health {
+  color: var(--bf-red);
+}
+
+.bf-dependency-card-detail {
+  margin-top: 6px;
+  font-size: 0.75rem;
+  color: var(--bf-red);
+}
+
+.bf-status-columns {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 16px;
+  align-items: start;
+}
+
+.bf-card-title {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.bf-card-subtitle {
+  margin: 2px 0 12px;
+  font-size: 0.8125rem;
+  color: #6b7589;
+}
+
+.bf-blocks-empty {
+  color: #6b7589;
+  font-size: 0.875rem;
+}
+
+.bf-blocks-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+
+.bf-blocks-table th {
+  text-align: left;
+  color: #6b7589;
+  font-weight: 600;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--bf-border-soft);
+}
+
+.bf-blocks-table td {
+  padding: 8px;
+  border-bottom: 1px solid var(--bf-border-soft);
+  vertical-align: top;
+}
+
+.bf-status-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.bf-review-inbox-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  text-decoration: none;
+  color: var(--bf-ink);
+  font-size: 0.875rem;
+}
+
+.bf-config-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.bf-config-lock-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: var(--bf-canvas);
+  border: 1px solid var(--bf-border);
+  border-radius: 9999px;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  color: #6b7589;
+}
+
+.bf-config-list {
+  margin: 12px 0;
+}
+
+.bf-config-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--bf-border-soft);
+  font-size: 0.8125rem;
+}
+
+.bf-config-row dt {
+  color: #6b7589;
+}
+
+.bf-config-row dd {
+  margin: 0;
+  font-family: var(--bf-font-mono);
+  text-align: right;
+  word-break: break-all;
+}
+
+.bf-config-card-footer {
+  margin: 8px 0 0;
+  font-size: 0.75rem;
+  color: #6b7589;
+}

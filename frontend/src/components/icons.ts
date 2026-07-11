@@ -17,4 +17,12 @@ export {
   Check,
   Lock,
   X,
+  // Home/Status view (issue #96)
+  CheckCircle2,
+  AlertTriangle,
+  Cloud,
+  Bot,
+  KeyRound,
+  Database,
+  ArrowRight,
 } from "lucide-react";

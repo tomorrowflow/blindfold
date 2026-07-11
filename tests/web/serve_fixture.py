@@ -10,12 +10,24 @@ real name is hidden behind a surrogate, an org term, an authorized re-identifier
 
 Run directly: `uv run python tests/web/serve_fixture.py`. Listens on 127.0.0.1:8951
 (fixed so `playwright.config.ts` can point `webServer.url` at it) until killed.
+
+Home/Status view (issue #96): two env vars parameterize a second instance for the
+Degraded browser-verify specs, launched by `playwright.config.ts`'s second
+`webServer` entry rather than a second script --
+- `BLINDFOLD_FIXTURE_PORT` -- bind port, default 8951.
+- `BLINDFOLD_FIXTURE_STATE` -- "protected" (default) forces all four `/v1/status`
+  dependencies healthy, so this port's state is deterministic for every OTHER spec
+  file here too (none of them assert on `/v1/status`). "degraded" leaves the real
+  unconfigured-L3 default in place (no `BLINDFOLD_OLLAMA_MODEL` in this process's
+  env) instead of stubbing a fake outage, so the Degraded render is exercised
+  against an honest fail-closed condition, not a synthetic one.
 """
 
 from __future__ import annotations
 
 import base64
 import json
+import os
 
 import httpx
 import uvicorn
@@ -24,20 +36,26 @@ from blindfold.app import (
     app,
     get_audit_log,
     get_entity_graph,
+    get_l3_health_probe,
     get_rbac,
     get_reidentify_store,
     get_relationship_store,
+    get_store_health_probe,
     get_transit_client,
+    get_transit_health_probe,
+    get_upstream_health,
 )
 from blindfold.entity_graph import EntityGraph
 from blindfold.policy import AuditLog
 from blindfold.rbac import RbacRegistry
 from blindfold.reidentify import InMemoryReIdentificationStore
 from blindfold.relationships import RelationshipStore
+from blindfold.status import DependencyHealth
 from blindfold.transit import TransitClient
 
 HOST = "127.0.0.1"
-PORT = 8951
+PORT = int(os.environ.get("BLINDFOLD_FIXTURE_PORT", "8951"))
+FORCE_DEPENDENCIES_HEALTHY = os.environ.get("BLINDFOLD_FIXTURE_STATE", "protected") != "degraded"
 
 WORKSPACE = "acme"
 REAL_PERSON = "Martin Bach"
@@ -98,7 +116,22 @@ def build_app():
     app.dependency_overrides[get_reidentify_store] = lambda: reidentify_store
     app.dependency_overrides[get_transit_client] = lambda: transit
 
+    if FORCE_DEPENDENCIES_HEALTHY:
+        _all_healthy = lambda: _StaticHealthProbe(DependencyHealth(healthy=True))
+        app.dependency_overrides[get_upstream_health] = _all_healthy
+        app.dependency_overrides[get_l3_health_probe] = _all_healthy
+        app.dependency_overrides[get_transit_health_probe] = _all_healthy
+        app.dependency_overrides[get_store_health_probe] = _all_healthy
+
     return app
+
+
+class _StaticHealthProbe:
+    def __init__(self, health: DependencyHealth) -> None:
+        self._health = health
+
+    def check(self) -> DependencyHealth:
+        return self._health
 
 
 if __name__ == "__main__":
