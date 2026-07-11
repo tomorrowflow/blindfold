@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from "react-router-dom";
 import { Shell } from "./components/Shell";
 import { Home } from "./routes/Home";
+import { ReviewInbox } from "./routes/ReviewInbox";
 import { StubView } from "./routes/StubView";
 
 export function App() {
@@ -14,7 +15,7 @@ export function App() {
         <Route path="status" element={<Home />} />
         <Route path="entities" element={<StubView title="Entity list" />} />
         <Route path="graph" element={<StubView title="Graph editor" />} />
-        <Route path="inbox" element={<StubView title="Review inbox" />} />
+        <Route path="inbox" element={<ReviewInbox />} />
         <Route path="audit" element={<StubView title="Audit log" />} />
         <Route path="access" element={<StubView title="Access" />} />
         <Route path="settings" element={<StubView title="Settings" />} />

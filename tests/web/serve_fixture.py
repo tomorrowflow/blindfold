@@ -1,12 +1,13 @@
 """Fixture launcher: a real, seeded `blindfold.app` served on a fixed loopback port.
 
 Used by the committed `@playwright/test` browser suite in this directory (issue #50,
-UX-7) to drive `/ui/org-graph` and `/ui/entity-list` against a real running server —
-never a stubbed page. Seeds the exact same in-memory store shapes and wiring the
-pytest SPA fixtures use (`tests/test_org_graph_spa.py`, `tests/test_entity_list_spa.py`,
-`tests/test_browser_leak_audit.py`): one workspace ("acme") with a person entity whose
-real name is hidden behind a surrogate, an org term, an authorized re-identifier
-("alice") and an identity with no role on the workspace ("bob").
+UX-7) to drive `/ui/org-graph`, `/ui/entity-list` and the shell's `/ui/inbox` against a
+real running server — never a stubbed page. Seeds the exact same in-memory store shapes
+and wiring the pytest SPA fixtures use (`tests/test_org_graph_spa.py`,
+`tests/test_entity_list_spa.py`, `tests/test_browser_leak_audit.py`): one workspace
+("acme") with a person entity whose real name is hidden behind a surrogate, an org term,
+an authorized re-identifier ("alice") and an identity with no role on the workspace
+("bob"), plus two provisional review-inbox candidates awaiting triage (issue #99).
 
 Run directly: `uv run python tests/web/serve_fixture.py`. Listens on 127.0.0.1:8951
 (fixed so `playwright.config.ts` can point `webServer.url` at it) until killed.
@@ -22,11 +23,13 @@ import uvicorn
 
 from blindfold.app import (
     app,
+    get_allowlist,
     get_audit_log,
     get_entity_graph,
     get_rbac,
     get_reidentify_store,
     get_relationship_store,
+    get_review_inbox,
     get_transit_client,
 )
 from blindfold.entity_graph import EntityGraph
@@ -34,6 +37,7 @@ from blindfold.policy import AuditLog
 from blindfold.rbac import RbacRegistry
 from blindfold.reidentify import InMemoryReIdentificationStore
 from blindfold.relationships import RelationshipStore
+from blindfold.review import Allowlist, ReviewInbox
 from blindfold.transit import TransitClient
 
 HOST = "127.0.0.1"
@@ -49,6 +53,12 @@ CIPHERTEXT = "vault:v1:enc:martin-bach"
 # Second workspace for multi-workspace switcher tests (issue #95):
 # carol holds a role on "beta"; alice has no role on "beta"; bob has no role on either.
 WORKSPACE_BETA = "beta"
+
+# Two provisional candidates awaiting review (review-inbox shell migration, issue #99).
+REVIEW_ITEM_REAL_ONE = "Klaus Bergmann"
+REVIEW_ITEM_CONTEXT_ONE = "Please brief Klaus Bergmann on the merger tomorrow."
+REVIEW_ITEM_REAL_TWO = "Nordwind Systems"
+REVIEW_ITEM_CONTEXT_TWO = "Nordwind Systems signed the new contract yesterday."
 
 
 def _stub_transit() -> TransitClient:
@@ -91,12 +101,19 @@ def build_app():
     reidentify_store = InMemoryReIdentificationStore({(PERSON_SURROGATE, WORKSPACE): CIPHERTEXT})
     transit = _stub_transit()
 
+    review_inbox = ReviewInbox()
+    review_inbox.upsert(REVIEW_ITEM_REAL_ONE, context=REVIEW_ITEM_CONTEXT_ONE)
+    review_inbox.upsert(REVIEW_ITEM_REAL_TWO, context=REVIEW_ITEM_CONTEXT_TWO)
+    allowlist = Allowlist()
+
     app.dependency_overrides[get_entity_graph] = lambda: graph
     app.dependency_overrides[get_relationship_store] = lambda: relationship_store
     app.dependency_overrides[get_rbac] = lambda: rbac
     app.dependency_overrides[get_audit_log] = lambda: audit_log
     app.dependency_overrides[get_reidentify_store] = lambda: reidentify_store
     app.dependency_overrides[get_transit_client] = lambda: transit
+    app.dependency_overrides[get_review_inbox] = lambda: review_inbox
+    app.dependency_overrides[get_allowlist] = lambda: allowlist
 
     return app
 
