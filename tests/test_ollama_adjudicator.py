@@ -145,3 +145,30 @@ def test_is_cloud_model_allows_an_ordinary_local_tag():
     assert is_cloud_model("llama3.1") is False
     assert is_cloud_model("llama3.1:8b") is False
     assert is_cloud_model("qwen3:cloudy") is False
+
+
+def test_ping_ollama_reports_healthy_when_the_daemon_answers():
+    from blindfold.status import DependencyHealth
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/tags"
+        return httpx.Response(200, json={"models": []})
+
+    from blindfold.ollama import ping_ollama
+
+    http = httpx.Client(transport=httpx.MockTransport(handler))
+    health = ping_ollama("http://localhost:11434", http=http)
+    assert health == DependencyHealth(healthy=True)
+
+
+def test_ping_ollama_reports_unhealthy_scrubbed_detail_when_unreachable():
+    from blindfold.status import DependencyHealth
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    from blindfold.ollama import ping_ollama
+
+    http = httpx.Client(transport=httpx.MockTransport(handler))
+    health = ping_ollama("http://localhost:11434", http=http)
+    assert health == DependencyHealth(healthy=False, detail="ollama unreachable")

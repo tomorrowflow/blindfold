@@ -107,7 +107,7 @@ from .l3 import (
     L3Detector,
     L3Unavailable,
 )
-from .ollama import OllamaAdjudicator
+from .ollama import OllamaAdjudicator, ping_ollama
 from .policy import (
     DEFAULT_WORKSPACE,
     AuditLog,
@@ -118,6 +118,13 @@ from .rbac import RbacRegistry
 from .relationships import RelationshipEdge, RelationshipStore
 from .review import Allowlist, ReviewInbox
 from .spa import entity_list_html, org_graph_html, review_inbox_html
+from .status import (
+    BlockHistory,
+    CachedHealthProbe,
+    DependencyHealth,
+    RecentFailureHealth,
+    compute_state,
+)
 from .store import vendored_seed_repository
 from .surrogates import SurrogateMapping
 from .upstream import UpstreamClient, UpstreamError
@@ -192,6 +199,57 @@ _l3_detector = L3Detector(_build_l3_adjudicator(get_settings()), allowlist=_allo
 # RBAC-scoped audit access are out of scope this slice — see policy.py.
 _workspace_policies = WorkspacePolicies()
 _audit_log = AuditLog()
+
+# Process-wide rolling window of fail-closed/leak-gate blocks (issue #92), fed by the
+# single `_blocked_response` funnel (#91) so `/v1/status`'s `blocks.recent` carries the
+# identical scrubbed reason + management_url as the 503 body -- never re-derived, never
+# entity plaintext. Tests substitute via dependency_overrides[get_block_history].
+_block_history = BlockHistory(window_minutes=15)
+
+# /v1/status's health probes (issue #92): a short TTL absorbs a poll storm (the status
+# endpoint is polled ~5s) against Ollama/Transit. Kept as module-global CachedHealthProbe
+# instances (not built per-request) so the TTL is actually meaningful across polls.
+# upstream has no cheap standalone active probe of its own (it's the paid provider) --
+# its health is the passive RecentFailureHealth signal instead, fed by the existing
+# `_upstream_error_response` funnel (#86). l3/transit/store use an active probe:
+#   - l3: `settings.ollama_model` unset means no adjudicator is wired at all (the
+#     `_UnconfiguredAdjudicator` case, ADR-0009) -- reported unhealthy without a network
+#     call, since that state is already certain; configured means a live ping_ollama.
+#   - transit: `settings.openbao_token` unset means Transit isn't wired for this
+#     deployment (ADR-0021: "Transit is optional") -- reported healthy without a probe;
+#     configured means a live TransitClient.health_check().
+#   - store: the live request path keeps the entity graph in-process this slice (no
+#     Postgres call on the hot path yet, see the module docstring) -- always healthy;
+#     the probe seam still exists so /v1/status treats all four dependencies uniformly
+#     and a future Postgres-backed store can wire a real probe without reshaping this.
+_HEALTH_PROBE_TTL_SECONDS = 5.0
+_UPSTREAM_UNHEALTHY_WINDOW_SECONDS = 60.0
+_upstream_health = RecentFailureHealth(unhealthy_window_seconds=_UPSTREAM_UNHEALTHY_WINDOW_SECONDS)
+
+
+def _default_l3_probe() -> DependencyHealth:
+    settings = get_settings()
+    if not settings.ollama_model:
+        return DependencyHealth(healthy=False, detail="no L3 adjudicator configured")
+    return ping_ollama(settings.ollama_addr)
+
+
+def _default_transit_probe() -> DependencyHealth:
+    settings = get_settings()
+    if not settings.openbao_token:
+        return DependencyHealth(healthy=True)
+    return TransitClient(addr=settings.openbao_addr, token=settings.openbao_token).health_check()
+
+
+def _default_store_probe() -> DependencyHealth:
+    return DependencyHealth(healthy=True)
+
+
+_l3_health_probe = CachedHealthProbe(_default_l3_probe, ttl_seconds=_HEALTH_PROBE_TTL_SECONDS)
+_transit_health_probe = CachedHealthProbe(
+    _default_transit_probe, ttl_seconds=_HEALTH_PROBE_TTL_SECONDS
+)
+_store_health_probe = CachedHealthProbe(_default_store_probe, ttl_seconds=_HEALTH_PROBE_TTL_SECONDS)
 
 # Process-wide RBAC registry (ADR-0007/0008). Persistence deferred to the Postgres/
 # Transit slice (#10). Tests substitute via dependency_overrides[get_rbac].
@@ -280,6 +338,26 @@ def get_workspace_policies() -> WorkspacePolicies:
 
 def get_audit_log() -> AuditLog:
     return _audit_log
+
+
+def get_block_history() -> BlockHistory:
+    return _block_history
+
+
+def get_upstream_health() -> RecentFailureHealth:
+    return _upstream_health
+
+
+def get_l3_health_probe() -> CachedHealthProbe:
+    return _l3_health_probe
+
+
+def get_transit_health_probe() -> CachedHealthProbe:
+    return _transit_health_probe
+
+
+def get_store_health_probe() -> CachedHealthProbe:
+    return _store_health_probe
 
 
 def get_rbac() -> RbacRegistry:
@@ -382,6 +460,7 @@ def _blocked_response(
     workspace: str,
     audit_log: AuditLog,
     sub_reason: str,
+    block_history: BlockHistory,
     remedy: str = _DEFAULT_REMEDY,
 ) -> JSONResponse:
     """Return the canonical fail-closed block response and write an audit record.
@@ -405,11 +484,18 @@ def _blocked_response(
     ``management_url`` deep link into the management app's Home/Status page. Built
     from the same scrubbed ``reason`` — the scrubbed-reason invariant applies to
     ``message`` verbatim too, never entity plaintext.
+
+    Issue #92: the identical scrubbed ``reason`` + ``management_url`` also land in
+    ``block_history`` — the rolling window `/v1/status`'s ``blocks.recent`` reads,
+    so that surface can never drift from or add a leak beyond this one funnel.
     """
     logger.warning("blindfold_blocked: event=%s workspace=%s reason=%s", event, workspace, reason)
     audit_log.append(AuditRecord(workspace=workspace, event=event, reason=reason))
     management_url = _management_url(sub_reason, get_settings())
     message = f"Blindfold blocked this request: {reason} Fix or review at {management_url}"
+    block_history.record(
+        sub_reason=sub_reason, scrubbed_reason=reason, management_url=management_url
+    )
     return JSONResponse(
         status_code=503,
         content={
@@ -428,7 +514,12 @@ def _blocked_response(
     )
 
 
-def _upstream_error_response(exc: UpstreamError, workspace: str, audit_log: AuditLog) -> JSONResponse:
+def _upstream_error_response(
+    exc: UpstreamError,
+    workspace: str,
+    audit_log: AuditLog,
+    upstream_health: RecentFailureHealth | None = None,
+) -> JSONResponse:
     """Return the structured upstream-boundary error response (issue #86).
 
     Mirrors :func:`_blocked_response`'s body+audit+log funnel (SEC-7 / #48) but with a
@@ -437,6 +528,11 @@ def _upstream_error_response(exc: UpstreamError, workspace: str, audit_log: Audi
     it must never be confused with ``blindfold_fail_closed`` by a client parsing the
     error shape. ``exc``'s message is already scrubbed -- it carries only the
     transport-level failure shape, never payload content (see ``UpstreamError``).
+
+    Issue #92: also feeds `/v1/status`'s passive upstream health signal -- this is
+    the one funnel every upstream-boundary failure already routes through, so it's
+    the natural place to mark "upstream" unhealthy for the bounded decay window
+    (:class:`~blindfold.status.RecentFailureHealth`), with no extra call sites needed.
     """
     logger.warning(
         "blindfold_upstream_error: workspace=%s sub_reason=%s reason=%s",
@@ -445,6 +541,8 @@ def _upstream_error_response(exc: UpstreamError, workspace: str, audit_log: Audi
         exc,
     )
     audit_log.append(AuditRecord(workspace=workspace, event="upstream-error", reason=str(exc)))
+    if upstream_health is not None:
+        upstream_health.mark_unhealthy(exc.sub_reason)
     return JSONResponse(
         status_code=exc.status_code,
         content={
@@ -464,6 +562,7 @@ async def _mint_or_block(
     workspace: str,
     policy_deterministic_only: bool,
     audit_log: AuditLog,
+    block_history: BlockHistory,
 ) -> tuple[dict, ExchangeSession] | JSONResponse:
     """Run the blindfold mint pass; return a block ``JSONResponse`` if L3 was unavailable.
 
@@ -494,6 +593,7 @@ async def _mint_or_block(
             workspace=workspace,
             audit_log=audit_log,
             sub_reason="l3_unavailable",
+            block_history=block_history,
             remedy=_L3_UNAVAILABLE_REMEDY,
         )
     if policy_deterministic_only:
@@ -539,6 +639,7 @@ def _leak_gate_or_block(
     mapping: SurrogateMapping,
     workspace: str,
     audit_log: AuditLog,
+    block_history: BlockHistory,
 ) -> JSONResponse | None:
     """Run the pre-egress :func:`leak_gate`; return a block ``JSONResponse`` if it raised.
 
@@ -558,6 +659,7 @@ def _leak_gate_or_block(
             workspace=workspace,
             audit_log=audit_log,
             sub_reason="leak_detected",
+            block_history=block_history,
         )
     return None
 
@@ -567,6 +669,7 @@ def _resolution_gate_or_block(
     session: ExchangeSession,
     workspace: str,
     audit_log: AuditLog,
+    block_history: BlockHistory,
 ) -> JSONResponse | None:
     """Run the post-restore :func:`resolution_gate`; return a block ``JSONResponse`` if raised.
 
@@ -586,8 +689,50 @@ def _resolution_gate_or_block(
             workspace=workspace,
             audit_log=audit_log,
             sub_reason="unresolved_surrogate",
+            block_history=block_history,
         )
     return None
+
+
+@app.get("/v1/status")
+async def status(
+    upstream_health: RecentFailureHealth = Depends(get_upstream_health),
+    l3_health_probe: CachedHealthProbe = Depends(get_l3_health_probe),
+    transit_health_probe: CachedHealthProbe = Depends(get_transit_health_probe),
+    store_health_probe: CachedHealthProbe = Depends(get_store_health_probe),
+    block_history: BlockHistory = Depends(get_block_history),
+    inbox: ReviewInbox = Depends(get_review_inbox),
+    settings: Settings = Depends(get_settings),
+) -> dict:
+    """The single status contract for the Home view + menu bar (issue #92).
+
+    Deliberately outside `/v1/management/*` (ADR-0011): not workspace-scoped, not
+    role-gated -- the security boundary is the existing loopback-only bind
+    (ADR-0021), and this payload is scrubbed by construction (dependency names,
+    sub-reason codes, counts -- never entity content, never secrets).
+    """
+    dependencies = {
+        "upstream": upstream_health.check(),
+        "l3": l3_health_probe.check(),
+        "transit": transit_health_probe.check(),
+        "store": store_health_probe.check(),
+    }
+    recent_blocks = block_history.recent()
+    return {
+        "state": compute_state(dependencies),
+        "dependencies": {name: health.to_dict() for name, health in dependencies.items()},
+        "blocks": {
+            "window_minutes": block_history.window_minutes,
+            "count": len(recent_blocks),
+            "recent": [record.to_dict() for record in recent_blocks],
+        },
+        "review_inbox": {"pending": len(inbox.list())},
+        "config": {
+            "upstream_base_url": settings.upstream_base_url,
+            "l3_model": settings.ollama_model or None,
+            "fail_closed_policy": "fail-closed",
+        },
+    }
 
 
 @app.post("/v1/messages")
@@ -599,6 +744,8 @@ async def messages(
     l3_detector: L3Detector = Depends(get_l3_detector),
     policies: WorkspacePolicies = Depends(get_workspace_policies),
     audit_log: AuditLog = Depends(get_audit_log),
+    block_history: BlockHistory = Depends(get_block_history),
+    upstream_health: RecentFailureHealth = Depends(get_upstream_health),
 ):
     payload = await request.json()
     workspace = _workspace_slug(request)
@@ -613,13 +760,14 @@ async def messages(
         workspace,
         policy.deterministic_only,
         audit_log,
+        block_history,
     )
     if isinstance(result, JSONResponse):
         return result
     blinded, session = result
     forwarded = _forwarded_headers(request)
 
-    block = _leak_gate_or_block(blinded, mapping, workspace, audit_log)
+    block = _leak_gate_or_block(blinded, mapping, workspace, audit_log, block_history)
     if block is not None:
         return block
 
@@ -627,7 +775,7 @@ async def messages(
         try:
             upstream_response = await upstream.open_stream(blinded, forwarded)
         except UpstreamError as exc:
-            return _upstream_error_response(exc, workspace, audit_log)
+            return _upstream_error_response(exc, workspace, audit_log, upstream_health)
         return StreamingResponse(
             _stream_restored(upstream_response, session, workspace, audit_log),
             media_type="text/event-stream",
@@ -636,9 +784,9 @@ async def messages(
     try:
         raw_response = await upstream.send_messages(blinded, forwarded)
     except UpstreamError as exc:
-        return _upstream_error_response(exc, workspace, audit_log)
+        return _upstream_error_response(exc, workspace, audit_log, upstream_health)
     restored = restore_response(raw_response, session)
-    block = _resolution_gate_or_block(restored, session, workspace, audit_log)
+    block = _resolution_gate_or_block(restored, session, workspace, audit_log, block_history)
     if block is not None:
         return block
     return restored
@@ -653,6 +801,8 @@ async def chat_completions(
     l3_detector: L3Detector = Depends(get_l3_detector),
     policies: WorkspacePolicies = Depends(get_workspace_policies),
     audit_log: AuditLog = Depends(get_audit_log),
+    block_history: BlockHistory = Depends(get_block_history),
+    upstream_health: RecentFailureHealth = Depends(get_upstream_health),
 ):
     payload = await request.json()
     if payload.get("stream"):
@@ -669,12 +819,13 @@ async def chat_completions(
         workspace,
         policy.deterministic_only,
         audit_log,
+        block_history,
     )
     if isinstance(result, JSONResponse):
         return result
     blinded, session = result
 
-    block = _leak_gate_or_block(blinded, mapping, workspace, audit_log)
+    block = _leak_gate_or_block(blinded, mapping, workspace, audit_log, block_history)
     if block is not None:
         return block
 
@@ -683,9 +834,9 @@ async def chat_completions(
             blinded, _forwarded_headers(request)
         )
     except UpstreamError as exc:
-        return _upstream_error_response(exc, workspace, audit_log)
+        return _upstream_error_response(exc, workspace, audit_log, upstream_health)
     restored = restore_chat_completion(raw_response, session)
-    block = _resolution_gate_or_block(restored, session, workspace, audit_log)
+    block = _resolution_gate_or_block(restored, session, workspace, audit_log, block_history)
     if block is not None:
         return block
     return restored
