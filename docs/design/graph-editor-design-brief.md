@@ -57,7 +57,7 @@ heavier action than everything else — because legally and operationally, it is
 
 ## 4. Sample data (use this so the mockup looks real — all surrogates, never real names)
 
-Workspace: **`acme-legal`**. Curator: **Jordan Pike** (holds *edit/curator* right;
+Workspace: **`acme-legal`**. Curator: **Jordan Pike** (holds *curator* right;
 **does NOT** hold *re-identifier*, except where a variant needs to show Reveal
 enabled).
 
@@ -118,7 +118,7 @@ Build these as one interactive prototype with dummy state (no backend):
   confirm. Same-kind only (person↔person, term↔term); never offer cross-kind merge.
 - **Edge vocabulary is closed** — only `employer` and `subsidiary_of`, both
   directional. No free-text relationship input, ever.
-- **RBAC split** — structural edits (merge, edges, rename) need an *edit/curator*
+- **RBAC split** — structural edits (merge, edges, rename) need a *curator*
   right but **not** `re-identifier`. A curator can do all structural work without
   ever being able to unmask. The two rights are independent; show this.
 - **One workspace at a time.**

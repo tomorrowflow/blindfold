@@ -1,9 +1,13 @@
-"""Per-identity RBAC for workspace management (ADR-0007 / ADR-0008 / issue #16).
+"""Per-identity RBAC for workspace management (ADR-0007 / ADR-0008 / ADR-0028 / issue #16).
 
 Roles are workspace-scoped: an identity may have different rights on different workspaces.
 
-Valid roles:
+Valid roles (the canonical set — ADR-0028):
   - ``viewer``        — read audit events and entity listings for the workspace.
+  - ``curator``       — structural edits in fake-space: merge, edge CRUD, rename,
+                        surrogate edit. Never implies ``re-identifier`` — a curator
+                        is fully productive on structure without ever unmasking a
+                        real value (ADR-0017).
   - ``re-identifier`` — decrypt (look up the real value behind) a surrogate; every
                         such lookup is captured as a ``re-identified`` audit event.
   - ``admin``         — grant and revoke roles within the workspace.
@@ -16,7 +20,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-VALID_ROLES: frozenset[str] = frozenset({"viewer", "re-identifier", "admin"})
+VALID_ROLES: frozenset[str] = frozenset({"viewer", "curator", "re-identifier", "admin"})
 
 
 @dataclass(frozen=True)

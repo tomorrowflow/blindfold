@@ -39,5 +39,6 @@ Vocabulary follows [`../../CONTEXT.md`](../../CONTEXT.md).
 | [0023](0023-l3-suppression-token-granularity.md) | L3 suppression for coding-agent traffic — token-granularity only | Accepted |
 | [0024](0024-inflection-robust-restore-bounded-suffixes.md) | Inflection-robust restore — word-boundary matching + bounded German suffix set | Accepted |
 | [0027](0027-blocked-503s-carry-actionable-message-and-management-url.md) | Blocked 503s carry an actionable message + management_url deep link, never a synthetic 200 | Accepted |
+| [0028](0028-canonical-rbac-role-vocabulary.md) | Canonical RBAC role vocabulary — viewer, curator, re-identifier, admin | Accepted |
 
 New ADRs: copy [`0000-template.md`](0000-template.md), take the next number.

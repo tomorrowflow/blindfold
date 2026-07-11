@@ -62,7 +62,7 @@ dozen nodes: the list view is the lens you reach for to **find**, **scan**, and
 
 ## 4. Sample data (reuse the graph brief's data so the two views look like one product)
 
-Workspace: **`acme-legal`**. Curator: **Jordan Pike** (holds *edit/curator* right;
+Workspace: **`acme-legal`**. Curator: **Jordan Pike** (holds *curator* right;
 does **not** hold *re-identifier*, except where a row needs to show Reveal enabled).
 
 Entities (label = surrogate; variations are **not** shown as a column — listed here
@@ -162,7 +162,7 @@ Build as one interactive prototype with dummy state (no backend):
   combined operation — categorically *not* the "apply to N rows" multi-select). v2 lifts
   the cap and adds bulk actions on the same control. Every *other* v1 mutation (rename,
   delete-edge, re-target) is single-row and needs no checkbox.
-- **RBAC split.** Structural edits (rename, edge CRUD, merge) need an *edit/curator*
+- **RBAC split.** Structural edits (rename, edge CRUD, merge) need a *curator*
   right but **not** `re-identifier`, which gates only Reveal and real-name search. A
   curator can do all structural work without ever being able to unmask.
 - **Client-side within a ceiling (v1).** Expected scale is **~100–200 entities per

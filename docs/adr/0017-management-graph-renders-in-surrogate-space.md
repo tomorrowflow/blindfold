@@ -38,9 +38,11 @@ Two corollaries:
    nodes and edges belong to it. A multi-workspace referent is shown from the selected
    workspace's vantage.
 2. **Privilege separation holds (ADR-0015's flat, no-hierarchy roles).** Structural
-   edits require a workspace **edit/curator** right; they do **not** require, and are not
-   implied by, `re-identifier`. A curator can merge, draw edges, and rename fakes across
-   the whole graph **without ever holding the right to unmask a single real name.**
+   edits require a workspace **curator** right (canonical spelling per ADR-0028,
+   which retires this ADR's earlier "edit/curator" phrasing); they do **not**
+   require, and are not implied by, `re-identifier`. A curator can merge, draw
+   edges, and rename fakes across the whole graph **without ever holding the right
+   to unmask a single real name.**
 
 ## Consequences
 

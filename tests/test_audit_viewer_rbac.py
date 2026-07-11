@@ -20,7 +20,7 @@ import pytest
 
 from blindfold.app import app, get_audit_log, get_rbac
 from blindfold.policy import AuditLog, AuditRecord
-from blindfold.rbac import RbacRegistry
+from blindfold.rbac import VALID_ROLES, RbacRegistry
 
 
 # ---------------------------------------------------------------------------
@@ -68,6 +68,24 @@ def test_rbac_list_workspace_returns_assignments():
     assignments = reg.list_workspace("ws-a")
     identities = {a.identity for a in assignments}
     assert identities == {"alice", "bob"}
+
+
+def test_rbac_grant_curator_role_succeeds():
+    # ADR-0028: curator (structural edits in fake-space) is a canonical role,
+    # distinct from re-identifier (curate != re-identify).
+    reg = RbacRegistry()
+    reg.grant("alice", "ws-a", "curator")
+    assert reg.has_role("alice", "ws-a", "curator")
+
+
+def test_valid_roles_is_the_adr_0028_canonical_four_role_set():
+    assert VALID_ROLES == frozenset({"viewer", "curator", "re-identifier", "admin"})
+
+
+def test_rbac_grant_unknown_role_still_raises():
+    reg = RbacRegistry()
+    with pytest.raises(ValueError):
+        reg.grant("alice", "ws-a", "editor")
 
 
 # ---------------------------------------------------------------------------

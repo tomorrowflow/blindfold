@@ -103,6 +103,16 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   **Re-identify** resolves only if the referent is tagged to a workspace the caller
   is authorized on. The surrogate stays globally stable (one referent → one
   surrogate everywhere); what is workspace-scoped is the *right to unmask it*.
+- **Role** — a workspace-scoped RBAC grant (ADR-0028). The canonical set is flat,
+  no hierarchy: **`viewer`** (read audit events + entity listings), **`curator`**
+  (structural edits in fake-space — merge, edge CRUD, rename, surrogate edit —
+  **never unmask**), **`re-identifier`** (decrypt a surrogate to its real value;
+  every attempt audited), **`admin`** (grant/revoke roles within the workspace).
+  Key invariant: **curate ≠ re-identify** — a `curator` is fully productive on
+  structure and surrogates without ever holding the right to unmask a real value
+  (ADR-0017). The management app's top-bar chips surface only `curator` and
+  `re-identifier` (the two day-to-day capability roles); that's a display
+  subset, not a different role set.
 - **Novel entity** — an entity encountered in traffic that is not yet in the
   **entity graph**: not a known entity, not one of its **variations**, not
   **allowlist**ed. L3's verdict on a **candidate span** decides whether a span
@@ -189,6 +199,14 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   is **no override** (unlike the SEC-2 root-token dev-mode escape hatch): sending real
   candidate spans off-device categorically defeats the product, so this invariant is
   absolute.
+
+## Controlled vocabulary
+
+- **Relation** (edge label): `employer`, `subsidiary_of`. New relations are added
+  deliberately, only when coherent-world/disambiguation logic consumes them.
+- **Role** (RBAC grant, ADR-0028): `viewer`, `curator`, `re-identifier`, `admin`.
+  This is the full set — no fifth role, and no separate "chip" vocabulary; the
+  top-bar chips are a display subset of these four, not a different list.
 
 ## Non-goals
 
