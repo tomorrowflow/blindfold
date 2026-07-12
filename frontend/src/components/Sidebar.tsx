@@ -2,6 +2,7 @@ import { NavLink } from "react-router-dom";
 import { ChevronsLeft, ChevronsRight } from "./icons";
 import { PRIMARY_NAV, SECONDARY_NAV } from "./nav";
 import { useReviewInboxPending } from "./ReviewInboxContext";
+import { useWorkspace } from "./WorkspaceContext";
 
 type SidebarProps = {
   collapsed: boolean;
@@ -14,6 +15,8 @@ const REVIEW_INBOX_PATH = "/inbox";
 
 export function Sidebar({ collapsed, onToggle }: SidebarProps) {
   const { pending } = useReviewInboxPending();
+  const { activeWorkspace } = useWorkspace();
+  const roles = activeWorkspace?.roles ?? [];
 
   return (
     <nav className="bf-sidebar" data-collapsed={collapsed} aria-label="Management navigation">
@@ -32,12 +35,18 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
             key={item.path}
             item={item}
             collapsed={collapsed}
+            disabled={!!item.requiresRole && !roles.includes(item.requiresRole)}
             badge={item.path === REVIEW_INBOX_PATH ? pending : undefined}
           />
         ))}
         <div className="bf-nav-divider" role="separator" />
         {SECONDARY_NAV.map((item) => (
-          <NavItemLink key={item.path} item={item} collapsed={collapsed} />
+          <NavItemLink
+            key={item.path}
+            item={item}
+            collapsed={collapsed}
+            disabled={!!item.requiresRole && !roles.includes(item.requiresRole)}
+          />
         ))}
       </div>
     </nav>
@@ -47,15 +56,25 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
 function NavItemLink({
   item,
   collapsed,
+  disabled,
   badge,
 }: {
   item: (typeof PRIMARY_NAV)[number];
   collapsed: boolean;
+  disabled?: boolean;
   badge?: number;
 }) {
   const Icon = item.icon;
   return (
-    <NavLink to={item.path} className="bf-nav-item" title={item.label}>
+    <NavLink
+      to={item.path}
+      className={`bf-nav-item${disabled ? " bf-nav-item--disabled" : ""}`}
+      title={disabled ? `${item.label} — ${item.requiresRole} role required` : item.label}
+      aria-disabled={disabled || undefined}
+      onClick={(e) => {
+        if (disabled) e.preventDefault();
+      }}
+    >
       <Icon size={20} />
       {!collapsed && <span className="bf-nav-label">{item.label}</span>}
       {!!badge && (

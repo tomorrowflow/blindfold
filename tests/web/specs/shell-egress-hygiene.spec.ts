@@ -13,6 +13,7 @@ const SHELL_ROUTES = [
   "/ui/graph",
   "/ui/inbox",
   "/ui/audit",
+  "/ui/access",
 ];
 
 test("the shell makes zero requests to a non-loopback origin", async ({ page, baseURL }) => {

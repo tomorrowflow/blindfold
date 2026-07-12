@@ -5,6 +5,9 @@ export type NavItem = {
   label: string;
   path: string;
   icon: LucideIcon;
+  // Role required on the active workspace for this destination to be enabled
+  // (issue #103: Access is admin-gated). Absent means always enabled.
+  requiresRole?: string;
 };
 
 // Sidebar destinations (issue #93): five primary views, a divider, then two
@@ -20,6 +23,6 @@ export const PRIMARY_NAV: NavItem[] = [
 ];
 
 export const SECONDARY_NAV: NavItem[] = [
-  { label: "Access", path: "/access", icon: ShieldCheck },
+  { label: "Access", path: "/access", icon: ShieldCheck, requiresRole: "admin" },
   { label: "Settings", path: "/settings", icon: Settings },
 ];

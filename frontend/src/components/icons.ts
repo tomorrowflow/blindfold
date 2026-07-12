@@ -28,4 +28,6 @@ export {
   // Audit log view (issue #102)
   Calendar,
   UserRound,
+  // Access view (issue #103)
+  Plus,
 } from "lucide-react";
