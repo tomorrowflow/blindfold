@@ -192,3 +192,28 @@ async def test_seeding_the_real_reidentify_store_lets_reveal_resolve_without_pos
 
     assert resp.status_code == 200
     assert resp.json()["real"] == "Martin Bach"
+
+
+def test_get_entity_graph_returns_same_instance_across_calls_when_database_url_unset(
+    monkeypatch,
+):
+    """Issue #104 regression: with BLINDFOLD_DATABASE_URL unset, get_entity_graph()
+    must return the same in-memory singleton across calls so mutations are visible
+    across requests within one process (mirrors the pre-slice _entity_graph singleton).
+
+    A fresh EntityGraph() per call would silently discard every mutation between
+    consecutive HTTP requests — not a documented acceptable gap, but a silent data loss.
+    """
+    monkeypatch.delenv("BLINDFOLD_DATABASE_URL", raising=False)
+
+    from blindfold.app import get_entity_graph
+
+    g1 = get_entity_graph()
+    g1.add_entity("person", "default", "Alice Example")
+
+    g2 = get_entity_graph()
+
+    # Same object — no fresh construction on the second call.
+    assert g1 is g2
+    # Mutation from g1 is visible through g2 (process-lifetime stability).
+    assert g2.list_entities("default") != []

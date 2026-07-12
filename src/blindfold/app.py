@@ -277,6 +277,15 @@ _reidentify_store = InMemoryReIdentificationStore()
 # lands in a future slice. Tests substitute via dependency_overrides[get_relationship_store].
 _relationship_store = RelationshipStore()
 
+# Lazily-created in-memory entity-graph singleton for the unset-BLINDFOLD_DATABASE_URL
+# fallback path (issue #104). Not built at import time (preserves test hermeticity);
+# built once on first get_entity_graph() call when no DSN is configured and reused
+# within the process lifetime — matching the pre-slice _entity_graph = EntityGraph()
+# singleton behavior so mutations are stable across HTTP requests in one process.
+# The Postgres-backed path (DSN configured) is stateless per-call; only the in-memory
+# fallback needs this sentinel. Tests override via dependency_overrides[get_entity_graph].
+_entity_graph_fallback: EntityGraph | None = None
+
 # No module-level Transit client singleton — get_transit_client() reads settings on each
 # call (matching get_upstream_client() pattern). Tests substitute via
 # dependency_overrides[get_transit_client].
@@ -376,25 +385,33 @@ def get_reidentify_store() -> ReIdentificationStore:
 
 
 def get_entity_graph() -> EntityGraph:
-    """Return the Postgres-backed entity graph store, constructed lazily per call.
+    """Return the entity graph store, constructed lazily on first call.
 
-    Per-call construction avoids an import-time DB connection that would force every
-    test importing blindfold.app to hold a live Postgres connection (breaking hermeticity
-    for the ~85% of the suite that never touches entity-graph endpoints).
+    Lazy (not import-time) construction avoids a live DB connection cost for the
+    ~85% of the test suite that imports blindfold.app but never hits an entity-graph
+    endpoint (breaking hermeticity if eager). Tests override via dependency_overrides.
 
-    Returns a PostgresEntityGraphStore when BLINDFOLD_DATABASE_URL is configured;
-    falls back to a fresh empty EntityGraph for backward compatibility when the URL
-    is unset (tests that override this via dependency_overrides are unaffected).
+    - BLINDFOLD_DATABASE_URL configured → PostgresEntityGraphStore (stateless per-call;
+      hydrates fresh from DB on every invocation so a process restart always reads live
+      Postgres state).
+    - BLINDFOLD_DATABASE_URL unset → lazily-created module-level in-memory singleton
+      (_entity_graph_fallback), so mutations are stable across HTTP requests within one
+      process (mirrors the pre-slice _entity_graph = EntityGraph() singleton behavior).
+      Any entity-graph endpoint hit without a configured DSN operates on this in-memory
+      graph — an acceptable, documented gap per the issue #104 brief.
     """
-    from .store.entity_graph_store import PostgresEntityGraphStore
+    global _entity_graph_fallback
 
     database_url = get_settings().database_url
     if database_url:
+        from .store.entity_graph_store import PostgresEntityGraphStore
+
         return PostgresEntityGraphStore(database_url)  # type: ignore[return-value]
-    # Empty DSN: return a fresh in-memory graph.  Any entity-graph endpoint hit
-    # without a configured database_url will return empty results — a documented
-    # acceptable gap per the issue brief (no fallback story required this slice).
-    return EntityGraph()
+
+    # Unset DSN: return (or lazily create) the process-wide in-memory singleton.
+    if _entity_graph_fallback is None:
+        _entity_graph_fallback = EntityGraph()
+    return _entity_graph_fallback
 
 
 def get_relationship_store() -> RelationshipStore:
