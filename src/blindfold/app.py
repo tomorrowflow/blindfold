@@ -820,6 +820,7 @@ async def status(
     block_history: BlockHistory = Depends(get_block_history),
     inbox: ReviewInbox = Depends(get_review_inbox),
     settings: Settings = Depends(get_settings),
+    entity_graph: EntityGraph = Depends(get_entity_graph),
 ) -> dict:
     """The single status contract for the Home view + menu bar (issue #92).
 
@@ -844,6 +845,7 @@ async def status(
             "recent": [record.to_dict() for record in recent_blocks],
         },
         "review_inbox": {"pending": len(inbox.list())},
+        "empty_store": entity_graph.is_empty(),
         "config": {
             "upstream_base_url": settings.upstream_base_url,
             "l3_model": settings.ollama_model or None,
