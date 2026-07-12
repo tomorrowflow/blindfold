@@ -1313,6 +1313,38 @@ async def list_caller_workspaces(
     return {"workspaces": workspaces}
 
 
+@app.post("/v1/management/workspaces")
+async def create_workspace(
+    request: Request,
+    body: dict,
+    entity_graph: EntityGraph = Depends(get_entity_graph),
+    rbac: RbacRegistry = Depends(get_rbac),
+) -> dict:
+    """Create a workspace — Setup's create-first-workspace action (issue #107).
+
+    Grants the creating identity ``admin`` on the new workspace, through the same
+    ``RbacRegistry.grant`` every other role-grant path uses, **iff the store was
+    empty before this call**. Creating an additional workspace on an already
+    non-empty store persists it but does not self-grant admin (privilege-escalation
+    guard) — that path is a separate, admin-gated action (v2), not this flow.
+
+    Ungated (no `_require_role` check): an empty store holds no admin to gate
+    against, mirroring the same chicken-and-egg rationale as headless
+    `BLINDFOLD_BOOTSTRAP_ADMIN` bootstrap (bootstrap.py).
+    """
+    slug = body.get("slug", "")
+    name = body.get("name", "")
+    if not slug or not name:
+        raise HTTPException(status_code=422, detail="slug and name are required")
+
+    was_empty = entity_graph.is_empty()
+    entity_graph.create_workspace(slug, name)
+    if was_empty:
+        rbac.grant(_caller_identity(request), slug, "admin")
+
+    return {"slug": slug, "name": name, "admin_granted": was_empty}
+
+
 @app.get("/v1/management/workspaces/{slug}/roles")
 async def list_workspace_roles(
     slug: str,

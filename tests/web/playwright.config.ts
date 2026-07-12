@@ -6,6 +6,10 @@ const PORT = 8951;
 // force-all-healthy default the primary instance uses — so the Home/Status
 // Degraded-render specs drive a real fail-closed condition, not a stub.
 const DEGRADED_PORT = 8952;
+// Third fixture instance (issue #107): a genuinely empty store (no workspace, no
+// entity, no RBAC grant) — the setup-shell spec's forced-redirect and
+// create-first-workspace/creator-becomes-admin flow need real empty-store state.
+const EMPTY_PORT = 8953;
 
 export default defineConfig({
   testDir: "./specs",
@@ -33,6 +37,17 @@ export default defineConfig({
       env: {
         BLINDFOLD_FIXTURE_PORT: String(DEGRADED_PORT),
         BLINDFOLD_FIXTURE_STATE: "degraded",
+      },
+    },
+    {
+      command: "uv run python serve_fixture.py",
+      cwd: __dirname,
+      url: `http://127.0.0.1:${EMPTY_PORT}/ui/`,
+      reuseExistingServer: false,
+      timeout: 20_000,
+      env: {
+        BLINDFOLD_FIXTURE_PORT: String(EMPTY_PORT),
+        BLINDFOLD_FIXTURE_STATE: "empty",
       },
     },
   ],

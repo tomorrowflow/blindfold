@@ -8,6 +8,7 @@ import { GraphEditor } from "./routes/GraphEditor";
 import { AuditLog } from "./routes/AuditLog";
 import { Access } from "./routes/Access";
 import { Settings } from "./routes/Settings";
+import { Setup } from "./routes/Setup";
 
 export function App() {
   return (
@@ -24,6 +25,7 @@ export function App() {
         <Route path="audit" element={<AuditLog />} />
         <Route path="access" element={<Access />} />
         <Route path="settings" element={<Settings />} />
+        <Route path="setup" element={<Setup />} />
         <Route path="*" element={<StubView title="Not found" />} />
       </Route>
     </Routes>

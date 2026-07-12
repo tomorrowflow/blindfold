@@ -59,7 +59,13 @@ from blindfold.transit import TransitClient
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("BLINDFOLD_FIXTURE_PORT", "8951"))
-FORCE_DEPENDENCIES_HEALTHY = os.environ.get("BLINDFOLD_FIXTURE_STATE", "protected") != "degraded"
+FIXTURE_STATE = os.environ.get("BLINDFOLD_FIXTURE_STATE", "protected")
+FORCE_DEPENDENCIES_HEALTHY = FIXTURE_STATE != "degraded"
+# Setup shell spec (issue #107): a third instance with a genuinely empty store —
+# no workspace, no entity, no RBAC grant — so the forced-redirect-to-/setup gate
+# and the create-first-workspace/creator-becomes-admin flow exercise real state,
+# not a stub.
+IS_EMPTY = FIXTURE_STATE == "empty"
 
 WORKSPACE = "acme"
 REAL_PERSON = "Martin Bach"
@@ -128,7 +134,45 @@ def _stub_transit() -> TransitClient:
     )
 
 
+def _build_empty_app():
+    """A genuinely empty store: no workspace, no entity, no RBAC grant.
+
+    Each override closes over ONE instance built up-front — a fresh instance
+    per lambda call would silently discard every mutation between requests
+    (the exact regression issue #104's own fix, commit c2d34d1, guards against
+    for get_entity_graph()'s own unset-DSN fallback).
+    """
+    graph = EntityGraph()
+    relationship_store = RelationshipStore()
+    rbac = RbacRegistry()
+    audit_log = AuditLog()
+    reidentify_store = InMemoryReIdentificationStore({})
+    review_inbox = ReviewInbox()
+    allowlist = Allowlist()
+
+    app.dependency_overrides[get_entity_graph] = lambda: graph
+    app.dependency_overrides[get_relationship_store] = lambda: relationship_store
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_audit_log] = lambda: audit_log
+    app.dependency_overrides[get_reidentify_store] = lambda: reidentify_store
+    app.dependency_overrides[get_transit_client] = _stub_transit
+    app.dependency_overrides[get_review_inbox] = lambda: review_inbox
+    app.dependency_overrides[get_allowlist] = lambda: allowlist
+
+    if FORCE_DEPENDENCIES_HEALTHY:
+        _all_healthy = lambda: _StaticHealthProbe(DependencyHealth(healthy=True))
+        app.dependency_overrides[get_upstream_health] = _all_healthy
+        app.dependency_overrides[get_l3_health_probe] = _all_healthy
+        app.dependency_overrides[get_transit_health_probe] = _all_healthy
+        app.dependency_overrides[get_store_health_probe] = _all_healthy
+
+    return app
+
+
 def build_app():
+    if IS_EMPTY:
+        return _build_empty_app()
+
     graph = EntityGraph()
     person = graph.add_entity("person", WORKSPACE, REAL_PERSON, surrogate=PERSON_SURROGATE)
     org = graph.add_entity("term", WORKSPACE, REAL_ORG, surrogate=ORG_SURROGATE)

@@ -25,6 +25,9 @@ export type StatusResponse = {
     recent: BlockRecord[];
   };
   review_inbox: { pending: number };
+  // Setup slice 4/5 (issue #107): true iff no workspace has ever been created.
+  // The shell's forced-redirect-to-/setup gate keys off this field.
+  empty_store: boolean;
   config: {
     upstream_base_url: string;
     l3_model: string | null;

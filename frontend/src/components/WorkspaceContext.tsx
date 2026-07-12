@@ -3,7 +3,7 @@
 // All TopBar chrome and management API calls that need x-blindfold-workspace consume
 // this context — no per-view role queries.
 
-import { createContext, useContext, useEffect, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useState } from "react";
 
 export type WorkspaceEntry = {
   slug: string;
@@ -15,9 +15,19 @@ type WorkspaceContextValue = {
   activeWorkspace: WorkspaceEntry | null;
   setActiveWorkspace: (ws: WorkspaceEntry) => void;
   loading: boolean;
+  // Re-fetch the caller's workspace list (issue #107): Setup calls this right
+  // after creating the first workspace so the shell picks up the fresh admin
+  // grant without a full page reload.
+  refresh: () => Promise<WorkspaceEntry[]>;
 };
 
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
+
+async function fetchWorkspaces(): Promise<WorkspaceEntry[]> {
+  const r = await fetch("/v1/management/workspaces");
+  const data: { workspaces: WorkspaceEntry[] } = await r.json();
+  return data.workspaces ?? [];
+}
 
 export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   const [workspaces, setWorkspaces] = useState<WorkspaceEntry[]>([]);
@@ -26,11 +36,9 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     let cancelled = false;
-    fetch("/v1/management/workspaces")
-      .then((r) => r.json())
-      .then((data: { workspaces: WorkspaceEntry[] }) => {
+    fetchWorkspaces()
+      .then((list) => {
         if (cancelled) return;
-        const list = data.workspaces ?? [];
         setWorkspaces(list);
         if (list.length > 0) setActiveWorkspace(list[0]);
       })
@@ -45,8 +53,16 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  const refresh = useCallback(async () => {
+    const list = await fetchWorkspaces();
+    setWorkspaces(list);
+    return list;
+  }, []);
+
   return (
-    <WorkspaceContext.Provider value={{ workspaces, activeWorkspace, setActiveWorkspace, loading }}>
+    <WorkspaceContext.Provider
+      value={{ workspaces, activeWorkspace, setActiveWorkspace, loading, refresh }}
+    >
       {children}
     </WorkspaceContext.Provider>
   );

@@ -1863,3 +1863,38 @@ body {
   border-color: var(--bf-chrome-navy);
   color: var(--bf-chrome-navy);
 }
+
+/* -----------------------------------------------------------------------
+   Setup (issue #107) -- create-first-workspace flow
+   ----------------------------------------------------------------------- */
+
+.bf-setup-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 16px;
+  max-width: 360px;
+}
+
+.bf-setup-field-label {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.bf-setup-form input {
+  border: 1px solid var(--bf-border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 0.875rem;
+}
+
+.bf-setup-form .bf-btn-primary {
+  align-self: flex-start;
+  margin-top: 4px;
+}
+
+.bf-setup-error {
+  margin: 4px 0 0;
+  font-size: 0.8125rem;
+  color: #b3261e;
+}

@@ -24,3 +24,14 @@ def test_entity_graph_with_an_entity_is_not_empty():
     graph.add_entity("person", "acme", "Martin Bach")
 
     assert graph.is_empty() is False
+
+
+def test_creating_a_workspace_with_no_entities_makes_the_graph_non_empty():
+    # Setup slice 4/5 (issue #107): the create-first-workspace action must flip
+    # is_empty() before any entity exists, mirroring
+    # PostgresEntityGraphStore.create_workspace()/is_empty() (issue #104).
+    graph = EntityGraph()
+
+    graph.create_workspace("acme", "Acme Corp")
+
+    assert graph.is_empty() is False

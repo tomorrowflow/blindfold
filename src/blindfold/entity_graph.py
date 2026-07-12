@@ -64,15 +64,23 @@ class EntityGraph:
         self._entities: dict[str, EntityRecord] = {}
         self._relationships: set[RelationshipRecord] = set()
         self._role_assignments: set[RoleAssignmentRecord] = set()
+        self._workspaces: dict[str, str] = {}
 
     def is_empty(self) -> bool:
-        """True iff no workspace has ever been populated (issue #106).
+        """True iff no workspace has ever been created and no entity has ever been
+        added (issue #106, extended by issue #107's ``create_workspace``).
 
-        Mirrors ``PostgresEntityGraphStore.is_empty()`` (issue #104): this in-memory
-        graph has no separate workspaces table, so "no workspace exists" reduces to
-        "no entity has ever been added".
+        Mirrors ``PostgresEntityGraphStore.is_empty()`` (issue #104), which checks
+        the ``workspaces`` table row count directly.
         """
-        return not self._entities
+        return not self._workspaces and not self._entities
+
+    def create_workspace(self, slug: str, name: str) -> None:
+        """Create a workspace with no entities yet (issue #107, Setup slice 4/5).
+
+        Idempotent — mirrors ``PostgresEntityGraphStore.create_workspace()``.
+        """
+        self._workspaces.setdefault(slug, name)
 
     def add_entity(
         self,

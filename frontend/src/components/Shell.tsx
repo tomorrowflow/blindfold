@@ -7,9 +7,11 @@ import { ToastProvider } from "./ToastContext";
 import { ToastOutlet } from "./ToastOutlet";
 import { PreferencesProvider } from "./PreferencesContext";
 import { ReviewInboxProvider } from "./ReviewInboxContext";
+import { useSetupRedirect } from "./useSetupRedirect";
 
 export function Shell() {
   const [collapsed, setCollapsed] = useState(false);
+  useSetupRedirect();
 
   return (
     <ToastProvider>
