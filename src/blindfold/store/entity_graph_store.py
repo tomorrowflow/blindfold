@@ -20,13 +20,13 @@ so their raw integer IDs can collide.  We compound them into a string:
 EntityRecord.entity_id is always this composite string; Postgres writes split it
 back into (kind, row_id) to locate the right table row.
 
-Leak-audit note: no canonical_name or variation value is ever written to a log
-line or error response.  The _LOG lines below are deliberately entity-free.
+Leak-audit note: this store emits no log lines, and no canonical_name or variation
+value is ever placed in an error response — the only interpolated identifiers are
+composite entity_ids ("person:1"), workspace slugs, and entity kinds.
 """
 
 from __future__ import annotations
 
-import logging
 from pathlib import Path
 
 import psycopg
@@ -37,8 +37,6 @@ from ..entity_graph import (
     RelationshipRecord,
     RoleAssignmentRecord,
 )
-
-logger = logging.getLogger(__name__)
 
 _MIGRATIONS_SQL = Path(__file__).with_name("migrations.sql").read_text(encoding="utf-8")
 
