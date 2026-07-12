@@ -70,14 +70,33 @@ def _map_httpx_error(exc: httpx.HTTPError) -> UpstreamError:
 class UpstreamClient:
     def __init__(self, base_url: str, client: httpx.AsyncClient | None = None) -> None:
         self._base_url = base_url
-        self._client = client or httpx.AsyncClient(
-            base_url=base_url,
-            timeout=httpx.Timeout(
-                DEFAULT_UPSTREAM_CONNECT_TIMEOUT_SECONDS,
-                connect=DEFAULT_UPSTREAM_CONNECT_TIMEOUT_SECONDS,
-                read=DEFAULT_UPSTREAM_READ_TIMEOUT_SECONDS,
-            ),
-        )
+        if client is not None:
+            self._client = client
+            return
+        # Issue #101: this construction previously ran unguarded. FastAPI's
+        # get_upstream_client/get_openai_upstream_client dependencies call this
+        # eagerly during dependency *resolution* -- before a route's own try/except
+        # ever runs -- so an unguarded construction failure here (a bad transport
+        # config: missing CA bundle, malformed base URL) escaped as a raw ASGI 500
+        # traceback. Map it to the same structured UpstreamError #86 already uses for
+        # request-time failures; the app-level exception handler (app.py) catches it
+        # regardless of whether it surfaces at dependency-resolution time or from
+        # inside a route body.
+        try:
+            self._client = httpx.AsyncClient(
+                base_url=base_url,
+                timeout=httpx.Timeout(
+                    DEFAULT_UPSTREAM_CONNECT_TIMEOUT_SECONDS,
+                    connect=DEFAULT_UPSTREAM_CONNECT_TIMEOUT_SECONDS,
+                    read=DEFAULT_UPSTREAM_READ_TIMEOUT_SECONDS,
+                ),
+            )
+        except Exception as exc:
+            raise UpstreamError(
+                status_code=502,
+                sub_reason="upstream_client_init_failed",
+                message="failed to construct upstream client",
+            ) from exc
 
     @property
     def base_url(self) -> str:

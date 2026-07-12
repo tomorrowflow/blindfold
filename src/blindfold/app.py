@@ -60,6 +60,18 @@ bytes are flowing, a mid-stream transport error inside ``_stream_restored`` is c
 logged, and audited (``upstream-stream-disconnected``) — the stream just ends cleanly
 rather than raising a raw traceback through the ASGI stack, and the resolution gate
 still runs over whatever was actually emitted.
+
+Upstream client *construction* errors (issue #101): #86's mapping only covered
+request-time failures on an already-built ``UpstreamClient``. ``get_upstream_client``/
+``get_openai_upstream_client`` build one eagerly during FastAPI dependency
+*resolution* — before a route's own try/except runs — so a construction failure (bad
+transport config: missing CA bundle, malformed base URL) used to escape as a raw ASGI
+500. ``UpstreamClient.__init__`` now maps its own construction failure to
+``UpstreamError`` (``sub_reason="upstream_client_init_failed"``), and the
+``@app.exception_handler(UpstreamError)`` registered below (``_upstream_error_exception_handler``)
+is the exception-type-scoped catch-all that fires no matter where the
+``UpstreamError`` was raised, funneling it through the same
+``blindfold_upstream_error`` body+audit+log response as every other upstream failure.
 """
 
 from __future__ import annotations
@@ -556,6 +568,32 @@ def _upstream_error_response(
             }
         },
     )
+
+
+@app.exception_handler(UpstreamError)
+async def _upstream_error_exception_handler(request: Request, exc: UpstreamError) -> JSONResponse:
+    """Catch-all for an ``UpstreamError`` that escapes a route's own try/except (#101).
+
+    ``messages``/``chat_completions`` already catch ``UpstreamError`` explicitly around
+    ``upstream.send_*``/``open_stream`` (#86) -- that catch still wins for request-time
+    failures, since it runs first. This handler exists for the failure #86 didn't
+    cover: ``get_upstream_client``/``get_openai_upstream_client`` build a
+    ``UpstreamClient`` (and now, #101, map its own construction failures to
+    ``UpstreamError`` -- see ``UpstreamClient.__init__``) *during FastAPI dependency
+    resolution*, before either route's try/except ever runs. An exception-type-scoped
+    handler is the one seam Starlette gives that fires regardless of where in request
+    handling the exception was raised, so a bad transport config (missing CA bundle,
+    malformed base URL) degrades through the same structured envelope instead of
+    escaping as a raw ASGI 500 traceback.
+
+    Reads dependency overrides directly (rather than via ``Depends``) because a
+    dependency-resolution-time failure means the route's own ``Depends(get_audit_log)``
+    /``Depends(get_upstream_health)`` params were never populated either.
+    """
+    workspace = _workspace_slug(request)
+    audit_log = app.dependency_overrides.get(get_audit_log, get_audit_log)()
+    upstream_health = app.dependency_overrides.get(get_upstream_health, get_upstream_health)()
+    return _upstream_error_response(exc, workspace, audit_log, upstream_health)
 
 
 async def _mint_or_block(
