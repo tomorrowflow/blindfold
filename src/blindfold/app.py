@@ -264,15 +264,17 @@ _transit_health_probe = CachedHealthProbe(
 )
 _store_health_probe = CachedHealthProbe(_default_store_probe, ttl_seconds=_HEALTH_PROBE_TTL_SECONDS)
 
-# Lazily-created in-memory RBAC fallback singleton for the unset-BLINDFOLD_DATABASE_URL
-# path (issue #105), mirroring _entity_graph_fallback (issue #104): not built at import
-# time (preserves test hermeticity); built once on first get_rbac() call when no DSN is
-# configured and reused within the process lifetime so a grant from one request is
-# visible to the next. Tests override via dependency_overrides[get_rbac].
+# In-memory RBAC fallback singleton for the unset-BLINDFOLD_DATABASE_URL path (issue
+# #105): built once on the first get_rbac() call with no DSN configured — in practice
+# the import-time bootstrap call below — then reused for the process lifetime so a grant
+# from one request is visible to the next. Unlike _entity_graph_fallback (issue #104),
+# whose getter the bootstrap does not invoke, this one is realized at import; that is
+# harmless for test hermeticity because with no DSN it is a plain in-memory object (no
+# DB/network side effect). Tests override via dependency_overrides[get_rbac].
 _rbac_fallback: RbacRegistry | None = None
 
-# Lazily-created in-memory re-identify-store fallback singleton, same rationale as
-# _rbac_fallback. Tests override via dependency_overrides[get_reidentify_store].
+# In-memory re-identify-store fallback singleton, same rationale as _rbac_fallback.
+# Tests override via dependency_overrides[get_reidentify_store].
 _reidentify_store_fallback: InMemoryReIdentificationStore | None = None
 
 # Process-wide relationship-edge store (issue #27). In-memory; Postgres persistence
