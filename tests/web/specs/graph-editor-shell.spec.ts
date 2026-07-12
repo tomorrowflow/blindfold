@@ -183,9 +183,8 @@ test.describe("graph editor — reveal", () => {
     expect(last.reason).not.toContain(REAL_PERSON);
   });
 
-  test("unauthorized viewer (curator only): reveal is locked, real value never in DOM, denial audited", async ({
+  test("unauthorized viewer (curator only): reveal is locked, real value never in DOM, no reveal request fired", async ({
     davePage,
-    baseURL,
   }) => {
     const page = davePage;
     const requestUrls: string[] = [];
@@ -199,7 +198,10 @@ test.describe("graph editor — reveal", () => {
     await expect(page.getByTestId("reveal-locked").first()).toBeVisible();
     // Real name must never appear in DOM
     await expect(page.locator("body")).not.toContainText(REAL_PERSON);
-    // No surrogate/real endpoint called
+    // No surrogate/real endpoint called — the locked badge IS the client-side denial;
+    // it fires no request, so there is no re-identify-denied event to audit here. The
+    // API-seam denial-audit (a forged reveal request without the role) is covered by
+    // test_reidentify_endpoint.py.
     expect(requestUrls.some((u) => u.includes("/v1/management/surrogate/"))).toBe(false);
   });
 });
