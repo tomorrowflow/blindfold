@@ -3,9 +3,12 @@
 Provides the (surrogate, workspace) → ciphertext lookup that backs the
 re-identify endpoint. Two implementations share the seam:
 
-- :class:`InMemoryReIdentificationStore` — in-process dict, used in tests and
-  when the Postgres store is unavailable.
-- Postgres-backed (future: wired via ETL + ciphertext columns).
+- :class:`InMemoryReIdentificationStore` — in-process dict, used in tests and as the
+  process-lifetime fallback when no database is configured.
+- :class:`~blindfold.store.reidentify_store.PostgresReIdentificationStore` (issue
+  #105) — persists the mapping so a surrogate minted before a restart still resolves
+  afterward. ``app.py``'s ``get_reidentify_store()`` chooses between the two based on
+  ``BLINDFOLD_DATABASE_URL``.
 """
 
 from __future__ import annotations

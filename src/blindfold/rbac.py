@@ -12,8 +12,11 @@ Valid roles (the canonical set — ADR-0028):
                         such lookup is captured as a ``re-identified`` audit event.
   - ``admin``         — grant and revoke roles within the workspace.
 
-This slice keeps the registry in-memory. Persistence lands with the Postgres/Transit
-slice (ADR-0008 / issue #10).
+This class is the in-memory implementation, used directly in tests and as the
+process-lifetime fallback when no database is configured. The Postgres-backed live
+store (:class:`~blindfold.store.rbac_store.PostgresRbacStore`, issue #105) shares this
+exact surface so grants survive a process restart; ``app.py``'s ``get_rbac()`` chooses
+between the two based on ``BLINDFOLD_DATABASE_URL``.
 """
 
 from __future__ import annotations

@@ -123,3 +123,28 @@ ALTER TABLE terms ADD COLUMN IF NOT EXISTS canonical_name_blind_index TEXT;
 
 ALTER TABLE term_variations ADD COLUMN IF NOT EXISTS value_ciphertext TEXT;
 ALTER TABLE term_variations ADD COLUMN IF NOT EXISTS value_blind_index TEXT;
+
+-- RBAC role grants (ADR-0028, issue #105 / Setup slice 2/5): per-identity,
+-- per-workspace role assignments, persisted so RbacRegistry.grant() survives a
+-- process restart. workspace is a free-text slug, not FK'd to `workspaces` -- a
+-- role can be granted (e.g. bootstrap-admin) before that workspace's first
+-- entity-graph row exists.
+CREATE TABLE IF NOT EXISTS rbac_grants (
+    id        SERIAL PRIMARY KEY,
+    identity  TEXT NOT NULL,
+    workspace TEXT NOT NULL,
+    role      TEXT NOT NULL,
+    UNIQUE (identity, workspace, role)
+);
+
+-- Re-identify mapping (ADR-0008 / ADR-0015, issue #105 / Setup slice 2/5):
+-- (surrogate, workspace) -> Transit ciphertext. Only the ciphertext is ever
+-- written here -- the real value never touches this table in plaintext
+-- (CONTEXT.md mapping-secrecy invariant / leak-audit clause G).
+CREATE TABLE IF NOT EXISTS reidentify_mappings (
+    id         SERIAL PRIMARY KEY,
+    surrogate  TEXT NOT NULL,
+    workspace  TEXT NOT NULL,
+    ciphertext TEXT NOT NULL,
+    UNIQUE (surrogate, workspace)
+);

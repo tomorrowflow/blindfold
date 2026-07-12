@@ -217,3 +217,53 @@ def test_get_entity_graph_returns_same_instance_across_calls_when_database_url_u
     assert g1 is g2
     # Mutation from g1 is visible through g2 (process-lifetime stability).
     assert g2.list_entities("default") != []
+
+
+def test_get_rbac_returns_same_instance_across_calls_when_database_url_unset(
+    monkeypatch,
+):
+    """Issue #105: get_rbac() mirrors get_entity_graph()'s singleton contract (#104) --
+    with BLINDFOLD_DATABASE_URL unset, it must return the same in-memory fallback
+    across calls so a grant issued in one request is visible to the next within one
+    process (a fresh RbacRegistry() per call would silently discard every grant).
+    """
+    monkeypatch.delenv("BLINDFOLD_DATABASE_URL", raising=False)
+
+    from blindfold.app import get_rbac
+
+    r1 = get_rbac()
+    r1.grant("wiring-singleton-check", "default", "viewer")
+    try:
+        r2 = get_rbac()
+
+        # Same object — no fresh construction on the second call.
+        assert r1 is r2
+        # Grant from r1 is visible through r2 (process-lifetime stability).
+        assert r2.has_role("wiring-singleton-check", "default", "viewer") is True
+    finally:
+        r1.revoke("wiring-singleton-check", "default", "viewer")
+
+
+@pytest.mark.anyio
+async def test_get_reidentify_store_returns_same_instance_across_calls_when_database_url_unset(
+    monkeypatch,
+):
+    """Issue #105: get_reidentify_store() mirrors get_entity_graph()'s/get_rbac()'s
+    singleton contract -- with BLINDFOLD_DATABASE_URL unset, it must return the same
+    in-memory fallback across calls so a seeded mapping entry is visible to the next
+    request within one process.
+    """
+    monkeypatch.delenv("BLINDFOLD_DATABASE_URL", raising=False)
+
+    from blindfold.app import get_reidentify_store
+
+    s1 = get_reidentify_store()
+    s1.seed("wiring-singleton-surrogate", "default", "vault:v1:wiring-blob")
+
+    s2 = get_reidentify_store()
+
+    # Same object — no fresh construction on the second call.
+    assert s1 is s2
+    # Seeded entry from s1 is visible through s2 (process-lifetime stability).
+    resolved = await s2.surrogate_to_ciphertext("wiring-singleton-surrogate", "default")
+    assert resolved == "vault:v1:wiring-blob"

@@ -264,14 +264,16 @@ _transit_health_probe = CachedHealthProbe(
 )
 _store_health_probe = CachedHealthProbe(_default_store_probe, ttl_seconds=_HEALTH_PROBE_TTL_SECONDS)
 
-# Process-wide RBAC registry (ADR-0007/0008). Persistence deferred to the Postgres/
-# Transit slice (#10). Tests substitute via dependency_overrides[get_rbac].
-_rbac = RbacRegistry()
+# Lazily-created in-memory RBAC fallback singleton for the unset-BLINDFOLD_DATABASE_URL
+# path (issue #105), mirroring _entity_graph_fallback (issue #104): not built at import
+# time (preserves test hermeticity); built once on first get_rbac() call when no DSN is
+# configured and reused within the process lifetime so a grant from one request is
+# visible to the next. Tests override via dependency_overrides[get_rbac].
+_rbac_fallback: RbacRegistry | None = None
 
-# Process-wide re-identification store (ADR-0015 / #10). Starts empty; the Postgres
-# ETL populates this via Transit ciphertext columns. Tests substitute via
-# dependency_overrides[get_reidentify_store].
-_reidentify_store = InMemoryReIdentificationStore()
+# Lazily-created in-memory re-identify-store fallback singleton, same rationale as
+# _rbac_fallback. Tests override via dependency_overrides[get_reidentify_store].
+_reidentify_store_fallback: InMemoryReIdentificationStore | None = None
 
 # Process-wide relationship-edge store (issue #27). In-memory; Postgres persistence
 # lands in a future slice. Tests substitute via dependency_overrides[get_relationship_store].
@@ -377,11 +379,50 @@ def get_store_health_probe() -> CachedHealthProbe:
 
 
 def get_rbac() -> RbacRegistry:
-    return _rbac
+    """Return the RBAC store, constructed lazily on first call (issue #105).
+
+    Same lazy hydrate-or-fallback pattern as get_entity_graph() (issue #104):
+
+    - BLINDFOLD_DATABASE_URL configured -> PostgresRbacStore (stateless per-call; a
+      grant issued through one process is visible to another after a restart).
+    - BLINDFOLD_DATABASE_URL unset -> lazily-created module-level in-memory singleton
+      (_rbac_fallback), reused for the process lifetime so a grant from one request is
+      visible to the next. Tests override via dependency_overrides.
+    """
+    global _rbac_fallback
+
+    database_url = get_settings().database_url
+    if database_url:
+        from .store.rbac_store import PostgresRbacStore
+
+        return PostgresRbacStore(database_url)  # type: ignore[return-value]
+
+    if _rbac_fallback is None:
+        _rbac_fallback = RbacRegistry()
+    return _rbac_fallback
 
 
 def get_reidentify_store() -> ReIdentificationStore:
-    return _reidentify_store
+    """Return the re-identify store, constructed lazily on first call (issue #105).
+
+    Same lazy hydrate-or-fallback pattern as get_rbac()/get_entity_graph():
+
+    - BLINDFOLD_DATABASE_URL configured -> PostgresReIdentificationStore (a surrogate
+      minted/seeded before a restart still resolves to its real value afterward).
+    - BLINDFOLD_DATABASE_URL unset -> lazily-created in-memory singleton
+      (_reidentify_store_fallback), reused for the process lifetime.
+    """
+    global _reidentify_store_fallback
+
+    database_url = get_settings().database_url
+    if database_url:
+        from .store.reidentify_store import PostgresReIdentificationStore
+
+        return PostgresReIdentificationStore(database_url)  # type: ignore[return-value]
+
+    if _reidentify_store_fallback is None:
+        _reidentify_store_fallback = InMemoryReIdentificationStore()
+    return _reidentify_store_fallback
 
 
 def get_entity_graph() -> EntityGraph:
@@ -425,18 +466,23 @@ def get_transit_client() -> TransitClient | None:
     return None
 
 
-# Startup bootstrap (ADR-0012, issue #43 / UX-1 — updated by issue #104):
+# Startup bootstrap (ADR-0012, issue #43 / UX-1 — updated by issue #104, #105):
 #   - Re-identify-store seeding: runs only when Transit is configured (network call).
 #   - Bootstrap-admin RBAC grant: runs only when BLINDFOLD_BOOTSTRAP_ADMIN is set.
 # Entity-graph seeding is NOT automatic anymore (issue #104): the entity graph is now
 # served by the Postgres-backed store; a blank workspace is the correct out-of-box state
 # for a fresh database. The vendored seed remains importable as opt-in Sample data (#108).
 # Neither change introduces an RBAC-bypass path -- _require_role stays the single gate.
+# get_rbac()/get_reidentify_store() (issue #105) route through the same lazy Postgres-
+# or-fallback getters every request uses, so a bootstrap-admin grant or seeded mapping
+# lands in the Postgres-backed store (and so survives a restart) whenever
+# BLINDFOLD_DATABASE_URL is configured -- the same guard already protects this call from
+# an import-time DB connection when it is not.
 bootstrap_from_vendored_seed(
     entity_graph=EntityGraph(),  # Dummy — seed_entity_graph=False skips this.
     relationship_store=_relationship_store,
-    reidentify_store=_reidentify_store,
-    rbac=_rbac,
+    reidentify_store=get_reidentify_store(),
+    rbac=get_rbac(),
     transit=get_transit_client(),
     bootstrap_admin_identity=get_settings().bootstrap_admin_identity,
     seed_entity_graph=False,
