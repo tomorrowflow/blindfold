@@ -10,6 +10,11 @@ export const ORG_SURROGATE = "Pinnacle Corp";
 export const PERSON2_SURROGATE = "Devin Novak";
 export const REAL_ORG2 = "Initech GmbH Holding";
 export const ORG2_SURROGATE = "Meridian Group";
+// Graph-editor-shell (#98) exclusive entities: entity-list-shell (#97) must never
+// touch these. Alphabetical spec order means entity-list-shell runs first and
+// mutates PERSON2/ORG; these new entities stay pristine throughout.
+export const PERSON3_SURROGATE = "Jordan Weiss";
+export const ORG3_SURROGATE = "Glacier Tech";
 
 type Fixtures = {
   alicePage: Page; // holds re-identifier + viewer + curator + admin on WORKSPACE

@@ -85,6 +85,18 @@ CIPHERTEXT_ORG2 = "vault:v1:enc:initech-holding"
 # carol holds a role on "beta"; alice has no role on "beta"; bob has no role on either.
 WORKSPACE_BETA = "beta"
 
+# Third person and third term — graph-editor-shell spec (#98) needs entities that
+# entity-list-shell spec (#97) never mutates (no merge/rename/delete on these).
+# Run order: alphabetical → entity-list-shell runs before graph-editor-shell.
+# PERSON3: a fresh same-kind candidate for graph merge/edge-draw tests.
+# ORG3: a term with PERSON3 as dependent (employer edge) so rename surfaces a warn.
+PERSON3_SURROGATE = "Jordan Weiss"
+REAL_PERSON3 = "Synthia Bloom"  # unrelated real name — no planted-duplicate needed
+CIPHERTEXT_PERSON3 = "vault:v1:enc:synthia-bloom"
+ORG3_SURROGATE = "Glacier Tech"
+REAL_ORG3 = "Glacier Technology Inc"
+CIPHERTEXT_ORG3 = "vault:v1:enc:glacier-tech"
+
 # Two provisional candidates awaiting review (review-inbox shell migration, issue #99).
 REVIEW_ITEM_REAL_ONE = "Klaus Bergmann"
 REVIEW_ITEM_CONTEXT_ONE = "Please brief Klaus Bergmann on the merger tomorrow."
@@ -97,6 +109,8 @@ def _stub_transit() -> TransitClient:
         CIPHERTEXT: REAL_PERSON,
         CIPHERTEXT_PERSON2: REAL_PERSON,
         CIPHERTEXT_ORG2: REAL_ORG2,
+        CIPHERTEXT_PERSON3: REAL_PERSON3,
+        CIPHERTEXT_ORG3: REAL_ORG3,
     }
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -120,6 +134,10 @@ def build_app():
     org = graph.add_entity("term", WORKSPACE, REAL_ORG, surrogate=ORG_SURROGATE)
     person2 = graph.add_entity("person", WORKSPACE, REAL_PERSON, surrogate=PERSON2_SURROGATE)
     org2 = graph.add_entity("term", WORKSPACE, REAL_ORG2, surrogate=ORG2_SURROGATE)
+    # person3 and org3: reserved for graph-editor-shell spec (issue #98).
+    # entity-list-shell spec (issue #97) must not touch these.
+    person3 = graph.add_entity("person", WORKSPACE, REAL_PERSON3, surrogate=PERSON3_SURROGATE)
+    org3 = graph.add_entity("term", WORKSPACE, REAL_ORG3, surrogate=ORG3_SURROGATE)
 
     relationship_store = RelationshipStore()
     relationship_store.create(
@@ -128,6 +146,10 @@ def build_app():
     relationship_store.create(
         WORKSPACE, "person", person2.entity_id, "employer", "term", org.entity_id
     )
+    # person3 → org3 (employer): used by graph-editor-shell rename-dependent-warning test.
+    relationship_store.create(
+        WORKSPACE, "person", person3.entity_id, "employer", "term", org3.entity_id
+    )
     # EntityGraph keeps its own internal relationship set (merge's edge re-homing,
     # edit_surrogate's coherent-world "inconsistent_dependents" warning) separate from
     # the RelationshipStore instance the /relationships CRUD endpoint (edge chips) uses.
@@ -135,6 +157,8 @@ def build_app():
     # soft-warn the entity-list shell's rename UI (issue #97) exercises end to end.
     graph.add_relationship(WORKSPACE, person.entity_id, "person", "employer", org.entity_id, "term")
     graph.add_relationship(WORKSPACE, person2.entity_id, "person", "employer", org.entity_id, "term")
+    # person3 → org3 in EntityGraph (rename-dependent-warning for graph-editor-shell).
+    graph.add_relationship(WORKSPACE, person3.entity_id, "person", "employer", org3.entity_id, "term")
 
     rbac = RbacRegistry()
     rbac.grant("alice", WORKSPACE, "re-identifier")
@@ -165,6 +189,8 @@ def build_app():
             (PERSON_SURROGATE, WORKSPACE): CIPHERTEXT,
             (PERSON2_SURROGATE, WORKSPACE): CIPHERTEXT_PERSON2,
             (ORG2_SURROGATE, WORKSPACE): CIPHERTEXT_ORG2,
+            (PERSON3_SURROGATE, WORKSPACE): CIPHERTEXT_PERSON3,
+            (ORG3_SURROGATE, WORKSPACE): CIPHERTEXT_ORG3,
         }
     )
     transit = _stub_transit()

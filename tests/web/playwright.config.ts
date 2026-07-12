@@ -20,7 +20,7 @@ export default defineConfig({
     {
       command: "uv run python serve_fixture.py",
       cwd: __dirname,
-      url: `http://127.0.0.1:${PORT}/ui/org-graph`,
+      url: `http://127.0.0.1:${PORT}/ui/`,
       reuseExistingServer: false,
       timeout: 20_000,
     },

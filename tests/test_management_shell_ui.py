@@ -85,17 +85,16 @@ async def test_ui_assets_are_served_from_the_vendored_bundle():
 
 
 @pytest.mark.anyio
-async def test_legacy_embedded_spa_routes_still_pending_migration_are_unaffected():
-    # org-graph and entity-list are still ADR-0011 embedded pages (their own
-    # migration issues, #97/#98) — each must still return ITS OWN page, not the
-    # new shell's index.html.
+async def test_legacy_embedded_spa_route_entity_list_still_pending_migration_is_unaffected():
+    # entity-list is the remaining ADR-0011 embedded page (its own future migration issue) —
+    # it must still return ITS OWN page, not the new shell's index.html.
+    # org-graph was retired by issue #98 and now falls through to the shell; that is
+    # covered by test_graph_editor_shell.py::test_ui_org_graph_is_retired_and_falls_back_to_the_shell.
     async with _client() as client:
-        org_graph_resp = await client.get("/ui/org-graph")
         entity_list_resp = await client.get("/ui/entity-list")
 
-    for resp in (org_graph_resp, entity_list_resp):
-        assert resp.status_code == 200
-        assert 'id="bf-shell-root"' not in resp.text
+    assert entity_list_resp.status_code == 200
+    assert 'id="bf-shell-root"' not in entity_list_resp.text
 
 
 @pytest.mark.anyio

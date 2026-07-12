@@ -12,12 +12,16 @@
   "dependencies": {
     "@fontsource/ibm-plex-mono": "^5.1.0",
     "@fontsource/ibm-plex-sans": "^5.1.0",
+    "cytoscape": "^3.34.0",
+    "cytoscape-edgehandles": "^4.0.1",
     "lucide-react": "^0.469.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-router-dom": "^6.28.0"
   },
   "devDependencies": {
+    "@types/cytoscape": "^3.21.9",
+    "@types/cytoscape-edgehandles": "^4.0.5",
     "@types/react": "^18.3.12",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.3.4",

@@ -152,6 +152,38 @@ export type MergeOutcome =
   | { outcome: "ok" }
   | { outcome: "error"; detail: string };
 
+// ---------------------------------------------------------------------------
+// Graph API (issue #98): GET .../graph — workspace-scoped surrogate-space data
+// (nodes labelled with surrogates, edges structural). Decrypt-free, no audit event
+// (ADR-0017). Used by the GraphEditor's canvas to build Cytoscape elements.
+// ---------------------------------------------------------------------------
+
+export type GraphNodeData = {
+  id: string;
+  kind: EntityKind;
+  label: string; // active surrogate (never the real name)
+};
+
+export type GraphEdgeData = {
+  id: string;
+  source: string;
+  target: string;
+  relation: "employer" | "subsidiary_of";
+};
+
+export type GraphData = {
+  nodes: GraphNodeData[];
+  edges: GraphEdgeData[];
+};
+
+export async function fetchGraph(workspace: string): Promise<GraphData> {
+  const r = await fetch(
+    `/v1/management/workspaces/${encodeURIComponent(workspace)}/graph`
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
 export async function mergeEntities(
   workspace: string,
   winnerId: string,

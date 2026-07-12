@@ -2,22 +2,26 @@
 
 Today's `test_*_spa.py` files only assert marker substrings exist in the served HTML
 string (`or`-chains that pass almost anything); they can't catch a broken handler, a
-bad fetch URL, or a JS exception. This suite drives `/ui/entity-list` and
-`/ui/org-graph` in a real Chromium browser (Playwright) against a seeded, running
-`blindfold.app` instance, and asserts the SPA-side privacy properties the
-`browser-verify` skill defines — the browser-side counterpart to the proxy
-request-path leak audit.
+bad fetch URL, or a JS exception. This suite drives `/ui/entity-list` in a real
+Chromium browser (Playwright) against a seeded, running `blindfold.app` instance,
+and asserts the SPA-side privacy properties the `browser-verify` skill defines —
+the browser-side counterpart to the proxy request-path leak audit.
+
+NOTE: The `/ui/org-graph` tests (previously tests 1 and 3) are retired with the
+legacy embedded page (issue #98). Their privacy properties are now covered by the
+committed Playwright spec `tests/web/specs/graph-editor-shell.spec.ts`, which
+drives the new React GraphEditor at `/ui/graph`. Test 3's "no CDN request for
+Cytoscape" assertion is now covered by `shell-egress-hygiene.spec.ts` (which
+already asserts `/ui/graph` makes zero non-loopback requests).
 
 Leak-audit clause analysis (`.claude/skills/leak-audit/SKILL.md`):
 - A/B/C/D/E — N/A: the management SPA is not the proxy request path; there is no
   blindfold/restore/streaming/tool-call hop here.
 - F (access control) — covered: authorized-only re-identification (reveal succeeds
-  for a role-holder, is denied without the role) on both `/ui/org-graph` and
-  `/ui/entity-list`.
+  for a role-holder, is denied without the role) on `/ui/entity-list`.
 - G (mapping secrecy) — covered at the browser boundary: no real entity value
   appears in the DOM or in any network request/response except through an
-  authorized, audited reveal; a third-party origin (the Cytoscape/Vue CDN loads)
-  never carries a real value.
+  authorized, audited reveal.
 
 Additionally (the `browser-verify` properties):
 - Audit-on-reveal: every reveal attempt (allowed or denied) produces an audit
@@ -34,7 +38,6 @@ import socket
 import threading
 import time
 from types import SimpleNamespace
-from urllib.parse import urlparse
 
 import httpx
 import pytest
@@ -153,7 +156,7 @@ def blindfold_server():
     deadline = time.monotonic() + 10
     while time.monotonic() < deadline:
         try:
-            httpx.get(f"{base_url}/ui/org-graph", timeout=0.5)
+            httpx.get(f"{base_url}/ui/", timeout=0.5)
             break
         except httpx.HTTPError:
             time.sleep(0.1)
@@ -194,89 +197,14 @@ def bob_page(browser):
     context.close()
 
 
-def _click_graph_node(page, label: str) -> None:
-    """Click a Cytoscape node by label.
-
-    The graph renders to a <canvas> with no per-node DOM elements, so we read the
-    node's renderedPosition() via the test-only `window.__blindfoldGraph` hook
-    (spa.py) and issue a real mouse click at that screen coordinate.
-    """
-    page.wait_for_function(
-        "() => window.__blindfoldGraph && window.__blindfoldGraph.nodes().length > 0"
-    )
-    point = page.evaluate(
-        """(label) => {
-            const cy = window.__blindfoldGraph;
-            const node = cy.nodes().filter(n => n.data('label') === label)[0];
-            const rp = node.renderedPosition();
-            const rect = document.getElementById('cy').getBoundingClientRect();
-            return { x: rect.left + rp.x, y: rect.top + rp.y };
-        }""",
-        label,
-    )
-    page.mouse.click(point["x"], point["y"])
-
+# NOTE: The helper _click_graph_node() and the org-graph reveal tests (old items
+# 1 and 3) are removed here — the legacy /ui/org-graph page is retired by #98.
+# Their privacy properties are now covered by:
+#   tests/web/specs/graph-editor-shell.spec.ts  (reveal audit, locked state)
+#   tests/web/specs/shell-egress-hygiene.spec.ts  (no CDN request for Cytoscape)
 
 # ---------------------------------------------------------------------------
-# 1. Org-graph: authorized-only re-identification + audit-on-reveal
-# ---------------------------------------------------------------------------
-
-
-def test_org_graph_reveal_authorized_shows_real_value_and_is_audited(
-    blindfold_server, alice_page
-):
-    page = alice_page
-    page.goto(f"{blindfold_server.base_url}/ui/org-graph?workspace={WORKSPACE}")
-
-    _click_graph_node(page, PERSON_SURROGATE)
-    page.wait_for_selector("#reveal-badge-btn", state="visible")
-    page.click("#reveal-badge-btn")
-    page.wait_for_selector("#reveal-audit-backdrop.open")
-    page.click("#reveal-confirm-yes")
-
-    page.wait_for_function(
-        f"() => document.getElementById('reveal-badge-btn').textContent === {REAL_PERSON!r}"
-    )
-    assert page.locator("#reveal-badge-btn").inner_text() == REAL_PERSON
-
-    reveals = [
-        r
-        for r in blindfold_server.audit_log.records
-        if r.event == "re-identified" and r.identity == "alice"
-    ]
-    assert reveals, "authorized reveal must be audited as re-identified"
-    assert reveals[-1].reason == f"surrogate={PERSON_SURROGATE}"
-    # The real name is never in the audit record — only the surrogate (CONTEXT invariant).
-    assert REAL_PERSON not in reveals[-1].reason
-
-
-def test_org_graph_reveal_denied_without_role_never_shows_real_value_and_is_audited_as_denied(
-    blindfold_server, bob_page
-):
-    page = bob_page
-    page.goto(f"{blindfold_server.base_url}/ui/org-graph?workspace={WORKSPACE}")
-
-    _click_graph_node(page, PERSON_SURROGATE)
-    page.wait_for_selector("#reveal-badge-btn", state="visible")
-    page.click("#reveal-badge-btn")
-    page.wait_for_selector("#reveal-audit-backdrop.open")
-    page.click("#reveal-confirm-yes")
-
-    page.wait_for_selector("#reveal-badge-locked", state="visible")
-    assert page.locator("#reveal-badge-locked").inner_text() == "locked"
-    assert REAL_PERSON not in page.content()
-
-    denials = [
-        r
-        for r in blindfold_server.audit_log.records
-        if r.event == "re-identify-denied" and r.identity == "bob"
-    ]
-    assert denials, "a denied reveal attempt must be audited too (SEC-8)"
-    assert denials[-1].reason == f"surrogate={PERSON_SURROGATE}"
-
-
-# ---------------------------------------------------------------------------
-# 2. Entity-list: authorized-only re-identification + audit-on-reveal
+# 1. Entity-list: authorized-only re-identification + audit-on-reveal
 # ---------------------------------------------------------------------------
 
 
@@ -320,37 +248,8 @@ def test_entity_list_reveal_locked_without_role_real_value_never_appears(
     assert not any("/v1/management/surrogate/" in url for url in requests)
 
 
-# ---------------------------------------------------------------------------
-# 3. Browser egress hygiene: no real value to a third-party origin
-# ---------------------------------------------------------------------------
-
-
-def test_browser_egress_hygiene_no_real_value_to_third_party_origin(
-    blindfold_server, alice_page
-):
-    page = alice_page
-    requests = []
-    page.on("request", lambda req: requests.append(req))
-
-    page.goto(f"{blindfold_server.base_url}/ui/org-graph?workspace={WORKSPACE}")
-    _click_graph_node(page, PERSON_SURROGATE)
-    page.wait_for_selector("#reveal-badge-btn", state="visible")
-    page.click("#reveal-badge-btn")
-    page.wait_for_selector("#reveal-audit-backdrop.open")
-    page.click("#reveal-confirm-yes")
-    page.wait_for_function(
-        f"() => document.getElementById('reveal-badge-btn').textContent === {REAL_PERSON!r}"
-    )
-
-    first_party = urlparse(blindfold_server.base_url).netloc
-    third_party = [r for r in requests if urlparse(r.url).netloc != first_party]
-    # Sanity: the page does load a third-party CDN script (Cytoscape) — otherwise
-    # this assertion would be vacuous.
-    assert third_party, "expected at least one third-party (CDN) request to check"
-
-    for req in third_party:
-        haystack = req.url + json.dumps(dict(req.headers)) + (req.post_data or "")
-        for real_value in (REAL_PERSON, REAL_ORG):
-            assert real_value not in haystack, (
-                f"real entity value {real_value!r} leaked to third-party origin {req.url}"
-            )
+# NOTE: The third-party egress hygiene test (old test 3) was specific to the legacy
+# /ui/org-graph page's CDN-loaded Cytoscape. After issue #98's migration:
+# - Cytoscape is vendored (no CDN request at all for /ui/graph) — asserted by
+#   tests/web/specs/shell-egress-hygiene.spec.ts which already covers /ui/graph.
+# - No test is needed here; the shell's committed Playwright spec covers it.

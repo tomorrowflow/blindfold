@@ -129,7 +129,7 @@ from .policy import (
 from .rbac import RbacRegistry
 from .relationships import RelationshipEdge, RelationshipStore
 from .review import Allowlist, ReviewInbox
-from .spa import entity_list_html, org_graph_html
+from .spa import entity_list_html
 from .status import (
     BlockHistory,
     CachedHealthProbe,
@@ -1784,16 +1784,10 @@ async def get_org_graph(
     }
 
 
-@app.get("/ui/org-graph", response_class=HTMLResponse)
-async def org_graph_spa() -> HTMLResponse:
-    """Serve the org-graph SPA bundle (ADR-0011 / ADR-0017 / issue #29).
-
-    Cytoscape.js page that renders the workspace entity graph in surrogate-space.
-    Per-node reveal calls the re-identify endpoint (re-identifier role required,
-    every reveal is audited per ADR-0015).
-    """
-    return HTMLResponse(content=org_graph_html())
-
+# NOTE: /ui/org-graph route removed by issue #98 — the legacy CDN-loaded
+# Cytoscape page is retired. The catch-all /ui/{full_path:path} in ui.py
+# now resolves /ui/org-graph to the shell's index.html (react-router takes
+# it to the /graph GraphEditor view). See also: ui.py module docstring.
 
 # ---------------------------------------------------------------------------
 # Entity list endpoint + SPA (ADR-0011 / ADR-0017 / ADR-0018 / issue #32)

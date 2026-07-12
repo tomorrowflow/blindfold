@@ -1,13 +1,19 @@
-"""Org-graph endpoint + SPA (Management-API seam / issue #29).
+"""Org-graph JSON endpoint (Management-API seam / issue #29).
 
 The graph renders in surrogate-space: nodes are labelled with their active
 surrogates, not real entity names. Loading the graph emits no audit events
 (no decrypt, no re-identify). Per-node reveal uses the existing
 re-identify endpoint (already tested in test_reidentify_endpoint.py).
 
+The legacy /ui/org-graph SPA page is retired by issue #98 — tests 5 and 6
+below (HTML-serving assertions) are removed. The graph/entities JSON endpoints
+are unchanged and now serve the shell's React GraphEditor view at /ui/graph.
+The Playwright spec tests/web/specs/graph-editor-shell.spec.ts covers the
+browser-level behavior (reveal, merge, edge CRUD, rename, egress hygiene).
+
 Leak-audit clause analysis:
-- A/B/C/D/E — N/A: the graph endpoint and SPA page do not touch the proxy
-  request path. No blindfold, no restore, no provider egress.
+- A/B/C/D/E — N/A: the graph endpoint does not touch the proxy request path.
+  No blindfold, no restore, no provider egress.
 - F (access control) — covered: per-node reveal (the re-identify endpoint)
   requires the ``re-identifier`` role (ADR-0015). Loading the graph itself
   does not require any role; all data returned is surrogate-space.
@@ -32,7 +38,7 @@ from blindfold.policy import AuditLog
 from blindfold.relationships import RelationshipStore
 from blindfold.spa import (
     ORG_GRAPH_ENDPOINT,
-    REIDENTIFY_ENDPOINT,
+    REIDENTIFY_ENDPOINT,  # noqa: F401 — still referenced in legacy test_entity_list_write_spa.py
 )
 
 
@@ -171,46 +177,12 @@ async def test_graph_endpoint_is_workspace_scoped():
     assert "Bob Sur" not in labels
 
 
-# ---------------------------------------------------------------------------
-# 5. Org-graph SPA is served as HTML with a mount point
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.anyio
-async def test_org_graph_spa_is_served_as_html_with_a_mount_point():
-    async with _make_client() as client:
-        resp = await client.get("/ui/org-graph")
-
-    assert resp.status_code == 200
-    assert "text/html" in resp.headers.get("content-type", "")
-    body = resp.text
-    assert "<!doctype html>" in body.lower()
-    assert 'id="org-graph-app"' in body
-
+# NOTE: Tests 5 and 6 (org-graph SPA HTML-serving assertions) removed by #98 —
+# the legacy /ui/org-graph embedded page is retired. Its behaviors are now
+# covered by the shell's Playwright spec (tests/web/specs/graph-editor-shell.spec.ts).
 
 # ---------------------------------------------------------------------------
-# 6. Org-graph SPA references the graph endpoint and re-identify endpoint
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.anyio
-async def test_org_graph_spa_references_management_endpoints():
-    async with _make_client() as client:
-        resp = await client.get("/ui/org-graph")
-
-    body = resp.text
-    # SPA must reference the graph endpoint (workspace slug substituted in JS).
-    assert ORG_GRAPH_ENDPOINT in body
-    # SPA must reference the re-identify endpoint (for per-node reveal).
-    assert REIDENTIFY_ENDPOINT in body
-    # Project ubiquitous language — not "anonymize"/"mask"/"redact".
-    assert "surrogate" in body.lower()
-    for forbidden in ("anonymize", "anonymise", "mask", "redact", "de-anonymize"):
-        assert forbidden not in body.lower(), f"{forbidden!r} is not project language"
-
-
-# ---------------------------------------------------------------------------
-# 7. Graph endpoint node shape includes id, kind, and label (surrogate)
+# 5 (renumbered). Graph endpoint node shape includes id, kind, and label (surrogate)
 # ---------------------------------------------------------------------------
 
 

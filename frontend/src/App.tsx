@@ -4,6 +4,7 @@ import { Home } from "./routes/Home";
 import { ReviewInbox } from "./routes/ReviewInbox";
 import { StubView } from "./routes/StubView";
 import { EntityList } from "./routes/EntityList";
+import { GraphEditor } from "./routes/GraphEditor";
 import { Settings } from "./routes/Settings";
 
 export function App() {
@@ -16,7 +17,7 @@ export function App() {
         <Route index element={<Navigate to="/status" replace />} />
         <Route path="status" element={<Home />} />
         <Route path="entities" element={<EntityList />} />
-        <Route path="graph" element={<StubView title="Graph editor" />} />
+        <Route path="graph" element={<GraphEditor />} />
         <Route path="inbox" element={<ReviewInbox />} />
         <Route path="audit" element={<StubView title="Audit log" />} />
         <Route path="access" element={<StubView title="Access" />} />
