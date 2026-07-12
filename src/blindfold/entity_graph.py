@@ -65,6 +65,15 @@ class EntityGraph:
         self._relationships: set[RelationshipRecord] = set()
         self._role_assignments: set[RoleAssignmentRecord] = set()
 
+    def is_empty(self) -> bool:
+        """True iff no workspace has ever been populated (issue #106).
+
+        Mirrors ``PostgresEntityGraphStore.is_empty()`` (issue #104): this in-memory
+        graph has no separate workspaces table, so "no workspace exists" reduces to
+        "no entity has ever been added".
+        """
+        return not self._entities
+
     def add_entity(
         self,
         kind: str,

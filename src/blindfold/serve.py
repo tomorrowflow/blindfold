@@ -19,6 +19,7 @@ from typing import Callable
 import uvicorn
 
 from .config import DEFAULT_HOST, DEFAULT_PORT, Settings, get_settings
+from .entity_graph import EntityGraph
 from .ollama import is_cloud_model
 from .transit import TransitClient
 
@@ -84,12 +85,34 @@ def refuse_if_cloud_model(settings: Settings | None = None) -> None:
         )
 
 
+def _entity_graph_for_startup_check(settings: Settings) -> EntityGraph:
+    """Construct a throwaway store to answer "is the store empty?" at startup.
+
+    Mirrors ``app.get_entity_graph()``'s backend selection (issue #104) without
+    importing the ASGI app module: Postgres-backed when a DSN is configured (a real
+    ``workspaces`` table row count), else a fresh in-memory ``EntityGraph`` -- which,
+    with no durable backing, is always empty at process boot.
+    """
+    if settings.database_url:
+        from .store.entity_graph_store import PostgresEntityGraphStore
+
+        return PostgresEntityGraphStore(settings.database_url)  # type: ignore[return-value]
+    return EntityGraph()
+
+
+def _console_management_url(path: str, settings: Settings) -> str:
+    """Deep link into the management app (ADR-0027 mechanism): derived from the
+    actual serve bind (``settings.host``/``settings.port``), never hardcoded."""
+    return f"http://{settings.host}:{settings.port}{path}"
+
+
 def run_server(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
     *,
     settings: Settings | None = None,
     transit_client: TransitClient | None = None,
+    entity_graph: EntityGraph | None = None,
     runner: Callable[..., None] = uvicorn.run,
 ) -> None:
     """Run the Blindfold ASGI app (``blindfold serve``).
@@ -111,4 +134,14 @@ def run_server(
         "blindfold_startup: openai_upstream_base_url=%s",
         settings.effective_openai_upstream_base_url,
     )
+    # Empty-store detection (issue #106, Setup slice 3/5): points a first-run
+    # operator at Setup, or otherwise names the management UI -- either way the
+    # line carries only a URL, never entity values or other sensitive data.
+    store = entity_graph if entity_graph is not None else _entity_graph_for_startup_check(settings)
+    if store.is_empty():
+        url = _console_management_url("/ui/setup", settings)
+        logger.info("blindfold: first run — no workspace yet. Open %s to finish setup.", url)
+    else:
+        url = _console_management_url("/ui/status", settings)
+        logger.info("blindfold: management UI at %s", url)
     runner(APP_TARGET, host=host, port=port)

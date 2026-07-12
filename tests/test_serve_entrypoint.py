@@ -13,6 +13,7 @@ import sys
 import pytest
 
 from blindfold.config import Settings
+from blindfold.entity_graph import EntityGraph
 from blindfold.serve import (
     DEFAULT_HOST,
     DEFAULT_PORT,
@@ -189,3 +190,68 @@ def test_run_server_startup_line_reaches_a_real_unconfigured_process():
     )
 
     assert "http://shared.test" in (result.stdout + result.stderr)
+
+
+# ---------------------------------------------------------------------------
+# 4. Empty-store detection + startup console line pointing to Setup (issue #106)
+# ---------------------------------------------------------------------------
+
+
+def test_run_server_logs_the_loud_setup_line_when_the_store_is_empty(caplog):
+    settings = Settings(upstream_base_url="http://shared.test")
+
+    with caplog.at_level("INFO"):
+        run_server(
+            settings=settings,
+            entity_graph=EntityGraph(),
+            runner=lambda app, **kwargs: None,
+        )
+
+    assert "first run" in caplog.text
+    assert "http://127.0.0.1:8000/ui/setup" in caplog.text
+
+
+def test_run_server_logs_the_quiet_status_line_when_the_store_is_populated(caplog):
+    settings = Settings(upstream_base_url="http://shared.test")
+    graph = EntityGraph()
+    graph.add_entity("person", "acme", "Martin Bach")
+
+    with caplog.at_level("INFO"):
+        run_server(
+            settings=settings,
+            entity_graph=graph,
+            runner=lambda app, **kwargs: None,
+        )
+
+    assert "first run" not in caplog.text
+    assert "http://127.0.0.1:8000/ui/status" in caplog.text
+
+
+def test_setup_url_is_built_from_the_configured_host_and_port_not_hardcoded(caplog):
+    settings = Settings(upstream_base_url="http://shared.test", host="0.0.0.0", port=9000)
+
+    with caplog.at_level("INFO"):
+        run_server(
+            settings=settings,
+            entity_graph=EntityGraph(),
+            runner=lambda app, **kwargs: None,
+        )
+
+    assert "http://0.0.0.0:9000/ui/setup" in caplog.text
+
+
+def test_startup_console_line_carries_only_a_url_never_an_entity_value(caplog):
+    # Issue #106 AC: "The console line carries only a URL -- no entity values or
+    # other sensitive data." A populated store still must not leak its canonical_name.
+    settings = Settings(upstream_base_url="http://shared.test")
+    graph = EntityGraph()
+    graph.add_entity("person", "acme", "Martin Bach")
+
+    with caplog.at_level("INFO"):
+        run_server(
+            settings=settings,
+            entity_graph=graph,
+            runner=lambda app, **kwargs: None,
+        )
+
+    assert "Martin Bach" not in caplog.text

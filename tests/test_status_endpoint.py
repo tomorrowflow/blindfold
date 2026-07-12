@@ -21,6 +21,7 @@ import pytest
 from blindfold.app import (
     app,
     get_block_history,
+    get_entity_graph,
     get_l3_detector,
     get_l3_health_probe,
     get_store_health_probe,
@@ -29,6 +30,7 @@ from blindfold.app import (
     get_upstream_health,
 )
 from blindfold.app import get_review_inbox
+from blindfold.entity_graph import EntityGraph
 from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
 from blindfold.review import ReviewInbox
 from blindfold.status import BlockHistory, CachedHealthProbe, DependencyHealth, RecentFailureHealth
@@ -55,6 +57,39 @@ async def test_status_endpoint_returns_the_settled_contract_shape():
         "l3_model",
         "fail_closed_policy",
     }
+
+
+@pytest.mark.anyio
+async def test_status_reports_empty_store_true_when_no_workspace_exists():
+    # Issue #106: the SPA's forced-redirect-to-Setup (slice 4) keys off this signal.
+    app.dependency_overrides[get_entity_graph] = lambda: EntityGraph()
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://proxy.test") as client:
+            resp = await client.get("/v1/status")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.json()["empty_store"] is True
+
+
+@pytest.mark.anyio
+async def test_status_reports_empty_store_false_once_an_entity_exists():
+    graph = EntityGraph()
+    graph.add_entity("person", "acme", "Martin Bach")
+    app.dependency_overrides[get_entity_graph] = lambda: graph
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://proxy.test") as client:
+            resp = await client.get("/v1/status")
+    finally:
+        app.dependency_overrides.clear()
+
+    body = resp.json()
+    assert body["empty_store"] is False
+    # The empty-store signal is a boolean only -- the real canonical_name must never
+    # surface on this ungated, loopback-only endpoint (issue #106 AC).
+    assert "Martin Bach" not in str(body)
 
 
 class _FakeProbe:
