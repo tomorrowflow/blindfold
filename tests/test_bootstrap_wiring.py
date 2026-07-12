@@ -1,10 +1,9 @@
-"""App-wiring: the process-wide singletons are actually seeded at import (issue #43 /
-UX-1), not merely the underlying seeding functions in isolation.
+"""App-wiring: the real (un-overridden) entity-graph + RBAC singletons behave correctly.
 
-Deliberately does NOT override get_entity_graph/get_relationship_store -- the point is
-to prove a fresh process's org-graph and entity-list render the vendored seed out of
-the box, mirroring how the existing proxy round-trip tests exercise the real ``_mapping``
-singleton (also built from the vendored seed at import) without overriding get_mapping.
+Issue #104 (Setup slice 1/5): entity-graph seeding is no longer automatic at startup.
+The entity graph is now served by the Postgres-backed store (``PostgresEntityGraphStore``
+via ``get_entity_graph()``).  A fresh database starts empty; the vendored seed is opt-in
+Sample data for a future slice (#108).
 
 The RBAC-bootstrap-admin and re-identify-store-seeding cases are env/network-gated at
 import (``BLINDFOLD_BOOTSTRAP_ADMIN`` / a configured Transit client), neither of which
@@ -28,12 +27,22 @@ import json
 import httpx
 import pytest
 
-from blindfold.app import app, get_rbac, get_reidentify_store, get_transit_client
+from blindfold.app import app, get_entity_graph, get_rbac, get_reidentify_store, get_transit_client
 from blindfold.bootstrap import bootstrap_admin
 from blindfold.policy import DEFAULT_WORKSPACE
 from blindfold.rbac import RbacRegistry
 from blindfold.store import vendored_seed_repository
 from blindfold.transit import TransitClient
+
+
+def _docker_available() -> bool:
+    try:
+        import docker
+
+        docker.from_env().ping()
+        return True
+    except Exception:
+        return False
 
 
 def _make_client() -> httpx.AsyncClient:
@@ -43,30 +52,61 @@ def _make_client() -> httpx.AsyncClient:
 
 
 @pytest.mark.anyio
-async def test_default_workspace_entity_list_renders_the_vendored_seed_out_of_the_box():
-    async with _make_client() as client:
-        resp = await client.get("/v1/management/workspaces/default/entities")
+@pytest.mark.skipif(not _docker_available(), reason="Docker unavailable")
+async def test_fresh_database_entity_list_renders_empty():
+    """Issue #104: a fresh database (no vendored-seed auto-load) returns an empty
+    entity list.  The real get_entity_graph() connects to the Postgres-backed store;
+    a blank workspace renders [] with no automatic seeding.
+
+    Requires Docker (PostgresContainer) — same guard as test_entity_graph_postgres.py.
+    """
+    from testcontainers.postgres import PostgresContainer
+
+    with PostgresContainer("postgres:16-alpine", driver=None) as pg:
+        dsn = pg.get_connection_url()
+
+    from blindfold.store.entity_graph_store import PostgresEntityGraphStore
+
+    fresh_store = PostgresEntityGraphStore(dsn)
+    app.dependency_overrides[get_entity_graph] = lambda: fresh_store
+    try:
+        async with _make_client() as client:
+            resp = await client.get("/v1/management/workspaces/default/entities")
+    finally:
+        app.dependency_overrides.pop(get_entity_graph, None)
 
     assert resp.status_code == 200
-    entities = resp.json()["entities"]
-    # Not empty: a fresh install must not show a blank workspace (finding UX-1).
-    assert len(entities) >= 5 + 3  # 5 seeded persons + 3 seeded terms
-    surrogates = {e["active_surrogate"] for e in entities}
-    pairs = dict(vendored_seed_repository().seeded_pairs())
-    assert pairs["Martin Bach"] in surrogates
-    assert pairs["Enervia"] in surrogates
+    # Fresh database: no auto-seeding, so the entity list is empty.
+    assert resp.json()["entities"] == []
 
 
 @pytest.mark.anyio
-async def test_default_workspace_org_graph_renders_seeded_nodes_and_the_seeded_edge():
-    async with _make_client() as client:
-        resp = await client.get("/v1/management/workspaces/default/graph")
+@pytest.mark.skipif(not _docker_available(), reason="Docker unavailable")
+async def test_fresh_database_org_graph_renders_empty():
+    """Issue #104: a fresh database renders empty nodes and edges (no auto-seed).
+
+    Requires Docker (PostgresContainer).
+    """
+    from testcontainers.postgres import PostgresContainer
+
+    with PostgresContainer("postgres:16-alpine", driver=None) as pg:
+        dsn = pg.get_connection_url()
+
+    from blindfold.store.entity_graph_store import PostgresEntityGraphStore
+
+    fresh_store = PostgresEntityGraphStore(dsn)
+    app.dependency_overrides[get_entity_graph] = lambda: fresh_store
+    try:
+        async with _make_client() as client:
+            resp = await client.get("/v1/management/workspaces/default/graph")
+    finally:
+        app.dependency_overrides.pop(get_entity_graph, None)
 
     assert resp.status_code == 200
     body = resp.json()
-    assert len(body["nodes"]) >= 5 + 3
-    # The vendored seed's one entity_relationship (Enervia subsidiary_of Voltwerk).
-    assert any(edge["relation"] == "subsidiary_of" for edge in body["edges"])
+    # Fresh database: no nodes, no edges.
+    assert body["nodes"] == []
+    assert body["edges"] == []
 
 
 @pytest.mark.anyio

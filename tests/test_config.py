@@ -137,3 +137,13 @@ def test_settings_host_and_port_are_overridable_via_env(monkeypatch):
     settings = get_settings()
     assert settings.host == "0.0.0.0"
     assert settings.port == 9000
+
+
+def test_settings_database_url_defaults_to_empty_string(monkeypatch):
+    monkeypatch.delenv("BLINDFOLD_DATABASE_URL", raising=False)
+    assert get_settings().database_url == ""
+
+
+def test_settings_database_url_is_read_from_env(monkeypatch):
+    monkeypatch.setenv("BLINDFOLD_DATABASE_URL", "postgresql://user:pass@localhost/blindfold")
+    assert get_settings().database_url == "postgresql://user:pass@localhost/blindfold"

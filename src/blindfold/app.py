@@ -273,12 +273,6 @@ _rbac = RbacRegistry()
 # dependency_overrides[get_reidentify_store].
 _reidentify_store = InMemoryReIdentificationStore()
 
-# Process-wide in-memory entity graph (ADR-0011 / issue #26). Holds persons and terms
-# with their variations, relationships, role assignments, and surrogates. Persistence
-# (Postgres) lands in a future slice. Tests substitute via
-# dependency_overrides[get_entity_graph].
-_entity_graph = EntityGraph()
-
 # Process-wide relationship-edge store (issue #27). In-memory; Postgres persistence
 # lands in a future slice. Tests substitute via dependency_overrides[get_relationship_store].
 _relationship_store = RelationshipStore()
@@ -382,7 +376,25 @@ def get_reidentify_store() -> ReIdentificationStore:
 
 
 def get_entity_graph() -> EntityGraph:
-    return _entity_graph
+    """Return the Postgres-backed entity graph store, constructed lazily per call.
+
+    Per-call construction avoids an import-time DB connection that would force every
+    test importing blindfold.app to hold a live Postgres connection (breaking hermeticity
+    for the ~85% of the suite that never touches entity-graph endpoints).
+
+    Returns a PostgresEntityGraphStore when BLINDFOLD_DATABASE_URL is configured;
+    falls back to a fresh empty EntityGraph for backward compatibility when the URL
+    is unset (tests that override this via dependency_overrides are unaffected).
+    """
+    from .store.entity_graph_store import PostgresEntityGraphStore
+
+    database_url = get_settings().database_url
+    if database_url:
+        return PostgresEntityGraphStore(database_url)  # type: ignore[return-value]
+    # Empty DSN: return a fresh in-memory graph.  Any entity-graph endpoint hit
+    # without a configured database_url will return empty results — a documented
+    # acceptable gap per the issue brief (no fallback story required this slice).
+    return EntityGraph()
 
 
 def get_relationship_store() -> RelationshipStore:
@@ -396,20 +408,21 @@ def get_transit_client() -> TransitClient | None:
     return None
 
 
-# Bootstrap a fresh single-user install from the vendored seed (ADR-0012, issue #43 /
-# UX-1): seed the entity graph + re-identify store from the same seed the mapping
-# already uses, and grant BLINDFOLD_BOOTSTRAP_ADMIN every role so merge/rename/reveal/
-# search/audit/role-grant are reachable out of the box. Re-identify-store seeding only
-# runs when Transit is configured (it needs an encrypt call); bootstrap-admin only runs
-# when the env var is set. Neither introduces an RBAC-bypass path -- _require_role stays
-# the single gate.
+# Startup bootstrap (ADR-0012, issue #43 / UX-1 — updated by issue #104):
+#   - Re-identify-store seeding: runs only when Transit is configured (network call).
+#   - Bootstrap-admin RBAC grant: runs only when BLINDFOLD_BOOTSTRAP_ADMIN is set.
+# Entity-graph seeding is NOT automatic anymore (issue #104): the entity graph is now
+# served by the Postgres-backed store; a blank workspace is the correct out-of-box state
+# for a fresh database. The vendored seed remains importable as opt-in Sample data (#108).
+# Neither change introduces an RBAC-bypass path -- _require_role stays the single gate.
 bootstrap_from_vendored_seed(
-    entity_graph=_entity_graph,
+    entity_graph=EntityGraph(),  # Dummy — seed_entity_graph=False skips this.
     relationship_store=_relationship_store,
     reidentify_store=_reidentify_store,
     rbac=_rbac,
     transit=get_transit_client(),
     bootstrap_admin_identity=get_settings().bootstrap_admin_identity,
+    seed_entity_graph=False,
 )
 
 

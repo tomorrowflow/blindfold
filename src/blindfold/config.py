@@ -63,6 +63,7 @@ class Settings:
     openai_upstream_base_url: str = ""
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
+    database_url: str = ""
 
     @property
     def effective_openai_upstream_base_url(self) -> str:
@@ -88,4 +89,5 @@ def get_settings() -> Settings:
         openai_upstream_base_url=os.environ.get("BLINDFOLD_OPENAI_UPSTREAM_BASE_URL", ""),
         host=os.environ.get("BLINDFOLD_HOST", DEFAULT_HOST),
         port=int(os.environ.get("BLINDFOLD_PORT", DEFAULT_PORT)),
+        database_url=os.environ.get("BLINDFOLD_DATABASE_URL", ""),
     )
