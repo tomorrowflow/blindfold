@@ -10,6 +10,14 @@ const DEGRADED_PORT = 8952;
 // entity, no RBAC grant) — the setup-shell spec's forced-redirect and
 // create-first-workspace/creator-becomes-admin flow need real empty-store state.
 const EMPTY_PORT = 8953;
+// Fourth and fifth fixture instances (issue #108, Setup slice 5/5): two more
+// independent genuinely-empty stores for the one-click Sample data and Seed
+// bundle Import specs respectively — each of those actions self-grants admin on
+// ITS OWN new workspace only when the store was empty beforehand (issue #107's
+// privilege-escalation guard), so the two specs need two stores of their own,
+// kept separate from each other and from EMPTY_PORT (setup-shell.spec.ts).
+const SAMPLE_DATA_EMPTY_PORT = 8954;
+const IMPORT_BUNDLE_EMPTY_PORT = 8955;
 
 export default defineConfig({
   testDir: "./specs",
@@ -47,6 +55,28 @@ export default defineConfig({
       timeout: 20_000,
       env: {
         BLINDFOLD_FIXTURE_PORT: String(EMPTY_PORT),
+        BLINDFOLD_FIXTURE_STATE: "empty",
+      },
+    },
+    {
+      command: "uv run python serve_fixture.py",
+      cwd: __dirname,
+      url: `http://127.0.0.1:${SAMPLE_DATA_EMPTY_PORT}/ui/`,
+      reuseExistingServer: false,
+      timeout: 20_000,
+      env: {
+        BLINDFOLD_FIXTURE_PORT: String(SAMPLE_DATA_EMPTY_PORT),
+        BLINDFOLD_FIXTURE_STATE: "empty",
+      },
+    },
+    {
+      command: "uv run python serve_fixture.py",
+      cwd: __dirname,
+      url: `http://127.0.0.1:${IMPORT_BUNDLE_EMPTY_PORT}/ui/`,
+      reuseExistingServer: false,
+      timeout: 20_000,
+      env: {
+        BLINDFOLD_FIXTURE_PORT: String(IMPORT_BUNDLE_EMPTY_PORT),
         BLINDFOLD_FIXTURE_STATE: "empty",
       },
     },

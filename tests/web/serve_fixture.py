@@ -111,6 +111,14 @@ REVIEW_ITEM_CONTEXT_TWO = "Nordwind Systems signed the new contract yesterday."
 
 
 def _stub_transit() -> TransitClient:
+    """A TransitClient whose decrypt() resolves the fixture's pre-seeded real
+    values, AND whose encrypt() mints a fresh ciphertext round-tripping back
+    through decrypt() -- Setup's Seed-bundle import / Sample-data seed path
+    (issue #108) calls encrypt() to populate the re-identify store, which the
+    pre-issue-#108 decrypt-only stub never exercised (a real gap this fixture
+    had, the same class as the `lambda: EntityGraph()` one issue #107's own
+    commit found and fixed).
+    """
     plaintext_by_ciphertext = {
         CIPHERTEXT: REAL_PERSON,
         CIPHERTEXT_PERSON2: REAL_PERSON,
@@ -118,9 +126,15 @@ def _stub_transit() -> TransitClient:
         CIPHERTEXT_PERSON3: REAL_PERSON3,
         CIPHERTEXT_ORG3: REAL_ORG3,
     }
+    minted_counter = [0]
 
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
+        if request.url.path.endswith("/encrypt/blindfold-mapping"):
+            minted_counter[0] += 1
+            ciphertext = f"vault:v1:seed-mint:{minted_counter[0]}"
+            plaintext_by_ciphertext[ciphertext] = base64.b64decode(body["plaintext"]).decode()
+            return httpx.Response(200, json={"data": {"ciphertext": ciphertext}})
         real = plaintext_by_ciphertext.get(body.get("ciphertext"))
         if real is not None:
             plaintext = base64.b64encode(real.encode()).decode()

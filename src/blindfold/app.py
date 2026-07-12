@@ -137,7 +137,7 @@ from .status import (
     RecentFailureHealth,
     compute_state,
 )
-from .store import vendored_seed_repository
+from .store import VendoredSeedRepository, vendored_seed_repository
 from .surrogates import SurrogateMapping
 from .ui import shell_router, ui_assets_app
 from .upstream import UpstreamClient, UpstreamError
@@ -1343,6 +1343,51 @@ async def create_workspace(
         rbac.grant(_caller_identity(request), slug, "admin")
 
     return {"slug": slug, "name": name, "admin_granted": was_empty}
+
+
+@app.post("/v1/management/workspaces/{slug}/seed")
+async def seed_workspace(
+    slug: str,
+    request: Request,
+    body: dict,
+    entity_graph: EntityGraph = Depends(get_entity_graph),
+    relationship_store: RelationshipStore = Depends(get_relationship_store),
+    reidentify_store: ReIdentificationStore = Depends(get_reidentify_store),
+    transit: TransitClient | None = Depends(get_transit_client),
+    rbac: RbacRegistry = Depends(get_rbac),
+) -> dict:
+    """Populate a workspace's entity graph from a Seed bundle (issue #108, Setup
+    slice 5/5) -- Setup's "Import a Seed bundle" and one-click "Load sample data"
+    actions.
+
+    Both go through the one shared ``seed_entity_graph`` path (ADR-0029): a
+    ``{"bundle": {...}}`` body is an operator-supplied v1 plaintext-JSON bundle
+    (Import); an empty body falls back to the vendored bundle (Sample data). Either
+    way, this install mints its OWN surrogates locally -- a bundle seeds detection,
+    never shared re-identification (two installs importing the same bundle get
+    divergent surrogates). Any ``surrogate``/mapping/RBAC-shaped field the bundle
+    happens to carry is structurally ignored: ``seed_entity_graph`` only ever reads
+    persons/terms/role_assignments/entity_relationships and always mints a fresh
+    surrogate itself, so importing a bundle can never grant a Role or plant an
+    attacker-chosen surrogate (privilege-escalation guard).
+
+    Gated by the ``admin`` role on ``slug`` (same convention as ``merge_entities``) --
+    the Setup creator already holds it from creating the workspace (issue #107).
+
+    Also seeds the re-identify store when Transit is configured, so re-identify
+    resolves for the imported entities without a separate ETL pass (mirrors
+    ``bootstrap_from_vendored_seed``'s transit-gated behavior) -- persisted through
+    the same Postgres-backed stores issue #105 wired up, so it survives a restart.
+    """
+    _require_role(request, slug, "admin", rbac)
+
+    bundle = body.get("bundle")
+    repo = VendoredSeedRepository(bundle) if bundle else vendored_seed_repository()
+    repo.seed_entity_graph(entity_graph, relationship_store, workspace=slug)
+    if transit is not None:
+        repo.seed_reidentify_store(reidentify_store, transit, workspace=slug)
+
+    return {"workspace": slug, "seeded": True}
 
 
 @app.get("/v1/management/workspaces/{slug}/roles")
