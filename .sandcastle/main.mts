@@ -491,6 +491,112 @@ function ensureSupacodeWorktreeSurface(branch: string): void {
   }
 }
 
+// True iff `branch`'s tip is already an ancestor of the target branch — i.e. its
+// work has fully landed and the branch carries nothing unmerged. `git merge-base
+// --is-ancestor` exits 0 for ancestor, 1 for not; any other failure (bad ref,
+// git error) is treated as "not an ancestor" so the caller stays conservative
+// and never reaps a branch it couldn't prove is spent.
+function isAncestorOfTarget(branch: string): boolean {
+  try {
+    execFileSync("git", ["merge-base", "--is-ancestor", branch, TARGET_BRANCH], {
+      stdio: "ignore",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Startup reconciliation for orphaned per-issue worktrees. reapBranch() only fires
+// on branches that merge in the CURRENT run (see the merge lifecycle below), so two
+// classes of leftover accrete forever otherwise:
+//   (1) A run interrupted mid-flight (e.g. a token-limit cutoff) never reaches the
+//       reap step — its worktrees + branches survive.
+//   (2) A branch already merged in a PRIOR run re-plans, re-implements to a no-op
+//       diff, and so never re-clears the merge gate — it's never reaped again.
+// Both leave a locked git worktree, a sandcastle/issue-* branch, AND (in a Supacode
+// session) a registered surface the human keeps seeing. This sweep, run once before
+// planning, reconciles both sides:
+//   (A) git-side  — any managed worktree whose branch is already an ancestor of the
+//                   target branch (its work has landed) is spent → reap it, which is
+//                   Supacode-aware and tears down the surface too.
+//   (B) Supacode  — any Supacode worktree entry under the managed dir that git no
+//                   longer tracks is a ghost surface (git teardown ran but Supacode
+//                   was never told, e.g. a raw `git worktree remove`) → deregister it.
+// It NEVER touches an orphan with unmerged commits — that's genuine unfinished work,
+// left for a human — nor the target's own worktree. Best-effort + fail-OPEN: a
+// reconciliation hiccup must never abort the run.
+function reapOrphanedWorktrees(): void {
+  const managed = resolve(SANDCASTLE_WORKTREES_DIR);
+
+  // (A) git-side: reap managed worktrees whose branch already landed on the target.
+  // Snapshot the porcelain up front, then iterate — reapBranch() mutates the live
+  // worktree list, but we walk the captured string. Also record which absolute
+  // worktree paths git currently tracks, for the ghost check in (B).
+  const tracked = new Set<string>();
+  let porcelain = "";
+  try {
+    porcelain = execFileSync("git", ["worktree", "list", "--porcelain"], {
+      encoding: "utf8",
+    });
+  } catch {
+    /* can't enumerate — skip the git-side sweep, still try (B) */
+  }
+  let curPath: string | null = null;
+  for (const line of porcelain.split("\n")) {
+    if (line.startsWith("worktree ")) {
+      curPath = line.slice("worktree ".length).trim();
+      tracked.add(resolve(curPath));
+    } else if (line.startsWith("branch ") && curPath) {
+      const branch = line
+        .slice("branch ".length)
+        .trim()
+        .replace(/^refs\/heads\//, "");
+      if (
+        branch !== TARGET_BRANCH &&
+        resolve(curPath).startsWith(managed) &&
+        isAncestorOfTarget(branch)
+      ) {
+        console.log(
+          `  🧹 orphan sweep: ${branch}'s work is already in ${TARGET_BRANCH} — reaping its stale worktree`,
+        );
+        reapBranch(branch);
+      }
+    }
+  }
+
+  // (B) Supacode-side: deregister ghost surfaces git no longer knows about.
+  if (!supacodeSession()) return;
+  let list = "";
+  try {
+    list = execFileSync("supacode", ["worktree", "list"], { encoding: "utf8" });
+  } catch {
+    return;
+  }
+  for (const raw of list.split("\n")) {
+    const id = raw.trim();
+    if (!id) continue;
+    let decoded: string;
+    try {
+      decoded = decodeURIComponent(id);
+    } catch {
+      continue; // not a path we understand — leave it alone
+    }
+    const abs = resolve(decoded);
+    if (abs === resolve(REPO_ROOT)) continue; // the target's own worktree
+    if (!abs.startsWith(managed)) continue; // only managed per-issue surfaces
+    if (tracked.has(abs)) continue; // still a live git worktree — leave it
+    try {
+      execFileSync("supacode", ["worktree", "delete", "-w", id], { stdio: "ignore" });
+      console.log(`  🧹 orphan sweep: deregistered ghost Supacode surface ${decoded}`);
+    } catch (err) {
+      console.warn(
+        `  (couldn't deregister ghost Supacode surface ${decoded}, continuing: ${err})`,
+      );
+    }
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Trust gate (finding SC-3) — host-side, fail-CLOSED
 // ---------------------------------------------------------------------------
@@ -591,6 +697,12 @@ function trustedCommentContext(id: string): string {
 // ---------------------------------------------------------------------------
 
 ensureSandcastleLabels();
+
+// Reconcile leftovers from prior runs BEFORE planning: an interrupted run, or a
+// branch already merged in a previous run, leaves stale worktrees + branches +
+// Supacode surfaces that the in-run reap path never revisits. Sweep the ones whose
+// work has already landed so the human doesn't keep seeing spent worktrees.
+reapOrphanedWorktrees();
 
 for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   console.log(`\n=== Iteration ${iteration}/${MAX_ITERATIONS} ===\n`);
