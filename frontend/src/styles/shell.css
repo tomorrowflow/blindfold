@@ -92,6 +92,16 @@ body {
   border-left-color: var(--bf-accent-lime);
 }
 
+.bf-nav-item--disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.bf-nav-item--disabled:hover {
+  background: none;
+  color: #cfd6e4;
+}
+
 .bf-nav-item svg {
   flex-shrink: 0;
 }
@@ -1624,4 +1634,151 @@ body {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+/* Access view (issue #103) */
+
+.bf-access-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.bf-access-locked {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 24px 20px;
+  color: #6b7589;
+  font-size: 0.875rem;
+}
+
+.bf-access-add-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 8px;
+  background: var(--bf-canvas);
+  border: 1px solid var(--bf-border);
+}
+
+.bf-access-add-form input,
+.bf-access-add-form select {
+  border: 1px solid var(--bf-border);
+  border-radius: 4px;
+  padding: 5px 8px;
+  font-size: 0.8125rem;
+}
+
+.bf-access-table-wrap {
+  overflow-x: auto;
+  margin-top: 16px;
+  border-radius: 14px;
+  border: 1px solid var(--bf-border);
+}
+
+.bf-access-table {
+  width: 100%;
+  min-width: 620px;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+}
+
+.bf-access-table th {
+  text-align: left;
+  padding: 10px 12px;
+  border-bottom: 2px solid var(--bf-border);
+  background: var(--bf-canvas);
+}
+
+.bf-access-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--bf-border-soft);
+  vertical-align: top;
+}
+
+.bf-access-identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.bf-access-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: #eef0f6;
+  color: var(--bf-chrome-navy);
+  font-size: 0.75rem;
+  font-weight: 600;
+  flex-shrink: 0;
+}
+
+.bf-access-identity-name {
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.bf-access-roles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.bf-access-role-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: var(--bf-canvas);
+  border: 1px solid var(--bf-border);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.75rem;
+}
+
+.bf-access-role-chip--re-identifier {
+  background: var(--bf-ochre-bg);
+  border-color: var(--bf-ochre-border);
+  color: var(--bf-ochre-strong);
+}
+
+.bf-access-role-revoke {
+  border: none;
+  background: none;
+  cursor: pointer;
+  display: inline-flex;
+  color: inherit;
+  padding: 0;
+}
+
+.bf-access-grant {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.bf-access-grant-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  background: none;
+  border: 1px dashed var(--bf-border);
+  font-family: "IBM Plex Mono", monospace;
+  font-size: 0.75rem;
+  color: #6b7589;
+  cursor: pointer;
+}
+
+.bf-access-grant-btn:hover {
+  border-color: var(--bf-chrome-navy);
+  color: var(--bf-chrome-navy);
 }

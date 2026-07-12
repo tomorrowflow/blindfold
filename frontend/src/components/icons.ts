@@ -25,4 +25,6 @@ export {
   KeyRound,
   Database,
   ArrowRight,
+  // Access view (issue #103)
+  Plus,
 } from "lucide-react";

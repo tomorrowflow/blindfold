@@ -6,7 +6,7 @@ import { test, expect } from "./fixtures";
 // ZERO requests to any non-loopback origin. Fonts (IBM Plex, @fontsource) and
 // icons (lucide-react) are bundled at build time, not fetched from a CDN.
 
-const SHELL_ROUTES = ["/ui/", "/ui/status", "/ui/entities", "/ui/graph", "/ui/inbox"];
+const SHELL_ROUTES = ["/ui/", "/ui/status", "/ui/entities", "/ui/graph", "/ui/inbox", "/ui/access"];
 
 test("the shell makes zero requests to a non-loopback origin", async ({ page, baseURL }) => {
   const requestHosts = new Set<string>();
