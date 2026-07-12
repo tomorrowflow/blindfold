@@ -25,4 +25,7 @@ export {
   KeyRound,
   Database,
   ArrowRight,
+  // Audit log view (issue #102)
+  Calendar,
+  UserRound,
 } from "lucide-react";

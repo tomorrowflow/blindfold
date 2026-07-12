@@ -504,6 +504,87 @@ body {
 }
 
 /* -----------------------------------------------------------------------
+   Audit log — full-page view (issue #102)
+   ----------------------------------------------------------------------- */
+
+.bf-audit-log-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.bf-audit-log-chips {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.bf-audit-log-locked {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 24px 20px;
+  color: #6b7589;
+  font-size: 0.875rem;
+}
+
+.bf-audit-log-table-wrap {
+  overflow-x: auto;
+}
+
+.bf-audit-log-table {
+  width: 100%;
+  min-width: 740px;
+  border-collapse: collapse;
+  font-size: 0.8125rem;
+}
+
+.bf-audit-log-table th {
+  text-align: left;
+  color: #6b7589;
+  font-weight: 600;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--bf-border-soft);
+}
+
+.bf-audit-log-table td {
+  padding: 8px;
+  border-bottom: 1px solid var(--bf-border-soft);
+  vertical-align: top;
+}
+
+.bf-mono-cell {
+  font-family: var(--bf-font-mono);
+}
+
+.bf-audit-kind-pill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-family: var(--bf-font-mono);
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.bf-audit-kind-pill--reveal,
+.bf-audit-kind-pill--lookup {
+  background: var(--bf-ochre-bg);
+  color: var(--bf-ochre);
+  border: 1px solid var(--bf-ochre-border);
+}
+
+.bf-audit-kind-pill--block {
+  background: #fff5f5;
+  color: var(--bf-red);
+  border: 1px solid var(--bf-red);
+}
+
+/* -----------------------------------------------------------------------
    Toast outlet (issue #95)
    ----------------------------------------------------------------------- */
 

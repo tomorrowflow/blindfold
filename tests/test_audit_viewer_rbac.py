@@ -145,6 +145,43 @@ async def test_audit_viewer_lists_events_for_workspace_caller_has_viewer_access_
 
 
 @pytest.mark.anyio
+async def test_audit_viewer_events_carry_a_timestamp():
+    # The full audit log view (/audit, issue #102) sorts and filters by time —
+    # each event must carry its own recorded-at timestamp, not just workspace/
+    # event/reason/identity.
+    rbac = RbacRegistry()
+    rbac.grant("alice", "ws-a", "viewer")
+
+    audit_log = _audit_with(
+        [
+            AuditRecord(
+                workspace="ws-a",
+                event="re-identified",
+                reason="lookup",
+                identity="alice",
+                ts="2026-07-01T12:00:00+00:00",
+            ),
+        ]
+    )
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_audit_log] = lambda: audit_log
+    try:
+        async with _make_client() as client:
+            resp = await client.get(
+                "/v1/management/audit",
+                params={"workspace": "ws-a"},
+                headers={"x-blindfold-identity": "alice"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    items = resp.json()["events"]
+    assert items[0]["ts"] == "2026-07-01T12:00:00+00:00"
+
+
+@pytest.mark.anyio
 async def test_audit_viewer_denied_without_viewer_role():
     rbac = RbacRegistry()  # alice has NO roles on ws-a
     audit_log = AuditLog()

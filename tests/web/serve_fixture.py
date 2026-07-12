@@ -49,7 +49,7 @@ from blindfold.app import (
     get_upstream_health,
 )
 from blindfold.entity_graph import EntityGraph
-from blindfold.policy import AuditLog
+from blindfold.policy import AuditLog, AuditRecord
 from blindfold.rbac import RbacRegistry
 from blindfold.reidentify import InMemoryReIdentificationStore
 from blindfold.relationships import RelationshipStore
@@ -183,7 +183,47 @@ def build_app():
     # must show the locked state.
     rbac.grant("dave", WORKSPACE, "curator")
 
+    # Seeded real-space crossings/refusals for the full-page audit log view
+    # (issue #102) — one of each kind (reveal/lookup/block), plus a second actor
+    # (dave, a denied reveal attempt — SEC-8 audits denials too) and one event
+    # dated well outside the default "Last 7 days" window to exercise the
+    # time-range filter's exclusion.
     audit_log = AuditLog()
+    audit_log.append(
+        AuditRecord(workspace=WORKSPACE, event="re-identified", reason="reveal", identity="alice")
+    )
+    audit_log.append(
+        AuditRecord(
+            workspace=WORKSPACE,
+            event="entity-list-searched",
+            reason="hit_count=1",
+            identity="alice",
+        )
+    )
+    audit_log.append(
+        AuditRecord(
+            workspace=WORKSPACE,
+            event="re-identify-denied",
+            reason="role_required=re-identifier",
+            identity="dave",
+        )
+    )
+    audit_log.append(
+        AuditRecord(
+            workspace=WORKSPACE,
+            event="blocked-leak",
+            reason="leak_gate: a mapped entity matched the outbound payload",
+        )
+    )
+    audit_log.append(
+        AuditRecord(
+            workspace=WORKSPACE,
+            event="entity-list-searched",
+            reason="hit_count=0",
+            identity="alice",
+            ts="2020-01-01T00:00:00+00:00",
+        )
+    )
     reidentify_store = InMemoryReIdentificationStore(
         {
             (PERSON_SURROGATE, WORKSPACE): CIPHERTEXT,

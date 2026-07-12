@@ -7,30 +7,8 @@ import { useEffect, useState } from "react";
 import { X, Lock } from "./icons";
 import { useWorkspace } from "./WorkspaceContext";
 import { Link } from "react-router-dom";
-
-type AuditEvent = {
-  workspace: string;
-  event: string;
-  reason: string;
-  identity: string;
-};
-
-type CardKind = "reveal" | "lookup" | "block";
-
-function eventKind(event: string): CardKind | null {
-  if (event === "re-identified") return "reveal";
-  if (event === "re-identify-denied" || event === "re-identify-failed") return "reveal";
-  if (event === "entity-list-searched") return "lookup";
-  if (event.startsWith("blocked-")) return "block";
-  // deterministic-only-pass — omit from drawer card set (not a reveal/lookup/block)
-  return null;
-}
-
-const KIND_LABELS: Record<CardKind, string> = {
-  reveal: "Reveal",
-  lookup: "Lookup",
-  block: "Block",
-};
+import { eventKind, KIND_LABELS, type AuditEvent, type CardKind } from "../lib/auditEvents";
+import { fetchAuditEvents } from "../lib/auditApi";
 
 type AuditDrawerProps = {
   open: boolean;
@@ -53,17 +31,14 @@ export function AuditDrawer({ open, onClose }: AuditDrawerProps) {
     }
     setLoading(true);
     setLocked(false);
-    fetch(`/v1/management/audit?workspace=${encodeURIComponent(activeWorkspace.slug)}`)
-      .then((r) => {
-        if (r.status === 403) {
+    fetchAuditEvents(activeWorkspace.slug)
+      .then((result) => {
+        if (result.locked) {
           setLocked(true);
           setEvents([]);
-          return null;
+        } else {
+          setEvents(result.events);
         }
-        return r.json();
-      })
-      .then((data) => {
-        if (data) setEvents(data.events ?? []);
       })
       .catch(() => {
         setEvents([]);

@@ -1201,6 +1201,7 @@ async def list_audit_events(
             "event": r.event,
             "reason": r.reason,
             "identity": r.identity,
+            "ts": r.ts,
         }
         for r in audit_log.records
         if r.workspace == workspace

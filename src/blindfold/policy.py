@@ -17,8 +17,13 @@ This module owns two seams the proxy depends on:
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 DEFAULT_WORKSPACE = "default"
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 @dataclass(frozen=True)
@@ -72,12 +77,17 @@ class AuditRecord:
       - ``re-identify-failed``        — a re-identify call could not be completed
                                         (unknown surrogate, Transit unavailable, or a
                                         decrypt error) (SEC-8, issue #41).
+
+    ``ts`` is the record's own recorded-at timestamp (ISO-8601, UTC) — the full audit
+    log view (issue #102) sorts and filters on it; mirrors ``BlockRecord.ts``
+    (status.py).
     """
 
     workspace: str
     event: str
     reason: str
     identity: str | None = None
+    ts: str = field(default_factory=_utc_now_iso)
 
 
 @dataclass
