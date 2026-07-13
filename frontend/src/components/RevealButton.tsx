@@ -73,18 +73,21 @@ export function RevealButton({ workspace, surrogate, canReveal, compact }: Revea
     <span className="bf-reveal-wrap">
       <button
         type="button"
-        className={`bf-reveal-badge${compact ? " bf-reveal-badge--compact" : ""}`}
+        className={`bf-reveal-badge bf-reveal-badge--ochre${compact ? " bf-reveal-badge--compact" : ""}`}
         disabled={busy}
         onClick={() => setConfirming(true)}
         data-testid="reveal-btn"
         title="This will be logged"
       >
-        Reveal
+        <Lock size={12} /> Reveal
       </button>
       {error && <span className="bf-reveal-error">{error}</span>}
       {confirming && (
-        <div className="bf-reveal-confirm" role="dialog" aria-label="Confirm reveal">
-          <p>Revealing the real value will be logged as an audit event.</p>
+        <div className="bf-reveal-confirm bf-reveal-confirm--ochre" role="dialog" aria-label="Confirm reveal">
+          <span className="bf-reveal-confirm-badge" data-testid="reveal-confirm-badge">
+            <Lock size={14} />
+          </span>
+          <p>Revealing the real value will be recorded as an audit event attributed to you.</p>
           <div className="bf-reveal-confirm-actions">
             <button
               type="button"
@@ -96,11 +99,11 @@ export function RevealButton({ workspace, surrogate, canReveal, compact }: Revea
             </button>
             <button
               type="button"
-              className="bf-btn-primary"
+              className="bf-btn-ochre"
               onClick={confirmReveal}
               data-testid="reveal-confirm"
             >
-              Reveal
+              Reveal & log
             </button>
           </div>
         </div>

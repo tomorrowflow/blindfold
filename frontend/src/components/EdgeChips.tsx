@@ -108,9 +108,17 @@ function EdgeChip({
   }
 
   return (
-    <span className="bf-edge-chip" data-testid={`edge-chip-${edge.edge_id}`}>
+    <span
+      className={`bf-edge-chip bf-edge-chip--${edge.target_kind}`}
+      data-testid={`edge-chip-${edge.edge_id}`}
+    >
       <span className="bf-edge-chip-label">
-        {edge.relation}: {edge.other_surrogate}
+        <span className="bf-edge-chip-relation" data-testid={`edge-chip-relation-${edge.edge_id}`}>
+          {edge.relation}
+        </span>
+        <span className="bf-edge-chip-target" data-testid={`edge-chip-target-${edge.edge_id}`}>
+          {edge.other_surrogate}
+        </span>
       </span>
       <button
         type="button"

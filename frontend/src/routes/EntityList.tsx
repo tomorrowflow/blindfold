@@ -185,6 +185,10 @@ export function EntityList() {
   return (
     <div className="bf-card bf-entity-list" data-density={density}>
       <h1>Entity list</h1>
+      <p className="bf-entity-list-subtitle" data-testid="entity-list-subtitle">
+        {allRows.length} entities in {workspace}. Variations stay hidden — reachable
+        only through real-name search and the merge dialog.
+      </p>
       <div className="bf-entity-list-toolbar">
         <label className="bf-toolbar-field">
           <span>Kind</span>
@@ -253,9 +257,11 @@ export function EntityList() {
               data-testid="real-name-search-btn"
               className="bf-btn-ochre"
             >
-              Search
+              Look up & log
             </button>
-            <span className="bf-real-name-hint">Exact match only. Logged as an audit event.</span>
+            <span className="bf-real-name-hint">
+              Blind-index equality — no free-text fishing. The lookup itself is an audit event.
+            </span>
           </form>
         ) : (
           <span className="bf-locked-msg" data-testid="real-name-search-locked">

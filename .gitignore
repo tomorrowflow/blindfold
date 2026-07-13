@@ -18,6 +18,7 @@ node_modules/
 tests/web/test-results/
 tests/web/playwright-report/
 tests/web/blob-report/
+frontend/test-results/
 
 # graphify output
 graphify-out/

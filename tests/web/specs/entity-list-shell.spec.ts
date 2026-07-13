@@ -1,11 +1,14 @@
 import {
   test,
   expect,
+  WORKSPACE,
   REAL_PERSON,
   PERSON_SURROGATE,
   PERSON2_SURROGATE,
+  PERSON3_SURROGATE,
   ORG_SURROGATE,
   ORG2_SURROGATE,
+  ORG3_SURROGATE,
   auditEventsFor,
   rowByCurrentSurrogate,
 } from "./fixtures";
@@ -15,6 +18,20 @@ import {
 // and the shipped /ui/entity-list behavior (tests/web/specs/entity-list.spec.ts,
 // left untouched — the legacy embedded page is retired by a later slice, ADR-0026).
 // This spec drives the new /ui/entities shell route against the same running server.
+
+test.describe("entity list shell — subtitle (issue #111)", () => {
+  test("states the entity count, workspace slug, and that variations stay hidden", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto(`/ui/entities`);
+    await alicePage.getByTestId("entity-table").waitFor();
+    const rowCount = await alicePage.locator('[data-testid^="entity-row-"]').count();
+    await expect(alicePage.getByTestId("entity-list-subtitle")).toHaveText(
+      `${rowCount} entities in ${WORKSPACE}. Variations stay hidden — reachable only ` +
+        `through real-name search and the merge dialog.`
+    );
+  });
+});
 
 test.describe("entity list shell — table & filters", () => {
   test("renders both kinds with dual-encoded kind marks", async ({ alicePage }) => {
@@ -76,6 +93,21 @@ test.describe("entity list shell — real-name search", () => {
     await expect(row.locator('[data-testid^="merge-trigger-"]')).toBeVisible();
   });
 
+  test("authorized: renders the ochre 'Look up & log' button and the blind-index helper line", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto(`/ui/entities`);
+    await alicePage.getByTestId("search-mode-real-name").click();
+
+    const btn = alicePage.getByTestId("real-name-search-btn");
+    await expect(btn).toHaveText("Look up & log");
+    await expect(btn).toHaveClass(/bf-btn-ochre/);
+    await expect(alicePage.getByTestId("real-name-input")).toHaveClass(/bf-toolbar-input--ochre/);
+    await expect(alicePage.locator(".bf-real-name-hint")).toHaveText(
+      "Blind-index equality — no free-text fishing. The lookup itself is an audit event."
+    );
+  });
+
   test("authorized: exact real-name hit highlights every matching surrogate row and audits", async ({
     alicePage,
     baseURL,
@@ -124,6 +156,34 @@ test.describe("entity list shell — reveal", () => {
     await expect(row.getByTestId("reveal-value")).toHaveText(`real: ${REAL_PERSON}`);
     const reveals = await auditEventsFor(baseURL!, "re-identified", "alice");
     expect(reveals.length).toBeGreaterThan(0);
+  });
+
+  test("authorized: per-row Reveal renders as an ochre button (bg/border/ink) with a lock icon, never a gray pill (issue #111 hard rule)", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto(`/ui/entities`);
+    const row = alicePage.locator("tr", { hasText: PERSON_SURROGATE });
+    const revealBtn = row.getByTestId("reveal-btn");
+    await expect(revealBtn).toHaveClass(/bf-reveal-badge--ochre/);
+    await expect(revealBtn.locator("svg")).toBeVisible();
+  });
+
+  test("authorized reveal: confirm dialog matches the shared comp — ochre top border, lock badge, audit-attribution copy, 'Reveal & log' button (issue #111)", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto(`/ui/entities`);
+    const row = alicePage.locator("tr", { hasText: PERSON_SURROGATE });
+    await row.getByTestId("reveal-btn").click();
+
+    const dialog = row.getByRole("dialog", { name: "Confirm reveal" });
+    await expect(dialog).toHaveClass(/bf-reveal-confirm--ochre/);
+    await expect(dialog.getByTestId("reveal-confirm-badge").locator("svg")).toBeVisible();
+    await expect(dialog.locator("p")).toHaveText(
+      "Revealing the real value will be recorded as an audit event attributed to you."
+    );
+    const confirmBtn = dialog.getByTestId("reveal-confirm");
+    await expect(confirmBtn).toHaveText("Reveal & log");
+    await expect(confirmBtn).toHaveClass(/bf-btn-ochre/);
   });
 
   test("unauthorized (curator only): locked, never fires, real value never shown", async ({
@@ -188,6 +248,22 @@ test.describe("entity list shell — edge chips", () => {
     await expect(row.locator(".bf-edge-chip")).toHaveCount(0);
   });
 
+  test("chips are kind-colored to their target and mono-encode relation and target separately (issue #111 polish)", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto(`/ui/entities`);
+    // PERSON3/ORG3 are the graph-editor-shell's exclusive fixtures — entity-list-shell
+    // specs never rename them, so (unlike PERSON_SURROGATE/ORG_SURROGATE, mutated by
+    // the inline-rename tests above) their surrogate stays stable within this file.
+    const row = alicePage.locator("tr", { hasText: PERSON3_SURROGATE });
+    const chip = row.locator(".bf-edge-chip").first();
+    // Both employer and subsidiary_of always target a term entity — the chip's
+    // dual-encoding color follows the actual target_kind, not a hardcoded person tint.
+    await expect(chip).toHaveClass(/bf-edge-chip--term/);
+    await expect(chip.getByTestId(/edge-chip-relation-/)).toHaveText("employer");
+    await expect(chip.getByTestId(/edge-chip-target-/)).toHaveText(ORG3_SURROGATE);
+  });
+
   test("re-target is kind-constrained (term only) and applies delete+create", async ({
     alicePage,
   }) => {
@@ -238,6 +314,21 @@ test.describe("entity list shell — variations nowhere except lookup/merge", ()
   test("the default table never renders a Variations column", async ({ alicePage }) => {
     await alicePage.goto(`/ui/entities`);
     await expect(alicePage.getByTestId("entity-table")).not.toContainText("Variations");
+  });
+});
+
+test.describe("entity list shell — polish (issue #111)", () => {
+  test("card radius is 14px and the header row is uppercase on a muted #fafbfc background", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto(`/ui/entities`);
+    const card = alicePage.locator(".bf-entity-list");
+    await expect(card).toHaveCSS("border-radius", "14px");
+
+    const headerRow = alicePage.locator(".bf-entity-table thead tr");
+    await expect(headerRow).toHaveCSS("background-color", "rgb(250, 251, 252)");
+    const firstHeader = alicePage.getByTestId("sort-surrogate");
+    await expect(firstHeader).toHaveCSS("text-transform", "uppercase");
   });
 });
 

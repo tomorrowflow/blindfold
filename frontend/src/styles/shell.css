@@ -896,6 +896,21 @@ body {
    Entity list (issue #97)
    ----------------------------------------------------------------------- */
 
+.bf-entity-list {
+  border-radius: 14px;
+}
+
+.bf-entity-table thead tr {
+  background: #fafbfc;
+}
+
+.bf-entity-table th {
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-size: 0.75rem;
+  color: #6b7589;
+}
+
 .bf-entity-list-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -1176,8 +1191,6 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  background: var(--bf-person-bg);
-  border: 1px solid #c0cfee;
   border-radius: 4px;
   padding: 2px 6px;
   font-size: 0.8125rem;
@@ -1185,8 +1198,37 @@ body {
   position: relative;
 }
 
+/* Dual-encoded by the edge's actual target_kind (§6.1 rule 2) — never hardcoded
+   to the source row's own kind. */
+.bf-edge-chip--person {
+  background: var(--bf-person-bg);
+  border: 1px solid var(--bf-person);
+}
+
+.bf-edge-chip--term {
+  background: var(--bf-term-bg);
+  border: 1px solid var(--bf-term);
+}
+
 .bf-edge-chip-label {
   font-family: var(--bf-font-mono);
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.bf-edge-chip-relation {
+  color: #6b7589;
+}
+
+.bf-edge-chip-relation::after {
+  content: "→";
+  margin-left: 4px;
+  color: #9aa2b1;
+}
+
+.bf-edge-chip-target {
+  font-weight: 600;
 }
 
 .bf-edge-chip-delete,
@@ -1242,13 +1284,22 @@ body {
 }
 
 .bf-reveal-badge {
-  background: var(--bf-ochre);
-  color: #fff;
-  border: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   border-radius: 4px;
   padding: 3px 8px;
   font-size: 0.8125rem;
   cursor: pointer;
+}
+
+/* Reveal is a real-space crossing (§6.1 hard rule) — reserved ochre family only,
+   never neutral gray/filled-solid; tinted bg/border/ink matches the rest of the
+   ochre family (role chip, audit pill, blind-index search input). */
+.bf-reveal-badge--ochre {
+  background: var(--bf-ochre-bg);
+  color: var(--bf-ochre);
+  border: 1px solid var(--bf-ochre-border);
 }
 
 .bf-reveal-badge--compact {
@@ -1297,6 +1348,25 @@ body {
   margin-top: 4px;
   min-width: 240px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+}
+
+/* The shared reveal-&-log confirm dialog (§6.1 hard rule) — ochre top border +
+   lock badge, adopted everywhere RevealButton is used (entity list, graph
+   inspector, merge dialog). */
+.bf-reveal-confirm--ochre {
+  border-top: 3px solid var(--bf-ochre);
+}
+
+.bf-reveal-confirm-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--bf-ochre-bg);
+  color: var(--bf-ochre);
+  margin-bottom: 8px;
 }
 
 .bf-reveal-confirm p {
