@@ -16,6 +16,25 @@ test.describe("review inbox", () => {
     await expect(page.getByTestId("review-inbox-badge")).toHaveText("2");
   });
 
+  test("header carries the comp subtitle and constrains content to an 820px centered column", async ({
+    page,
+  }) => {
+    await page.goto("/ui/inbox");
+    await expect(page.getByRole("heading", { name: "Review inbox" })).toBeVisible();
+    await expect(page.getByText(
+      "Provisional surrogates detected in traffic. Confirm to keep, or reject to discard the candidate."
+    )).toBeVisible();
+
+    const column = page.getByTestId("review-inbox-page");
+    await expect(column).toHaveCSS("max-width", "820px");
+    const columnBox = await column.boundingBox();
+    const mainBox = await page.locator(".bf-main").boundingBox();
+    if (!columnBox || !mainBox) throw new Error("missing bounding box");
+    const leftGap = columnBox.x - mainBox.x;
+    const rightGap = mainBox.x + mainBox.width - (columnBox.x + columnBox.width);
+    expect(Math.abs(leftGap - rightGap)).toBeLessThanOrEqual(2);
+  });
+
   test("inbox lists provisional candidates with real value, mono surrogate, and context", async ({
     page,
   }) => {
@@ -28,8 +47,17 @@ test.describe("review inbox", () => {
     const klaus = page.getByTestId("review-inbox-item").filter({ hasText: "Klaus Bergmann" });
     await expect(klaus).toBeVisible();
     await expect(klaus).toContainText("Please brief Klaus Bergmann on the merger tomorrow.");
-    await expect(klaus.getByRole("button", { name: "Confirm" })).toBeVisible();
+
+    const confirmBtn = klaus.getByRole("button", { name: "Confirm" });
+    await expect(confirmBtn).toBeVisible();
+    await expect(confirmBtn.locator("svg")).toBeVisible();
     await expect(klaus.getByRole("button", { name: "Reject" })).toBeVisible();
+
+    await expect(klaus).toHaveCSS("border-radius", "13px");
+    await expect(klaus.locator(".bf-review-inbox-item-surrogate")).toHaveCSS(
+      "font-family",
+      /Mono/
+    );
   });
 
   test("confirming an item removes it from the list and decrements the sidebar badge", async ({
@@ -58,8 +86,11 @@ test.describe("review inbox", () => {
       .getByRole("button", { name: "Reject" })
       .click();
 
-    await expect(page.getByTestId("review-inbox-empty")).toBeVisible();
-    await expect(page.getByTestId("review-inbox-empty")).toContainText("Inbox clear");
+    const empty = page.getByTestId("review-inbox-empty");
+    await expect(empty).toBeVisible();
+    await expect(page.getByTestId("review-inbox-empty-badge")).toBeVisible();
+    await expect(empty.getByRole("heading", { name: "Inbox clear" })).toBeVisible();
+    await expect(empty).toContainText("Every provisional candidate has been reviewed.");
     await expect(page.getByTestId("review-inbox-badge")).toHaveCount(0);
   });
 });
