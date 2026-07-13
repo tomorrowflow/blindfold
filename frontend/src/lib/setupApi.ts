@@ -46,7 +46,7 @@ export async function createWorkspace(name: string): Promise<CreateWorkspaceResu
   return postCreateWorkspace(slugify(name), name);
 }
 
-async function seedWorkspace(
+export async function seedWorkspace(
   slug: string,
   bundle?: Record<string, unknown>,
 ): Promise<SeedResult> {

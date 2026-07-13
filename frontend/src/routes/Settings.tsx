@@ -4,6 +4,7 @@
 // this slice's scope (StubView covered "Settings" generically before this).
 
 import { usePreferences, type Density } from "../components/PreferencesContext";
+import { SettingsImport } from "../components/SettingsImport";
 
 const DENSITY_OPTIONS: { value: Density; label: string }[] = [
   { value: "compact", label: "Compact" },
@@ -45,6 +46,11 @@ export function Settings() {
           </p>
         </div>
       </section>
+      <SettingsImport />
+      <p className="bf-settings-field-hint" data-testid="settings-no-export-note">
+        No export. Colleague sharing goes through the shared surrogate store and
+        workspace roles; the voice-diary consumes the JSON API.
+      </p>
     </div>
   );
 }
