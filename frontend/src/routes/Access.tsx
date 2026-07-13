@@ -194,7 +194,9 @@ export function Access() {
                       <span
                         key={role}
                         className={`bf-access-role-chip${
-                          role === "re-identifier" ? " bf-access-role-chip--re-identifier" : ""
+                          role === "re-identifier" || role === "curator"
+                            ? ` bf-access-role-chip--${role}`
+                            : ""
                         }`}
                         data-testid={`role-chip-${role}`}
                       >
@@ -218,7 +220,11 @@ export function Access() {
                       <button
                         key={role}
                         type="button"
-                        className="bf-access-grant-btn"
+                        className={`bf-access-grant-btn${
+                          role === "re-identifier" || role === "curator"
+                            ? ` bf-access-grant-btn--${role}`
+                            : ""
+                        }`}
                         data-testid={`grant-btn-${row.identity}-${role}`}
                         onClick={() => handleGrant(row.identity, role)}
                       >
