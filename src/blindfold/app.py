@@ -125,6 +125,7 @@ from .policy import (
     AuditLog,
     AuditRecord,
     WorkspacePolicies,
+    WorkspacePolicy,
 )
 from .rbac import RbacRegistry
 from .relationships import RelationshipEdge, RelationshipStore
@@ -1448,6 +1449,18 @@ async def revoke_workspace_role(
     return {"identity": target_identity, "workspace": slug, "role": role, "action": "revoked"}
 
 
+def _policy_response(policy: WorkspacePolicy) -> dict:
+    """The wire shape for a workspace's fail-closed posture (ADR-0009, issue #118).
+
+    ``fail_closed`` is always the inverse of ``deterministic_only`` -- the comp's
+    "Fail closed on dependency loss" toggle maps directly onto it (do not invert).
+    """
+    return {
+        "deterministic_only": policy.deterministic_only,
+        "fail_closed": not policy.deterministic_only,
+    }
+
+
 @app.get("/v1/management/workspaces/{slug}/policy")
 async def get_workspace_policy(
     slug: str,
@@ -1457,16 +1470,10 @@ async def get_workspace_policy(
 ) -> dict:
     """Read a workspace's fail-closed posture (ADR-0009, issue #118).
 
-    Requires the ``admin`` role. ``fail_closed`` is always the inverse of
-    ``deterministic_only`` -- the comp's "Fail closed on dependency loss" toggle
-    maps directly onto it (do not invert).
+    Requires the ``admin`` role.
     """
     _require_role(request, slug, "admin", rbac)
-    policy = policies.for_workspace(slug)
-    return {
-        "deterministic_only": policy.deterministic_only,
-        "fail_closed": not policy.deterministic_only,
-    }
+    return _policy_response(policies.for_workspace(slug))
 
 
 @app.put("/v1/management/workspaces/{slug}/policy")
@@ -1508,11 +1515,7 @@ async def put_workspace_policy(
             )
         )
 
-    policy = policies.for_workspace(slug)
-    return {
-        "deterministic_only": policy.deterministic_only,
-        "fail_closed": not policy.deterministic_only,
-    }
+    return _policy_response(policies.for_workspace(slug))
 
 
 def _apply_merge_side_effects(
