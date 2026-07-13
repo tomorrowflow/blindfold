@@ -113,6 +113,35 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   (ADR-0017). The management app's top-bar chips surface only `curator` and
   `re-identifier` (the two day-to-day capability roles); that's a display
   subset, not a different role set.
+- **Bootstrap** — the *automatic, headless* step that makes a fresh install
+  non-empty and self-consistent without human interaction: it seeds the entity
+  graph from the vendored seed and grants the bootstrap-admin identity so the
+  store isn't RBAC-locked-out of itself. Machine-run at startup, no operator in
+  the loop. Distinct from **Setup**. _Avoid_ using "bootstrap" for the human
+  first-run flow.
+- **Setup** — the *human-driven* first-run flow an operator walks through to make
+  a fresh install *theirs*: claim the install as admin, create the first real
+  **workspace**, and populate it with real **entities** (optionally loading the
+  vendored seed as **sample data**). Triggered by an **empty store** (no
+  **workspace** exists yet) and pointed to from the startup console line. The
+  counterpart to **Bootstrap**: Setup is deliberate and interactive, Bootstrap is
+  automatic and headless. _Avoid_: wizard, onboarding, initialization (as the
+  canonical word).
+- **Seed bundle** — a portable **entity-graph** artifact (persons, **terms**, org
+  units, **variations**, **relationships** — real names) importable into a
+  **workspace** during **Setup**. Carries the *dictionary of what to protect*,
+  deliberately **not** the **mapping**: no **surrogates**, no encrypted real
+  values, and **no RBAC grants** (a file must never self-grant a **Role**). On
+  import the local install mints its **own** surrogates, so two installs importing
+  the same bundle get **divergent** surrogates — a bundle seeds **detection**,
+  never shared **re-identification** (that stays the job of a shared **store**). v1
+  is plaintext JSON; an **encrypted** variant (file-level crypto, **not Transit**)
+  is a deferred v2 option. The vendored **Sample data** is the shipped instance.
+  _Avoid_: dump, export file, backup.
+- **Sample data** — the vendored **Seed bundle** (ADR-0012) shipped with
+  Blindfold, offered as an *opt-in* load inside **Setup**, never silently
+  populating a real **workspace**. A demo, not a default. _Avoid_: demo seed,
+  default data (as the canonical words).
 - **Novel entity** — an entity encountered in traffic that is not yet in the
   **entity graph**: not a known entity, not one of its **variations**, not
   **allowlist**ed. L3's verdict on a **candidate span** decides whether a span
@@ -167,6 +196,10 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   before emitting; tool-call JSON is reassembled before restoring inside it.
 - **Transit** — the OpenBao (MPL-2.0) encryption-as-a-service engine that holds the
   encryption keys and performs encrypt/decrypt; the app never holds key material.
+  It holds **keys, not data**, and is **not a dataset-distribution channel**: the
+  encrypted **mapping** lives in the **store**, and sharing data means connecting
+  to a shared store + shared Transit (RBAC-gated), never exchanging a
+  Transit-encrypted file.
 - **Blind index** — a deterministic derived column enabling equality lookups over
   encrypted real-value columns without decrypting them.
 - **Fail-closed** — when the full detection pipeline can't run, block by default;
