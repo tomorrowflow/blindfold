@@ -10,12 +10,14 @@ const DEGRADED_PORT = 8952;
 // entity, no RBAC grant) — the setup-shell spec's forced-redirect and
 // create-first-workspace/creator-becomes-admin flow need real empty-store state.
 const EMPTY_PORT = 8953;
-// Fourth and fifth fixture instances (issue #108, Setup slice 5/5): two more
-// independent genuinely-empty stores for the one-click Sample data and Seed
-// bundle Import specs respectively — each of those actions self-grants admin on
-// ITS OWN new workspace only when the store was empty beforehand (issue #107's
-// privilege-escalation guard), so the two specs need two stores of their own,
-// kept separate from each other and from EMPTY_PORT (setup-shell.spec.ts).
+// Fourth and fifth fixture instances (issue #108, Setup slice 5/5; reworked by
+// #109 to decouple create from populate): two more independent genuinely-empty
+// stores for entity-list-populate.spec.ts's one-click Sample data (via Setup's
+// checkbox) and Seed bundle Import (via the entity list's empty state) specs
+// respectively — each of those creates its own workspace and self-grants admin
+// only when the store was empty beforehand (issue #107's privilege-escalation
+// guard), so the two specs need two stores of their own, kept separate from each
+// other and from EMPTY_PORT (setup-shell.spec.ts).
 const SAMPLE_DATA_EMPTY_PORT = 8954;
 const IMPORT_BUNDLE_EMPTY_PORT = 8955;
 

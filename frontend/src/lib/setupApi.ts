@@ -1,11 +1,15 @@
-// Setup view management-API seam (issue #107, extended by #108 -- Setup slice 5/5):
-// create the first workspace over POST /v1/management/workspaces (ungated
-// server-side -- an empty store holds no admin to gate against), then optionally
-// populate it via POST /v1/management/workspaces/{slug}/seed (admin-gated -- the
-// creator already holds admin from the create call). Workspace name/slug are not
-// entities (CONTEXT.md); a Seed bundle is real-entity dictionary data (persons,
-// terms, variations, relationships) that never leaves the browser except as the
-// body of this same-origin management-API POST, so this seam carries no egress
+// Setup view management-API seam (issue #107, reworked by #109 to decouple create
+// from populate per ADR-0030): create a workspace over POST
+// /v1/management/workspaces (ungated server-side -- an empty store holds no admin
+// to gate against), then separately populate any already-created workspace via
+// POST /v1/management/workspaces/{slug}/seed (admin-gated -- the creator already
+// holds admin on it). Populate is a persistent, sequential step, not bundled into
+// create: `loadSampleData`/`importSeedBundle` both target an explicit, existing
+// workspace slug -- neither ever creates a workspace itself, and Sample data no
+// longer auto-creates `default`. Workspace name/slug are not entities
+// (CONTEXT.md); a Seed bundle is real-entity dictionary data (persons, terms,
+// variations, relationships) that never leaves the browser except as the body of
+// this same-origin management-API POST, so this seam carries no egress
 // leak-audit surface of its own (server-side clauses are covered in
 // tests/test_setup_seed_bundle.py).
 
@@ -55,27 +59,23 @@ async function seedWorkspace(
   return r.json();
 }
 
-// The vendored bundle's own workspace tag (store/vendored_seed.json's "workspace"
-// field) -- kept in sync here since the one-click action must auto-create it
-// without uploading/parsing the bundle client-side.
-const SAMPLE_DATA_WORKSPACE = { slug: "default", name: "Default Workspace" };
-
-// One-click Sample data (issue #108 AC): auto-creates `default` and loads the
-// vendored bundle -- an explicit operator action, never automatic (CONTEXT.md
-// non-goal: a real workspace is never silently populated).
-export async function loadSampleData(): Promise<SeedResult> {
-  await postCreateWorkspace(SAMPLE_DATA_WORKSPACE.slug, SAMPLE_DATA_WORKSPACE.name);
-  return seedWorkspace(SAMPLE_DATA_WORKSPACE.slug);
+// One-click Sample data (issue #109): loads the vendored bundle into an explicit,
+// already-created target workspace -- never auto-creates one. An explicit
+// operator action, never automatic (CONTEXT.md non-goal: a real workspace is
+// never silently populated). Reachable any time a workspace has zero entities
+// (the entity-list empty state), not just at Setup.
+export async function loadSampleData(targetSlug: string): Promise<SeedResult> {
+  return seedWorkspace(targetSlug);
 }
 
-// Import a Seed bundle (issue #108 AC): a v1 plaintext-JSON bundle (ADR-0029)
-// names its own workspace (`bundle.workspace.slug`/`.name`) -- the same field the
-// vendored seed carries -- so Import needs no separate "workspace name" prompt.
-// The bundle is parsed here only to read that tag; the server ignores every
-// other field it doesn't recognize (persons/terms/role_assignments/
-// entity_relationships), so an uploaded mapping/surrogate/RBAC-shaped field never
-// reaches an RBAC grant or a locally-minted surrogate (server-side guard).
-export async function importSeedBundle(file: File): Promise<SeedResult> {
+// Import a Seed bundle (issue #109): populates an explicit, already-created
+// target workspace -- the bundle's own `workspace` tag (ADR-0029) is not used to
+// pick the target since the workspace already exists by the time Import runs.
+// The server ignores every field it doesn't recognize (persons/terms/
+// role_assignments/entity_relationships), so an uploaded mapping/surrogate/
+// RBAC-shaped field never reaches an RBAC grant or a locally-minted surrogate
+// (server-side guard).
+export async function importSeedBundle(targetSlug: string, file: File): Promise<SeedResult> {
   const text = await file.text();
   let bundle: Record<string, unknown>;
   try {
@@ -83,10 +83,5 @@ export async function importSeedBundle(file: File): Promise<SeedResult> {
   } catch {
     throw new Error("Not valid JSON");
   }
-  const ws = (bundle.workspace as { slug?: unknown; name?: unknown } | undefined) ?? {};
-  const name = typeof ws.name === "string" && ws.name ? ws.name : "Imported Workspace";
-  const slug = typeof ws.slug === "string" && ws.slug ? ws.slug : slugify(name);
-
-  await postCreateWorkspace(slug, name);
-  return seedWorkspace(slug, bundle);
+  return seedWorkspace(targetSlug, bundle);
 }

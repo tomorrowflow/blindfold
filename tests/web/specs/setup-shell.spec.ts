@@ -42,15 +42,19 @@ test.describe("Setup — empty-store forced redirect", () => {
 });
 
 test.describe("Setup — create first workspace", () => {
-  test("creating a workspace grants the creator admin and lands on the populated app", async ({
+  test("creating a workspace (Load sample data left unticked) grants the creator admin and lands in that workspace's empty entity list", async ({
     operatorPage,
   }) => {
     await operatorPage.goto("/ui/setup");
     await operatorPage.getByTestId("setup-workspace-name").fill("Acme Corp");
     await operatorPage.getByTestId("setup-create-btn").click();
 
-    await expect(operatorPage).toHaveURL(/\/ui\/status$/);
-    await expect(operatorPage.locator("h1")).toContainText("Status");
+    await expect(operatorPage).toHaveURL(/\/ui\/entities$/);
+    await expect(operatorPage.locator("h1")).toContainText("Entity list");
+    // Create and populate are decoupled (ADR-0030): the checkbox was left
+    // unticked, so the workspace lands empty, offering the persistent
+    // Import/Sample-data populate surface rather than a populated table.
+    await expect(operatorPage.getByTestId("entity-list-empty-state")).toBeVisible();
 
     // The SPA never sends x-blindfold-identity (issue #107's browser-side caller
     // is the default "" identity, ADR-0019's static single-owner model) — verify

@@ -129,7 +129,9 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   canonical word).
 - **Seed bundle** — a portable **entity-graph** artifact (persons, **terms**, org
   units, **variations**, **relationships** — real names) importable into a
-  **workspace** during **Setup**. Carries the *dictionary of what to protect*,
+  **workspace** any time it has no **entities** yet — a persistent capability of
+  the entity list, not confined to first-run **Setup**. Carries the *dictionary
+  of what to protect*,
   deliberately **not** the **mapping**: no **surrogates**, no encrypted real
   values, and **no RBAC grants** (a file must never self-grant a **Role**). On
   import the local install mints its **own** surrogates, so two installs importing

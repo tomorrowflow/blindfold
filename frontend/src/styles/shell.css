@@ -1900,10 +1900,11 @@ body {
 }
 
 /* -----------------------------------------------------------------------
-   Setup (issue #108) -- Seed bundle import + one-click Sample data
+   Entity list empty state (issue #109) -- persistent Seed bundle import +
+   one-click Sample data, reachable any time a workspace has zero entities
    ----------------------------------------------------------------------- */
 
-.bf-setup-seed-actions {
+.bf-populate-actions {
   display: flex;
   flex-direction: column;
   gap: 20px;
@@ -1911,7 +1912,7 @@ body {
   max-width: 360px;
 }
 
-.bf-setup-seed-action {
+.bf-populate-action {
   display: flex;
   flex-direction: column;
   gap: 8px;
@@ -1919,6 +1920,6 @@ body {
   border-top: 1px solid var(--bf-border);
 }
 
-.bf-setup-seed-action .bf-btn-secondary {
+.bf-populate-action .bf-btn-secondary {
   align-self: flex-start;
 }

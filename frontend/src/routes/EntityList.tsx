@@ -8,6 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useWorkspace } from "../components/WorkspaceContext";
 import { usePreferences } from "../components/PreferencesContext";
 import { EntityListRow } from "../components/EntityListRow";
+import { EntityListEmptyState } from "../components/EntityListEmptyState";
 import { MergeDialog } from "../components/MergeDialog";
 import {
   ENTITY_LIST_CEILING,
@@ -166,6 +167,17 @@ export function EntityList() {
       <div className="bf-card">
         <h1>Entity list</h1>
         <p className="bf-empty">No workspace selected.</p>
+      </div>
+    );
+  }
+
+  const isEmptyWorkspace = !loading && !overCeiling && !error && allRows.length === 0;
+
+  if (isEmptyWorkspace) {
+    return (
+      <div className="bf-card bf-entity-list" data-density={density}>
+        <h1>Entity list</h1>
+        <EntityListEmptyState workspace={workspace} onPopulated={setAllRows} />
       </div>
     );
   }
