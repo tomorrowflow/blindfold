@@ -42,8 +42,19 @@ export function DependencyCard({
       className={`bf-dependency-card ${health.healthy ? "bf-dependency-card--healthy" : "bf-dependency-card--unhealthy"}`}
       data-testid={`dependency-card-${dependencyKey}`}
     >
+      <span
+        className={`bf-dependency-card-status-dot ${
+          health.healthy
+            ? "bf-dependency-card-status-dot--ok"
+            : "bf-dependency-card-status-dot--unhealthy"
+        }`}
+        data-testid="dependency-card-status-dot"
+        aria-hidden="true"
+      />
       <div className="bf-dependency-card-head">
-        <Icon size={18} aria-hidden="true" />
+        <div className="bf-dependency-card-icon" data-testid="dependency-card-icon">
+          <Icon size={16} aria-hidden="true" />
+        </div>
         <span className="bf-dependency-card-label">{DEPENDENCY_LABELS[dependencyKey]}</span>
       </div>
       <div className="bf-dependency-card-identifier">{identifierFor(dependencyKey, config)}</div>
@@ -57,6 +68,11 @@ export function DependencyCard({
       </div>
       {!health.healthy && health.detail && (
         <div className="bf-dependency-card-detail">{health.detail}</div>
+      )}
+      {health.latency_ms !== undefined && (
+        <div className="bf-dependency-card-latency" data-testid="dependency-card-latency">
+          {Math.round(health.latency_ms)}ms
+        </div>
       )}
     </div>
   );

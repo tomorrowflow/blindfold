@@ -3,6 +3,7 @@
 // column is looked up by `sub_reason` client-side (see lib/status.ts) — the API
 // contract (#92) never carries remediation text of its own.
 
+import { ShieldCheck } from "./icons";
 import { BLOCK_REMEDY_BY_SUB_REASON, DEFAULT_BLOCK_REMEDY, type BlockRecord } from "../lib/status";
 
 function formatTime(ts: string): string {
@@ -22,9 +23,16 @@ export function RecentBlocksTable({
       <h2 className="bf-card-title">Recent blocks</h2>
       <p className="bf-card-subtitle">Last {windowMinutes} minutes</p>
       {recent.length === 0 ? (
-        <p className="bf-blocks-empty" data-testid="blocks-empty">
-          No blocks in the last {windowMinutes} minutes.
-        </p>
+        <div className="bf-blocks-empty" data-testid="blocks-empty">
+          <div className="bf-blocks-empty-icon" data-testid="blocks-empty-icon">
+            <ShieldCheck size={20} aria-hidden="true" />
+          </div>
+          <strong>No requests blocked in the last {windowMinutes} minutes</strong>
+          <p className="bf-blocks-empty-detail">
+            Every prompt in this window reached the provider blindfolded and came back
+            restored.
+          </p>
+        </div>
       ) : (
         <table className="bf-blocks-table" data-testid="blocks-table">
           <thead>

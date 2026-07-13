@@ -32,11 +32,33 @@ test.describe("Degraded state", () => {
     await expect(banner).toContainText("Requests will fail closed until this is fixed.");
   });
 
-  test("the unhealthy L3 dependency card shows its scrubbed detail", async ({ alicePage }) => {
+  test("Degraded banner shows the red-family badge, heading, and a pill naming the failing dependency", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto("/ui/status");
+    const banner = alicePage.getByTestId("status-banner");
+    await expect(banner).toHaveClass(/bf-status-banner--degraded/);
+
+    const badge = banner.getByTestId("status-banner-icon");
+    await expect(badge).toBeVisible();
+    await expect(badge).toHaveCSS("width", "46px");
+    await expect(badge).toHaveCSS("border-radius", "50%");
+    await expect(badge).toHaveCSS("background-color", "rgb(179, 38, 30)"); // --bf-red
+
+    await expect(banner.getByTestId("status-banner-heading")).toHaveText("Degraded");
+    await expect(banner.getByTestId("status-banner-pill")).toContainText("L3 adjudicator");
+  });
+
+  test("the unhealthy L3 dependency card shows its scrubbed detail and a red status dot", async ({
+    alicePage,
+  }) => {
     await alicePage.goto("/ui/status");
     const card = alicePage.getByTestId("dependency-card-l3");
     await expect(card).toContainText("Unhealthy");
     await expect(card).toContainText("no L3 adjudicator configured");
+    await expect(card.getByTestId("dependency-card-status-dot")).toHaveClass(
+      /bf-dependency-card-status-dot--unhealthy/
+    );
   });
 
   test("the other three dependency cards stay healthy", async ({ alicePage }) => {
