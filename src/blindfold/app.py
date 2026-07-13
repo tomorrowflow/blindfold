@@ -1448,6 +1448,73 @@ async def revoke_workspace_role(
     return {"identity": target_identity, "workspace": slug, "role": role, "action": "revoked"}
 
 
+@app.get("/v1/management/workspaces/{slug}/policy")
+async def get_workspace_policy(
+    slug: str,
+    request: Request,
+    rbac: RbacRegistry = Depends(get_rbac),
+    policies: WorkspacePolicies = Depends(get_workspace_policies),
+) -> dict:
+    """Read a workspace's fail-closed posture (ADR-0009, issue #118).
+
+    Requires the ``admin`` role. ``fail_closed`` is always the inverse of
+    ``deterministic_only`` -- the comp's "Fail closed on dependency loss" toggle
+    maps directly onto it (do not invert).
+    """
+    _require_role(request, slug, "admin", rbac)
+    policy = policies.for_workspace(slug)
+    return {
+        "deterministic_only": policy.deterministic_only,
+        "fail_closed": not policy.deterministic_only,
+    }
+
+
+@app.put("/v1/management/workspaces/{slug}/policy")
+async def put_workspace_policy(
+    slug: str,
+    request: Request,
+    body: dict,
+    rbac: RbacRegistry = Depends(get_rbac),
+    policies: WorkspacePolicies = Depends(get_workspace_policies),
+    audit_log: AuditLog = Depends(get_audit_log),
+) -> dict:
+    """Flip a workspace's fail-closed posture (ADR-0009, issue #118).
+
+    Requires the ``admin`` role. Body: ``{"deterministic_only": bool}``. A PUT that
+    changes the posture writes an ``AuditRecord`` attributed to the calling identity
+    (``policy-degrade-enabled`` / ``policy-degrade-disabled`` -- ADR-0009's "the
+    degrade opt-in must be audited" mandate); a no-op PUT (same value) writes nothing.
+    """
+    _require_role(request, slug, "admin", rbac)
+    deterministic_only = bool(body.get("deterministic_only", False))
+    was_deterministic_only = policies.for_workspace(slug).deterministic_only
+
+    if deterministic_only:
+        policies.opt_in_deterministic_only(slug)
+    else:
+        policies.reset(slug)
+
+    if deterministic_only != was_deterministic_only:
+        audit_log.append(
+            AuditRecord(
+                workspace=slug,
+                event="policy-degrade-enabled" if deterministic_only else "policy-degrade-disabled",
+                reason=(
+                    "workspace opted into deterministic-only mode"
+                    if deterministic_only
+                    else "workspace returned to fail-closed by default"
+                ),
+                identity=_caller_identity(request),
+            )
+        )
+
+    policy = policies.for_workspace(slug)
+    return {
+        "deterministic_only": policy.deterministic_only,
+        "fail_closed": not policy.deterministic_only,
+    }
+
+
 def _apply_merge_side_effects(
     *,
     workspace: str,
