@@ -12,11 +12,13 @@ export {
   ShieldCheck,
   Settings,
   // Shell chrome (issue #95)
-  Building2,
   ChevronDown,
   Check,
   Lock,
   X,
+  // Shell chrome fidelity (issue #114)
+  Layers,
+  EyeOff,
   // Home/Status view (issue #96)
   CheckCircle2,
   AlertTriangle,

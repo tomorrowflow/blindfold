@@ -82,6 +82,23 @@ async def test_create_workspace_is_idempotent(pg_dsn):
     store.create_workspace("idempotent-ws", "Idempotent Workspace")
 
 
+async def test_workspace_name_returns_the_created_name(pg_dsn):
+    """Topbar switcher fidelity (issue #114): the display name persists and is
+    readable by slug, independent of the RBAC/entity-list query paths."""
+    from blindfold.store.entity_graph_store import PostgresEntityGraphStore
+
+    store = PostgresEntityGraphStore(pg_dsn)
+    store.create_workspace("named-ws", "Named Workspace")
+    assert store.workspace_name("named-ws") == "Named Workspace"
+
+
+async def test_workspace_name_falls_back_to_slug_when_unknown(pg_dsn):
+    from blindfold.store.entity_graph_store import PostgresEntityGraphStore
+
+    store = PostgresEntityGraphStore(pg_dsn)
+    assert store.workspace_name("never-created") == "never-created"
+
+
 # ---------------------------------------------------------------------------
 # Test 3: add_entity persists and is visible from a second store instance
 # (process-restart contract: acceptance criterion 3)

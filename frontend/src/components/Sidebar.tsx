@@ -1,5 +1,5 @@
 import { NavLink } from "react-router-dom";
-import { ChevronsLeft, ChevronsRight } from "./icons";
+import { ChevronsLeft, ChevronsRight, EyeOff } from "./icons";
 import { PRIMARY_NAV, SECONDARY_NAV } from "./nav";
 import { useReviewInboxPending } from "./ReviewInboxContext";
 import { useWorkspace } from "./WorkspaceContext";
@@ -20,15 +20,17 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
   return (
     <nav className="bf-sidebar" data-collapsed={collapsed} aria-label="Management navigation">
-      <button
-        type="button"
-        className="bf-sidebar-toggle"
-        onClick={onToggle}
-        aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-      >
-        {collapsed ? <ChevronsRight size={20} /> : <ChevronsLeft size={20} />}
-        {!collapsed && <span>Blindfold</span>}
-      </button>
+      <div className="bf-sidebar-brand">
+        <span className="bf-sidebar-brand-glyph" aria-hidden="true">
+          <EyeOff size={18} />
+        </span>
+        {!collapsed && (
+          <span className="bf-sidebar-brand-text">
+            <span className="bf-sidebar-brand-name">Blindfold</span>
+            <span className="bf-sidebar-brand-subline">Management</span>
+          </span>
+        )}
+      </div>
       <div className="bf-nav">
         {PRIMARY_NAV.map((item) => (
           <NavItemLink
@@ -49,6 +51,15 @@ export function Sidebar({ collapsed, onToggle }: SidebarProps) {
           />
         ))}
       </div>
+      <button
+        type="button"
+        className="bf-sidebar-toggle"
+        onClick={onToggle}
+        aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+      >
+        {collapsed ? <ChevronsRight size={20} /> : <ChevronsLeft size={20} />}
+        {!collapsed && <span>Collapse</span>}
+      </button>
     </nav>
   );
 }

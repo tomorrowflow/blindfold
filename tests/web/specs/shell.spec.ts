@@ -55,6 +55,38 @@ test.describe("management shell", () => {
     await expect(sidebar).toHaveAttribute("data-collapsed", "false");
   });
 
+  test("sidebar shows the brand block: glyph, 'Blindfold', and a 'Management' subline", async ({
+    page,
+  }) => {
+    await page.goto("/ui/");
+    const brand = page.locator(".bf-sidebar-brand");
+    await expect(brand).toBeVisible();
+    await expect(brand.locator(".bf-sidebar-brand-glyph")).toBeVisible();
+    await expect(brand).toContainText("Blindfold");
+    await expect(brand).toContainText("Management");
+  });
+
+  test("collapse control sits at the sidebar bottom, below the nav; collapsed sidebar is an icon rail", async ({
+    page,
+  }) => {
+    await page.goto("/ui/");
+    const sidebar = page.locator("nav.bf-sidebar");
+    const order = await sidebar.locator("> *").evaluateAll((els) =>
+      els.map((el) => el.className)
+    );
+    const brandIdx = order.findIndex((c) => c.includes("bf-sidebar-brand"));
+    const navIdx = order.findIndex((c) => c.includes("bf-nav"));
+    const toggleIdx = order.findIndex((c) => c.includes("bf-sidebar-toggle"));
+    expect(brandIdx).toBeLessThan(navIdx);
+    expect(toggleIdx).toBeGreaterThan(navIdx);
+
+    await page.getByRole("button", { name: "Collapse sidebar" }).click();
+    await expect(sidebar).toHaveAttribute("data-collapsed", "true");
+    // Icon rail: nav labels and the brand wordmark text hide, the glyph stays.
+    await expect(page.locator(".bf-sidebar-brand-glyph")).toBeVisible();
+    await expect(page.locator(".bf-nav-label")).toHaveCount(0);
+  });
+
   test("deep link to a sidebar route renders directly", async ({ page }) => {
     await page.goto("/ui/audit");
     await expect(page.getByRole("heading", { name: "Audit log" })).toBeVisible();

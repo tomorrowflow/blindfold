@@ -188,6 +188,9 @@ def build_app():
         return _build_empty_app()
 
     graph = EntityGraph()
+    # A display name distinct from the slug (issue #114: switcher shows name + mono
+    # slug on two lines, not slug-as-name).
+    graph.create_workspace(WORKSPACE, "Acme Corp")
     person = graph.add_entity("person", WORKSPACE, REAL_PERSON, surrogate=PERSON_SURROGATE)
     org = graph.add_entity("term", WORKSPACE, REAL_ORG, surrogate=ORG_SURROGATE)
     person2 = graph.add_entity("person", WORKSPACE, REAL_PERSON, surrogate=PERSON2_SURROGATE)
