@@ -121,16 +121,6 @@ export function GraphInspector({
         </span>
       </div>
 
-      {/* Per-node Reveal badge (ochre, ADR-0017 / design-brief §Q4) */}
-      <div className="bf-graph-inspector-row" data-testid="inspector-reveal-row">
-        <span className="bf-graph-inspector-label">Real value:</span>
-        <RevealButton
-          workspace={workspace}
-          surrogate={row.active_surrogate}
-          canReveal={canReveal}
-        />
-      </div>
-
       {/* Retired-surrogate chips */}
       {row.retired_surrogates.length > 0 && (
         <div className="bf-graph-inspector-row">
@@ -147,7 +137,7 @@ export function GraphInspector({
 
       {/* Edge list */}
       <div className="bf-graph-inspector-edges" data-testid="inspector-edges">
-        <span className="bf-graph-inspector-label">Edges:</span>
+        <span className="bf-graph-inspector-label">Relationships:</span>
         <ul className="bf-graph-inspector-edge-list">
           {row.edges.map((e) => (
             <li
@@ -155,7 +145,7 @@ export function GraphInspector({
               className={`bf-graph-inspector-edge${selectedEdgeId === e.edge_id ? " bf-graph-inspector-edge--selected" : ""}`}
               data-testid={`inspector-edge-${e.edge_id}`}
             >
-              <span>
+              <span className="bf-graph-inspector-edge-text">
                 {e.direction === "outbound" ? "→" : "←"} {e.relation} {e.other_surrogate}
               </span>
               <button
@@ -253,6 +243,17 @@ export function GraphInspector({
         >
           Draw edge
         </button>
+      </div>
+
+      {/* Bottom, full-width, ochre reveal action (ADR-0017 / design-brief §Q4, issue #112) */}
+      <div className="bf-graph-inspector-reveal" data-testid="inspector-reveal-row">
+        <RevealButton
+          workspace={workspace}
+          surrogate={row.active_surrogate}
+          canReveal={canReveal}
+          fullWidth
+          label="Reveal & log"
+        />
       </div>
     </aside>
   );

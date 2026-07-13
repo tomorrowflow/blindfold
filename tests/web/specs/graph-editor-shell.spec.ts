@@ -389,7 +389,7 @@ test.describe("graph editor — rename in inspector", () => {
     await expect(input).toHaveClass(/bf-surrogate-input--error/);
   });
 
-  test("dependent warning: slate banner, acknowledge required before commit", async ({
+  test("dependent warning: ochre banner, acknowledge required before commit", async ({
     alicePage,
   }) => {
     const page = alicePage;
@@ -404,9 +404,11 @@ test.describe("graph editor — rename in inspector", () => {
     await input.fill("Glacier Holdings");
     await inspector.getByTestId("inspector-rename-save").click();
 
-    // Dependent warning banner must appear
+    // Dependent warning banner must appear, ochre (comp fidelity, issue #112)
     const warn = inspector.getByTestId("inspector-rename-warn");
     await expect(warn).toBeVisible();
+    await expect(warn).toHaveCSS("background-color", "rgb(250, 246, 236)"); // --bf-ochre-bg
+    await expect(warn).toHaveCSS("border-color", "rgb(230, 214, 168)"); // --bf-ochre-border
     const ackSave = inspector.getByTestId("inspector-rename-ack-save");
     await expect(ackSave).toBeDisabled();
 

@@ -16,9 +16,20 @@ type RevealButtonProps = {
   surrogate: string;
   canReveal: boolean;
   compact?: boolean;
+  /** Bottom full-width variant (graph inspector, issue #112) vs the default inline badge. */
+  fullWidth?: boolean;
+  /** Trigger button label — defaults to "Reveal"; the graph inspector uses "Reveal & log". */
+  label?: string;
 };
 
-export function RevealButton({ workspace, surrogate, canReveal, compact }: RevealButtonProps) {
+export function RevealButton({
+  workspace,
+  surrogate,
+  canReveal,
+  compact,
+  fullWidth,
+  label = "Reveal",
+}: RevealButtonProps) {
   const { toast } = useToast();
   const [confirming, setConfirming] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -33,7 +44,7 @@ export function RevealButton({ workspace, surrogate, canReveal, compact }: Revea
   if (!canReveal) {
     return (
       <span
-        className={`bf-reveal-badge bf-reveal-badge--locked${compact ? " bf-reveal-badge--compact" : ""}`}
+        className={`bf-reveal-badge bf-reveal-badge--locked${compact ? " bf-reveal-badge--compact" : ""}${fullWidth ? " bf-reveal-badge--full" : ""}`}
         data-testid="reveal-locked"
         title="re-identifier role required"
       >
@@ -70,16 +81,16 @@ export function RevealButton({ workspace, surrogate, canReveal, compact }: Revea
   }
 
   return (
-    <span className="bf-reveal-wrap">
+    <span className={`bf-reveal-wrap${fullWidth ? " bf-reveal-wrap--full" : ""}`}>
       <button
         type="button"
-        className={`bf-reveal-badge${compact ? " bf-reveal-badge--compact" : ""}`}
+        className={`bf-reveal-badge${compact ? " bf-reveal-badge--compact" : ""}${fullWidth ? " bf-reveal-badge--full" : ""}`}
         disabled={busy}
         onClick={() => setConfirming(true)}
         data-testid="reveal-btn"
         title="This will be logged"
       >
-        Reveal
+        {label}
       </button>
       {error && <span className="bf-reveal-error">{error}</span>}
       {confirming && (
