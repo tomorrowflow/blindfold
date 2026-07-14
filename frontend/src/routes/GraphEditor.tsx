@@ -29,6 +29,20 @@ import {
 
 type ToolMode = "select" | "draw-edge" | "merge";
 
+const TOOL_LABELS: Record<ToolMode, string> = {
+  select: "Select",
+  "draw-edge": "Draw edge",
+  merge: "Merge",
+};
+
+// Single source of truth for both the segmented-control tab title and the
+// toolbar hint line (issue #112: the two had drifted out of sync).
+const TOOL_HINTS: Record<ToolMode, string> = {
+  select: "Click a node to inspect it. Drag onto another same-kind node to merge.",
+  "draw-edge": "Select a node first, then click Draw edge in the inspector, then click a target node.",
+  merge: "Drag one node onto another same-kind node to merge them.",
+};
+
 export function GraphEditor() {
   const { activeWorkspace } = useWorkspace();
   const { toast } = useToast();
@@ -243,6 +257,13 @@ export function GraphEditor() {
 
   return (
     <div className="bf-graph-editor" data-testid="graph-editor">
+      <div className="bf-graph-header">
+        <h1>Graph editor</h1>
+        <p className="bf-card-subtitle" data-testid="graph-editor-subtitle">
+          Click a node to inspect it. Person = round, term = square — kind is dual-encoded by shape and color.
+        </p>
+      </div>
+
       {/* Tool switcher (segmented, per issue brief) */}
       <div className="bf-graph-toolbar" data-testid="graph-toolbar">
         <div
@@ -250,37 +271,25 @@ export function GraphEditor() {
           role="tablist"
           aria-label="Graph tool"
         >
-          {(["select", "draw-edge", "merge"] as ToolMode[]).map((mode) => {
-            const labels: Record<ToolMode, string> = {
-              select: "Select",
-              "draw-edge": "Draw edge",
-              merge: "Merge",
-            };
-            const hints: Record<ToolMode, string> = {
-              select: "Click a node to inspect it. Drag one node onto another same-kind node to merge.",
-              "draw-edge": "Click a source node in the inspector panel, then click Draw edge, then click a target node.",
-              merge: "Drag one node onto another same-kind node to merge them.",
-            };
-            return (
-              <button
-                key={mode}
-                type="button"
-                role="tab"
-                aria-selected={toolMode === mode}
-                className={`bf-search-mode-option${toolMode === mode ? " bf-search-mode-option--active" : ""}`}
-                onClick={() => handleToolMode(mode)}
-                data-testid={`tool-${mode}`}
-                title={hints[mode]}
-              >
-                {labels[mode]}
-              </button>
-            );
-          })}
+          {(["select", "draw-edge", "merge"] as ToolMode[]).map((mode) => (
+            <button
+              key={mode}
+              type="button"
+              role="tab"
+              aria-selected={toolMode === mode}
+              className={`bf-search-mode-option${toolMode === mode ? " bf-search-mode-option--active" : ""}`}
+              onClick={() => handleToolMode(mode)}
+              data-testid={`tool-${mode}`}
+              title={TOOL_HINTS[mode]}
+            >
+              {TOOL_LABELS[mode]}
+            </button>
+          ))}
         </div>
         <span className="bf-graph-tool-hint" data-testid="tool-hint">
-          {toolMode === "select" && "Click a node to inspect. Drag onto another same-kind node to merge."}
-          {toolMode === "draw-edge" && (drawSource ? `Drawing edge from ${drawSource.label} — click a target node.` : "Select a node first, then click Draw edge in the inspector.")}
-          {toolMode === "merge" && "Drag one node onto another same-kind node to merge."}
+          {toolMode === "draw-edge" && drawSource
+            ? `Drawing edge from ${drawSource.label} — click a target node.`
+            : TOOL_HINTS[toolMode]}
         </span>
         {loadError && <span className="bf-error" data-testid="graph-load-error">{loadError}</span>}
       </div>

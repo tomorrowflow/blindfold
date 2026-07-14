@@ -46,15 +46,23 @@ type GraphCanvasProps = {
   onCyReady: (cy: cytoscape.Core) => void;
 };
 
-// Cytoscape node/edge style tokens (matches design-brief §8 — professional/calm)
+// Cytoscape draws to <canvas>, so style values must be literal (no CSS var()
+// resolution) — these hex values mirror tokens.css's --bf-person/--bf-person-bg
+// and --bf-term/--bf-term-bg, and --bf-font-mono's stack (issue #112: lightweight
+// pill nodes, mono labels, dual-encoded shape+color preserved from #98).
+const MONO_FONT_STACK = '"IBM Plex Mono", ui-monospace, monospace';
+
 const CYTOSCAPE_STYLE: cytoscape.StylesheetStyle[] = [
   {
     selector: "node[kind='person']",
     style: {
-      "background-color": "#4a90d9",
+      "background-color": "#eaf1fb", // --bf-person-bg
+      "border-width": "1.5px" as unknown as undefined,
+      "border-color": "#2f5fb0", // --bf-person
       label: "data(label)",
+      "font-family": MONO_FONT_STACK,
       "font-size": "12px",
-      color: "#fff",
+      color: "#2f5fb0", // --bf-person
       "text-valign": "center",
       "text-halign": "center",
       shape: "ellipse",
@@ -67,10 +75,13 @@ const CYTOSCAPE_STYLE: cytoscape.StylesheetStyle[] = [
   {
     selector: "node[kind='term']",
     style: {
-      "background-color": "#8b5cf6",
+      "background-color": "#efeaf7", // --bf-term-bg
+      "border-width": "1.5px" as unknown as undefined,
+      "border-color": "#5b4494", // --bf-term
       label: "data(label)",
+      "font-family": MONO_FONT_STACK,
       "font-size": "12px",
-      color: "#fff",
+      color: "#5b4494", // --bf-term
       "text-valign": "center",
       "text-halign": "center",
       shape: "roundrectangle",
@@ -94,10 +105,13 @@ const CYTOSCAPE_STYLE: cytoscape.StylesheetStyle[] = [
       "curve-style": "bezier",
       "target-arrow-shape": "triangle",
       label: "data(relation)",
+      "font-family": MONO_FONT_STACK,
       "font-size": "10px",
+      color: "#6b7589",
       "text-rotation": "autorotate",
-      "line-color": "#aaa",
-      "target-arrow-color": "#aaa",
+      "line-color": "#ccc",
+      "target-arrow-color": "#ccc",
+      width: 1,
     },
   },
   {

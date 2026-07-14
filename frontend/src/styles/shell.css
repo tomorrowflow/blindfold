@@ -1128,8 +1128,8 @@ body {
 }
 
 .bf-rename-warn {
-  background: #f1f5f9;
-  border: 1px solid #94a3b8;
+  background: var(--bf-ochre-bg);
+  border: 1px solid var(--bf-ochre-border);
   border-radius: 4px;
   padding: 8px;
   font-size: 0.8125rem;
@@ -1283,6 +1283,11 @@ body {
   display: inline-block;
 }
 
+.bf-reveal-wrap--full {
+  display: block;
+  width: 100%;
+}
+
 .bf-reveal-badge {
   display: inline-flex;
   align-items: center;
@@ -1305,6 +1310,16 @@ body {
 .bf-reveal-badge--compact {
   padding: 2px 6px;
   font-size: 0.75rem;
+}
+
+.bf-reveal-badge--full {
+  display: block;
+  width: 100%;
+  padding: 8px;
+  font-size: 0.875rem;
+  font-weight: 600;
+  text-align: center;
+  border-radius: 6px;
 }
 
 .bf-reveal-badge[disabled] {
@@ -1651,6 +1666,15 @@ body {
   /* The graph editor fills the main area, no card padding */
 }
 
+.bf-graph-header {
+  padding: 16px 16px 0;
+  flex-shrink: 0;
+}
+
+.bf-graph-header h1 {
+  margin: 0;
+}
+
 .bf-graph-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -1684,7 +1708,7 @@ body {
 
 /* Inspector side panel */
 .bf-graph-inspector {
-  width: 300px;
+  width: 320px;
   flex-shrink: 0;
   border-left: 1px solid var(--bf-border);
   background: var(--bf-card);
@@ -1724,7 +1748,8 @@ body {
 
 .bf-graph-inspector-surrogate {
   font-family: var(--bf-font-mono);
-  font-size: 0.85rem;
+  font-size: 1.125rem;
+  font-weight: 600;
   color: var(--bf-ink);
 }
 
@@ -1755,13 +1780,21 @@ body {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 4px 6px;
-  border-radius: 4px;
+  gap: 6px;
+  padding: 4px 10px;
+  margin-bottom: 4px;
+  border-radius: 999px;
+  background: var(--bf-canvas);
+  border: 1px solid var(--bf-border-soft);
   font-size: 0.8125rem;
 }
 
+.bf-graph-inspector-edge-text {
+  font-family: var(--bf-font-mono);
+}
+
 .bf-graph-inspector-edge--selected {
-  background: var(--bf-canvas);
+  border-color: var(--bf-ochre);
 }
 
 .bf-graph-inspector-edge-delete {
@@ -1779,6 +1812,11 @@ body {
 
 .bf-graph-inspector-rename {
   margin-bottom: 12px;
+}
+
+.bf-graph-inspector-reveal {
+  margin-top: auto;
+  padding-top: 16px;
 }
 
 .bf-graph-inspector-actions {
