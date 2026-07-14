@@ -1174,6 +1174,94 @@ body {
 }
 
 /* -----------------------------------------------------------------------
+   Settings -> Workspace policy (issue #120, ADR-0009)
+   ----------------------------------------------------------------------- */
+
+.bf-policy-card {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+  border: 1px solid var(--bf-border-soft);
+}
+
+.bf-policy-card--danger {
+  border-color: var(--bf-red);
+}
+
+.bf-policy-icon-badge {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--bf-ok);
+  color: #fff;
+}
+
+.bf-policy-icon-badge--danger {
+  background: var(--bf-red);
+}
+
+.bf-policy-body {
+  flex: 1;
+}
+
+.bf-policy-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.bf-policy-label {
+  margin: 0;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  color: var(--bf-ink);
+}
+
+.bf-policy-toggle {
+  position: relative;
+  flex-shrink: 0;
+  width: 44px;
+  height: 24px;
+  border-radius: 9999px;
+  border: none;
+  background: var(--bf-border);
+  cursor: pointer;
+  padding: 2px;
+}
+
+.bf-policy-toggle--on {
+  background: var(--bf-ok);
+}
+
+.bf-policy-toggle-knob {
+  display: block;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.15s ease;
+}
+
+.bf-policy-toggle--on .bf-policy-toggle-knob {
+  transform: translateX(20px);
+}
+
+.bf-policy-danger-note {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #fdecec;
+  border: 1px solid var(--bf-red);
+  color: var(--bf-red);
+  font-size: 0.8125rem;
+}
+
+/* -----------------------------------------------------------------------
    Settings -> Import (issue #116)
    ----------------------------------------------------------------------- */
 

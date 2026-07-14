@@ -5,6 +5,7 @@
 
 import { usePreferences, type Density } from "../components/PreferencesContext";
 import { SettingsImport } from "../components/SettingsImport";
+import { SettingsPolicy } from "../components/SettingsPolicy";
 
 const DENSITY_OPTIONS: { value: Density; label: string }[] = [
   { value: "compact", label: "Compact" },
@@ -46,6 +47,7 @@ export function Settings() {
           </p>
         </div>
       </section>
+      <SettingsPolicy />
       <SettingsImport />
       <p className="bf-settings-field-hint" data-testid="settings-no-export-note">
         No export. Colleague sharing goes through the shared surrogate store and
