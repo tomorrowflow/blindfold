@@ -21,7 +21,7 @@ import json
 import httpx
 
 from blindfold.l3 import CandidateSpan, L3Adjudication
-from blindfold.l3_openai_compat import _PROMPT_TEMPLATE, OpenAICompatibleAdjudicator
+from blindfold.l3_openai_compat import OpenAICompatibleAdjudicator
 
 
 def test_openai_compatible_adjudicator_sends_the_candidate_and_context_and_confirms_an_entity():
