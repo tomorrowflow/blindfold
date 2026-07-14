@@ -214,6 +214,44 @@ async def test_entity_list_endpoint_row_has_required_fields():
 
 
 # ---------------------------------------------------------------------------
+# 5b. Entity list endpoint row includes a dependents count (issue #117 — comp
+#     column model adds a Dependents column)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_entity_list_endpoint_row_includes_dependents_count():
+    graph = EntityGraph()
+    org = graph.add_entity("term", "acme", "Initech GmbH", surrogate="Pinnacle Corp")
+    employee1 = graph.add_entity("person", "acme", "Martin Bach", surrogate="Clara Hoffmann")
+    employee2 = graph.add_entity("person", "acme", "Devin Real", surrogate="Devin Novak")
+
+    store = RelationshipStore()
+    store.create("acme", "person", employee1.entity_id, "employer", "term", org.entity_id)
+    store.create("acme", "person", employee2.entity_id, "employer", "term", org.entity_id)
+
+    audit_log = AuditLog()
+
+    app.dependency_overrides[get_entity_graph] = lambda: graph
+    app.dependency_overrides[get_relationship_store] = lambda: store
+    app.dependency_overrides[get_audit_log] = lambda: audit_log
+    try:
+        async with _make_client() as client:
+            resp = await client.get("/v1/management/workspaces/acme/entities")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    rows = resp.json()["entities"]
+    org_row = next(r for r in rows if r["active_surrogate"] == "Pinnacle Corp")
+    employee_row = next(r for r in rows if r["active_surrogate"] == "Clara Hoffmann")
+    # Two distinct entities depend on org's surrogate staying stable (both employers).
+    assert org_row["dependents"] == 2
+    # Nobody depends on an employee's surrogate.
+    assert employee_row["dependents"] == 0
+
+
+# ---------------------------------------------------------------------------
 # 6. Real-name search requires re-identifier role (403 without it)
 # ---------------------------------------------------------------------------
 

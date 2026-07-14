@@ -19,12 +19,6 @@ import {
 } from "../lib/entityListApi";
 
 type SearchMode = "surrogate" | "real-name";
-type SortCol = "active_surrogate" | "kind" | "employer" | "retired_surrogates";
-
-function edgeSortValue(row: Row, relation: "employer" | "subsidiary_of"): string {
-  const edge = row.edges.find((e) => e.relation === relation && e.direction === "outbound");
-  return edge ? edge.other_surrogate : "";
-}
 
 export function EntityList() {
   const { activeWorkspace } = useWorkspace();
@@ -37,16 +31,12 @@ export function EntityList() {
   const [error, setError] = useState<string | null>(null);
   const [overCeiling, setOverCeiling] = useState(false);
 
-  const [kindFilter, setKindFilter] = useState<"" | "person" | "term">("");
   const [surrogateFilter, setSurrogateFilter] = useState("");
   const [searchMode, setSearchMode] = useState<SearchMode>("surrogate");
   const [realNameQuery, setRealNameQuery] = useState("");
   const [searching, setSearching] = useState(false);
   const [searchMessage, setSearchMessage] = useState<string | null>(null);
   const [highlighted, setHighlighted] = useState<Set<string>>(new Set());
-
-  const [sortCol, setSortCol] = useState<SortCol>("active_surrogate");
-  const [sortAsc, setSortAsc] = useState(true);
 
   const [mergePair, setMergePair] = useState<{ winner: Row; loser: Row } | null>(null);
 
@@ -83,42 +73,10 @@ export function EntityList() {
   }, [workspace]);
 
   const visibleRows = useMemo(() => {
-    let rows = allRows;
-    if (kindFilter) rows = rows.filter((r) => r.kind === kindFilter);
-    if (surrogateFilter.trim()) {
-      const needle = surrogateFilter.trim().toLowerCase();
-      rows = rows.filter((r) => r.active_surrogate.toLowerCase().includes(needle));
-    }
-    const sorted = [...rows].sort((a, b) => {
-      let va = "";
-      let vb = "";
-      if (sortCol === "active_surrogate") {
-        va = a.active_surrogate;
-        vb = b.active_surrogate;
-      } else if (sortCol === "kind") {
-        va = a.kind;
-        vb = b.kind;
-      } else if (sortCol === "employer") {
-        va = edgeSortValue(a, "employer");
-        vb = edgeSortValue(b, "employer");
-      } else if (sortCol === "retired_surrogates") {
-        va = a.retired_surrogates.join(",");
-        vb = b.retired_surrogates.join(",");
-      }
-      const cmp = va.localeCompare(vb);
-      return sortAsc ? cmp : -cmp;
-    });
-    return sorted;
-  }, [allRows, kindFilter, surrogateFilter, sortCol, sortAsc]);
-
-  function toggleSort(col: SortCol) {
-    if (sortCol === col) {
-      setSortAsc((v) => !v);
-    } else {
-      setSortCol(col);
-      setSortAsc(true);
-    }
-  }
+    if (!surrogateFilter.trim()) return allRows;
+    const needle = surrogateFilter.trim().toLowerCase();
+    return allRows.filter((r) => r.active_surrogate.toLowerCase().includes(needle));
+  }, [allRows, surrogateFilter]);
 
   function handleRenamed(entityId: string, newSurrogate: string) {
     setAllRows((rows) =>
@@ -190,19 +148,6 @@ export function EntityList() {
         only through real-name search and the merge dialog.
       </p>
       <div className="bf-entity-list-toolbar">
-        <label className="bf-toolbar-field">
-          <span>Kind</span>
-          <select
-            value={kindFilter}
-            onChange={(e) => setKindFilter(e.target.value as "" | "person" | "term")}
-            data-testid="kind-filter"
-          >
-            <option value="">All</option>
-            <option value="person">Person</option>
-            <option value="term">Term</option>
-          </select>
-        </label>
-
         <div className="bf-search-mode-toggle" role="tablist" aria-label="Search mode">
           <button
             type="button"
@@ -285,20 +230,11 @@ export function EntityList() {
         <table className="bf-entity-table" data-testid="entity-table">
           <thead>
             <tr>
-              <th onClick={() => toggleSort("active_surrogate")} data-testid="sort-surrogate">
-                Surrogate {sortCol === "active_surrogate" ? (sortAsc ? "↑" : "↓") : "↕"}
-              </th>
-              <th onClick={() => toggleSort("kind")} data-testid="sort-kind">
-                Kind {sortCol === "kind" ? (sortAsc ? "↑" : "↓") : "↕"}
-              </th>
-              <th onClick={() => toggleSort("employer")} data-testid="sort-edges">
-                Edges {sortCol === "employer" ? (sortAsc ? "↑" : "↓") : "↕"}
-              </th>
-              <th onClick={() => toggleSort("retired_surrogates")} data-testid="sort-retired">
-                Retired surrogates {sortCol === "retired_surrogates" ? (sortAsc ? "↑" : "↓") : "↕"}
-              </th>
-              <th>Real value</th>
-              <th>Merge</th>
+              <th>Kind</th>
+              <th>Surrogate</th>
+              <th>Relationships</th>
+              <th>Dependents</th>
+              <th>Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -317,7 +253,7 @@ export function EntityList() {
             ))}
             {visibleRows.length === 0 && (
               <tr>
-                <td colSpan={6} className="bf-empty">
+                <td colSpan={5} className="bf-empty">
                   No entities match the current filters.
                 </td>
               </tr>

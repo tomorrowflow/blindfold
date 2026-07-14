@@ -1087,13 +1087,7 @@ body {
   text-align: left;
   padding: 8px 10px;
   border-bottom: 2px solid var(--bf-border);
-  cursor: pointer;
-  user-select: none;
   white-space: nowrap;
-}
-
-.bf-entity-table th:hover {
-  background: var(--bf-canvas);
 }
 
 .bf-entity-table td {
@@ -1472,8 +1466,32 @@ body {
   color: var(--bf-ink);
 }
 
+.bf-dependents-cell {
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.bf-actions-cell {
+  text-align: right;
+  white-space: nowrap;
+}
+
+.bf-actions-cell > * {
+  margin-left: 8px;
+}
+
+.bf-rename-trigger {
+  background: var(--bf-card);
+  border: 1px solid var(--bf-border);
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 0.8125rem;
+  cursor: pointer;
+}
+
 .bf-merge-trigger-wrap {
   position: relative;
+  display: inline-block;
 }
 
 .bf-merge-trigger {

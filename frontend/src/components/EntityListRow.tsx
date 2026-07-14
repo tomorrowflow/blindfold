@@ -32,6 +32,7 @@ export function EntityListRow({
 }: EntityListRowProps) {
   const [pickingMerge, setPickingMerge] = useState(false);
   const [candidateId, setCandidateId] = useState("");
+  const [renameSignal, setRenameSignal] = useState(0);
 
   const sameKindCandidates = allRows.filter(
     (r) => r.kind === row.kind && r.entity_id !== row.entity_id
@@ -43,17 +44,18 @@ export function EntityListRow({
       data-testid={`entity-row-${row.entity_id}`}
       data-kind={row.kind}
     >
+      <td>
+        <span className={`bf-kind-mark bf-kind-mark--${row.kind}`} aria-hidden="true" />
+        <span className="bf-kind-label">{row.kind}</span>
+      </td>
       <td className="bf-surrogate-cell">
         <RenameCell
           workspace={workspace}
           entityId={row.entity_id}
           surrogate={row.active_surrogate}
           onRenamed={(newSurrogate) => onRenamed(row.entity_id, newSurrogate)}
+          editSignal={renameSignal}
         />
-      </td>
-      <td>
-        <span className={`bf-kind-mark bf-kind-mark--${row.kind}`} aria-hidden="true" />
-        <span className="bf-kind-label">{row.kind}</span>
       </td>
       <td>
         <EdgeChips
@@ -63,11 +65,20 @@ export function EntityListRow({
           onEdgesChanged={(edges) => onEdgesChanged(row.entity_id, edges)}
         />
       </td>
-      <td className="bf-retired-cell">{row.retired_surrogates.join(", ") || "—"}</td>
-      <td>
-        <RevealButton workspace={workspace} surrogate={row.active_surrogate} canReveal={canReveal} />
+      <td className="bf-dependents-cell" data-testid={`dependents-count-${row.entity_id}`}>
+        {row.dependents}
       </td>
-      <td>
+      <td className="bf-actions-cell">
+        <button
+          type="button"
+          className="bf-rename-trigger"
+          title="Rename surrogate"
+          aria-label="Rename surrogate"
+          onClick={() => setRenameSignal((v) => v + 1)}
+          data-testid={`rename-trigger-${row.entity_id}`}
+        >
+          ✎
+        </button>
         {sameKindCandidates.length > 0 && (
           <div className="bf-merge-trigger-wrap">
             <button
@@ -121,6 +132,7 @@ export function EntityListRow({
             )}
           </div>
         )}
+        <RevealButton workspace={workspace} surrogate={row.active_surrogate} canReveal={canReveal} />
       </td>
     </tr>
   );

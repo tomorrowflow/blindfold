@@ -20,6 +20,7 @@ export type EntityListRow = {
   active_surrogate: string;
   retired_surrogates: string[];
   edges: EdgeSummary[];
+  dependents: number;
 };
 
 export const ENTITY_LIST_CEILING = 150;

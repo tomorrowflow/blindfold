@@ -6,7 +6,7 @@
 // re-derived, issue #25 — a past exchange's restore keeps relying on the old
 // surrogate, which stays reserved forever).
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { renameSurrogate } from "../lib/entityListApi";
 
 type Dependent = { entity_id: string; active_surrogate: string };
@@ -16,10 +16,23 @@ type RenameCellProps = {
   entityId: string;
   surrogate: string;
   onRenamed: (newSurrogate: string) => void;
+  /** Bumped by an external trigger (the Actions column's rename icon, issue #117)
+   * to enter edit mode without duplicating the edit state in the parent. */
+  editSignal?: number;
 };
 
-export function RenameCell({ workspace, entityId, surrogate, onRenamed }: RenameCellProps) {
+export function RenameCell({
+  workspace,
+  entityId,
+  surrogate,
+  onRenamed,
+  editSignal,
+}: RenameCellProps) {
   const [editing, setEditing] = useState(false);
+
+  useEffect(() => {
+    if (editSignal) setEditing(true);
+  }, [editSignal]);
   const [value, setValue] = useState(surrogate);
   const [error, setError] = useState<string | null>(null);
   const [collision, setCollision] = useState(false);

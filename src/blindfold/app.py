@@ -1988,6 +1988,12 @@ def _surrogate_space_rows(
             )
         return summaries
 
+    def dependents_count(entity_id: str) -> int:
+        """Count distinct entities whose coherent-world surrogate depends on this one
+        staying stable — i.e. entities with a relationship targeting ``entity_id``
+        (the same set ``EntityGraph.edit_surrogate`` warns about on rename)."""
+        return len({edge.source_id for edge in edges if edge.target_id == entity_id})
+
     return [
         {
             "entity_id": e.entity_id,
@@ -1995,6 +2001,7 @@ def _surrogate_space_rows(
             "active_surrogate": e.active_surrogate,
             "retired_surrogates": list(e.retired_surrogates),
             "edges": edge_summaries(e.entity_id),
+            "dependents": dependents_count(e.entity_id),
         }
         for e in rows
     ]

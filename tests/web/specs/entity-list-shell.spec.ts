@@ -13,6 +13,12 @@ import {
   rowByCurrentSurrogate,
 } from "./fixtures";
 
+// Comp column model (issue #117): Kind | Surrogate | Relationships | Dependents |
+// Actions — structural counterpart to #111's ochre styling. PERSON3/ORG3 are
+// reserved for graph-editor-shell and untouched by this file's own mutations
+// (see fixtures.ts), so they're the stable pair used below for Dependents
+// assertions regardless of where in this file they run.
+
 // Entity list migrated into the shell (issue #97). Behavior authority: the settled
 // entity-list design (docs/design/entity-list-view-design-brief.md, ADR-0016/17/18)
 // and the shipped /ui/entity-list behavior (tests/web/specs/entity-list.spec.ts,
@@ -42,13 +48,6 @@ test.describe("entity list shell — table & filters", () => {
     await expect(termRow.locator(".bf-kind-mark--term")).toBeVisible();
   });
 
-  test("kind filter narrows to the selected kind only", async ({ alicePage }) => {
-    await alicePage.goto(`/ui/entities`);
-    await alicePage.getByTestId("kind-filter").selectOption("term");
-    await expect(alicePage.locator("tr", { hasText: PERSON_SURROGATE })).toHaveCount(0);
-    await expect(alicePage.locator("tr", { hasText: ORG_SURROGATE })).toBeVisible();
-  });
-
   test("surrogate free-text filter narrows client-side instantly", async ({ alicePage }) => {
     await alicePage.goto(`/ui/entities`);
     await alicePage.getByTestId("surrogate-filter").fill(PERSON2_SURROGATE);
@@ -57,15 +56,37 @@ test.describe("entity list shell — table & filters", () => {
       hasNotText: PERSON2_SURROGATE,
     })).toHaveCount(0);
   });
+});
 
-  test("clicking the surrogate header toggles sort order", async ({ alicePage }) => {
+test.describe("entity list shell — comp column model (issue #117)", () => {
+  test("renders exactly Kind, Surrogate, Relationships, Dependents, Actions — unsorted, no kind filter", async ({
+    alicePage,
+  }) => {
     await alicePage.goto(`/ui/entities`);
-    const surrogateCells = () => alicePage.locator('[data-testid^="surrogate-text-"]');
-    await alicePage.getByTestId("sort-surrogate").click();
-    const ascFirst = await surrogateCells().first().textContent();
-    await alicePage.getByTestId("sort-surrogate").click();
-    const descFirst = await surrogateCells().first().textContent();
-    expect(ascFirst).not.toEqual(descFirst);
+    await alicePage.getByTestId("entity-table").waitFor();
+    const headers = await alicePage.locator(".bf-entity-table thead th").allTextContents();
+    expect(headers).toEqual(["Kind", "Surrogate", "Relationships", "Dependents", "Actions"]);
+    await expect(alicePage.getByTestId("kind-filter")).toHaveCount(0);
+    await expect(alicePage.locator(".bf-entity-table thead [data-testid^='sort-']")).toHaveCount(0);
+  });
+
+  test("Dependents column renders the coherent-world dependents count", async ({ alicePage }) => {
+    await alicePage.goto(`/ui/entities`);
+    const orgRow = await rowByCurrentSurrogate(alicePage, ORG3_SURROGATE);
+    const personRow = await rowByCurrentSurrogate(alicePage, PERSON3_SURROGATE);
+    await expect(orgRow.locator('[data-testid^="dependents-count-"]')).toHaveText("1");
+    await expect(personRow.locator('[data-testid^="dependents-count-"]')).toHaveText("0");
+  });
+
+  test("Actions column hosts rename, merge, and reveal; no standalone Real value or Merge columns", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto(`/ui/entities`);
+    const row = alicePage.locator("tr", { hasText: PERSON3_SURROGATE });
+    await expect(row.locator('[data-testid^="rename-trigger-"]')).toBeVisible();
+    await expect(row.locator('[data-testid^="merge-trigger-"]')).toBeVisible();
+    await expect(row.getByTestId("reveal-btn")).toBeVisible();
+    await expect(alicePage.locator(".bf-entity-table")).not.toContainText("Real value");
   });
 });
 
@@ -327,7 +348,7 @@ test.describe("entity list shell — polish (issue #111)", () => {
 
     const headerRow = alicePage.locator(".bf-entity-table thead tr");
     await expect(headerRow).toHaveCSS("background-color", "rgb(250, 251, 252)");
-    const firstHeader = alicePage.getByTestId("sort-surrogate");
+    const firstHeader = alicePage.locator(".bf-entity-table thead th").first();
     await expect(firstHeader).toHaveCSS("text-transform", "uppercase");
   });
 });
