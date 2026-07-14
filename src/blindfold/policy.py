@@ -77,6 +77,10 @@ class AuditRecord:
       - ``re-identify-failed``        — a re-identify call could not be completed
                                         (unknown surrogate, Transit unavailable, or a
                                         decrypt error) (SEC-8, issue #41).
+      - ``policy-degrade-enabled``     — an admin opted a workspace into
+                                        deterministic-only mode (issue #118).
+      - ``policy-degrade-disabled``    — an admin returned a workspace to
+                                        fail-closed by default (issue #118).
 
     ``ts`` is the record's own recorded-at timestamp (ISO-8601, UTC) — the full audit
     log view (issue #102) sorts and filters on it; mirrors ``BlockRecord.ts``
