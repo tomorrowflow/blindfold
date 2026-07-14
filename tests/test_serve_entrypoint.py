@@ -252,7 +252,7 @@ def test_run_server_logs_the_loud_setup_line_when_the_store_is_empty(caplog):
         )
 
     assert "first run" in caplog.text
-    assert "http://127.0.0.1:8000/ui/setup" in caplog.text
+    assert "http://127.0.0.1:25463/ui/setup" in caplog.text
 
 
 def test_run_server_logs_the_quiet_status_line_when_the_store_is_populated(caplog):
@@ -268,7 +268,7 @@ def test_run_server_logs_the_quiet_status_line_when_the_store_is_populated(caplo
         )
 
     assert "first run" not in caplog.text
-    assert "http://127.0.0.1:8000/ui/status" in caplog.text
+    assert "http://127.0.0.1:25463/ui/status" in caplog.text
 
 
 def test_setup_url_is_built_from_the_configured_host_and_port_not_hardcoded(caplog):

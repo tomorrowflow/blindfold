@@ -128,7 +128,7 @@ def test_settings_host_and_port_default_to_loopback(monkeypatch):
     monkeypatch.delenv("BLINDFOLD_PORT", raising=False)
     settings = get_settings()
     assert settings.host == "127.0.0.1"
-    assert settings.port == 8000
+    assert settings.port == 25463
 
 
 def test_settings_host_and_port_are_overridable_via_env(monkeypatch):

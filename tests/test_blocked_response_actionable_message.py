@@ -278,7 +278,7 @@ async def test_streaming_request_blocked_before_headers_carries_the_same_fields(
     assert resp.headers["content-type"].startswith("application/json")
     error = resp.json()["error"]
     assert error["sub_reason"] == "l3_unavailable"
-    assert error["management_url"] == "http://127.0.0.1:8000/ui/status"
+    assert error["management_url"] == "http://127.0.0.1:25463/ui/status"
     assert error["message"].startswith("Blindfold blocked this request:")
     assert recorded == []
 

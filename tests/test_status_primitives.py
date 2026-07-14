@@ -160,7 +160,7 @@ def test_block_history_recent_returns_recorded_block_verbatim():
     history.record(
         sub_reason="l3_unavailable",
         scrubbed_reason="hash:abc123",
-        management_url="http://127.0.0.1:8000/ui/status",
+        management_url="http://127.0.0.1:25463/ui/status",
     )
     recent = history.recent()
     assert len(recent) == 1
@@ -168,14 +168,14 @@ def test_block_history_recent_returns_recorded_block_verbatim():
         "ts": "2026-07-11T00:00:00+00:00",
         "sub_reason": "l3_unavailable",
         "scrubbed_reason": "hash:abc123",
-        "management_url": "http://127.0.0.1:8000/ui/status",
+        "management_url": "http://127.0.0.1:25463/ui/status",
     }
 
 
 def test_block_history_prunes_entries_older_than_the_window():
     clock = {"now": 0.0}
     history = BlockHistory(window_minutes=15, clock=lambda: clock["now"])
-    history.record("l3_unavailable", "hash:abc123", "http://127.0.0.1:8000/ui/status")
+    history.record("l3_unavailable", "hash:abc123", "http://127.0.0.1:25463/ui/status")
     clock["now"] = 15 * 60 + 1
     assert history.recent() == []
 
