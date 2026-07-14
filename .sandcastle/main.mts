@@ -507,6 +507,40 @@ function isAncestorOfTarget(branch: string): boolean {
   }
 }
 
+// True iff issue #id's work already landed in TARGET_BRANCH's history, in ANY
+// prior run. Unlike isAncestorOfTarget(), this does NOT require the issue's
+// branch to still exist — it greps TARGET_BRANCH's own commit log for this
+// issue's marker, so it still answers correctly after reapOrphanedWorktrees()
+// (or a prior reap) has already deleted the branch. This is the fix for a
+// concrete failure mode observed on issue #120: a run merged the branch (the
+// implementer + reviewer both attested clean) but was cut off — almost
+// certainly a token/context limit — before reaching this file's OWN terminal
+// close step below (setStateLabel("merged") + closeIssue()). Every run after
+// that re-picked the still-open issue, spun up a fresh sandbox, watched the
+// implementer correctly discover "nothing to do, already merged", and stopped
+// — hasWork end up false, so the loop never reached the close step again
+// either. That's an infinite, silent, token-burning loop with no route to
+// terminate on its own. Matches the RALPH commit convention every implementer
+// commit follows (`... (issue #123)` / `... (ADR-0009, issue #123)`); a
+// conservative fixed-string match on `issue #<id>)` — under-matching (falling
+// back to the normal pipeline) is safe, over-matching a still-open issue as
+// "already merged" would wrongly close it, so the trailing `)` anchor matters:
+// it stops "#12" from matching inside "#120)" and "#120" from matching inside
+// "#1200)"/"#1120)". Host-side; fail-OPEN to "false" (→ normal pipeline) on any
+// git error, matching every other helper in this file.
+function issueAlreadyLandedInTarget(issueId: string): boolean {
+  try {
+    const out = execFileSync(
+      "git",
+      ["log", TARGET_BRANCH, "--format=%s", "--fixed-strings", `--grep=issue #${issueId})`],
+      { encoding: "utf8" },
+    );
+    return out.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
 // Startup reconciliation for orphaned per-issue worktrees. reapBranch() only fires
 // on branches that merge in the CURRENT run (see the merge lifecycle below), so two
 // classes of leftover accrete forever otherwise:
@@ -770,6 +804,43 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     continue;
   }
 
+  // Recover issues whose work already landed in TARGET_BRANCH in a prior run,
+  // but whose terminal close step never fired (see issueAlreadyLandedInTarget's
+  // own comment — a token/context cutoff between merge and close is the
+  // observed cause, first found stuck on issue #120). Checked BEFORE spinning
+  // up any sandbox, so recovery costs zero implementer/reviewer/merger tokens
+  // — just the host-side git grep + a few `gh` calls.
+  const toWork = trustedIssues.filter((issue) => {
+    if (!issueAlreadyLandedInTarget(issue.id)) return true;
+    console.log(
+      `  ♻️  ${issue.id} (${issue.branch}) already landed in ${TARGET_BRANCH} in a prior run — ` +
+        `recovering the terminal close step (no sandbox spend).`,
+    );
+    setStateLabel(issue.id, "merged");
+    postOnce(
+      issue.id,
+      "sandcastle:merged",
+      `🎉 \`${issue.branch}\`'s work was already merged into \`${TARGET_BRANCH}\` in a prior run, but ` +
+        `that run's terminal close step never fired (most likely a token/context cutoff between the ` +
+        `merge and the close). Recovered here — no new code ran; this only completes the bookkeeping ` +
+        `a prior run left unfinished.`,
+    );
+    closeIssue(
+      issue.id,
+      `Completed by Sandcastle — \`${issue.branch}\` was already merged into ${TARGET_BRANCH}; ` +
+        `recovering a terminal close step a prior (likely token-limited) run left unfinished.`,
+    );
+    reapBranch(issue.branch);
+    return false;
+  });
+
+  if (toWork.length === 0) {
+    console.log(
+      "Every planned issue this cycle was an already-landed recovery. Nothing new to execute.",
+    );
+    continue;
+  }
+
   // -------------------------------------------------------------------------
   // Phase 2: Execute + Review (behind a fail-closed merge gate)
   //
@@ -791,7 +862,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   // -------------------------------------------------------------------------
 
   const settled = await Promise.allSettled(
-    trustedIssues.map(async (issue) => {
+    toWork.map(async (issue) => {
       // Register the per-issue worktree as a Supacode surface FIRST (when in a
       // Supacode session), so sandcastle adopts it as its bind-mount target and
       // the human gets a tab to watch. No-op / fail-OPEN otherwise — see the
@@ -985,7 +1056,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   );
 
   // Pair each outcome back with its issue for gating + reporting.
-  const evaluated = settled.map((outcome, i) => ({ outcome, issue: trustedIssues[i]! }));
+  const evaluated = settled.map((outcome, i) => ({ outcome, issue: toWork[i]! }));
 
   // Log any pipelines that threw (network error, sandbox crash, etc.).
   for (const { outcome, issue } of evaluated) {
