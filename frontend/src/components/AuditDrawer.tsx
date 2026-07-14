@@ -110,7 +110,7 @@ export function AuditDrawer({ open, onClose }: AuditDrawerProps) {
       <div className="bf-audit-drawer-footer">
         <Link to="/audit" className="bf-audit-drawer-footer-link" onClick={onClose}
           aria-label="Open the full audit log view">
-          View full log
+          View full audit log
         </Link>
       </div>
     </div>

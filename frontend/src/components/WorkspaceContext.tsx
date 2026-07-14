@@ -7,6 +7,7 @@ import { createContext, useCallback, useContext, useEffect, useState } from "rea
 
 export type WorkspaceEntry = {
   slug: string;
+  name: string;
   roles: string[];
 };
 
@@ -15,6 +16,9 @@ type WorkspaceContextValue = {
   activeWorkspace: WorkspaceEntry | null;
   setActiveWorkspace: (ws: WorkspaceEntry) => void;
   loading: boolean;
+  // The calling identity, as the server resolves it (issue #114: topbar identity
+  // avatar). Empty string until the first fetch resolves.
+  identity: string;
   // Re-fetch the caller's workspace list (issue #107): Setup calls this right
   // after creating the first workspace so the shell picks up the fresh admin
   // grant without a full page reload.
@@ -23,23 +27,25 @@ type WorkspaceContextValue = {
 
 const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
 
-async function fetchWorkspaces(): Promise<WorkspaceEntry[]> {
+async function fetchWorkspaces(): Promise<{ workspaces: WorkspaceEntry[]; identity: string }> {
   const r = await fetch("/v1/management/workspaces");
-  const data: { workspaces: WorkspaceEntry[] } = await r.json();
-  return data.workspaces ?? [];
+  const data: { workspaces: WorkspaceEntry[]; identity?: string } = await r.json();
+  return { workspaces: data.workspaces ?? [], identity: data.identity ?? "" };
 }
 
 export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   const [workspaces, setWorkspaces] = useState<WorkspaceEntry[]>([]);
   const [activeWorkspace, setActiveWorkspace] = useState<WorkspaceEntry | null>(null);
   const [loading, setLoading] = useState(true);
+  const [identity, setIdentity] = useState("");
 
   useEffect(() => {
     let cancelled = false;
     fetchWorkspaces()
-      .then((list) => {
+      .then(({ workspaces: list, identity: id }) => {
         if (cancelled) return;
         setWorkspaces(list);
+        setIdentity(id);
         if (list.length > 0) setActiveWorkspace(list[0]);
       })
       .catch(() => {
@@ -54,14 +60,15 @@ export function WorkspaceProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const refresh = useCallback(async () => {
-    const list = await fetchWorkspaces();
+    const { workspaces: list, identity: id } = await fetchWorkspaces();
     setWorkspaces(list);
+    setIdentity(id);
     return list;
   }, []);
 
   return (
     <WorkspaceContext.Provider
-      value={{ workspaces, activeWorkspace, setActiveWorkspace, loading, refresh }}
+      value={{ workspaces, activeWorkspace, setActiveWorkspace, loading, identity, refresh }}
     >
       {children}
     </WorkspaceContext.Provider>

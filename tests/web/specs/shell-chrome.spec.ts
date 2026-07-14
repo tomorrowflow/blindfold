@@ -12,6 +12,23 @@ test.describe("workspace switcher", () => {
     await expect(alicePage.getByTestId("workspace-switcher-trigger")).toContainText("acme");
   });
 
+  test("switcher trigger shows workspace name and mono slug on two lines (comp fidelity)", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto("/ui/");
+    const trigger = alicePage.getByTestId("workspace-switcher-trigger");
+    await expect(trigger.locator(".bf-workspace-name")).toHaveText("Acme Corp");
+    await expect(trigger.locator(".bf-workspace-slug")).toHaveText("acme");
+  });
+
+  test("switcher menu item shows workspace name and mono slug", async ({ alicePage }) => {
+    await alicePage.goto("/ui/");
+    await alicePage.getByTestId("workspace-switcher-trigger").click();
+    const item = alicePage.getByTestId("workspace-menu").locator(".bf-workspace-menu-item");
+    await expect(item.locator(".bf-workspace-menu-item-name")).toHaveText("Acme Corp");
+    await expect(item.locator(".bf-workspace-menu-item-slug")).toHaveText("acme");
+  });
+
   test("switcher never shows a workspace the identity holds no role on", async ({ alicePage }) => {
     await alicePage.goto("/ui/");
     await alicePage.getByTestId("workspace-switcher-trigger").click();
@@ -72,6 +89,32 @@ test.describe("role chips", () => {
   });
 });
 
+test.describe("identity avatar", () => {
+  test("identity avatar renders with the caller's initials at the topbar's right end", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto("/ui/");
+    const avatar = alicePage.getByTestId("identity-avatar");
+    await expect(avatar).toBeVisible();
+    await expect(avatar).toHaveText("AL");
+  });
+
+  test("comp order: switcher, spacer, Audit, role chips, identity (left to right)", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto("/ui/");
+    const order = await alicePage.locator(".bf-topbar > *").evaluateAll((els) =>
+      els.map((el) => el.getAttribute("data-testid") || el.className)
+    );
+    const auditIdx = order.findIndex((v) => v === "audit-drawer-trigger");
+    const chipsIdx = order.findIndex((v) => typeof v === "string" && v.includes("bf-role-chips"));
+    const avatarIdx = order.findIndex((v) => v === "identity-avatar");
+    expect(auditIdx).toBeGreaterThan(-1);
+    expect(chipsIdx).toBeGreaterThan(auditIdx);
+    expect(avatarIdx).toBeGreaterThan(chipsIdx);
+  });
+});
+
 test.describe("audit drawer", () => {
   test("audit drawer opens on button click", async ({ alicePage }) => {
     await alicePage.goto("/ui/");
@@ -95,7 +138,7 @@ test.describe("audit drawer", () => {
     const footerLink = alicePage.locator(".bf-audit-drawer-footer-link");
     await expect(footerLink).toBeVisible();
     await expect(footerLink).toHaveAttribute("href", /\/audit/);
-    await expect(footerLink).toContainText("View full log");
+    await expect(footerLink).toContainText("View full audit log");
   });
 
   test("bob (no viewer role) sees locked state in audit drawer", async ({ bobPage }) => {

@@ -1293,13 +1293,17 @@ async def list_audit_events(
 async def list_caller_workspaces(
     request: Request,
     rbac: RbacRegistry = Depends(get_rbac),
+    entity_graph: EntityGraph = Depends(get_entity_graph),
 ) -> dict:
     """List workspaces the calling identity holds at least one role on (issue #95).
 
     Identity-scoped; no role gate on this endpoint itself — the response is derived
     entirely from the caller's own assignments. An identity with zero roles anywhere
     receives an empty list (never a 403 that would leak workspace existence).
-    Response: ``{"workspaces": [{"slug": ..., "roles": [...]}]}``.
+    Response: ``{"workspaces": [{"slug": ..., "name": ..., "roles": [...]}],
+    "identity": ...}`` — ``identity`` and ``name`` are the topbar's identity avatar
+    and workspace-switcher fidelity data (issue #114), both plain metadata (never
+    an entity real value).
     """
     identity = _caller_identity(request)
     assignments = rbac.list_identity(identity)
@@ -1308,9 +1312,10 @@ async def list_caller_workspaces(
     for a in assignments:
         workspace_roles.setdefault(a.workspace, []).append(a.role)
     workspaces = [
-        {"slug": slug, "roles": roles} for slug, roles in workspace_roles.items()
+        {"slug": slug, "name": entity_graph.workspace_name(slug), "roles": roles}
+        for slug, roles in workspace_roles.items()
     ]
-    return {"workspaces": workspaces}
+    return {"workspaces": workspaces, "identity": identity}
 
 
 @app.post("/v1/management/workspaces")

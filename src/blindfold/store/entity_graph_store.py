@@ -96,6 +96,18 @@ class PostgresEntityGraphStore:
             )
             conn.commit()
 
+    def workspace_name(self, slug: str) -> str:
+        """The display name for ``slug`` (issue #114, topbar switcher fidelity).
+
+        Falls back to the slug itself for a workspace row with no name (mirrors
+        the in-memory ``EntityGraph.workspace_name()`` fallback).
+        """
+        with psycopg.connect(self._dsn) as conn:
+            row = conn.execute(
+                "SELECT name FROM workspaces WHERE slug = %s", (slug,)
+            ).fetchone()
+            return row[0] if row and row[0] else slug
+
     def _workspace_id(self, conn: psycopg.Connection, workspace: str) -> int | None:
         row = conn.execute(
             "SELECT id FROM workspaces WHERE slug = %s", (workspace,)

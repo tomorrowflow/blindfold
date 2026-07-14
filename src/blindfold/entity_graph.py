@@ -82,6 +82,16 @@ class EntityGraph:
         """
         self._workspaces.setdefault(slug, name)
 
+    def workspace_name(self, slug: str) -> str:
+        """The display name for ``slug`` (issue #114, topbar switcher fidelity).
+
+        Falls back to the slug itself for a workspace that predates
+        ``create_workspace`` (e.g. one only ever reached via ``add_entity`` in a
+        test fixture) — never raises, since a missing name is metadata, not an
+        error condition.
+        """
+        return self._workspaces.get(slug, slug)
+
     def add_entity(
         self,
         kind: str,

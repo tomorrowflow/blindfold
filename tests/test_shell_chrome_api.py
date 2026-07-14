@@ -20,7 +20,8 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from blindfold.app import app, get_rbac
+from blindfold.app import app, get_entity_graph, get_rbac
+from blindfold.entity_graph import EntityGraph
 from blindfold.rbac import RbacRegistry
 
 
@@ -99,6 +100,34 @@ async def test_workspaces_endpoint_never_shows_workspace_caller_holds_no_role_on
 
 
 @pytest.mark.anyio
+async def test_workspaces_endpoint_includes_workspace_name_and_caller_identity():
+    """Topbar fidelity (issue #114): switcher needs the workspace *name*, not just the
+    slug, and the identity avatar needs the caller's own identity string — both are
+    metadata the server already knows, never an entity real value."""
+    rbac = RbacRegistry()
+    rbac.grant("alice", "ws-a", "viewer")
+    entity_graph = EntityGraph()
+    entity_graph.create_workspace("ws-a", "Acme Corp")
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_entity_graph] = lambda: entity_graph
+    try:
+        async with _make_client() as client:
+            resp = await client.get(
+                "/v1/management/workspaces",
+                headers={"x-blindfold-identity": "alice"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["identity"] == "alice"
+    [ws_a] = [w for w in data["workspaces"] if w["slug"] == "ws-a"]
+    assert ws_a["name"] == "Acme Corp"
+
+
+@pytest.mark.anyio
 async def test_workspaces_endpoint_returns_empty_list_for_identity_with_no_roles():
     """Workspace-existence-safe: zero roles → empty list, never a 403."""
     rbac = RbacRegistry()
@@ -115,7 +144,7 @@ async def test_workspaces_endpoint_returns_empty_list_for_identity_with_no_roles
         app.dependency_overrides.clear()
 
     assert resp.status_code == 200
-    assert resp.json() == {"workspaces": []}
+    assert resp.json() == {"workspaces": [], "identity": "carol"}
 
 
 @pytest.mark.anyio
