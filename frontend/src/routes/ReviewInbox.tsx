@@ -5,13 +5,18 @@
 // allowlist. Both actions reactively drop the item from the list — protection
 // already happened at request time, this view is only the human side of the loop.
 //
-// ReviewItem (blindfold.review) carries only id/real/provisional_surrogate/context —
+// Restyled to the comp (issue #113): subtitle + 820px centered column, a rich
+// empty state, 13px candidate cards, and a check icon on Confirm. ReviewItem
+// (blindfold.review) still carries only id/real/provisional_surrogate/context —
 // no entity kind or detection-confidence signal exists anywhere in the pipeline
-// (mining.py / engine.py never attach one), so this view shows exactly that data
-// rather than inventing a kind dot or a "detected in N exchanges" figure.
+// (mining.py / engine.py never attach one) — so the comp's dual-encoded kind
+// swatch + kind label on each candidate row is NOT rendered here; inventing a
+// kind would misrepresent data the pipeline never produced. Attaching a real
+// kind signal to ReviewItem is a backend slice, out of this issue's CSS/JSX scope.
 
 import { useEffect, useState } from "react";
 import { useReviewInboxPending } from "../components/ReviewInboxContext";
+import { Check, CheckCircle2 } from "../components/icons";
 
 const LIST_URL = "/v1/management/review-inbox";
 const CONFIRM_URL = (id: string) => `/v1/management/review-inbox/${encodeURIComponent(id)}/confirm`;
@@ -61,14 +66,22 @@ export function ReviewInbox() {
   }
 
   return (
-    <div className="bf-card">
+    <div className="bf-card bf-review-inbox" data-testid="review-inbox-page">
       <h1>Review inbox</h1>
+      <p className="bf-card-subtitle">
+        Provisional surrogates detected in traffic. Confirm to keep, or reject to
+        discard the candidate.
+      </p>
       {error && <p className="bf-review-inbox-error">{error}</p>}
       {items === null && <p className="bf-review-inbox-loading">Loading…</p>}
       {items !== null && items.length === 0 && (
-        <p className="bf-review-inbox-empty" data-testid="review-inbox-empty">
-          Inbox clear — no provisional candidates awaiting review.
-        </p>
+        <div className="bf-review-inbox-empty" data-testid="review-inbox-empty">
+          <span className="bf-review-inbox-empty-badge" data-testid="review-inbox-empty-badge">
+            <CheckCircle2 size={28} aria-hidden="true" />
+          </span>
+          <h2>Inbox clear</h2>
+          <p>Every provisional candidate has been reviewed.</p>
+        </div>
       )}
       {items !== null && items.length > 0 && (
         <ul className="bf-review-inbox-list">
@@ -96,6 +109,7 @@ export function ReviewInbox() {
                   disabled={busyId === item.id}
                   onClick={() => triage(item, CONFIRM_URL(item.id))}
                 >
+                  <Check size={16} aria-hidden="true" />
                   Confirm
                 </button>
               </div>
