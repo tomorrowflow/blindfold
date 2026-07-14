@@ -18,8 +18,10 @@ from blindfold.serve import (
     DEFAULT_HOST,
     DEFAULT_PORT,
     DevModeRequiredError,
+    LegacyEnvVarError,
     LocalOnlyModelRequiredError,
     refuse_if_cloud_model,
+    refuse_if_legacy_l3_env_vars,
     refuse_if_root_token,
     run_server,
 )
@@ -71,22 +73,50 @@ def test_refuse_if_root_token_is_a_noop_with_no_transit_token_configured():
 
 
 def test_refuse_if_cloud_model_blocks_a_remotely_executing_model():
-    settings = Settings(ollama_model="qwen3:cloud")
+    settings = Settings(l3_model="qwen3:cloud")
 
     with pytest.raises(LocalOnlyModelRequiredError):
         refuse_if_cloud_model(settings)
 
 
 def test_refuse_if_cloud_model_allows_an_ordinary_local_model():
-    settings = Settings(ollama_model="llama3.1")
+    settings = Settings(l3_model="llama3.1")
 
     refuse_if_cloud_model(settings)
 
 
 def test_refuse_if_cloud_model_is_a_noop_with_no_model_configured():
-    settings = Settings(ollama_model="")
+    settings = Settings(l3_model="")
 
     refuse_if_cloud_model(settings)
+
+
+# ---------------------------------------------------------------------------
+# 1c. refuse_if_legacy_l3_env_vars — ADR-0031 operator migration aid
+# ---------------------------------------------------------------------------
+
+
+def test_refuse_if_legacy_l3_env_vars_blocks_the_old_addr_name(monkeypatch):
+    monkeypatch.setenv("BLINDFOLD_OLLAMA_ADDR", "http://localhost:11434")
+    monkeypatch.delenv("BLINDFOLD_OLLAMA_MODEL", raising=False)
+
+    with pytest.raises(LegacyEnvVarError, match="BLINDFOLD_L3_BASE_URL"):
+        refuse_if_legacy_l3_env_vars()
+
+
+def test_refuse_if_legacy_l3_env_vars_blocks_the_old_model_name(monkeypatch):
+    monkeypatch.delenv("BLINDFOLD_OLLAMA_ADDR", raising=False)
+    monkeypatch.setenv("BLINDFOLD_OLLAMA_MODEL", "llama3.1")
+
+    with pytest.raises(LegacyEnvVarError, match="BLINDFOLD_L3_MODEL"):
+        refuse_if_legacy_l3_env_vars()
+
+
+def test_refuse_if_legacy_l3_env_vars_is_a_noop_with_neither_old_name_set(monkeypatch):
+    monkeypatch.delenv("BLINDFOLD_OLLAMA_ADDR", raising=False)
+    monkeypatch.delenv("BLINDFOLD_OLLAMA_MODEL", raising=False)
+
+    refuse_if_legacy_l3_env_vars()
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +143,20 @@ def test_run_server_binding_elsewhere_is_an_explicit_opt_in():
     assert calls[0][1]["port"] == 9000
 
 
+def test_run_server_refuses_a_legacy_l3_env_var_before_starting_the_asgi_server(monkeypatch):
+    monkeypatch.setenv("BLINDFOLD_OLLAMA_MODEL", "llama3.1")
+    settings = Settings(upstream_base_url="http://shared.test")
+    calls = []
+
+    with pytest.raises(LegacyEnvVarError):
+        run_server(
+            settings=settings,
+            runner=lambda app, **kwargs: calls.append((app, kwargs)),
+        )
+
+    assert calls == []
+
+
 def test_run_server_refuses_a_root_token_before_starting_the_asgi_server():
     settings = Settings(openbao_token="dev-root-token", dev_mode=False)
     calls = []
@@ -130,7 +174,7 @@ def test_run_server_refuses_a_root_token_before_starting_the_asgi_server():
 def test_run_server_refuses_a_cloud_model_before_starting_the_asgi_server():
     # ADR-0022: no override, unlike the root-token guard's dev-mode escape hatch --
     # sending real candidate spans off-device categorically defeats the product.
-    settings = Settings(ollama_model="qwen3:cloud")
+    settings = Settings(l3_model="qwen3:cloud")
     calls = []
 
     with pytest.raises(LocalOnlyModelRequiredError):

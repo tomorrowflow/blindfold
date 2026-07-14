@@ -19,7 +19,7 @@ Degraded browser-verify specs, launched by `playwright.config.ts`'s second
 - `BLINDFOLD_FIXTURE_STATE` -- "protected" (default) forces all four `/v1/status`
   dependencies healthy, so this port's state is deterministic for every OTHER spec
   file here too (none of them assert on `/v1/status`). "degraded" leaves the real
-  unconfigured-L3 default in place (no `BLINDFOLD_OLLAMA_MODEL` in this process's
+  unconfigured-L3 default in place (no `BLINDFOLD_L3_MODEL` in this process's
   env) instead of stubbing a fake outage, so the Degraded render is exercised
   against an honest fail-closed condition, not a synthetic one.
 """

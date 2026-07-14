@@ -149,7 +149,7 @@ logger = logging.getLogger(__name__)
 
 
 class _UnconfiguredAdjudicator:
-    """Default L3 adjudicator until a real Ollama model is configured (ADR-0009 / #48).
+    """Default L3 adjudicator until a real L3 model is configured (ADR-0009 / #48).
 
     Raises for every candidate: "no L3 wired" is a form of "L3 unavailable", not
     "confirmed not an entity". Silently returning ``is_entity=False`` here would mean
@@ -166,16 +166,16 @@ class _UnconfiguredAdjudicator:
 def _build_l3_adjudicator(settings: Settings) -> L3Adjudicator:
     """Build the production L3 adjudicator from ``settings`` (ADR-0022 / issue #57).
 
-    Wires a real local-Ollama client when ``BLINDFOLD_OLLAMA_MODEL`` is configured;
+    Wires a real local-Ollama client when ``BLINDFOLD_L3_MODEL`` is configured;
     otherwise falls back to the honest ``_UnconfiguredAdjudicator`` so the unwired case
     still fails closed (ADR-0009) rather than fails open. The local-only invariant
     (refusing a ``:cloud`` model) is enforced at process startup
     (``serve.refuse_if_cloud_model``), not here — this function only decides which
     adjudicator to construct, not whether the process is allowed to run.
     """
-    if not settings.ollama_model:
+    if not settings.l3_model:
         return _UnconfiguredAdjudicator()
-    return OllamaAdjudicator(base_url=settings.ollama_addr, model=settings.ollama_model)
+    return OllamaAdjudicator(base_url=settings.l3_base_url, model=settings.l3_model)
 
 
 # Process-wide surrogate mapping built from the entity-graph repository seam (the seeded
@@ -202,7 +202,7 @@ del _seeded_token
 # `_review_inbox`) so its content cache persists across turns within the process
 # (ADR-0003) and so L3 has exactly one seam -- the mint pass; the pre-egress gate no
 # longer invokes it at all. Production wiring uses a real local-Ollama client when
-# BLINDFOLD_OLLAMA_MODEL is configured; otherwise the honest _UnconfiguredAdjudicator
+# BLINDFOLD_L3_MODEL is configured; otherwise the honest _UnconfiguredAdjudicator
 # (ADR-0009) keeps the unwired case fail-closed rather than fail-open. Wired with
 # `_allowlist` (issue #71) so a seeded or learned reject actually suppresses
 # candidacy in production, not just in tests that build their own detector+allowlist
@@ -226,7 +226,7 @@ _block_history = BlockHistory(window_minutes=15)
 # upstream has no cheap standalone active probe of its own (it's the paid provider) --
 # its health is the passive RecentFailureHealth signal instead, fed by the existing
 # `_upstream_error_response` funnel (#86). l3/transit/store use an active probe:
-#   - l3: `settings.ollama_model` unset means no adjudicator is wired at all (the
+#   - l3: `settings.l3_model` unset means no adjudicator is wired at all (the
 #     `_UnconfiguredAdjudicator` case, ADR-0009) -- reported unhealthy without a network
 #     call, since that state is already certain; configured means a live ping_ollama.
 #   - transit: `settings.openbao_token` unset means Transit isn't wired for this
@@ -243,9 +243,9 @@ _upstream_health = RecentFailureHealth(unhealthy_window_seconds=_UPSTREAM_UNHEAL
 
 def _default_l3_probe() -> DependencyHealth:
     settings = get_settings()
-    if not settings.ollama_model:
+    if not settings.l3_model:
         return DependencyHealth(healthy=False, detail="no L3 adjudicator configured")
-    return ping_ollama(settings.ollama_addr)
+    return ping_ollama(settings.l3_base_url)
 
 
 def _default_transit_probe() -> DependencyHealth:
@@ -849,7 +849,7 @@ async def status(
         "empty_store": entity_graph.is_empty(),
         "config": {
             "upstream_base_url": settings.upstream_base_url,
-            "l3_model": settings.ollama_model or None,
+            "l3_model": settings.l3_model or None,
             "fail_closed_policy": "fail-closed",
         },
     }

@@ -1,7 +1,7 @@
 """Upstream base URL + OpenBao config is configurable (ADR-0008 / issue #10)."""
 
 from blindfold.config import (
-    DEFAULT_OLLAMA_ADDR,
+    DEFAULT_L3_BASE_URL,
     DEFAULT_OPENBAO_ADDR,
     DEFAULT_UPSTREAM_BASE_URL,
     get_settings,
@@ -63,25 +63,25 @@ def test_settings_dev_mode_is_overridable_via_env(monkeypatch):
     assert get_settings().dev_mode is True
 
 
-def test_settings_ollama_addr_defaults_to_localhost(monkeypatch):
-    monkeypatch.delenv("BLINDFOLD_OLLAMA_ADDR", raising=False)
-    assert get_settings().ollama_addr == DEFAULT_OLLAMA_ADDR
+def test_settings_l3_base_url_defaults_to_localhost(monkeypatch):
+    monkeypatch.delenv("BLINDFOLD_L3_BASE_URL", raising=False)
+    assert get_settings().l3_base_url == DEFAULT_L3_BASE_URL
 
 
-def test_settings_ollama_addr_is_overridable_via_env(monkeypatch):
-    monkeypatch.setenv("BLINDFOLD_OLLAMA_ADDR", "http://ollama.internal:11434")
-    assert get_settings().ollama_addr == "http://ollama.internal:11434"
+def test_settings_l3_base_url_is_overridable_via_env(monkeypatch):
+    monkeypatch.setenv("BLINDFOLD_L3_BASE_URL", "http://l3.internal:11434")
+    assert get_settings().l3_base_url == "http://l3.internal:11434"
 
 
-def test_settings_ollama_model_defaults_to_empty_string(monkeypatch):
+def test_settings_l3_model_defaults_to_empty_string(monkeypatch):
     # Empty means L3 is unconfigured (ADR-0009 fail-closed default, ADR-0022).
-    monkeypatch.delenv("BLINDFOLD_OLLAMA_MODEL", raising=False)
-    assert get_settings().ollama_model == ""
+    monkeypatch.delenv("BLINDFOLD_L3_MODEL", raising=False)
+    assert get_settings().l3_model == ""
 
 
-def test_settings_ollama_model_is_read_from_env(monkeypatch):
-    monkeypatch.setenv("BLINDFOLD_OLLAMA_MODEL", "llama3.1")
-    assert get_settings().ollama_model == "llama3.1"
+def test_settings_l3_model_is_read_from_env(monkeypatch):
+    monkeypatch.setenv("BLINDFOLD_L3_MODEL", "llama3.1")
+    assert get_settings().l3_model == "llama3.1"
 
 
 def test_settings_openai_upstream_base_url_defaults_to_empty_string(monkeypatch):

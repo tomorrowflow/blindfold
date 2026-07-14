@@ -12,7 +12,7 @@ This module owns the small primitives the endpoint (app.py) composes:
 - :class:`DependencyHealth` / :func:`compute_state` -- the shape of one dependency's
   health and the single Protected/Degraded rule computed from all of them.
 - :class:`CachedHealthProbe` -- wraps a dependency health check with a short TTL so
-  the (~5s-polled) endpoint never itself becomes a probe storm against Ollama/Transit.
+  the (~5s-polled) endpoint never itself becomes a probe storm against L3/Transit.
 - :class:`BlockHistory` -- a rolling window of fail-closed/leak-gate blocks (the same
   `_blocked_response` funnel #91 built), so `blocks.recent` carries the identical
   scrubbed reason + management_url as the 503 body, never entity plaintext.

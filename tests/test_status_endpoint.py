@@ -114,7 +114,7 @@ async def test_state_flips_to_degraded_when_a_stubbed_dependency_is_down(
     dependency_name, override_getter
 ):
     # Stub every dependency healthy first so only the one under test can be
-    # unhealthy -- otherwise the real default l3 probe (no BLINDFOLD_OLLAMA_MODEL
+    # unhealthy -- otherwise the real default l3 probe (no BLINDFOLD_L3_MODEL
     # in the test env) would already report unhealthy regardless of this test.
     for getter in (get_upstream_health, get_l3_health_probe, get_transit_health_probe, get_store_health_probe):
         app.dependency_overrides[getter] = lambda: _FakeProbe(DependencyHealth(healthy=True))

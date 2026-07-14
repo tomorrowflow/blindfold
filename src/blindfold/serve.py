@@ -14,6 +14,7 @@ there is no opt-in here).
 from __future__ import annotations
 
 import logging
+import os
 from typing import Callable
 
 import uvicorn
@@ -38,6 +39,33 @@ class LocalOnlyModelRequiredError(RuntimeError):
     No override (ADR-0022): candidate spans handed to L3 are un-blindfolded real
     values (adjudicator egress, CONTEXT.md), so this invariant is absolute.
     """
+
+
+class LegacyEnvVarError(RuntimeError):
+    """Raised when a pre-ADR-0031 ``BLINDFOLD_OLLAMA_*`` env var is still set.
+
+    ``get_settings()`` no longer reads these names (ADR-0031's provider-agnostic
+    rename) -- silently ignoring them would leave an operator believing L3 is
+    configured under the old name while it's actually unconfigured under the new
+    one, an operator-migration trap rather than a privacy hole (unconfigured L3
+    still fails closed, ADR-0009). Fail loud instead.
+    """
+
+
+_LEGACY_L3_ENV_VARS = {
+    "BLINDFOLD_OLLAMA_ADDR": "BLINDFOLD_L3_BASE_URL",
+    "BLINDFOLD_OLLAMA_MODEL": "BLINDFOLD_L3_MODEL",
+}
+
+
+def refuse_if_legacy_l3_env_vars() -> None:
+    """Fail fast (ADR-0031) if a pre-rename ``BLINDFOLD_OLLAMA_*`` env var is set."""
+    for old_name, new_name in _LEGACY_L3_ENV_VARS.items():
+        if old_name in os.environ:
+            raise LegacyEnvVarError(
+                f"{old_name} is no longer read (ADR-0031 renamed L3 config to "
+                f"provider-agnostic names); rename it to {new_name}."
+            )
 
 
 def refuse_if_root_token(
@@ -74,12 +102,12 @@ def refuse_if_cloud_model(settings: Settings | None = None) -> None:
     executes off-device categorically defeats the product.
     """
     settings = settings or get_settings()
-    if not settings.ollama_model:
+    if not settings.l3_model:
         return
-    if is_cloud_model(settings.ollama_model):
+    if is_cloud_model(settings.l3_model):
         raise LocalOnlyModelRequiredError(
             f"refusing to run L3 against a remotely-executing model "
-            f"({settings.ollama_model!r}); candidate spans are un-blindfolded real "
+            f"({settings.l3_model!r}); candidate spans are un-blindfolded real "
             "values and must never leave the machine (ADR-0022). Configure a local "
             "Ollama model instead. There is no override for this invariant."
         )
@@ -118,10 +146,11 @@ def run_server(
     """Run the Blindfold ASGI app (``blindfold serve``).
 
     Binds loopback by default (SEC-11); binding elsewhere is the caller's explicit
-    opt-in via ``host``. Runs the SEC-2 root-token guard and the ADR-0022 local-only-L3
-    guard before starting the server so a misconfigured deploy never has the ASGI
-    server accept traffic in the first place.
+    opt-in via ``host``. Runs the ADR-0031 legacy-env-var guard, the SEC-2 root-token
+    guard, and the ADR-0022 local-only-L3 guard before starting the server so a
+    misconfigured deploy never has the ASGI server accept traffic in the first place.
     """
+    refuse_if_legacy_l3_env_vars()
     settings = settings or get_settings()
     refuse_if_root_token(settings, transit_client=transit_client)
     refuse_if_cloud_model(settings)

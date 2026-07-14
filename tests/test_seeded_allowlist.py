@@ -144,7 +144,7 @@ async def test_seed_is_loaded_at_startup_into_the_real_process_allowlist():
     # the *real* startup wiring: the process-global allowlist is seeded at import
     # time, and the process-global L3 detector actually consults it. Left unwired,
     # "Ollama" below would reach the real (test-env) _UnconfiguredAdjudicator and
-    # fail-close with a 503, since no BLINDFOLD_OLLAMA_MODEL is configured here.
+    # fail-close with a 503, since no BLINDFOLD_L3_MODEL is configured here.
     mapping = SurrogateMapping.from_pairs(vendored_seed_repository().seeded_pairs())
     scripted_response = {
         "id": "msg_1",
