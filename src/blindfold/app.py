@@ -119,6 +119,7 @@ from .l3 import (
     L3Detector,
     L3Unavailable,
 )
+from .l3_openai_compat import OpenAICompatibleAdjudicator, ping_omlx
 from .ollama import OllamaAdjudicator, ping_ollama
 from .policy import (
     DEFAULT_WORKSPACE,
@@ -166,15 +167,19 @@ class _UnconfiguredAdjudicator:
 def _build_l3_adjudicator(settings: Settings) -> L3Adjudicator:
     """Build the production L3 adjudicator from ``settings`` (ADR-0022 / issue #57).
 
-    Wires a real local-Ollama client when ``BLINDFOLD_L3_MODEL`` is configured;
-    otherwise falls back to the honest ``_UnconfiguredAdjudicator`` so the unwired case
-    still fails closed (ADR-0009) rather than fails open. The local-only invariant
-    (refusing a ``:cloud`` model) is enforced at process startup
-    (``serve.refuse_if_cloud_model``), not here — this function only decides which
-    adjudicator to construct, not whether the process is allowed to run.
+    Wires a real local-Ollama or oMLX client (``BLINDFOLD_L3_PROVIDER``, ADR-0031 §2)
+    when ``BLINDFOLD_L3_MODEL`` is configured; otherwise falls back to the honest
+    ``_UnconfiguredAdjudicator`` so the unwired case still fails closed (ADR-0009)
+    rather than fails open. The local-only invariants (refusing a ``:cloud`` Ollama
+    model / a non-loopback oMLX base url) are enforced at process startup
+    (``serve.refuse_if_cloud_model`` / ``serve.refuse_if_omlx_non_loopback``), not
+    here — this function only decides which adjudicator to construct, not whether the
+    process is allowed to run.
     """
     if not settings.l3_model:
         return _UnconfiguredAdjudicator()
+    if settings.l3_provider == "omlx":
+        return OpenAICompatibleAdjudicator(base_url=settings.l3_base_url, model=settings.l3_model)
     return OllamaAdjudicator(base_url=settings.l3_base_url, model=settings.l3_model)
 
 
@@ -221,14 +226,16 @@ _audit_log = AuditLog()
 _block_history = BlockHistory(window_minutes=15)
 
 # /v1/status's health probes (issue #92): a short TTL absorbs a poll storm (the status
-# endpoint is polled ~5s) against Ollama/Transit. Kept as module-global CachedHealthProbe
+# endpoint is polled ~5s) against L3/Transit. Kept as module-global CachedHealthProbe
 # instances (not built per-request) so the TTL is actually meaningful across polls.
 # upstream has no cheap standalone active probe of its own (it's the paid provider) --
 # its health is the passive RecentFailureHealth signal instead, fed by the existing
 # `_upstream_error_response` funnel (#86). l3/transit/store use an active probe:
 #   - l3: `settings.l3_model` unset means no adjudicator is wired at all (the
 #     `_UnconfiguredAdjudicator` case, ADR-0009) -- reported unhealthy without a network
-#     call, since that state is already certain; configured means a live ping_ollama.
+#     call, since that state is already certain; configured means a live ping_ollama or
+#     ping_omlx, dispatched on `settings.l3_provider` (ADR-0031 §2, issue #122) -- same
+#     contract from the caller's perspective either way.
 #   - transit: `settings.openbao_token` unset means Transit isn't wired for this
 #     deployment (ADR-0021: "Transit is optional") -- reported healthy without a probe;
 #     configured means a live TransitClient.health_check().
@@ -245,6 +252,8 @@ def _default_l3_probe() -> DependencyHealth:
     settings = get_settings()
     if not settings.l3_model:
         return DependencyHealth(healthy=False, detail="no L3 adjudicator configured")
+    if settings.l3_provider == "omlx":
+        return ping_omlx(settings.l3_base_url)
     return ping_ollama(settings.l3_base_url)
 
 

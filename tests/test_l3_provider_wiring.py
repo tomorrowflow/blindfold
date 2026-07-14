@@ -1,0 +1,46 @@
+"""ADR-0031 §2 / issue #122 acceptance criterion: BLINDFOLD_L3_PROVIDER selects which
+client app.py's L3-wiring function constructs, both behind the unchanged
+L3Adjudicator protocol -- the mint pass and the fail-closed 503 path don't change.
+
+_build_l3_adjudicator is app.py's pure settings-to-client builder (mirrors
+UpstreamClient.from_settings's role for the upstream seam) -- exercised directly here
+since the process-wide `_l3_detector` singleton it feeds is built once at import time
+(ADR-0022 §3's persistent-cache requirement), so an env-var change after import can't
+be observed through the public get_l3_detector() getter.
+
+Leak-audit clause analysis: N/A this slice -- this test asserts which class is
+constructed, not the request path (unchanged, per ADR-0031 §2).
+"""
+
+from __future__ import annotations
+
+from blindfold.app import _build_l3_adjudicator, _UnconfiguredAdjudicator
+from blindfold.config import Settings
+from blindfold.l3_openai_compat import OpenAICompatibleAdjudicator
+from blindfold.ollama import OllamaAdjudicator
+
+
+def test_build_l3_adjudicator_wires_ollama_client_by_default():
+    settings = Settings(l3_model="llama3.1", l3_base_url="http://localhost:11434")
+
+    adjudicator = _build_l3_adjudicator(settings)
+
+    assert isinstance(adjudicator, OllamaAdjudicator)
+
+
+def test_build_l3_adjudicator_wires_openai_compatible_client_for_omlx():
+    settings = Settings(
+        l3_provider="omlx", l3_model="qwen2.5-7b-mlx", l3_base_url="http://localhost:8080"
+    )
+
+    adjudicator = _build_l3_adjudicator(settings)
+
+    assert isinstance(adjudicator, OpenAICompatibleAdjudicator)
+
+
+def test_build_l3_adjudicator_stays_unconfigured_when_omlx_has_no_model():
+    settings = Settings(l3_provider="omlx", l3_model="")
+
+    adjudicator = _build_l3_adjudicator(settings)
+
+    assert isinstance(adjudicator, _UnconfiguredAdjudicator)

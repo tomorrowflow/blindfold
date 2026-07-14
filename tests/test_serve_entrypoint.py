@@ -20,8 +20,10 @@ from blindfold.serve import (
     DevModeRequiredError,
     LegacyEnvVarError,
     LocalOnlyModelRequiredError,
+    OmlxLoopbackRequiredError,
     refuse_if_cloud_model,
     refuse_if_legacy_l3_env_vars,
+    refuse_if_omlx_non_loopback,
     refuse_if_root_token,
     run_server,
 )
@@ -89,6 +91,57 @@ def test_refuse_if_cloud_model_is_a_noop_with_no_model_configured():
     settings = Settings(l3_model="")
 
     refuse_if_cloud_model(settings)
+
+
+# ---------------------------------------------------------------------------
+# 1b2. refuse_if_omlx_non_loopback — ADR-0031 §3 local-only startup guard for oMLX,
+# no override. Distinct from refuse_if_cloud_model: oMLX has no ":cloud"-tag-equivalent
+# signal, so the invariant here is a loopback-only base-url check instead.
+# ---------------------------------------------------------------------------
+
+
+def test_refuse_if_omlx_non_loopback_blocks_a_non_loopback_base_url():
+    settings = Settings(
+        l3_provider="omlx", l3_model="qwen2.5-7b-mlx", l3_base_url="http://l3.internal:8080"
+    )
+
+    with pytest.raises(OmlxLoopbackRequiredError):
+        refuse_if_omlx_non_loopback(settings)
+
+
+def test_refuse_if_omlx_non_loopback_allows_a_loopback_base_url():
+    settings = Settings(
+        l3_provider="omlx", l3_model="qwen2.5-7b-mlx", l3_base_url="http://127.0.0.1:8080"
+    )
+
+    refuse_if_omlx_non_loopback(settings)
+
+
+def test_refuse_if_omlx_non_loopback_allows_the_localhost_hostname():
+    settings = Settings(
+        l3_provider="omlx", l3_model="qwen2.5-7b-mlx", l3_base_url="http://localhost:8080"
+    )
+
+    refuse_if_omlx_non_loopback(settings)
+
+
+def test_refuse_if_omlx_non_loopback_is_a_noop_for_the_ollama_provider():
+    # The Ollama provider has its own local-only check (refuse_if_cloud_model) --
+    # this guard is specific to oMLX (ADR-0031 §3) and must not fire for ollama, even
+    # against a non-loopback base url (Ollama's own :cloud-tag check covers that case).
+    settings = Settings(
+        l3_provider="ollama", l3_model="llama3.1", l3_base_url="http://l3.internal:11434"
+    )
+
+    refuse_if_omlx_non_loopback(settings)
+
+
+def test_refuse_if_omlx_non_loopback_is_a_noop_with_no_model_configured():
+    settings = Settings(
+        l3_provider="omlx", l3_model="", l3_base_url="http://l3.internal:8080"
+    )
+
+    refuse_if_omlx_non_loopback(settings)
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +231,23 @@ def test_run_server_refuses_a_cloud_model_before_starting_the_asgi_server():
     calls = []
 
     with pytest.raises(LocalOnlyModelRequiredError):
+        run_server(
+            settings=settings,
+            runner=lambda app, **kwargs: calls.append((app, kwargs)),
+        )
+
+    assert calls == []
+
+
+def test_run_server_refuses_a_non_loopback_omlx_base_url_before_starting_the_asgi_server():
+    # ADR-0031 §3: same no-override stance as the Ollama :cloud-tag guard above, for
+    # oMLX's own local-only signal (loopback-only base url).
+    settings = Settings(
+        l3_provider="omlx", l3_model="qwen2.5-7b-mlx", l3_base_url="http://l3.internal:8080"
+    )
+    calls = []
+
+    with pytest.raises(OmlxLoopbackRequiredError):
         run_server(
             settings=settings,
             runner=lambda app, **kwargs: calls.append((app, kwargs)),

@@ -13,9 +13,11 @@ there is no opt-in here).
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import os
 from typing import Callable
+from urllib.parse import urlparse
 
 import uvicorn
 
@@ -38,6 +40,22 @@ class LocalOnlyModelRequiredError(RuntimeError):
 
     No override (ADR-0022): candidate spans handed to L3 are un-blindfolded real
     values (adjudicator egress, CONTEXT.md), so this invariant is absolute.
+    """
+
+
+class OmlxLoopbackRequiredError(RuntimeError):
+    """Raised when ``BLINDFOLD_L3_PROVIDER=omlx`` is configured with a non-loopback
+    ``BLINDFOLD_L3_BASE_URL``.
+
+    This loopback check is a property established **specifically for oMLX**
+    (ADR-0031 §3), not a generalizable "OpenAI-compatible == safe" rule: plain oMLX
+    serves only MLX weights it holds locally and has no remote-routing feature of its
+    own, so reaching it over loopback is sufficient proof the model runs on-device.
+    That is *not* true of every OpenAI-compatible endpoint (a real cloud one would
+    trivially satisfy a bare loopback-string check) -- a future contributor adding a
+    third provider must re-derive its own local-only story, not assume this check
+    transfers. No override: the adjudicator egress carries un-blindfolded candidate
+    spans, so sending them off-device categorically defeats the product.
     """
 
 
@@ -113,6 +131,40 @@ def refuse_if_cloud_model(settings: Settings | None = None) -> None:
         )
 
 
+def _is_loopback_base_url(base_url: str) -> bool:
+    hostname = urlparse(base_url).hostname or ""
+    if hostname.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def refuse_if_omlx_non_loopback(settings: Settings | None = None) -> None:
+    """Fail fast (ADR-0031 §3) if ``omlx`` is selected with a non-loopback base url.
+
+    No-op for the ``ollama`` provider (its own local-only signal is the ``:cloud``
+    tag, checked by :func:`refuse_if_cloud_model`) and when no model is configured
+    (L3 stays unconfigured and fails closed per ADR-0009). Like
+    :func:`refuse_if_cloud_model`, there is no opt-in flag for the ``omlx`` case
+    either -- see :class:`OmlxLoopbackRequiredError` for why a loopback base url is
+    sufficient specifically for oMLX, and why that reasoning doesn't generalize to
+    "any OpenAI-compatible endpoint".
+    """
+    settings = settings or get_settings()
+    if settings.l3_provider != "omlx" or not settings.l3_model:
+        return
+    if not _is_loopback_base_url(settings.l3_base_url):
+        raise OmlxLoopbackRequiredError(
+            f"refusing to run L3 (BLINDFOLD_L3_PROVIDER=omlx) against a non-loopback "
+            f"base url ({settings.l3_base_url!r}); candidate spans are un-blindfolded "
+            "real values and must never leave the machine (ADR-0031 §3). Configure a "
+            "loopback BLINDFOLD_L3_BASE_URL (127.0.0.1/localhost) instead. There is no "
+            "override for this invariant."
+        )
+
+
 def _entity_graph_for_startup_check(settings: Settings) -> EntityGraph:
     """Construct a throwaway store to answer "is the store empty?" at startup.
 
@@ -147,13 +199,16 @@ def run_server(
 
     Binds loopback by default (SEC-11); binding elsewhere is the caller's explicit
     opt-in via ``host``. Runs the ADR-0031 legacy-env-var guard, the SEC-2 root-token
-    guard, and the ADR-0022 local-only-L3 guard before starting the server so a
-    misconfigured deploy never has the ASGI server accept traffic in the first place.
+    guard, the ADR-0022 local-only-L3 guard (Ollama's ``:cloud`` tag), and the
+    ADR-0031 §3 local-only-L3 guard (oMLX's loopback-only base url) before starting
+    the server so a misconfigured deploy never has the ASGI server accept traffic in
+    the first place.
     """
     refuse_if_legacy_l3_env_vars()
     settings = settings or get_settings()
     refuse_if_root_token(settings, transit_client=transit_client)
     refuse_if_cloud_model(settings)
+    refuse_if_omlx_non_loopback(settings)
     # A no-op if the process already configured logging (e.g. an embedding app, or
     # pytest's own log capture); otherwise this is the only thing standing between
     # the line below and Python's logging module silently dropping it (issue #82 —

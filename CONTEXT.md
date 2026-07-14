@@ -233,7 +233,11 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   startup** — the operator is informed and the process does not run L3 against it. There
   is **no override** (unlike the SEC-2 root-token dev-mode escape hatch): sending real
   candidate spans off-device categorically defeats the product, so this invariant is
-  absolute.
+  absolute. The detection signal is provider-specific, not generic: Ollama's is the
+  `:cloud` tag (a local daemon can still proxy to a remote model); oMLX's is a
+  loopback-only base-url check (plain oMLX has no remote-routing feature of its own, so
+  loopback is sufficient there) — a future provider must re-derive its own local-only
+  story, not assume either check transfers.
 
 ## Controlled vocabulary
 

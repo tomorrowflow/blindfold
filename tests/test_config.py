@@ -2,6 +2,7 @@
 
 from blindfold.config import (
     DEFAULT_L3_BASE_URL,
+    DEFAULT_L3_PROVIDER,
     DEFAULT_OPENBAO_ADDR,
     DEFAULT_UPSTREAM_BASE_URL,
     get_settings,
@@ -82,6 +83,17 @@ def test_settings_l3_model_defaults_to_empty_string(monkeypatch):
 def test_settings_l3_model_is_read_from_env(monkeypatch):
     monkeypatch.setenv("BLINDFOLD_L3_MODEL", "llama3.1")
     assert get_settings().l3_model == "llama3.1"
+
+
+def test_settings_l3_provider_defaults_to_ollama(monkeypatch):
+    # ollama preserves today's exact behavior for existing deployments (ADR-0031 §2).
+    monkeypatch.delenv("BLINDFOLD_L3_PROVIDER", raising=False)
+    assert get_settings().l3_provider == DEFAULT_L3_PROVIDER == "ollama"
+
+
+def test_settings_l3_provider_is_overridable_via_env(monkeypatch):
+    monkeypatch.setenv("BLINDFOLD_L3_PROVIDER", "omlx")
+    assert get_settings().l3_provider == "omlx"
 
 
 def test_settings_openai_upstream_base_url_defaults_to_empty_string(monkeypatch):
