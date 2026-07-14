@@ -181,6 +181,38 @@ async def test_rapid_repeated_polls_do_not_multiply_probe_calls_to_a_stubbed_dep
     assert len(calls) == 1
 
 
+@pytest.mark.anyio
+async def test_a_dependency_probed_through_cachedhealthprobe_reports_its_measured_latency():
+    # Issue #110: the dependency card's mono latency figure, specified by #96 but
+    # never shipped. CachedHealthProbe (issue #92) already measures wall-clock cost
+    # of a fresh probe call -- this proves it reaches the /v1/status JSON body.
+    app.dependency_overrides[get_l3_health_probe] = lambda: CachedHealthProbe(
+        lambda: DependencyHealth(healthy=True), ttl_seconds=5.0
+    )
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://proxy.test") as client:
+            resp = await client.get("/v1/status")
+    finally:
+        app.dependency_overrides.clear()
+
+    latency = resp.json()["dependencies"]["l3"]["latency_ms"]
+    assert isinstance(latency, (int, float))
+    assert latency >= 0
+
+
+@pytest.mark.anyio
+async def test_upstream_has_no_active_probe_so_it_reports_no_latency():
+    # upstream's health is the passive RecentFailureHealth signal (issue #92) --
+    # there is no round-trip to measure, so latency_ms must stay absent rather than
+    # fabricate a number.
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://proxy.test") as client:
+        resp = await client.get("/v1/status")
+
+    assert "latency_ms" not in resp.json()["dependencies"]["upstream"]
+
+
 class _UnavailableAdjudicator:
     def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
         raise ConnectionError("ollama unreachable")

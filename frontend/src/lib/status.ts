@@ -7,6 +7,10 @@ export type DependencyKey = "upstream" | "l3" | "transit" | "store";
 export type DependencyHealth = {
   healthy: boolean;
   detail?: string;
+  // Wall-clock cost of the probe call that produced this result (issue #110,
+  // specified by #96 but never shipped) — absent for a dependency with no active
+  // probe of its own (upstream's passive RecentFailureHealth signal).
+  latency_ms?: number;
 };
 
 export type BlockRecord = {

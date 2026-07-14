@@ -10,12 +10,19 @@ import { DependencyCard } from "../components/DependencyCard";
 import { RecentBlocksTable } from "../components/RecentBlocksTable";
 import { ConfigCard } from "../components/ConfigCard";
 import { ReviewInboxCard } from "../components/ReviewInboxCard";
+import { useWorkspace } from "../components/WorkspaceContext";
 import { DEPENDENCY_ORDER, type StatusResponse } from "../lib/status";
 
 const POLL_INTERVAL_MS = 5000;
+const FRESHNESS_TICK_MS = 1000;
 
 export function Home() {
+  const { activeWorkspace } = useWorkspace();
+  const workspace = activeWorkspace?.slug ?? null;
   const [status, setStatus] = useState<StatusResponse | null>(null);
+  const [pollOk, setPollOk] = useState(true);
+  const [lastPolledAt, setLastPolledAt] = useState<number | null>(null);
+  const [nowMs, setNowMs] = useState(() => Date.now());
 
   useEffect(() => {
     let cancelled = false;
@@ -23,10 +30,16 @@ export function Home() {
       fetch("/v1/status")
         .then((r) => r.json())
         .then((data: StatusResponse) => {
-          if (!cancelled) setStatus(data);
+          if (cancelled) return;
+          setStatus(data);
+          setPollOk(true);
+          setLastPolledAt(Date.now());
         })
         .catch(() => {
-          // Leave the last-known render on screen rather than crash the view.
+          // Leave the last-known render on screen rather than crash the view --
+          // the freshness indicator's dot is what tells the operator this poll
+          // itself failed.
+          if (!cancelled) setPollOk(false);
         });
     }
     poll();
@@ -37,6 +50,11 @@ export function Home() {
     };
   }, []);
 
+  useEffect(() => {
+    const tick = setInterval(() => setNowMs(Date.now()), FRESHNESS_TICK_MS);
+    return () => clearInterval(tick);
+  }, []);
+
   if (!status) {
     return (
       <div className="bf-card">
@@ -45,9 +63,28 @@ export function Home() {
     );
   }
 
+  const secondsAgo = lastPolledAt === null ? 0 : Math.max(0, Math.round((nowMs - lastPolledAt) / 1000));
+
   return (
     <div className="bf-status-view">
-      <h1>Status</h1>
+      <div className="bf-status-header">
+        <div>
+          <h1>Status</h1>
+          <p className="bf-status-subtitle" data-testid="status-subtitle">
+            Live proxy status for <code>{workspace}</code> — reported by the proxy, not
+            re-derived here.
+          </p>
+        </div>
+        <div className="bf-status-freshness" data-testid="status-freshness">
+          <span
+            className={`bf-status-freshness-dot ${
+              pollOk ? "bf-status-freshness-dot--ok" : "bf-status-freshness-dot--degraded"
+            }`}
+            aria-hidden="true"
+          />
+          polled {secondsAgo}s ago
+        </div>
+      </div>
       <StatusBanner status={status} />
       <div className="bf-dependency-cards">
         {DEPENDENCY_ORDER.map((key) => (

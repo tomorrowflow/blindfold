@@ -32,6 +32,16 @@ def test_dependency_health_to_dict_includes_detail_when_set():
     assert health.to_dict() == {"healthy": False, "detail": "ollama unreachable"}
 
 
+def test_dependency_health_to_dict_includes_latency_ms_when_set():
+    health = DependencyHealth(healthy=True, latency_ms=12.3)
+    assert health.to_dict() == {"healthy": True, "latency_ms": 12.3}
+
+
+def test_dependency_health_to_dict_omits_latency_ms_when_none():
+    health = DependencyHealth(healthy=True)
+    assert health.to_dict() == {"healthy": True}
+
+
 def test_compute_state_is_protected_when_every_dependency_is_healthy():
     dependencies = {
         "upstream": DependencyHealth(healthy=True),
@@ -68,6 +78,43 @@ def test_cached_health_probe_collapses_repeated_checks_within_the_ttl():
     cached.check()
 
     assert len(calls) == 1
+
+
+def test_cached_health_probe_measures_latency_of_a_fresh_probe_call():
+    clock = {"now": 0.0}
+
+    def probe() -> DependencyHealth:
+        # Simulate the probe itself taking 250ms of wall-clock time.
+        clock["now"] = 0.25
+        return DependencyHealth(healthy=True)
+
+    cached = CachedHealthProbe(probe, ttl_seconds=5.0, clock=lambda: clock["now"])
+    result = cached.check()
+
+    assert result.latency_ms == 250.0
+
+
+def test_cached_health_probe_returns_the_measured_latency_on_a_cache_hit_too():
+    clock = {"now": 0.0}
+
+    def probe() -> DependencyHealth:
+        clock["now"] = 0.1
+        return DependencyHealth(healthy=True)
+
+    cached = CachedHealthProbe(probe, ttl_seconds=5.0, clock=lambda: clock["now"])
+    first = cached.check()
+    clock["now"] = 2.0
+    cached_hit = cached.check()
+
+    assert cached_hit.latency_ms == first.latency_ms == 100.0
+
+
+def test_cached_health_probe_never_overwrites_a_latency_the_probe_already_set():
+    def probe() -> DependencyHealth:
+        return DependencyHealth(healthy=True, latency_ms=42.0)
+
+    cached = CachedHealthProbe(probe, ttl_seconds=5.0, clock=lambda: 0.0)
+    assert cached.check().latency_ms == 42.0
 
 
 def test_cached_health_probe_re_probes_once_the_ttl_has_elapsed():

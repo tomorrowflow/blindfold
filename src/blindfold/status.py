@@ -21,7 +21,7 @@ This module owns the small primitives the endpoint (app.py) composes:
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Callable
 
@@ -31,16 +31,23 @@ class DependencyHealth:
     """One dependency's scrubbed-by-construction health (issue #92).
 
     ``detail`` is a scrubbed, non-secret diagnostic string (e.g. "ollama
-    unreachable") -- never entity content, never a credential.
+    unreachable") -- never entity content, never a credential. ``latency_ms``
+    (issue #110) is the wall-clock cost of the probe call that produced this
+    result -- ``None`` when no probe was actually run to produce it (e.g. a
+    cache hit's original probe already carries it; an unconfigured-dependency
+    short-circuit that never made a call has none to report).
     """
 
     healthy: bool
     detail: str | None = None
+    latency_ms: float | None = None
 
     def to_dict(self) -> dict:
         body: dict = {"healthy": self.healthy}
         if self.detail is not None:
             body["detail"] = self.detail
+        if self.latency_ms is not None:
+            body["latency_ms"] = self.latency_ms
         return body
 
 
@@ -85,6 +92,9 @@ class CachedHealthProbe:
         ):
             return self._cached
         result = self._probe()
+        if result.latency_ms is None:
+            elapsed_ms = (self._clock() - now) * 1000
+            result = replace(result, latency_ms=round(elapsed_ms, 1))
         self._cached = result
         self._cached_at = now
         return result

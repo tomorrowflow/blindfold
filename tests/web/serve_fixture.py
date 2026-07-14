@@ -174,8 +174,13 @@ def _build_empty_app():
     app.dependency_overrides[get_allowlist] = lambda: allowlist
 
     if FORCE_DEPENDENCIES_HEALTHY:
-        _all_healthy = lambda: _StaticHealthProbe(DependencyHealth(healthy=True))
-        app.dependency_overrides[get_upstream_health] = _all_healthy
+        # latency_ms is set on the three actively-probed dependencies only, never on
+        # upstream -- it has no standalone active probe in production either (its
+        # health is the passive RecentFailureHealth signal), so a fabricated number
+        # there would be dishonest, not just untestable (issue #110).
+        _all_healthy = lambda: _StaticHealthProbe(DependencyHealth(healthy=True, latency_ms=8.0))
+        _upstream_healthy = lambda: _StaticHealthProbe(DependencyHealth(healthy=True))
+        app.dependency_overrides[get_upstream_health] = _upstream_healthy
         app.dependency_overrides[get_l3_health_probe] = _all_healthy
         app.dependency_overrides[get_transit_health_probe] = _all_healthy
         app.dependency_overrides[get_store_health_probe] = _all_healthy
@@ -308,8 +313,10 @@ def build_app():
     app.dependency_overrides[get_allowlist] = lambda: allowlist
 
     if FORCE_DEPENDENCIES_HEALTHY:
-        _all_healthy = lambda: _StaticHealthProbe(DependencyHealth(healthy=True))
-        app.dependency_overrides[get_upstream_health] = _all_healthy
+        # See build_app()'s identical override for why upstream is excluded.
+        _all_healthy = lambda: _StaticHealthProbe(DependencyHealth(healthy=True, latency_ms=8.0))
+        _upstream_healthy = lambda: _StaticHealthProbe(DependencyHealth(healthy=True))
+        app.dependency_overrides[get_upstream_health] = _upstream_healthy
         app.dependency_overrides[get_l3_health_probe] = _all_healthy
         app.dependency_overrides[get_transit_health_probe] = _all_healthy
         app.dependency_overrides[get_store_health_probe] = _all_healthy
