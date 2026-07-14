@@ -36,7 +36,9 @@ Serve bind address (ADR-0021 / ADR-0027, issue #91):
                              127.0.0.1, matching the loopback-only default). Read by
                              the request path to build a block response's
                              `management_url` deep link -- never hardcoded.
-  BLINDFOLD_PORT           — bind port, same purpose (default: 8000).
+  BLINDFOLD_PORT           — bind port, same purpose (default: 25463; moved off 8000,
+                             which collides with oMLX/LM Studio's own default, ADR-0031
+                             §4 — "BLIND" on a phone keypad).
 """
 
 from __future__ import annotations
@@ -48,7 +50,7 @@ DEFAULT_UPSTREAM_BASE_URL = "https://api.anthropic.com"
 DEFAULT_OPENBAO_ADDR = "http://localhost:8200"
 DEFAULT_OLLAMA_ADDR = "http://localhost:11434"
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8000
+DEFAULT_PORT = 25463
 
 
 @dataclass(frozen=True)

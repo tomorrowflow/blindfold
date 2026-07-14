@@ -114,7 +114,7 @@ uv sync
 uv run blindfold serve
 ```
 
-This starts the proxy at `http://127.0.0.1:8000` — **loopback-only by default**
+This starts the proxy at `http://127.0.0.1:25463` — **loopback-only by default**
 (SEC-11); pass `--host`/`--port` to bind elsewhere, an explicit opt-in. It runs against
 the vendored in-process entity-graph seed, so there's nothing else to stand up to try
 it end-to-end (Postgres-backed persistence, ADR-0008, is a separate slice — today's
@@ -152,7 +152,7 @@ repo/package like the fonts and icons it embeds.
 **Dev loop** (editing the shell itself):
 
 ```bash
-uv run blindfold serve       # the API, on 127.0.0.1:8000
+uv run blindfold serve       # the API, on 127.0.0.1:25463
 cd frontend && npm install && npm run dev   # the SPA, proxying /v1/* to the API above
 ```
 
@@ -176,11 +176,11 @@ up whatever is already committed there.
 
 ```bash
 # Claude Code
-export ANTHROPIC_BASE_URL=http://localhost:8000
+export ANTHROPIC_BASE_URL=http://localhost:25463
 export ANTHROPIC_AUTH_TOKEN=…
 
 # Any OpenAI-SDK client
-export OPENAI_BASE_URL=http://localhost:8000/v1
+export OPENAI_BASE_URL=http://localhost:25463/v1
 ```
 
 From there it's transparent — you keep prompting and reading in real names. The system
