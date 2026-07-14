@@ -2298,6 +2298,7 @@ body {
 }
 
 .bf-access-identity-name {
+  font-family: var(--bf-font-mono);
   font-size: 0.8125rem;
   font-weight: 600;
 }
@@ -2323,7 +2324,13 @@ body {
 .bf-access-role-chip--re-identifier {
   background: var(--bf-ochre-bg);
   border-color: var(--bf-ochre-border);
-  color: var(--bf-ochre-strong);
+  color: var(--bf-ochre);
+}
+
+.bf-access-role-chip--curator {
+  background: var(--bf-curator-bg);
+  border-color: var(--bf-curator);
+  color: var(--bf-curator);
 }
 
 .bf-access-role-revoke {
@@ -2358,6 +2365,26 @@ body {
 .bf-access-grant-btn:hover {
   border-color: var(--bf-chrome-navy);
   color: var(--bf-chrome-navy);
+}
+
+.bf-access-grant-btn--re-identifier {
+  border-color: var(--bf-ochre-border);
+  color: var(--bf-ochre);
+}
+
+.bf-access-grant-btn--re-identifier:hover {
+  border-color: var(--bf-ochre);
+  color: var(--bf-ochre);
+}
+
+.bf-access-grant-btn--curator {
+  border-color: var(--bf-curator);
+  color: var(--bf-curator);
+}
+
+.bf-access-grant-btn--curator:hover {
+  border-color: var(--bf-curator);
+  color: var(--bf-curator);
 }
 
 /* -----------------------------------------------------------------------

@@ -37,6 +37,72 @@ test.describe("access shell — identity table", () => {
   });
 });
 
+test.describe("access shell — identity cell (issue #115)", () => {
+  test("identity row shows derived initials in the avatar and the identity string in mono", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto("/ui/access");
+    const daveRow = alicePage.getByTestId("access-row-dave");
+    await expect(daveRow.locator(".bf-access-avatar")).toHaveText("DA");
+    const identityName = daveRow.locator(".bf-access-identity-name");
+    await expect(identityName).toHaveText("dave");
+    await expect(identityName).toHaveCSS("font-family", /IBM Plex Mono/);
+  });
+});
+
+test.describe("access shell — re-identifier ochre / curator green (issue #115)", () => {
+  test("re-identifier and curator chips use their reserved colors; admin does not", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto("/ui/access");
+    const aliceRow = alicePage.getByTestId("access-row-alice");
+
+    await expect(aliceRow.getByTestId("role-chip-re-identifier")).toHaveCSS(
+      "color",
+      "rgb(176, 127, 32)" // --bf-ochre
+    );
+    await expect(aliceRow.getByTestId("role-chip-curator")).toHaveCSS(
+      "color",
+      "rgb(35, 122, 82)" // --bf-curator
+    );
+    await expect(aliceRow.getByTestId("role-chip-admin")).not.toHaveCSS(
+      "color",
+      "rgb(176, 127, 32)"
+    );
+  });
+
+  test("re-identifier and curator grant buttons use their reserved colors; admin does not", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto("/ui/access");
+    // Seed a throwaway identity (frank) holding only viewer, so curator/re-identifier/
+    // admin all still render as grant buttons. Revoked at the end to leave the shared
+    // fixture unperturbed for later specs in this file (mirrors the dave round-trip's
+    // own restore-at-the-end discipline above).
+    await alicePage.getByTestId("add-identity-btn").click();
+    await alicePage.getByTestId("add-identity-input").fill("frank");
+    await alicePage.getByTestId("add-identity-role-select").selectOption("viewer");
+    await alicePage.getByTestId("add-identity-submit").click();
+
+    const frankRow = alicePage.getByTestId("access-row-frank");
+    await expect(frankRow.getByTestId("grant-btn-frank-re-identifier")).toHaveCSS(
+      "color",
+      "rgb(176, 127, 32)" // --bf-ochre
+    );
+    await expect(frankRow.getByTestId("grant-btn-frank-curator")).toHaveCSS(
+      "color",
+      "rgb(35, 122, 82)" // --bf-curator
+    );
+    await expect(frankRow.getByTestId("grant-btn-frank-admin")).not.toHaveCSS(
+      "color",
+      "rgb(176, 127, 32)"
+    );
+
+    await frankRow.getByTestId("revoke-btn-frank-viewer").click();
+    await expect(alicePage.getByTestId("access-row-frank")).toHaveCount(0);
+  });
+});
+
 test.describe("access shell — grant/revoke round trip", () => {
   // Exercises dave's `viewer` role only, never alice's — alice's admin/curator/
   // re-identifier/viewer grants are load-bearing fixture state for every OTHER spec
