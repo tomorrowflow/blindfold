@@ -32,6 +32,13 @@ from .status import DependencyHealth
 DEFAULT_PING_TIMEOUT_SECONDS = 5.0
 
 
+def _bearer_auth_headers(api_key: str) -> dict[str, str]:
+    # Single-sources the oMLX auth contract for both the probe and the adjudicator
+    # (ADR-0031 follow-up, issue #130). Empty/unset means "no key" -- unchanged
+    # behavior for oMLX installs run with skip_api_key_verification: true.
+    return {"Authorization": f"Bearer {api_key}"} if api_key else {}
+
+
 def ping_omlx(
     base_url: str,
     api_key: str = "",
@@ -46,7 +53,7 @@ def ping_omlx(
     probe.
     """
     url = f"{base_url.rstrip('/')}/v1/models"
-    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    headers = _bearer_auth_headers(api_key)
     client = http or httpx.Client(timeout=timeout)
     try:
         response = client.get(url, headers=headers)
@@ -86,11 +93,6 @@ class OpenAICompatibleAdjudicator:
         self._api_key = api_key
         self._http = http or httpx.Client(base_url=self._base_url, timeout=timeout)
 
-    def _auth_headers(self) -> dict[str, str]:
-        # Empty/unset means "no key" (ADR-0031 follow-up, issue #130) -- unchanged
-        # behavior for oMLX installs run with skip_api_key_verification: true.
-        return {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
-
     def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
         prompt = _PROMPT_TEMPLATE.format(context=candidate.context, text=candidate.text)
         response = self._http.post(
@@ -100,7 +102,7 @@ class OpenAICompatibleAdjudicator:
                 "messages": [{"role": "user", "content": prompt}],
                 "response_format": {"type": "json_object"},
             },
-            headers=self._auth_headers(),
+            headers=_bearer_auth_headers(self._api_key),
         )
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]
