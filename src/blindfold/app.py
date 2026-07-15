@@ -84,7 +84,7 @@ from datetime import datetime
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from .allowlist_seed import load_seeded_allowlist_tokens
 from .bootstrap import bootstrap_from_vendored_seed
@@ -133,7 +133,6 @@ from .policy import (
 from .rbac import RbacRegistry
 from .relationships import RelationshipEdge, RelationshipStore
 from .review import Allowlist, ReviewInbox
-from .spa import entity_list_html
 from .status import (
     BlockHistory,
     CachedHealthProbe,
@@ -2215,19 +2214,15 @@ async def search_workspace_entities(
     return {"hits": _surrogate_space_rows(matches, all_entities, edges)}
 
 
-@app.get("/ui/entity-list", response_class=HTMLResponse)
-async def entity_list_spa() -> HTMLResponse:
-    """Serve the entity-list SPA bundle (ADR-0011 / ADR-0017 / ADR-0018 / issue #32).
-
-    Compact table view in surrogate-space. Real-name search and per-row Reveal
-    require the ``re-identifier`` role and emit audit events (ADR-0015, ADR-0018).
-    """
-    return HTMLResponse(content=entity_list_html())
-
+# NOTE: /ui/entity-list route removed by issue #128 — the last embedded SPA
+# page (ADR-0011) is retired. The catch-all /ui/{full_path:path} in ui.py now
+# resolves /ui/entity-list to the shell's index.html (react-router takes it
+# to the /entities EntityList view). See also: ui.py module docstring.
 
 # ---------------------------------------------------------------------------
 # Management SPA shell (ADR-0026, issue #93) — mounted last so its /ui/* catch-all
-# never shadows a legacy embedded route registered above.
+# resolves every /ui/* path (deep links and retired embedded-page bookmarks alike)
+# to the shell's index.html. No embedded /ui routes remain above it (issue #128).
 # ---------------------------------------------------------------------------
 
 app.mount("/ui/assets", ui_assets_app, name="ui-assets")

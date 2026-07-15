@@ -32,10 +32,6 @@ from blindfold.entity_graph import EntityGraph
 from blindfold.policy import AuditLog
 from blindfold.rbac import RbacRegistry
 from blindfold.relationships import RelationshipStore
-from blindfold.spa import (
-    ENTITY_LIST_ENDPOINT,
-    REIDENTIFY_ENDPOINT,
-)
 
 
 def _make_client() -> httpx.AsyncClient:
@@ -508,36 +504,7 @@ async def test_entity_search_never_echoes_real_name_in_response():
     assert "Martin Bach" not in resp.text
 
 
-# ---------------------------------------------------------------------------
-# 13. Entity list SPA is served as HTML
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.anyio
-async def test_entity_list_spa_is_served_as_html():
-    async with _make_client() as client:
-        resp = await client.get("/ui/entity-list")
-
-    assert resp.status_code == 200
-    assert "text/html" in resp.headers.get("content-type", "")
-    body = resp.text
-    assert "<!doctype html>" in body.lower()
-    assert 'id="entity-list-app"' in body
-
-
-# ---------------------------------------------------------------------------
-# 14. Entity list SPA references the entities endpoint and re-identify endpoint
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.anyio
-async def test_entity_list_spa_references_management_endpoints():
-    async with _make_client() as client:
-        resp = await client.get("/ui/entity-list")
-
-    body = resp.text
-    assert ENTITY_LIST_ENDPOINT in body
-    assert REIDENTIFY_ENDPOINT in body
-    assert "surrogate" in body.lower()
-    for forbidden in ("anonymize", "anonymise", "mask", "redact", "de-anonymize"):
-        assert forbidden not in body.lower(), f"{forbidden!r} is not project language"
+# NOTE: Tests 13 and 14 (entity-list SPA HTML-serving assertions) removed by
+# #128 — the legacy /ui/entity-list embedded page is retired. Its behaviors
+# are now covered by the shell's Playwright spec
+# (tests/web/specs/entity-list-shell.spec.ts).

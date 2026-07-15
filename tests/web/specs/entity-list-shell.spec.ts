@@ -21,8 +21,8 @@ import {
 
 // Entity list migrated into the shell (issue #97). Behavior authority: the settled
 // entity-list design (docs/design/entity-list-view-design-brief.md, ADR-0016/17/18)
-// and the shipped /ui/entity-list behavior (tests/web/specs/entity-list.spec.ts,
-// left untouched — the legacy embedded page is retired by a later slice, ADR-0026).
+// and the shipped /ui/entity-list behavior (formerly tests/web/specs/entity-list.spec.ts —
+// deleted by issue #128, which retires the legacy embedded page, ADR-0026).
 // This spec drives the new /ui/entities shell route against the same running server.
 
 test.describe("entity list shell — subtitle (issue #111)", () => {

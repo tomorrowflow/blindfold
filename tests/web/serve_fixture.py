@@ -1,10 +1,11 @@
 """Fixture launcher: a real, seeded `blindfold.app` served on a fixed loopback port.
 
 Used by the committed `@playwright/test` browser suite in this directory (issue #50,
-UX-7) to drive `/ui/org-graph`, `/ui/entity-list` and the shell's `/ui/inbox` against a
-real running server — never a stubbed page. Seeds the exact same in-memory store shapes
-and wiring the pytest SPA fixtures use (`tests/test_org_graph_spa.py`,
-`tests/test_entity_list_spa.py`, `tests/test_browser_leak_audit.py`): one workspace
+UX-7) to drive the shell's `/ui/graph`, `/ui/entities`, and `/ui/inbox` views against a
+real running server — never a stubbed page (both `/ui/org-graph` and `/ui/entity-list`,
+the legacy embedded pages this fixture originally targeted, are retired — issues #98,
+#128). Seeds the exact same in-memory store shapes and wiring the pytest SPA fixtures
+use (`tests/test_org_graph_spa.py`, `tests/test_entity_list_spa.py`): one workspace
 ("acme") with a person entity whose real name is hidden behind a surrogate, an org term,
 an authorized re-identifier ("alice") and an identity with no role on the workspace
 ("bob"), plus two provisional review-inbox candidates awaiting triage (issue #99).

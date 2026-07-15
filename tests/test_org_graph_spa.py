@@ -36,10 +36,6 @@ from blindfold.app import (
 from blindfold.entity_graph import EntityGraph
 from blindfold.policy import AuditLog
 from blindfold.relationships import RelationshipStore
-from blindfold.spa import (
-    ORG_GRAPH_ENDPOINT,
-    REIDENTIFY_ENDPOINT,  # noqa: F401 — still referenced in legacy test_entity_list_write_spa.py
-)
 
 
 def _make_client() -> httpx.AsyncClient:

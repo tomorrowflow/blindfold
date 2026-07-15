@@ -30,7 +30,6 @@ from blindfold.entity_graph import EntityGraph
 from blindfold.policy import AuditLog
 from blindfold.rbac import RbacRegistry
 from blindfold.relationships import RelationshipStore
-from blindfold.spa import ENTITY_LIST_MERGE_ENDPOINT
 from blindfold.surrogates import SurrogateMapping
 
 
@@ -335,32 +334,7 @@ async def test_merge_by_entity_id_emits_audit_event():
     assert "Alice Jones" not in rec.reason
 
 
-# ---------------------------------------------------------------------------
-# 7. Entity list SPA references the merge endpoint constant
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.anyio
-async def test_entity_list_spa_references_merge_endpoint():
-    async with _make_client() as client:
-        resp = await client.get("/ui/entity-list")
-
-    assert resp.status_code == 200
-    body = resp.text
-    assert ENTITY_LIST_MERGE_ENDPOINT in body
-
-
-# ---------------------------------------------------------------------------
-# 8. Entity list SPA HTML has a checkbox column
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.anyio
-async def test_entity_list_spa_has_checkbox_column():
-    async with _make_client() as client:
-        resp = await client.get("/ui/entity-list")
-
-    body = resp.text
-    assert 'type="checkbox"' in body or "checkbox" in body.lower()
-    # Merge button must appear in the SPA source
-    assert "merge" in body.lower()
+# NOTE: Tests 7-8 (entity-list SPA HTML-serving assertions for the merge
+# endpoint/checkbox column) removed by #128 — the legacy /ui/entity-list
+# embedded page is retired. Its behaviors are now covered by the shell's
+# Playwright spec (tests/web/specs/entity-list-shell.spec.ts).

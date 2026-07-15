@@ -34,7 +34,6 @@ from blindfold.entity_graph import EntityGraph
 from blindfold.policy import AuditLog
 from blindfold.rbac import RbacRegistry
 from blindfold.relationships import RelationshipStore
-from blindfold.spa import ENTITY_LIST_ENDPOINT, REIDENTIFY_ENDPOINT
 from blindfold.surrogates import SurrogateMapping
 
 
@@ -251,55 +250,7 @@ async def test_edge_retarget_is_delete_plus_create():
     assert remaining[0].target_id == "new-org"
 
 
-# ---------------------------------------------------------------------------
-# 7. Entity list SPA includes inline rename UI elements
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.anyio
-async def test_entity_list_spa_includes_rename_ui():
-    async with _make_client() as client:
-        resp = await client.get("/ui/entity-list")
-
-    body = resp.text
-    assert resp.status_code == 200
-    # Rename invokes the surrogate PATCH endpoint
-    assert "surrogate" in body.lower()
-    assert "/v1/management/entities" in body
-    assert "PATCH" in body or "patch" in body.lower()
-
-
-# ---------------------------------------------------------------------------
-# 8. Entity list SPA includes edge delete controls (× chip button)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.anyio
-async def test_entity_list_spa_includes_edge_delete_controls():
-    async with _make_client() as client:
-        resp = await client.get("/ui/entity-list")
-
-    body = resp.text
-    assert resp.status_code == 200
-    # Edge delete calls DELETE /relationships/{edge_id}
-    assert "/v1/management/workspaces" in body
-    assert "relationships" in body
-    assert "DELETE" in body or "delete" in body.lower()
-
-
-# ---------------------------------------------------------------------------
-# 9. Entity list SPA includes edge re-target picker (kind-constrained terms)
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.anyio
-async def test_entity_list_spa_includes_retarget_picker():
-    async with _make_client() as client:
-        resp = await client.get("/ui/entity-list")
-
-    body = resp.text
-    assert resp.status_code == 200
-    # Re-target calls POST /relationships — kind-constrained picker filters for terms
-    assert "retarget" in body.lower() or "re-target" in body.lower() or "retargetEdge" in body or "retarget_edge" in body.lower()
-    # Target picker should be kind-constrained to terms
-    assert "term" in body.lower()
+# NOTE: Tests 7-9 (entity-list SPA HTML-serving assertions for rename/edge-
+# delete/retarget UI) removed by #128 — the legacy /ui/entity-list embedded
+# page is retired. Its behaviors are now covered by the shell's Playwright
+# spec (tests/web/specs/entity-list-shell.spec.ts).
