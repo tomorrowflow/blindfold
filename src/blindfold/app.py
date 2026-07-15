@@ -2158,7 +2158,8 @@ async def search_workspace_entities(
 
 # ---------------------------------------------------------------------------
 # Management SPA shell (ADR-0026, issue #93) — mounted last so its /ui/* catch-all
-# never shadows a legacy embedded route registered above.
+# resolves every /ui/* path (deep links and retired embedded-page bookmarks alike)
+# to the shell's index.html. No embedded /ui routes remain above it (issue #128).
 # ---------------------------------------------------------------------------
 
 app.mount("/ui/assets", ui_assets_app, name="ui-assets")
