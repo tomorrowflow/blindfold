@@ -84,8 +84,9 @@ export function SettingsPolicy() {
           </div>
           {!failClosed && (
             <p className="bf-policy-danger-note" role="alert" data-testid="policy-danger-note">
-              Protection is off for degraded states. Requests may reach the upstream
-              with real values if a dependency drops.
+              Deterministic-only degrade: L1+L2 keep protecting known entities, but
+              L3 candidate-span adjudication is skipped, so a novel entity may cross
+              egress unblindfolded until it's confirmed in the review inbox.
             </p>
           )}
         </div>

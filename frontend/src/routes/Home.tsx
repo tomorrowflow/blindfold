@@ -27,7 +27,9 @@ export function Home() {
   useEffect(() => {
     let cancelled = false;
     function poll() {
-      fetch("/v1/status")
+      fetch("/v1/status", {
+        headers: workspace ? { "x-blindfold-workspace": workspace } : undefined,
+      })
         .then((r) => r.json())
         .then((data: StatusResponse) => {
           if (cancelled) return;
@@ -48,7 +50,7 @@ export function Home() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, []);
+  }, [workspace]);
 
   useEffect(() => {
     const tick = setInterval(() => setNowMs(Date.now()), FRESHNESS_TICK_MS);

@@ -825,6 +825,7 @@ def _resolution_gate_or_block(
 
 @app.get("/v1/status")
 async def status(
+    request: Request,
     upstream_health: RecentFailureHealth = Depends(get_upstream_health),
     l3_health_probe: CachedHealthProbe = Depends(get_l3_health_probe),
     transit_health_probe: CachedHealthProbe = Depends(get_transit_health_probe),
@@ -833,6 +834,7 @@ async def status(
     inbox: ReviewInbox = Depends(get_review_inbox),
     settings: Settings = Depends(get_settings),
     entity_graph: EntityGraph = Depends(get_entity_graph),
+    policies: WorkspacePolicies = Depends(get_workspace_policies),
 ) -> dict:
     """The single status contract for the Home view + menu bar (issue #92).
 
@@ -840,7 +842,14 @@ async def status(
     role-gated -- the security boundary is the existing loopback-only bind
     (ADR-0021), and this payload is scrubbed by construction (dependency names,
     sub-reason codes, counts -- never entity content, never secrets).
+
+    ``config.fail_closed_policy`` reflects the active workspace's ADR-0009 posture
+    (issue #126) -- the same optional ``x-blindfold-workspace`` header the request
+    path reads (``_workspace_slug``), defaulting to the default workspace. Reading
+    it stays ungated, matching the rest of this endpoint's no-auth contract.
     """
+    workspace = _workspace_slug(request)
+    policy = policies.for_workspace(workspace)
     dependencies = {
         "upstream": upstream_health.check(),
         "l3": l3_health_probe.check(),
@@ -861,7 +870,9 @@ async def status(
         "config": {
             "upstream_base_url": settings.upstream_base_url,
             "l3_model": settings.l3_model or None,
-            "fail_closed_policy": "fail-closed",
+            "fail_closed_policy": (
+                "deterministic-only" if policy.deterministic_only else "fail-closed"
+            ),
         },
     }
 
