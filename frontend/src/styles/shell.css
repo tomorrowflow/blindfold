@@ -1312,6 +1312,13 @@ body {
   font-size: 0.875rem;
 }
 
+/* Preview-before-commit row-level validation (issue #127): a flagged row (blind-
+   index duplicate, unknown relation type, orientation violation) is skipped on
+   commit, not committed and silently wrong -- the danger-red text says so. */
+.bf-import-row--problem td {
+  color: var(--bf-red);
+}
+
 /* -----------------------------------------------------------------------
    Entity list (issue #97)
    ----------------------------------------------------------------------- */

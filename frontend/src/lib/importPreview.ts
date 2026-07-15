@@ -1,11 +1,14 @@
-// Settings -> Import preview parsing (issue #116). Parses an operator-supplied
-// CSV or JSON file into the same seed-bundle shape the existing seed endpoint
-// already consumes (persons/terms: {canonical_name, variations};
-// entity_relationships: {source_kind, source, relation, target_kind, target} --
-// see src/blindfold/store/vendored_seed.json, ADR-0029) so Commit reuses the one
-// shared VendoredSeedRepository path, never a second bundle schema.
+// Settings -> Import file parsing (issue #116, extended by #127). Parses an
+// operator-supplied CSV or JSON file into the same seed-bundle shape the seed/
+// seed-preview endpoints already consume (persons/terms: {canonical_name,
+// variations}; entity_relationships: {source_kind, source, relation, target_kind,
+// target} -- see src/blindfold/store/vendored_seed.json, ADR-0029), so both
+// preview and commit reuse the one shared VendoredSeedRepository path, never a
+// second bundle schema.
 //
-// Entirely client-side: nothing here makes a network call.
+// Entirely client-side: nothing here makes a network call. Row-level validation
+// (blind-index duplicates, unknown relation type, orientation) happens server-side
+// against the live entity graph -- see setupApi.ts's previewSeedBundle().
 
 export type Referent = { canonical_name: string; variations: string[] };
 export type EntityRelationship = {
@@ -22,12 +25,6 @@ export type SeedBundle = {
   entity_relationships: EntityRelationship[];
 };
 
-export type PreviewRow = {
-  kind: "person" | "term";
-  value: string;
-  relation: string;
-};
-
 export function parseJsonBundle(text: string): SeedBundle {
   const parsed = JSON.parse(text);
   return {
@@ -35,24 +32,6 @@ export function parseJsonBundle(text: string): SeedBundle {
     terms: parsed.terms ?? [],
     entity_relationships: parsed.entity_relationships ?? [],
   };
-}
-
-export function bundleToPreviewRows(bundle: SeedBundle): PreviewRow[] {
-  const rows: PreviewRow[] = [];
-  for (const person of bundle.persons) {
-    rows.push({ kind: "person", value: person.canonical_name, relation: "" });
-  }
-  for (const term of bundle.terms) {
-    rows.push({ kind: "term", value: term.canonical_name, relation: "" });
-  }
-  for (const rel of bundle.entity_relationships) {
-    rows.push({
-      kind: rel.source_kind === "term" ? "term" : "person",
-      value: `${rel.source} → ${rel.target}`,
-      relation: rel.relation,
-    });
-  }
-  return rows;
 }
 
 // CSV columns: kind,value,variations,relation,target. `variations` is a

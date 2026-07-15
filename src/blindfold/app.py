@@ -1405,6 +1405,42 @@ async def seed_workspace(
     return {"workspace": slug, "seeded": True}
 
 
+@app.post("/v1/management/workspaces/{slug}/seed/preview")
+async def preview_seed_bundle(
+    slug: str,
+    request: Request,
+    body: dict,
+    entity_graph: EntityGraph = Depends(get_entity_graph),
+    rbac: RbacRegistry = Depends(get_rbac),
+) -> dict:
+    """POST /v1/management/workspaces/{slug}/seed/preview -- validate an
+    operator-supplied Seed bundle against the live entity graph before commit
+    (issue #127), the first of the two phases Settings -> Import's dropzone drives.
+
+    Read-only: builds :meth:`VendoredSeedRepository.preview`'s per-row problems
+    (blind-index duplicates, ADR-0018; unknown relation type / orientation
+    violation for ``entity_relationships`` rows) without ever calling
+    ``seed_entity_graph`` -- Discard-after-preview and a preview call itself both
+    leave the workspace byte-for-byte unchanged. A bundle is required (unlike the
+    commit endpoint, which falls back to the vendored Sample data for an empty
+    body) since previewing the vendored bundle against itself is not this
+    feature's job.
+
+    Gated by the ``admin`` role, the same convention ``seed_workspace``/
+    ``merge_entities`` already use for a structural write surface in this codebase
+    -- ``curator`` is a defined RBAC role (CONTEXT.md) but is not yet wired as an
+    actual gate anywhere, so this endpoint follows the established admin-gate
+    convention rather than introducing a new, inconsistent one.
+    """
+    _require_role(request, slug, "admin", rbac)
+
+    bundle = body.get("bundle")
+    if not bundle:
+        raise HTTPException(status_code=422, detail="bundle is required")
+    repo = VendoredSeedRepository(bundle)
+    return repo.preview(entity_graph, workspace=slug)
+
+
 @app.get("/v1/management/workspaces/{slug}/roles")
 async def list_workspace_roles(
     slug: str,

@@ -1,13 +1,18 @@
-import { test, expect, WORKSPACE } from "./fixtures";
+import { test, expect, WORKSPACE, REAL_PERSON } from "./fixtures";
 import { request as pwRequest } from "@playwright/test";
 
-// Settings -> Import (issue #116): bulk-seed the entity graph from CSV/JSON with a
-// preview-before-commit step, closing a design-fidelity gap (brief §3.7,
-// ADR-0013's seed-first model). Frontend-only -- the backend seam already exists
-// (POST /v1/management/workspaces/{slug}/seed, issue #108/#109).
+// Settings -> Import (issue #116; two-phase preview/commit API added by #127):
+// bulk-seed the entity graph from CSV/JSON with a real preview-before-commit
+// round trip (brief §3.7, ADR-0013's seed-first model). Selecting/dropping a file
+// now POSTs to .../seed/preview -- a read-only server validation against the live
+// entity graph (ADR-0018 blind-index duplicates; CONTEXT.md's controlled relation
+// vocabulary + orientation) -- before Commit POSTs to the existing .../seed
+// (issue #108/#109). Backend row-validation behavior itself is covered by
+// tests/test_import_preview_commit.py; this file is the SPA-side contract.
 //
 // Fixture roles (serve_fixture.py): alice holds admin (+ viewer/curator/re-identifier)
-// on WORKSPACE ("acme").
+// on WORKSPACE ("acme"). REAL_PERSON ("Martin Bach") is already a seeded entity
+// there -- reused below to trigger a real blind-index duplicate.
 
 test.describe("settings import — section renders", () => {
   test("Import section renders under Preferences with a dropzone", async ({ alicePage }) => {
@@ -55,6 +60,186 @@ test.describe("settings import — JSON preview", () => {
     });
     await alicePage.waitForTimeout(200);
     expect(seedRequestFired).toBe(false);
+  });
+
+  test("selecting a file posts to the read-only seed/preview endpoint, not commit", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto("/ui/settings");
+    const bundle = {
+      persons: [{ canonical_name: "Fatima Al-Rashid", variations: [] }],
+      terms: [],
+      entity_relationships: [],
+    };
+
+    const [previewRequest] = await Promise.all([
+      alicePage.waitForRequest(
+        (req) => req.url().endsWith("/seed/preview") && req.method() === "POST"
+      ),
+      alicePage.getByTestId("import-file-input").setInputFiles({
+        name: "bundle.json",
+        mimeType: "application/json",
+        buffer: Buffer.from(JSON.stringify(bundle)),
+      }),
+    ]);
+
+    expect(previewRequest.url()).toContain(`/v1/management/workspaces/${WORKSPACE}/seed/preview`);
+    expect(previewRequest.postDataJSON().bundle.persons[0].canonical_name).toBe(
+      "Fatima Al-Rashid"
+    );
+  });
+
+  test("the preview summary reads 'N rows · nothing committed yet'", async ({ alicePage }) => {
+    await alicePage.goto("/ui/settings");
+    const bundle = {
+      persons: [{ canonical_name: "Kwame Mensah", variations: [] }],
+      terms: [{ canonical_name: "Solari Systems", variations: [] }],
+      entity_relationships: [],
+    };
+    await alicePage.getByTestId("import-file-input").setInputFiles({
+      name: "bundle.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify(bundle)),
+    });
+
+    await expect(alicePage.getByTestId("import-preview-summary")).toHaveText(
+      "2 rows · nothing committed yet"
+    );
+  });
+});
+
+test.describe("settings import — row-level validation (issue #127)", () => {
+  test("a blind-index duplicate of an existing entity is flagged in the Problems column", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto("/ui/settings");
+    const bundle = {
+      persons: [{ canonical_name: REAL_PERSON, variations: [] }],
+      terms: [],
+      entity_relationships: [],
+    };
+    await alicePage.getByTestId("import-file-input").setInputFiles({
+      name: "bundle.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify(bundle)),
+    });
+
+    const table = alicePage.getByTestId("import-preview-table");
+    await expect(table).toBeVisible();
+    const row = table.locator("tbody tr").filter({ hasText: REAL_PERSON });
+    await expect(row.getByTestId("import-row-problems")).toContainText("Duplicate");
+  });
+
+  test("an unknown relation type is flagged with a reason, valid rows unaffected", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto("/ui/settings");
+    const bundle = {
+      persons: [{ canonical_name: "Noor Haddad", variations: [] }],
+      terms: [{ canonical_name: "Ravello Dynamics", variations: [] }],
+      entity_relationships: [
+        {
+          source_kind: "person",
+          source: "Noor Haddad",
+          relation: "manages",
+          target_kind: "term",
+          target: "Ravello Dynamics",
+        },
+      ],
+    };
+    await alicePage.getByTestId("import-file-input").setInputFiles({
+      name: "bundle.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify(bundle)),
+    });
+
+    const table = alicePage.getByTestId("import-preview-table");
+    const relRow = table.locator("tbody tr").filter({ hasText: "manages" });
+    await expect(relRow.getByTestId("import-row-problems")).toContainText("Unknown relation type");
+    // The person/term rows themselves carry no problems.
+    const personRow = table.locator("tbody tr").filter({ hasText: "Noor Haddad" }).first();
+    await expect(personRow.getByTestId("import-row-problems")).toHaveText("");
+  });
+
+  test("a wrong-orientation employer edge is flagged with a reason", async ({ alicePage }) => {
+    await alicePage.goto("/ui/settings");
+    const bundle = {
+      persons: [{ canonical_name: "Tomas Novotny", variations: [] }],
+      terms: [{ canonical_name: "Birchwood Capital", variations: [] }],
+      entity_relationships: [
+        {
+          // Reversed: employer must be person -> term, not term -> person.
+          source_kind: "term",
+          source: "Birchwood Capital",
+          relation: "employer",
+          target_kind: "person",
+          target: "Tomas Novotny",
+        },
+      ],
+    };
+    await alicePage.getByTestId("import-file-input").setInputFiles({
+      name: "bundle.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify(bundle)),
+    });
+
+    const table = alicePage.getByTestId("import-preview-table");
+    const relRow = table.locator("tbody tr").filter({ hasText: "employer" });
+    await expect(relRow.getByTestId("import-row-problems")).toContainText(
+      "Wrong relation orientation"
+    );
+  });
+
+  test("a duplicate row is skipped on commit -- no second entity is minted", async ({
+    alicePage,
+    baseURL,
+  }) => {
+    await alicePage.goto("/ui/settings");
+    const bundle = {
+      persons: [{ canonical_name: REAL_PERSON, variations: [] }],
+      terms: [],
+      entity_relationships: [],
+    };
+    await alicePage.getByTestId("import-file-input").setInputFiles({
+      name: "bundle.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify(bundle)),
+    });
+    await expect(alicePage.getByTestId("import-preview-table")).toBeVisible();
+
+    const api = await pwRequest.newContext({
+      baseURL,
+      extraHTTPHeaders: { "x-blindfold-identity": "alice" },
+    });
+    const before = await (await api.get(`/v1/management/workspaces/${WORKSPACE}/entities`)).json();
+    const countBefore = (before.entities as unknown[]).length;
+
+    await alicePage.getByTestId("import-commit-btn").click();
+    await expect(alicePage.getByTestId("import-preview-table")).not.toBeVisible();
+
+    const after = await (await api.get(`/v1/management/workspaces/${WORKSPACE}/entities`)).json();
+    await api.dispose();
+    expect((after.entities as unknown[]).length).toBe(countBefore);
+  });
+});
+
+test.describe("settings import — corrected persistence copy (issue #127)", () => {
+  test("the footnote no longer claims real values never persist", async ({ alicePage }) => {
+    await alicePage.goto("/ui/settings");
+    const bundle = {
+      persons: [{ canonical_name: "Ingrid Solheim", variations: [] }],
+      terms: [],
+      entity_relationships: [],
+    };
+    await alicePage.getByTestId("import-file-input").setInputFiles({
+      name: "bundle.json",
+      mimeType: "application/json",
+      buffer: Buffer.from(JSON.stringify(bundle)),
+    });
+
+    const card = alicePage.locator(".bf-import-card");
+    await expect(card).toContainText("stored encrypted in the mapping");
+    await expect(card).not.toContainText("real values never persist");
   });
 });
 
