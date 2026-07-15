@@ -24,6 +24,22 @@ export type SeedResult = {
   seeded: boolean;
 };
 
+// Preview-row problem codes the server's seed/preview endpoint returns (issue
+// #127): "duplicate" is a blind-index equality match against an existing entity
+// (ADR-0018); "unknown_relation"/"orientation_violation" are entity_relationships
+// row problems (CONTEXT.md controlled vocabulary: employer, subsidiary_of).
+export type PreviewRow = {
+  kind: string;
+  value: string;
+  relation: string;
+  problems: string[];
+};
+
+export type PreviewResult = {
+  rows: PreviewRow[];
+  row_count: number;
+};
+
 export function slugify(name: string): string {
   return name
     .trim()
@@ -55,6 +71,26 @@ export async function seedWorkspace(
     headers: { "content-type": "application/json" },
     body: JSON.stringify(bundle ? { bundle } : {}),
   });
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
+}
+
+// Validate a bulk-seed bundle against the live entity graph before commit (issue
+// #127) -- the first of the two phases Settings -> Import's dropzone drives.
+// Read-only server round-trip: never mutates the target workspace (nothing
+// persists on preview or on Discard afterward).
+export async function previewSeedBundle(
+  slug: string,
+  bundle: Record<string, unknown>,
+): Promise<PreviewResult> {
+  const r = await fetch(
+    `/v1/management/workspaces/${encodeURIComponent(slug)}/seed/preview`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ bundle }),
+    },
+  );
   if (!r.ok) throw new Error(`HTTP ${r.status}`);
   return r.json();
 }

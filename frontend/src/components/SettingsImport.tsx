@@ -1,16 +1,29 @@
-// Settings -> Import (issue #116): bulk-seed the entity graph from CSV/JSON with a
-// preview-before-commit step (design brief §3.7, ADR-0013's seed-first model).
-// Parsing is entirely client-side; nothing reaches the server until Commit.
+// Settings -> Import (issue #116, two-phase preview/commit added by #127):
+// bulk-seed the entity graph from CSV/JSON (design brief §3.7, ADR-0013's
+// seed-first model). File parsing is client-side; the parsed bundle is then
+// validated against the live entity graph by a read-only server round-trip
+// (POST .../seed/preview) before anything can be committed -- nothing persists
+// until Commit, and Discard (or a preview-request failure) leaves the workspace
+// untouched.
 
 import { useRef, useState, type ChangeEvent, type DragEvent } from "react";
 import { useWorkspace } from "./WorkspaceContext";
-import { seedWorkspace } from "../lib/setupApi";
 import {
-  parseImportFile,
-  bundleToPreviewRows,
-  type SeedBundle,
+  seedWorkspace,
+  previewSeedBundle,
   type PreviewRow,
-} from "../lib/importPreview";
+} from "../lib/setupApi";
+import { parseImportFile, type SeedBundle } from "../lib/importPreview";
+
+const PROBLEM_LABELS: Record<string, string> = {
+  duplicate: "Duplicate — already in the graph",
+  unknown_relation: "Unknown relation type",
+  orientation_violation: "Wrong relation orientation",
+};
+
+function describeProblems(problems: string[]): string {
+  return problems.map((p) => PROBLEM_LABELS[p] ?? p).join("; ");
+}
 
 export function SettingsImport() {
   const { activeWorkspace } = useWorkspace();
@@ -18,6 +31,7 @@ export function SettingsImport() {
   const [bundle, setBundle] = useState<SeedBundle | null>(null);
   const [rows, setRows] = useState<PreviewRow[]>([]);
   const [parseError, setParseError] = useState<string | null>(null);
+  const [previewing, setPreviewing] = useState(false);
   const [committing, setCommitting] = useState(false);
   const [commitError, setCommitError] = useState<string | null>(null);
   const [dragOver, setDragOver] = useState(false);
@@ -31,15 +45,31 @@ export function SettingsImport() {
 
   async function handleFile(file: File) {
     setParseError(null);
+    if (!activeWorkspace) {
+      setParseError("No active workspace — pick a workspace first.");
+      return;
+    }
+    let parsed: SeedBundle;
     try {
       const text = await file.text();
-      const parsed = parseImportFile(text, file.name);
-      setBundle(parsed);
-      setRows(bundleToPreviewRows(parsed));
+      parsed = parseImportFile(text, file.name);
     } catch {
       setParseError("Could not parse this file. Check it's valid CSV or JSON and try again.");
       setBundle(null);
       setRows([]);
+      return;
+    }
+    setPreviewing(true);
+    try {
+      const preview = await previewSeedBundle(activeWorkspace.slug, parsed);
+      setBundle(parsed);
+      setRows(preview.rows);
+    } catch {
+      setParseError("Could not validate this file against the entity graph. Try again.");
+      setBundle(null);
+      setRows([]);
+    } finally {
+      setPreviewing(false);
     }
   }
 
@@ -115,19 +145,31 @@ export function SettingsImport() {
             {parseError}
           </p>
         )}
+        {previewing && (
+          <p className="bf-settings-field-hint" data-testid="import-previewing">
+            Validating against the entity graph…
+          </p>
+        )}
         {bundle && (
           <>
+            <p className="bf-settings-field-hint" data-testid="import-preview-summary">
+              {rows.length} row{rows.length === 1 ? "" : "s"} · nothing committed yet
+            </p>
             <table className="bf-import-preview-table" data-testid="import-preview-table">
               <thead>
                 <tr>
                   <th>Kind</th>
-                  <th>Value</th>
+                  <th>Value (inbound)</th>
                   <th>Relationship</th>
+                  <th>Problems</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((row, i) => (
-                  <tr key={i}>
+                  <tr
+                    key={i}
+                    className={row.problems.length > 0 ? "bf-import-row--problem" : undefined}
+                  >
                     <td>
                       <span
                         className={`bf-kind-mark bf-kind-mark--${row.kind}`}
@@ -137,6 +179,9 @@ export function SettingsImport() {
                     </td>
                     <td>{row.value}</td>
                     <td className="bf-mono-cell">{row.relation}</td>
+                    <td data-testid="import-row-problems">
+                      {row.problems.length > 0 ? describeProblems(row.problems) : ""}
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -149,7 +194,7 @@ export function SettingsImport() {
                 onClick={handleCommit}
                 data-testid="import-commit-btn"
               >
-                Commit
+                Commit {rows.length} row{rows.length === 1 ? "" : "s"}
               </button>
               <button
                 type="button"
@@ -161,7 +206,9 @@ export function SettingsImport() {
                 Discard
               </button>
               <p className="bf-settings-field-hint">
-                Surrogates are minted on commit; real values never persist.
+                Surrogates are minted on commit. Real values are stored encrypted in
+                the mapping, never plaintext — import is inbound-only, nothing
+                leaves this machine. Rows flagged above are skipped on commit.
               </p>
             </div>
             {commitError && (
