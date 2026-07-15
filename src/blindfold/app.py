@@ -79,6 +79,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import AsyncIterator, Callable
+from datetime import datetime
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -127,6 +128,7 @@ from .policy import (
     AuditRecord,
     WorkspacePolicies,
     WorkspacePolicy,
+    audit_event_kind,
 )
 from .rbac import RbacRegistry
 from .relationships import RelationshipEdge, RelationshipStore
@@ -1275,6 +1277,9 @@ def _require_role(
 async def list_audit_events(
     request: Request,
     workspace: str,
+    kind: str | None = None,
+    actor: str | None = None,
+    since: str | None = None,
     rbac: RbacRegistry = Depends(get_rbac),
     audit_log: AuditLog = Depends(get_audit_log),
 ) -> dict:
@@ -1283,8 +1288,16 @@ async def list_audit_events(
     Requires the calling identity to hold the ``viewer`` role (exact-match; ADR-0015)
     on the requested workspace — workspace A's events are hidden from identities with
     access only to workspace B (workspace scoping, acceptance criterion 2).
+
+    ``kind`` (``reveal`` | ``lookup`` | ``block``, optional) narrows to one of the
+    audit log view's tinted kind families server-side (issue #124's segmented
+    filter) — see :func:`blindfold.policy.audit_event_kind`. ``actor`` (optional)
+    narrows to one identity (the audit log view's "All actors" chip). ``since``
+    (ISO-8601, optional) excludes events recorded strictly before the cutoff (the
+    audit log view's time-range chip).
     """
     _require_role(request, workspace, "viewer", rbac)
+    since_dt = datetime.fromisoformat(since) if since is not None else None
     events = [
         {
             "workspace": r.workspace,
@@ -1295,6 +1308,9 @@ async def list_audit_events(
         }
         for r in audit_log.records
         if r.workspace == workspace
+        and (kind is None or audit_event_kind(r.event) == kind)
+        and (actor is None or r.identity == actor)
+        and (since_dt is None or datetime.fromisoformat(r.ts) >= since_dt)
     ]
     return {"events": events}
 

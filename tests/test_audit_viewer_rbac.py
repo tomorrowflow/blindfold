@@ -202,6 +202,117 @@ async def test_audit_viewer_denied_without_viewer_role():
 
 
 @pytest.mark.anyio
+async def test_audit_viewer_kind_filter_narrows_to_block_events_server_side():
+    # Audit log view (issue #124): the segmented kind filter must narrow the
+    # result set server-side via a `kind` query param, not just in the browser.
+    rbac = RbacRegistry()
+    rbac.grant("alice", "ws-a", "viewer")
+
+    audit_log = _audit_with(
+        [
+            AuditRecord(workspace="ws-a", event="re-identified", reason="reveal", identity="alice"),
+            AuditRecord(workspace="ws-a", event="entity-list-searched", reason="hit_count=1", identity="alice"),
+            AuditRecord(workspace="ws-a", event="blocked-l3-unavailable", reason="l3 down"),
+        ]
+    )
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_audit_log] = lambda: audit_log
+    try:
+        async with _make_client() as client:
+            resp = await client.get(
+                "/v1/management/audit",
+                params={"workspace": "ws-a", "kind": "block"},
+                headers={"x-blindfold-identity": "alice"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    items = resp.json()["events"]
+    assert len(items) == 1
+    assert items[0]["event"] == "blocked-l3-unavailable"
+
+
+@pytest.mark.anyio
+async def test_audit_viewer_actor_filter_narrows_to_one_identity_server_side():
+    # Audit log view (issue #124): the "All actors" chip must narrow server-side
+    # via an `actor` query param, not just in the browser.
+    rbac = RbacRegistry()
+    rbac.grant("alice", "ws-a", "viewer")
+
+    audit_log = _audit_with(
+        [
+            AuditRecord(workspace="ws-a", event="re-identified", reason="reveal", identity="alice"),
+            AuditRecord(
+                workspace="ws-a", event="re-identify-denied", reason="no role", identity="dave"
+            ),
+        ]
+    )
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_audit_log] = lambda: audit_log
+    try:
+        async with _make_client() as client:
+            resp = await client.get(
+                "/v1/management/audit",
+                params={"workspace": "ws-a", "actor": "dave"},
+                headers={"x-blindfold-identity": "alice"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    items = resp.json()["events"]
+    assert len(items) == 1
+    assert items[0]["identity"] == "dave"
+
+
+@pytest.mark.anyio
+async def test_audit_viewer_since_filter_excludes_events_before_the_cutoff_server_side():
+    # Audit log view (issue #124): the "Last 7 days" chip must narrow server-side
+    # via a `since` (ISO-8601) query param, not just in the browser.
+    rbac = RbacRegistry()
+    rbac.grant("alice", "ws-a", "viewer")
+
+    audit_log = _audit_with(
+        [
+            AuditRecord(
+                workspace="ws-a",
+                event="entity-list-searched",
+                reason="hit_count=0",
+                identity="alice",
+                ts="2020-01-01T00:00:00+00:00",
+            ),
+            AuditRecord(
+                workspace="ws-a",
+                event="re-identified",
+                reason="reveal",
+                identity="alice",
+                ts="2026-07-01T12:00:00+00:00",
+            ),
+        ]
+    )
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_audit_log] = lambda: audit_log
+    try:
+        async with _make_client() as client:
+            resp = await client.get(
+                "/v1/management/audit",
+                params={"workspace": "ws-a", "since": "2026-06-01T00:00:00+00:00"},
+                headers={"x-blindfold-identity": "alice"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    items = resp.json()["events"]
+    assert len(items) == 1
+    assert items[0]["event"] == "re-identified"
+
+
+@pytest.mark.anyio
 async def test_audit_viewer_workspace_scoping_hides_other_workspace_events():
     # Workspace isolation: alice has viewer on ws-a only; ws-b events MUST NOT appear.
     rbac = RbacRegistry()

@@ -30,6 +30,7 @@ export function AuditLog() {
   const workspace = activeWorkspace?.slug ?? null;
 
   const [events, setEvents] = useState<AuditEvent[]>([]);
+  const [actors, setActors] = useState<string[]>([]);
   const [locked, setLocked] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -37,6 +38,30 @@ export function AuditLog() {
   const [actorFilter, setActorFilter] = useState<string>("all");
   const [timeRange, setTimeRange] = useState<TimeRangeKey>("7d");
 
+  // The actor chip's option list stays stable across the other filters, so it's
+  // drawn from one unfiltered fetch, independent of the filtered rows fetch below.
+  useEffect(() => {
+    if (!workspace) {
+      setActors([]);
+      return;
+    }
+    let cancelled = false;
+    fetchAuditEvents(workspace).then((result) => {
+      if (cancelled || result.locked) return;
+      const identities = result.events
+        .filter((e) => eventKind(e.event) !== null)
+        .map((e) => e.identity)
+        .filter((id): id is string => !!id);
+      setActors([...new Set(identities)].sort());
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [workspace]);
+
+  // Kind, actor and time-range filters are applied server-side (issue #124) —
+  // GET /v1/management/audit's kind/actor/since query params, not client-side
+  // filtering over a bulk fetch.
   useEffect(() => {
     if (!workspace) {
       setEvents([]);
@@ -46,7 +71,13 @@ export function AuditLog() {
     let cancelled = false;
     setLoading(true);
     setLocked(false);
-    fetchAuditEvents(workspace)
+    const rangeMs = TIME_RANGES[timeRange].ms;
+    const since = rangeMs === null ? undefined : new Date(Date.now() - rangeMs).toISOString();
+    fetchAuditEvents(workspace, {
+      kind: kindFilter === "all" ? undefined : kindFilter,
+      actor: actorFilter === "all" ? undefined : actorFilter,
+      since,
+    })
       .then((result) => {
         if (cancelled) return;
         if (result.locked) {
@@ -65,33 +96,19 @@ export function AuditLog() {
     return () => {
       cancelled = true;
     };
-  }, [workspace]);
+  }, [workspace, kindFilter, actorFilter, timeRange]);
 
   // A real-space crossing or refusal only — structural edits (merge/rename/
   // surrogate-edit) are never in this log, mirroring the drawer's card set.
-  const crossings = useMemo(
+  // (The server already excludes these when a kind filter is applied; this
+  // guards the unfiltered "All" case, which returns every audit record.)
+  const visibleRows = useMemo(
     () =>
       events
         .map((e) => ({ ...e, kind: eventKind(e.event) }))
         .filter((e): e is AuditEvent & { kind: CardKind } => e.kind !== null),
     [events]
   );
-
-  const actors = useMemo(
-    () => [...new Set(crossings.map((e) => e.identity).filter((id): id is string => !!id))].sort(),
-    [crossings]
-  );
-
-  const visibleRows = useMemo(() => {
-    const rangeMs = TIME_RANGES[timeRange].ms;
-    const cutoff = rangeMs === null ? null : Date.now() - rangeMs;
-    return crossings.filter((e) => {
-      if (kindFilter !== "all" && e.kind !== kindFilter) return false;
-      if (actorFilter !== "all" && e.identity !== actorFilter) return false;
-      if (cutoff !== null && new Date(e.ts).getTime() < cutoff) return false;
-      return true;
-    });
-  }, [crossings, kindFilter, actorFilter, timeRange]);
 
   if (!workspace) {
     return (

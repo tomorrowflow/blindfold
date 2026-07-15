@@ -102,3 +102,21 @@ class AuditLog:
 
     def append(self, record: AuditRecord) -> None:
         self.records.append(record)
+
+
+def audit_event_kind(event: str) -> str | None:
+    """Map an ``AuditRecord.event`` onto the audit log view's tinted "kind" family.
+
+    Mirrors ``frontend/src/lib/auditEvents.ts``'s ``eventKind`` — the single
+    reveal/lookup/block classification the drawer (#95) and the full-page audit
+    log view (#102/#124) both key off. ``None`` for structural or non-real-space
+    events (``deterministic-only-pass``, ``entity-merged``, ``surrogate-edited``,
+    ``upstream-*``, ``policy-degrade-*``), which the audit log view never shows.
+    """
+    if event in ("re-identified", "re-identify-denied", "re-identify-failed"):
+        return "reveal"
+    if event == "entity-list-searched":
+        return "lookup"
+    if event.startswith("blocked-"):
+        return "block"
+    return None
