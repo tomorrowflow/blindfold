@@ -16,6 +16,13 @@ const SHELL_ROUTES = [
   "/ui/access",
   "/ui/setup",
   "/ui/settings",
+  // Retired ADR-0011 embedded-page bookmarks (issue #128: /ui/entity-list;
+  // issue #98: /ui/org-graph; issue #99: /ui/review-inbox) now fall through
+  // to this same shell bundle — the whole /ui/ surface, old paths included,
+  // must stay zero-non-loopback.
+  "/ui/entity-list",
+  "/ui/org-graph",
+  "/ui/review-inbox",
 ];
 
 test("the shell makes zero requests to a non-loopback origin", async ({ page, baseURL }) => {

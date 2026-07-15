@@ -6,13 +6,11 @@ the result is committed to the repo — a **vendored** bundle, so an installed w
 serves the shell with zero Node at install or run time. Only ``frontend/`` (and a
 developer's own ``npm run build``) ever touches Node.
 
-Any ``/ui/*`` path that isn't one of the legacy embedded SPA routes still pending
-migration (ADR-0011's ``/ui/entity-list`` — untouched here, retired in its own
-migration issue) falls through to the shell's ``index.html`` so react-router's
-client-side routing can resolve a deep link or a reload.
-``/ui/review-inbox`` was retired by issue #99; ``/ui/org-graph`` was retired by
-issue #98 — both now fall through here, resolving to the shell's ``/inbox`` and
-``/graph`` views respectively.
+Every ADR-0011 embedded SPA route is now retired (``/ui/review-inbox`` by issue
+#99, ``/ui/org-graph`` by issue #98, ``/ui/entity-list`` by issue #128), so any
+``/ui/*`` path falls through to the shell's ``index.html`` — old bookmarks to
+those paths resolve here, and react-router's client-side routing takes it from
+there to the shell's ``/inbox``, ``/graph``, or ``/entities`` view respectively.
 """
 
 from __future__ import annotations

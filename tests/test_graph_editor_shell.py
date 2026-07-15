@@ -66,40 +66,21 @@ async def test_ui_graph_shell_route_serves_the_shell():
     assert 'id="bf-shell-root"' in resp.text
 
 
-# ---------------------------------------------------------------------------
-# 3. spa.py no longer defines _ORG_GRAPH_HTML / org_graph_html
-# ---------------------------------------------------------------------------
-
-
-def test_spa_module_does_not_export_org_graph_html():
-    """The org_graph_html() function and _ORG_GRAPH_HTML constant must be
-    removed from spa.py after retirement — the legacy CDN-loaded Cytoscape
-    page is gone and replaced by the shell's vendored build."""
-    import blindfold.spa as spa_module
-
-    assert not hasattr(spa_module, "_ORG_GRAPH_HTML"), (
-        "_ORG_GRAPH_HTML must be removed from spa.py (legacy page retired by #98)"
-    )
-    assert not hasattr(spa_module, "org_graph_html"), (
-        "org_graph_html() must be removed from spa.py (legacy page retired by #98)"
-    )
-
+# NOTE: The #98-era test_spa_module_does_not_export_org_graph_html (asserting
+# _ORG_GRAPH_HTML/org_graph_html were gone from spa.py) is superseded by #128's
+# test_spa_module_is_removed below — spa.py itself no longer exists.
 
 # ---------------------------------------------------------------------------
-# 4. The ORG_GRAPH_ENDPOINT / MERGE_ENDPOINT / EDIT_SURROGATE_ENDPOINT /
-#    REIDENTIFY_ENDPOINT constants may be cleaned from spa.py if unused
-#    (only if nothing else imports them).
+# 4. spa.py itself is gone — issue #128 retires the last embedded page
+#    (/ui/entity-list), leaving nothing in the module for anything to import.
 # ---------------------------------------------------------------------------
 
 
-def test_spa_still_has_entity_list_html_for_unreleased_entity_list_migration():
-    """The entity-list embedded page (/ui/entity-list) is NOT retired by #98
-    (it has its own future migration issue) — entity_list_html() must stay."""
-    import blindfold.spa as spa_module
+def test_spa_module_is_removed():
+    """Issue #128 retires spa.py entirely: the last embedded SPA page
+    (/ui/entity-list) is gone, and nothing else in the codebase imports from
+    it, so the module itself is deleted rather than left as dead code."""
+    import importlib
 
-    assert hasattr(spa_module, "entity_list_html"), (
-        "entity_list_html() must remain in spa.py — entity-list migration is out of scope for #98"
-    )
-    assert hasattr(spa_module, "_ENTITY_LIST_HTML"), (
-        "_ENTITY_LIST_HTML must remain in spa.py — entity-list not yet migrated"
-    )
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("blindfold.spa")
