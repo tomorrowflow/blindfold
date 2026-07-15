@@ -28,10 +28,12 @@ from blindfold.app import (
     get_transit_health_probe,
     get_upstream_client,
     get_upstream_health,
+    get_workspace_policies,
 )
 from blindfold.app import get_review_inbox
 from blindfold.entity_graph import EntityGraph
 from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
+from blindfold.policy import WorkspacePolicies
 from blindfold.review import ReviewInbox
 from blindfold.status import BlockHistory, CachedHealthProbe, DependencyHealth, RecentFailureHealth
 from blindfold.upstream import UpstreamClient, UpstreamError
@@ -336,6 +338,33 @@ async def test_config_never_carries_the_openbao_token_or_any_secret(monkeypatch)
         "fail_closed_policy",
     }
     assert secret_token not in str(body)
+
+
+@pytest.mark.anyio
+async def test_config_fail_closed_policy_reflects_the_deterministic_only_opt_in():
+    # Issue #126 AC: "/v1/status's config summary reflects the active workspace
+    # policy" -- previously this was a hardcoded "fail-closed" literal regardless
+    # of any WorkspacePolicies opt-in (ADR-0009). Same x-blindfold-workspace header
+    # convention the proxy path already reads (app._workspace_slug), defaulting to
+    # the default workspace -- kept optional/ungated per ADR-0011 (see
+    # test_no_auth_or_identity_headers_are_required below).
+    policies = WorkspacePolicies()
+    policies.opt_in_deterministic_only("ws-a")
+    app.dependency_overrides[get_workspace_policies] = lambda: policies
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://proxy.test") as client:
+            degraded_resp = await client.get(
+                "/v1/status", headers={"x-blindfold-workspace": "ws-a"}
+            )
+            default_resp = await client.get(
+                "/v1/status", headers={"x-blindfold-workspace": "ws-b"}
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert degraded_resp.json()["config"]["fail_closed_policy"] == "deterministic-only"
+    assert default_resp.json()["config"]["fail_closed_policy"] == "fail-closed"
 
 
 @pytest.mark.anyio
