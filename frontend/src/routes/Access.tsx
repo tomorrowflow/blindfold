@@ -12,6 +12,7 @@ import { Lock, Plus } from "../components/icons";
 import { useWorkspace } from "../components/WorkspaceContext";
 import {
   CANONICAL_ROLES,
+  ROLE_MEANINGS,
   fetchWorkspaceRoles,
   grantRole,
   revokeRole,
@@ -31,13 +32,22 @@ function groupByIdentity(assignments: RoleAssignment[]): IdentityRoles[] {
 }
 
 export function Access() {
-  const { activeWorkspace } = useWorkspace();
+  const { activeWorkspace, identity: selfIdentity } = useWorkspace();
   const [identities, setIdentities] = useState<IdentityRoles[]>([]);
   const [addingIdentity, setAddingIdentity] = useState(false);
   const [newIdentity, setNewIdentity] = useState("");
   const [newRole, setNewRole] = useState<string>(CANONICAL_ROLES[0]);
+  const [confirmingLockout, setConfirmingLockout] = useState(false);
+  // Set the instant the caller confirms revoking their own admin role: the
+  // server denies that identity's own next roles-endpoint call (they no longer
+  // hold admin), so this view flips to the locked state itself rather than
+  // relying on a refetch that would just 403.
+  const [selfLostAdmin, setSelfLostAdmin] = useState(false);
   const workspace = activeWorkspace?.slug ?? null;
-  const isAdmin = activeWorkspace?.roles.includes("admin") ?? false;
+  const isAdmin = (activeWorkspace?.roles.includes("admin") ?? false) && !selfLostAdmin;
+  const adminHolders = identities.filter((row) => row.roles.includes("admin"));
+  const isSelfOnlyAdmin =
+    adminHolders.length === 1 && adminHolders[0]?.identity === selfIdentity;
 
   useEffect(() => {
     if (!workspace || !isAdmin) {
@@ -71,10 +81,30 @@ export function Access() {
     await refresh();
   }
 
-  async function handleRevoke(identity: string, role: string) {
+  async function commitRevoke(identity: string, role: string) {
     if (!workspace) return;
     await revokeRole(workspace, identity, role);
     await refresh();
+  }
+
+  function handleRevoke(identity: string, role: string) {
+    // Roles are flat (ADR-0028) — an identity holds `admin` or doesn't, so
+    // revoking your own admin role is always your only one. Doing so ends this
+    // session's own access to this view, and — if no one else holds admin —
+    // locks every identity out of workspace administration. Either way, that's
+    // consequential enough to confirm before committing.
+    if (role === "admin" && identity === selfIdentity) {
+      setConfirmingLockout(true);
+      return;
+    }
+    void commitRevoke(identity, role);
+  }
+
+  async function confirmLockoutRevoke() {
+    if (!workspace) return;
+    setConfirmingLockout(false);
+    setSelfLostAdmin(true);
+    await revokeRole(workspace, selfIdentity, "admin");
   }
 
   async function handleAddIdentity() {
@@ -199,6 +229,7 @@ export function Access() {
                             : ""
                         }`}
                         data-testid={`role-chip-${role}`}
+                        title={ROLE_MEANINGS[role as (typeof CANONICAL_ROLES)[number]]}
                       >
                         {role}
                         <button
@@ -213,6 +244,46 @@ export function Access() {
                       </span>
                     ))}
                   </div>
+                  {confirmingLockout && row.identity === selfIdentity && (
+                    <div
+                      className="bf-access-lockout-warning"
+                      role="dialog"
+                      aria-label="Confirm admin self-revoke"
+                      data-testid="admin-lockout-warning"
+                    >
+                      <p>
+                        {isSelfOnlyAdmin ? (
+                          <>
+                            You are the only admin on <code>{workspace}</code> — revoking your own
+                            admin role will lock every identity out of workspace administration.
+                          </>
+                        ) : (
+                          <>
+                            Revoking your own admin role will remove your access to manage{" "}
+                            <code>{workspace}</code>.
+                          </>
+                        )}
+                      </p>
+                      <div className="bf-access-lockout-actions">
+                        <button
+                          type="button"
+                          className="bf-btn-secondary"
+                          onClick={() => setConfirmingLockout(false)}
+                          data-testid="admin-lockout-cancel"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="button"
+                          className="bf-btn-danger"
+                          onClick={confirmLockoutRevoke}
+                          data-testid="admin-lockout-confirm"
+                        >
+                          Revoke anyway
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </td>
                 <td>
                   <div className="bf-access-grant">
@@ -226,6 +297,7 @@ export function Access() {
                             : ""
                         }`}
                         data-testid={`grant-btn-${row.identity}-${role}`}
+                        title={ROLE_MEANINGS[role]}
                         onClick={() => handleGrant(row.identity, role)}
                       >
                         <Plus size={12} /> {role}

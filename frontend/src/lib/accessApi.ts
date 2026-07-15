@@ -9,6 +9,16 @@ export const CANONICAL_ROLES = ["viewer", "curator", "re-identifier", "admin"] a
 
 export type Role = (typeof CANONICAL_ROLES)[number];
 
+// One-line meaning per role (CONTEXT.md "Role" / ADR-0028) — surfaced as a tooltip
+// wherever a role is granted or held, since curate ≠ re-identify is easy to miss
+// from the chip label alone.
+export const ROLE_MEANINGS: Record<Role, string> = {
+  viewer: "read audit events + entity listings",
+  curator: "structural edits in fake-space (merge, edge CRUD, rename, surrogate edit) — never unmask",
+  "re-identifier": "decrypt a surrogate to its real value; every attempt audited",
+  admin: "grant/revoke roles within the workspace",
+};
+
 export type RoleAssignment = {
   identity: string;
   workspace: string;

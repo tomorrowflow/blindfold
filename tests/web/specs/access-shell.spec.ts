@@ -1,4 +1,4 @@
-import { test, expect } from "./fixtures";
+import { test, expect, WORKSPACE } from "./fixtures";
 
 // Access view (issue #103): workspace RBAC admin — list/grant/revoke the ADR-0028
 // roles {viewer, curator, re-identifier, admin}, admin-gated. Replaces the /access
@@ -100,6 +100,108 @@ test.describe("access shell — re-identifier ochre / curator green (issue #115)
 
     await frankRow.getByTestId("revoke-btn-frank-viewer").click();
     await expect(alicePage.getByTestId("access-row-frank")).toHaveCount(0);
+  });
+});
+
+test.describe("access shell — role glossary (issue #125)", () => {
+  test("each role chip and grant button surfaces the ADR-0028 one-line meaning", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto("/ui/access");
+    const aliceRow = alicePage.getByTestId("access-row-alice");
+
+    await expect(aliceRow.getByTestId("role-chip-curator")).toHaveAttribute(
+      "title",
+      /never unmask/
+    );
+    await expect(aliceRow.getByTestId("role-chip-re-identifier")).toHaveAttribute(
+      "title",
+      /every attempt audited/
+    );
+
+    const daveRow = alicePage.getByTestId("access-row-dave");
+    await expect(daveRow.getByTestId("grant-btn-dave-viewer")).toHaveAttribute(
+      "title",
+      /read audit events/
+    );
+    await expect(daveRow.getByTestId("grant-btn-dave-admin")).toHaveAttribute(
+      "title",
+      /grant\/revoke roles/
+    );
+  });
+});
+
+test.describe("access shell — admin self-revoke lockout guard (issue #125)", () => {
+  test("revoking your own last admin role warns before commit; cancel leaves it granted", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto("/ui/access");
+    const aliceRow = alicePage.getByTestId("access-row-alice");
+    await expect(aliceRow.getByTestId("role-chip-admin")).toBeVisible();
+
+    // alice is the sole admin on "acme" (serve_fixture.py) — revoking her own
+    // admin role here would lock every identity out of workspace administration.
+    await aliceRow.getByTestId("revoke-btn-alice-admin").click();
+
+    const warning = alicePage.getByTestId("admin-lockout-warning");
+    await expect(warning).toBeVisible();
+    await expect(warning).toContainText(/only admin/i);
+
+    // Not yet committed — the chip is still there and no revoke has happened.
+    await expect(aliceRow.getByTestId("role-chip-admin")).toBeVisible();
+
+    await alicePage.getByTestId("admin-lockout-cancel").click();
+    await expect(alicePage.getByTestId("admin-lockout-warning")).toHaveCount(0);
+    await expect(aliceRow.getByTestId("role-chip-admin")).toBeVisible();
+  });
+
+  test("still warns (with different copy) when another identity also holds admin, and confirming commits the revoke and locks the view", async ({
+    alicePage,
+    request,
+  }) => {
+    await alicePage.goto("/ui/access");
+
+    // Give "grace" admin too. Roles are flat (ADR-0028): revoking your own
+    // admin role always ends *your own* session's access to this view, even
+    // when the workspace itself still has another admin — so the guard must
+    // still warn here, just with copy that doesn't claim a full lockout.
+    await alicePage.getByTestId("add-identity-btn").click();
+    await alicePage.getByTestId("add-identity-input").fill("grace");
+    await alicePage.getByTestId("add-identity-role-select").selectOption("admin");
+    await alicePage.getByTestId("add-identity-submit").click();
+    await expect(alicePage.getByTestId("access-row-grace")).toBeVisible();
+
+    const aliceRow = alicePage.getByTestId("access-row-alice");
+    await aliceRow.getByTestId("revoke-btn-alice-admin").click();
+
+    const warning = alicePage.getByTestId("admin-lockout-warning");
+    await expect(warning).toBeVisible();
+    await expect(warning).not.toContainText(/only admin/i);
+    await expect(warning).toContainText(/your access/i);
+
+    await alicePage.getByTestId("admin-lockout-confirm").click();
+
+    // Committed: alice's own session immediately sees the locked view, even
+    // though grace still holds admin on the workspace.
+    await expect(alicePage.getByTestId("access-locked")).toBeVisible();
+
+    // Restore fixture state for every later spec in this file: re-grant alice
+    // admin and drop grace entirely. Alice's own browser session can no longer
+    // call an admin-gated endpoint (she just lost admin), so this goes through
+    // the API directly as "grace" — the only remaining admin — not the UI.
+    await request.post(`/v1/management/workspaces/${WORKSPACE}/roles`, {
+      headers: { "x-blindfold-identity": "grace", "content-type": "application/json" },
+      data: { identity: "alice", role: "admin" },
+    });
+    await request.delete(`/v1/management/workspaces/${WORKSPACE}/roles/grace?role=admin`, {
+      headers: { "x-blindfold-identity": "grace" },
+    });
+
+    await alicePage.reload();
+    await expect(
+      alicePage.getByTestId("access-row-alice").getByTestId("role-chip-admin")
+    ).toBeVisible();
+    await expect(alicePage.getByTestId("access-row-grace")).toHaveCount(0);
   });
 });
 
