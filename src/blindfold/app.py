@@ -180,7 +180,11 @@ def _build_l3_adjudicator(settings: Settings) -> L3Adjudicator:
     if not settings.l3_model:
         return _UnconfiguredAdjudicator()
     if settings.l3_provider == "omlx":
-        return OpenAICompatibleAdjudicator(base_url=settings.l3_base_url, model=settings.l3_model)
+        return OpenAICompatibleAdjudicator(
+            base_url=settings.l3_base_url,
+            model=settings.l3_model,
+            api_key=settings.l3_api_key,
+        )
     return OllamaAdjudicator(base_url=settings.l3_base_url, model=settings.l3_model)
 
 
@@ -254,7 +258,7 @@ def _default_l3_probe() -> DependencyHealth:
     if not settings.l3_model:
         return DependencyHealth(healthy=False, detail="no L3 adjudicator configured")
     if settings.l3_provider == "omlx":
-        return ping_omlx(settings.l3_base_url)
+        return ping_omlx(settings.l3_base_url, api_key=settings.l3_api_key)
     return ping_ollama(settings.l3_base_url)
 
 

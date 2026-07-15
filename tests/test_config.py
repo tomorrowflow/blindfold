@@ -96,6 +96,18 @@ def test_settings_l3_provider_is_overridable_via_env(monkeypatch):
     assert get_settings().l3_provider == "omlx"
 
 
+def test_settings_l3_api_key_defaults_to_empty_string(monkeypatch):
+    # Empty means "no key" -- today's behavior, for oMLX installs run with
+    # skip_api_key_verification: true (ADR-0031 follow-up, issue #130).
+    monkeypatch.delenv("BLINDFOLD_L3_API_KEY", raising=False)
+    assert get_settings().l3_api_key == ""
+
+
+def test_settings_l3_api_key_is_read_from_env(monkeypatch):
+    monkeypatch.setenv("BLINDFOLD_L3_API_KEY", "sk-omlx-secret")
+    assert get_settings().l3_api_key == "sk-omlx-secret"
+
+
 def test_settings_openai_upstream_base_url_defaults_to_empty_string(monkeypatch):
     # Empty means "not set" — the OpenAI chat-completions path falls back to the
     # shared BLINDFOLD_UPSTREAM_BASE_URL (issue #76, transport sliver of #37).

@@ -33,13 +33,23 @@ DEFAULT_PING_TIMEOUT_SECONDS = 5.0
 
 
 def ping_omlx(
-    base_url: str, http: httpx.Client | None = None, timeout: float = DEFAULT_PING_TIMEOUT_SECONDS
+    base_url: str,
+    api_key: str = "",
+    http: httpx.Client | None = None,
+    timeout: float = DEFAULT_PING_TIMEOUT_SECONDS,
 ) -> DependencyHealth:
-    """Lightweight oMLX liveness probe (issue #92) -- GET ``{base_url}/v1/models``."""
+    """Lightweight oMLX liveness probe (issue #92) -- GET ``{base_url}/v1/models``.
+
+    Authenticates the same way ``OpenAICompatibleAdjudicator`` does (ADR-0031
+    follow-up, issue #130) -- an auth-enabled oMLX instance 401s this probe too
+    without a key, which would otherwise false-negative /v1/status's l3 dependency
+    probe.
+    """
     url = f"{base_url.rstrip('/')}/v1/models"
+    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     client = http or httpx.Client(timeout=timeout)
     try:
-        response = client.get(url)
+        response = client.get(url, headers=headers)
         response.raise_for_status()
     except httpx.HTTPError:
         return DependencyHealth(healthy=False, detail="omlx unreachable")
@@ -67,12 +77,19 @@ class OpenAICompatibleAdjudicator:
         self,
         base_url: str,
         model: str,
+        api_key: str = "",
         http: httpx.Client | None = None,
         timeout: float = DEFAULT_ADJUDICATOR_TIMEOUT_SECONDS,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._model = model
+        self._api_key = api_key
         self._http = http or httpx.Client(base_url=self._base_url, timeout=timeout)
+
+    def _auth_headers(self) -> dict[str, str]:
+        # Empty/unset means "no key" (ADR-0031 follow-up, issue #130) -- unchanged
+        # behavior for oMLX installs run with skip_api_key_verification: true.
+        return {"Authorization": f"Bearer {self._api_key}"} if self._api_key else {}
 
     def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
         prompt = _PROMPT_TEMPLATE.format(context=candidate.context, text=candidate.text)
@@ -83,6 +100,7 @@ class OpenAICompatibleAdjudicator:
                 "messages": [{"role": "user", "content": prompt}],
                 "response_format": {"type": "json_object"},
             },
+            headers=self._auth_headers(),
         )
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]

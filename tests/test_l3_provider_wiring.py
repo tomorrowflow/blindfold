@@ -14,7 +14,8 @@ constructed, not the request path (unchanged, per ADR-0031 §2).
 
 from __future__ import annotations
 
-from blindfold.app import _build_l3_adjudicator, _UnconfiguredAdjudicator
+import blindfold.app as app
+from blindfold.app import _build_l3_adjudicator, _default_l3_probe, _UnconfiguredAdjudicator
 from blindfold.config import Settings
 from blindfold.l3_openai_compat import OpenAICompatibleAdjudicator
 from blindfold.ollama import OllamaAdjudicator
@@ -38,9 +39,48 @@ def test_build_l3_adjudicator_wires_openai_compatible_client_for_omlx():
     assert isinstance(adjudicator, OpenAICompatibleAdjudicator)
 
 
+def test_build_l3_adjudicator_threads_the_api_key_into_the_openai_compatible_client():
+    # ADR-0031 follow-up (issue #130): BLINDFOLD_L3_API_KEY must reach the wired
+    # client, or the adjudicator 401s against an auth-enabled oMLX instance.
+    settings = Settings(
+        l3_provider="omlx",
+        l3_model="qwen2.5-7b-mlx",
+        l3_base_url="http://localhost:8080",
+        l3_api_key="sk-omlx-secret",
+    )
+
+    adjudicator = _build_l3_adjudicator(settings)
+
+    assert adjudicator._api_key == "sk-omlx-secret"
+
+
 def test_build_l3_adjudicator_stays_unconfigured_when_omlx_has_no_model():
     settings = Settings(l3_provider="omlx", l3_model="")
 
     adjudicator = _build_l3_adjudicator(settings)
 
     assert isinstance(adjudicator, _UnconfiguredAdjudicator)
+
+
+def test_default_l3_probe_threads_the_api_key_into_ping_omlx(monkeypatch):
+    # Acceptance criterion (issue #130): the liveness probe also authenticates, so
+    # /v1/status's l3 dependency probe doesn't false-negative against an
+    # auth-enabled oMLX instance.
+    monkeypatch.setenv("BLINDFOLD_L3_PROVIDER", "omlx")
+    monkeypatch.setenv("BLINDFOLD_L3_MODEL", "qwen2.5-7b-mlx")
+    monkeypatch.setenv("BLINDFOLD_L3_BASE_URL", "http://localhost:8080")
+    monkeypatch.setenv("BLINDFOLD_L3_API_KEY", "sk-omlx-secret")
+    captured: dict = {}
+
+    def fake_ping_omlx(base_url, api_key="", **kwargs):
+        captured["base_url"] = base_url
+        captured["api_key"] = api_key
+        from blindfold.status import DependencyHealth
+
+        return DependencyHealth(healthy=True)
+
+    monkeypatch.setattr(app, "ping_omlx", fake_ping_omlx)
+
+    _default_l3_probe()
+
+    assert captured == {"base_url": "http://localhost:8080", "api_key": "sk-omlx-secret"}

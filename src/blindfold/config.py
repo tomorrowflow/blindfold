@@ -39,6 +39,12 @@ L3 adjudicator (ADR-0022 / ADR-0031 / issue #57, #121, #122):
                              own local-only startup guard (a loopback-only base-url
                              check, distinct from Ollama's `:cloud`-tag check --
                              ADR-0031 §3) since it has no `:cloud`-equivalent signal.
+  BLINDFOLD_L3_API_KEY     — optional oMLX API key (ADR-0031 follow-up, issue #130).
+                             Sent as `Authorization: Bearer <key>` on oMLX's
+                             `/v1/chat/completions` and `/v1/models` calls. Empty
+                             (default) means "no key" -- unchanged behavior for oMLX
+                             installs run with `skip_api_key_verification: true`.
+                             No equivalent for the Ollama provider.
 
 Serve bind address (ADR-0021 / ADR-0027, issue #91):
   BLINDFOLD_HOST           — bind host `blindfold serve` reports itself at (default:
@@ -73,6 +79,7 @@ class Settings:
     l3_base_url: str = DEFAULT_L3_BASE_URL
     l3_model: str = ""
     l3_provider: str = DEFAULT_L3_PROVIDER
+    l3_api_key: str = ""
     openai_upstream_base_url: str = ""
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
@@ -100,6 +107,7 @@ def get_settings() -> Settings:
         l3_base_url=os.environ.get("BLINDFOLD_L3_BASE_URL", DEFAULT_L3_BASE_URL),
         l3_model=os.environ.get("BLINDFOLD_L3_MODEL", ""),
         l3_provider=os.environ.get("BLINDFOLD_L3_PROVIDER", DEFAULT_L3_PROVIDER),
+        l3_api_key=os.environ.get("BLINDFOLD_L3_API_KEY", ""),
         openai_upstream_base_url=os.environ.get("BLINDFOLD_OPENAI_UPSTREAM_BASE_URL", ""),
         host=os.environ.get("BLINDFOLD_HOST", DEFAULT_HOST),
         port=int(os.environ.get("BLINDFOLD_PORT", DEFAULT_PORT)),

@@ -60,6 +60,71 @@ def test_openai_compatible_adjudicator_sends_the_candidate_and_context_and_confi
     assert candidate.context in prompt
 
 
+def test_openai_compatible_adjudicator_sends_a_bearer_token_when_an_api_key_is_configured():
+    # ADR-0031 follow-up (issue #130): a stock oMLX install requires an API key by
+    # default (auth.skip_api_key_verification: false) and 401s without one.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["request"] = request
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": json.dumps({"is_entity": True})}}
+                ]
+            },
+        )
+
+    http = httpx.Client(
+        base_url="http://localhost:8080", transport=httpx.MockTransport(handler)
+    )
+    adjudicator = OpenAICompatibleAdjudicator(
+        base_url="http://localhost:8080",
+        model="qwen2.5-7b-mlx",
+        api_key="sk-omlx-secret",
+        http=http,
+    )
+    candidate = CandidateSpan(
+        text="Quentin", start=13, end=20, context="Please brief Quentin tomorrow."
+    )
+
+    adjudicator.adjudicate(candidate)
+
+    assert captured["request"].headers["authorization"] == "Bearer sk-omlx-secret"
+
+
+def test_openai_compatible_adjudicator_sends_no_authorization_header_when_api_key_is_unset():
+    # Empty/unset means "no key" -- unchanged behavior for oMLX installs run with
+    # skip_api_key_verification: true (ADR-0031 follow-up, issue #130).
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["request"] = request
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": json.dumps({"is_entity": True})}}
+                ]
+            },
+        )
+
+    http = httpx.Client(
+        base_url="http://localhost:8080", transport=httpx.MockTransport(handler)
+    )
+    adjudicator = OpenAICompatibleAdjudicator(
+        base_url="http://localhost:8080", model="qwen2.5-7b-mlx", http=http
+    )
+    candidate = CandidateSpan(
+        text="Quentin", start=13, end=20, context="Please brief Quentin tomorrow."
+    )
+
+    adjudicator.adjudicate(candidate)
+
+    assert "authorization" not in captured["request"].headers
+
+
 def test_openai_compatible_adjudicator_rejects_a_non_entity_candidate():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -139,6 +204,25 @@ def test_ping_omlx_reports_healthy_when_the_daemon_answers():
     http = httpx.Client(transport=httpx.MockTransport(handler))
     health = ping_omlx("http://localhost:8080", http=http)
     assert health == DependencyHealth(healthy=True)
+
+
+def test_ping_omlx_sends_a_bearer_token_when_an_api_key_is_configured():
+    # ADR-0031 follow-up (issue #130): the liveness probe must also authenticate, so
+    # /v1/status's l3 dependency probe doesn't false-negative against an auth-enabled
+    # oMLX instance.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["request"] = request
+        return httpx.Response(200, json={"data": []})
+
+    from blindfold.l3_openai_compat import ping_omlx
+
+    http = httpx.Client(transport=httpx.MockTransport(handler))
+    health = ping_omlx("http://localhost:8080", api_key="sk-omlx-secret", http=http)
+
+    assert health.healthy
+    assert captured["request"].headers["authorization"] == "Bearer sk-omlx-secret"
 
 
 def test_ping_omlx_reports_unhealthy_scrubbed_detail_when_unreachable():
