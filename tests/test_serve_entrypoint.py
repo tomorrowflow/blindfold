@@ -18,10 +18,12 @@ from blindfold.serve import (
     DEFAULT_HOST,
     DEFAULT_PORT,
     DevModeRequiredError,
+    GlinerModelMissingError,
     LegacyEnvVarError,
     LocalOnlyModelRequiredError,
     OmlxLoopbackRequiredError,
     refuse_if_cloud_model,
+    refuse_if_gliner_model_missing,
     refuse_if_legacy_l3_env_vars,
     refuse_if_omlx_non_loopback,
     refuse_if_root_token,
@@ -144,6 +146,62 @@ def test_refuse_if_omlx_non_loopback_is_a_noop_with_no_model_configured():
     refuse_if_omlx_non_loopback(settings)
 
 
+def test_refuse_if_omlx_non_loopback_fires_for_the_gliner_cascades_omlx_inner(tmp_path):
+    # ADR-0033 §2, issue #139: BLINDFOLD_L3_PROVIDER=gliner delegates the inner
+    # client's provider to BLINDFOLD_L3_INNER_PROVIDER -- this guard must still
+    # enforce the loopback-only invariant against *that* provider, not the literal
+    # (now "gliner") settings.l3_provider string.
+    model_path = tmp_path / "gliner-pii-edge-v1.0.onnx"
+    model_path.write_bytes(b"stub-onnx-bytes")
+    settings = Settings(
+        l3_provider="gliner",
+        l3_gliner_model_path=str(model_path),
+        l3_inner_provider="omlx",
+        l3_model="qwen2.5-7b-mlx",
+        l3_base_url="http://l3.internal:8080",
+    )
+
+    with pytest.raises(OmlxLoopbackRequiredError):
+        refuse_if_omlx_non_loopback(settings)
+
+
+# ---------------------------------------------------------------------------
+# 1b3. refuse_if_gliner_model_missing — ADR-0033 §2 local-only startup guard for the
+# GLiNER cascade, no override. GLiNER's local-only invariant is a readable model-file
+# path rather than a network-reachability check (it's a local ONNX file, not a client).
+# ---------------------------------------------------------------------------
+
+
+def test_refuse_if_gliner_model_missing_blocks_an_empty_path():
+    settings = Settings(l3_provider="gliner", l3_gliner_model_path="")
+
+    with pytest.raises(GlinerModelMissingError):
+        refuse_if_gliner_model_missing(settings)
+
+
+def test_refuse_if_gliner_model_missing_blocks_a_nonexistent_file(tmp_path):
+    settings = Settings(
+        l3_provider="gliner", l3_gliner_model_path=str(tmp_path / "does-not-exist.onnx")
+    )
+
+    with pytest.raises(GlinerModelMissingError):
+        refuse_if_gliner_model_missing(settings)
+
+
+def test_refuse_if_gliner_model_missing_allows_a_readable_file(tmp_path):
+    model_path = tmp_path / "gliner-pii-edge-v1.0.onnx"
+    model_path.write_bytes(b"stub-onnx-bytes")
+    settings = Settings(l3_provider="gliner", l3_gliner_model_path=str(model_path))
+
+    refuse_if_gliner_model_missing(settings)
+
+
+def test_refuse_if_gliner_model_missing_is_a_noop_for_the_ollama_provider():
+    settings = Settings(l3_provider="ollama", l3_gliner_model_path="")
+
+    refuse_if_gliner_model_missing(settings)
+
+
 # ---------------------------------------------------------------------------
 # 1c. refuse_if_legacy_l3_env_vars — ADR-0031 operator migration aid
 # ---------------------------------------------------------------------------
@@ -248,6 +306,21 @@ def test_run_server_refuses_a_non_loopback_omlx_base_url_before_starting_the_asg
     calls = []
 
     with pytest.raises(OmlxLoopbackRequiredError):
+        run_server(
+            settings=settings,
+            runner=lambda app, **kwargs: calls.append((app, kwargs)),
+        )
+
+    assert calls == []
+
+
+def test_run_server_refuses_a_missing_gliner_model_before_starting_the_asgi_server():
+    # ADR-0033 §2, issue #139: same no-override stance -- fails at startup, not on
+    # the first request that happens to hit a novel candidate.
+    settings = Settings(l3_provider="gliner", l3_gliner_model_path="")
+    calls = []
+
+    with pytest.raises(GlinerModelMissingError):
         run_server(
             settings=settings,
             runner=lambda app, **kwargs: calls.append((app, kwargs)),

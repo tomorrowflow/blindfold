@@ -80,6 +80,7 @@ import json
 import logging
 from collections.abc import AsyncIterator, Callable
 from datetime import datetime
+from pathlib import Path
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -120,6 +121,7 @@ from .l3 import (
     L3Detector,
     L3Unavailable,
 )
+from .l3_gliner import GlinerCascadeAdjudicator, GlinerOnnxClassifier
 from .l3_openai_compat import OpenAICompatibleAdjudicator, ping_omlx
 from .ollama import OllamaAdjudicator, ping_ollama
 from .policy import (
@@ -176,10 +178,36 @@ def _build_l3_adjudicator(settings: Settings) -> L3Adjudicator:
     (``serve.refuse_if_cloud_model`` / ``serve.refuse_if_omlx_non_loopback``), not
     here — this function only decides which adjudicator to construct, not whether the
     process is allowed to run.
+
+    ``BLINDFOLD_L3_PROVIDER=gliner`` (ADR-0033 §2, issue #139) activates the GLiNER
+    cascade instead: a :class:`~blindfold.l3_gliner.GlinerCascadeAdjudicator` wrapping
+    the same inner-LLM adjudicator this function would otherwise return directly (see
+    :func:`_build_inner_l3_adjudicator`). An empty ``l3_gliner_model_path`` falls back
+    to ``_UnconfiguredAdjudicator`` too, mirroring the empty-``l3_model`` fallback —
+    GLiNER unconfigured is exactly as fail-closed as the plain LLM path unconfigured.
+    """
+    if settings.l3_provider == "gliner":
+        if not settings.l3_gliner_model_path:
+            return _UnconfiguredAdjudicator()
+        return GlinerCascadeAdjudicator(
+            classifier=GlinerOnnxClassifier(settings.l3_gliner_model_path),
+            inner=_build_inner_l3_adjudicator(settings),
+        )
+    return _build_inner_l3_adjudicator(settings)
+
+
+def _build_inner_l3_adjudicator(settings: Settings) -> L3Adjudicator:
+    """Build the LLM adjudicator that receives inner-adjudicator calls.
+
+    Shared by the non-cascade ``ollama``/``omlx`` path and the GLiNER cascade's inner
+    slot (ADR-0033 §2, issue #139) — dispatches on
+    ``settings.effective_inner_l3_provider`` rather than ``settings.l3_provider``
+    directly, since the latter is ``"gliner"`` (not a client name) once the cascade is
+    active.
     """
     if not settings.l3_model:
         return _UnconfiguredAdjudicator()
-    if settings.l3_provider == "omlx":
+    if settings.effective_inner_l3_provider == "omlx":
         return OpenAICompatibleAdjudicator(
             base_url=settings.l3_base_url,
             model=settings.l3_model,
@@ -270,6 +298,13 @@ _upstream_health = RecentFailureHealth(unhealthy_window_seconds=_UPSTREAM_UNHEAL
 
 def _default_l3_probe() -> DependencyHealth:
     settings = get_settings()
+    if settings.l3_provider == "gliner":
+        # ADR-0033 §2, issue #139: a fast local file-readable check, not a live ping
+        # -- GLiNER has no network client to probe, and loading the ONNX model on
+        # every /v1/status poll (~5s cadence) would be far too expensive.
+        if not settings.l3_gliner_model_path or not Path(settings.l3_gliner_model_path).is_file():
+            return DependencyHealth(healthy=False, detail="gliner model file not found")
+        return DependencyHealth(healthy=True)
     if not settings.l3_model:
         return DependencyHealth(healthy=False, detail="no L3 adjudicator configured")
     if settings.l3_provider == "omlx":

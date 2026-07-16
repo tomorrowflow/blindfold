@@ -22,6 +22,7 @@ from blindfold.app import (
     _UnconfiguredAdjudicator,
 )
 from blindfold.config import Settings
+from blindfold.l3_gliner import GlinerCascadeAdjudicator, GlinerOnnxClassifier
 from blindfold.l3_openai_compat import OpenAICompatibleAdjudicator
 from blindfold.ollama import OllamaAdjudicator
 from blindfold.review import Allowlist
@@ -62,6 +63,49 @@ def test_build_l3_adjudicator_threads_the_api_key_into_the_openai_compatible_cli
 
 def test_build_l3_adjudicator_stays_unconfigured_when_omlx_has_no_model():
     settings = Settings(l3_provider="omlx", l3_model="")
+
+    adjudicator = _build_l3_adjudicator(settings)
+
+    assert isinstance(adjudicator, _UnconfiguredAdjudicator)
+
+
+def test_build_l3_adjudicator_wires_gliner_cascade_with_ollama_inner_by_default():
+    # ADR-0033 §2 / issue #139: BLINDFOLD_L3_PROVIDER=gliner activates the cascade;
+    # the inner LLM defaults to ollama (BLINDFOLD_L3_INNER_PROVIDER unset).
+    settings = Settings(
+        l3_provider="gliner",
+        l3_gliner_model_path="/models/gliner-pii-edge-v1.0.onnx",
+        l3_model="llama3.1",
+        l3_base_url="http://localhost:11434",
+    )
+
+    adjudicator = _build_l3_adjudicator(settings)
+
+    assert isinstance(adjudicator, GlinerCascadeAdjudicator)
+    assert isinstance(adjudicator._classifier, GlinerOnnxClassifier)
+    assert adjudicator._classifier._model_path == "/models/gliner-pii-edge-v1.0.onnx"
+    assert isinstance(adjudicator._inner, OllamaAdjudicator)
+
+
+def test_build_l3_adjudicator_wires_gliner_cascade_with_omlx_inner():
+    # BLINDFOLD_L3_INNER_PROVIDER selects the inner client when the cascade is active
+    # (BLINDFOLD_L3_PROVIDER itself now names the cascade, not the inner client).
+    settings = Settings(
+        l3_provider="gliner",
+        l3_gliner_model_path="/models/gliner-pii-edge-v1.0.onnx",
+        l3_inner_provider="omlx",
+        l3_model="qwen2.5-7b-mlx",
+        l3_base_url="http://localhost:8080",
+    )
+
+    adjudicator = _build_l3_adjudicator(settings)
+
+    assert isinstance(adjudicator, GlinerCascadeAdjudicator)
+    assert isinstance(adjudicator._inner, OpenAICompatibleAdjudicator)
+
+
+def test_build_l3_adjudicator_gliner_stays_unconfigured_with_no_model_path():
+    settings = Settings(l3_provider="gliner", l3_gliner_model_path="")
 
     adjudicator = _build_l3_adjudicator(settings)
 
@@ -110,3 +154,33 @@ def test_default_l3_probe_threads_the_api_key_into_ping_omlx(monkeypatch):
     _default_l3_probe()
 
     assert captured == {"base_url": "http://localhost:8080", "api_key": "sk-omlx-secret"}
+
+
+def test_default_l3_probe_reports_healthy_for_a_readable_gliner_model_file(monkeypatch, tmp_path):
+    # ADR-0033 §2, issue #139: a fast local file-readable check, no model load.
+    model_path = tmp_path / "gliner-pii-edge-v1.0.onnx"
+    model_path.write_bytes(b"stub-onnx-bytes")
+    monkeypatch.setenv("BLINDFOLD_L3_PROVIDER", "gliner")
+    monkeypatch.setenv("BLINDFOLD_L3_GLINER_MODEL_PATH", str(model_path))
+
+    health = _default_l3_probe()
+
+    assert health.healthy is True
+
+
+def test_default_l3_probe_reports_unhealthy_for_a_missing_gliner_model_file(monkeypatch, tmp_path):
+    monkeypatch.setenv("BLINDFOLD_L3_PROVIDER", "gliner")
+    monkeypatch.setenv("BLINDFOLD_L3_GLINER_MODEL_PATH", str(tmp_path / "missing.onnx"))
+
+    health = _default_l3_probe()
+
+    assert health.healthy is False
+
+
+def test_default_l3_probe_reports_unhealthy_for_an_unconfigured_gliner_model_path(monkeypatch):
+    monkeypatch.setenv("BLINDFOLD_L3_PROVIDER", "gliner")
+    monkeypatch.setenv("BLINDFOLD_L3_GLINER_MODEL_PATH", "")
+
+    health = _default_l3_probe()
+
+    assert health.healthy is False

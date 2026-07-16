@@ -49,6 +49,16 @@ L3 adjudicator (ADR-0022 / ADR-0031 / issue #57, #121, #122):
                              curate the seeded allowlist (ADR-0032, issue #133). A
                              file path; empty (default) means off -- no file created
                              or written, no behavior change from today.
+  BLINDFOLD_L3_GLINER_MODEL_PATH — path to a local GLiNER ONNX model file
+                             (ADR-0033 §2, issue #139). `BLINDFOLD_L3_PROVIDER=gliner`
+                             activates the GLiNER cascade adjudicator using this
+                             model; empty (default) means GLiNER is unconfigured.
+  BLINDFOLD_L3_INNER_PROVIDER — which client (`ollama` or `omlx`) the GLiNER
+                             cascade's inner LLM adjudicator uses (ADR-0033 §2,
+                             issue #139). Only consulted when
+                             `BLINDFOLD_L3_PROVIDER=gliner` -- `BLINDFOLD_L3_PROVIDER`
+                             itself already names the client directly for the
+                             `ollama`/`omlx` (non-cascade) case. Default: `ollama`.
 
 Serve bind address (ADR-0021 / ADR-0027, issue #91):
   BLINDFOLD_HOST           — bind host `blindfold serve` reports itself at (default:
@@ -85,6 +95,8 @@ class Settings:
     l3_provider: str = DEFAULT_L3_PROVIDER
     l3_api_key: str = ""
     l3_dismissal_log: str = ""
+    l3_gliner_model_path: str = ""
+    l3_inner_provider: str = DEFAULT_L3_PROVIDER
     openai_upstream_base_url: str = ""
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
@@ -98,6 +110,22 @@ class Settings:
         unconfigured dedicated var reproduces today's behavior exactly.
         """
         return self.openai_upstream_base_url or self.upstream_base_url
+
+    @property
+    def effective_inner_l3_provider(self) -> str:
+        """Which client (``ollama``/``omlx``) receives inner-adjudicator calls
+        (ADR-0033 §2, issue #139).
+
+        ``l3_provider="gliner"`` activates the GLiNER cascade and delegates the
+        inner LLM's provider selection to ``l3_inner_provider`` instead; any other
+        ``l3_provider`` value names the client directly, reproducing pre-cascade
+        behavior exactly. The single reconciliation point for "which client
+        actually receives inner-adjudicator calls" so the adjudicator builder and
+        the omlx-loopback startup guard can't drift apart.
+        """
+        if self.l3_provider == "gliner":
+            return self.l3_inner_provider
+        return self.l3_provider
 
 
 def get_settings() -> Settings:
@@ -114,6 +142,8 @@ def get_settings() -> Settings:
         l3_provider=os.environ.get("BLINDFOLD_L3_PROVIDER", DEFAULT_L3_PROVIDER),
         l3_api_key=os.environ.get("BLINDFOLD_L3_API_KEY", ""),
         l3_dismissal_log=os.environ.get("BLINDFOLD_L3_DISMISSAL_LOG", ""),
+        l3_gliner_model_path=os.environ.get("BLINDFOLD_L3_GLINER_MODEL_PATH", ""),
+        l3_inner_provider=os.environ.get("BLINDFOLD_L3_INNER_PROVIDER", DEFAULT_L3_PROVIDER),
         openai_upstream_base_url=os.environ.get("BLINDFOLD_OPENAI_UPSTREAM_BASE_URL", ""),
         host=os.environ.get("BLINDFOLD_HOST", DEFAULT_HOST),
         port=int(os.environ.get("BLINDFOLD_PORT", DEFAULT_PORT)),

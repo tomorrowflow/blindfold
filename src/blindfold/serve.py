@@ -16,6 +16,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
+from pathlib import Path
 from typing import Callable
 from urllib.parse import urlparse
 
@@ -56,6 +57,19 @@ class OmlxLoopbackRequiredError(RuntimeError):
     third provider must re-derive its own local-only story, not assume this check
     transfers. No override: the adjudicator egress carries un-blindfolded candidate
     spans, so sending them off-device categorically defeats the product.
+    """
+
+
+class GlinerModelMissingError(RuntimeError):
+    """Raised when ``BLINDFOLD_L3_PROVIDER=gliner`` is configured with no readable
+    GLiNER model file (ADR-0033 §2, issue #139).
+
+    GLiNER's local-only invariant is a readable on-disk model path, not a network
+    reachability check (unlike Ollama's ``:cloud``-tag / oMLX's loopback-base-url
+    checks) -- there is no network client behind the GLiNER classifier at all
+    (l3_gliner.py). Failing at startup rather than mid-request keeps the failure mode
+    identical to the other local-only guards: an actionable error before the ASGI
+    server accepts traffic, not a per-candidate runtime surprise.
     """
 
 
@@ -153,7 +167,7 @@ def refuse_if_omlx_non_loopback(settings: Settings | None = None) -> None:
     "any OpenAI-compatible endpoint".
     """
     settings = settings or get_settings()
-    if settings.l3_provider != "omlx" or not settings.l3_model:
+    if settings.effective_inner_l3_provider != "omlx" or not settings.l3_model:
         return
     if not _is_loopback_base_url(settings.l3_base_url):
         raise OmlxLoopbackRequiredError(
@@ -162,6 +176,28 @@ def refuse_if_omlx_non_loopback(settings: Settings | None = None) -> None:
             "real values and must never leave the machine (ADR-0031 §3). Configure a "
             "loopback BLINDFOLD_L3_BASE_URL (127.0.0.1/localhost) instead. There is no "
             "override for this invariant."
+        )
+
+
+def refuse_if_gliner_model_missing(settings: Settings | None = None) -> None:
+    """Fail fast (ADR-0033 §2) if ``BLINDFOLD_L3_PROVIDER=gliner`` names an empty or
+    unreadable GLiNER model path.
+
+    No-op for every other ``l3_provider`` value. Like the other local-only guards,
+    there is no opt-in flag: an unreadable model path here would otherwise surface as
+    a runtime ``_UnconfiguredAdjudicator`` fail-closed 503 per candidate mid-request
+    (:func:`~blindfold.app._build_l3_adjudicator`) rather than a clear error before the
+    process starts accepting traffic.
+    """
+    settings = settings or get_settings()
+    if settings.l3_provider != "gliner":
+        return
+    path = settings.l3_gliner_model_path
+    if not path or not Path(path).is_file():
+        raise GlinerModelMissingError(
+            f"refusing to start: BLINDFOLD_L3_PROVIDER=gliner requires a readable "
+            f"BLINDFOLD_L3_GLINER_MODEL_PATH (got {path!r}); configure it to point at "
+            "a local GLiNER ONNX model file."
         )
 
 
@@ -199,16 +235,18 @@ def run_server(
 
     Binds loopback by default (SEC-11); binding elsewhere is the caller's explicit
     opt-in via ``host``. Runs the ADR-0031 legacy-env-var guard, the SEC-2 root-token
-    guard, the ADR-0022 local-only-L3 guard (Ollama's ``:cloud`` tag), and the
-    ADR-0031 §3 local-only-L3 guard (oMLX's loopback-only base url) before starting
-    the server so a misconfigured deploy never has the ASGI server accept traffic in
-    the first place.
+    guard, the ADR-0022 local-only-L3 guard (Ollama's ``:cloud`` tag), the ADR-0031 §3
+    local-only-L3 guard (oMLX's loopback-only base url), and the ADR-0033 §2
+    local-only-L3 guard (GLiNER's readable-model-file check) before starting the
+    server so a misconfigured deploy never has the ASGI server accept traffic in the
+    first place.
     """
     refuse_if_legacy_l3_env_vars()
     settings = settings or get_settings()
     refuse_if_root_token(settings, transit_client=transit_client)
     refuse_if_cloud_model(settings)
     refuse_if_omlx_non_loopback(settings)
+    refuse_if_gliner_model_missing(settings)
     # A no-op if the process already configured logging (e.g. an embedding app, or
     # pytest's own log capture); otherwise this is the only thing standing between
     # the line below and Python's logging module silently dropping it (issue #82 —
