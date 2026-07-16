@@ -215,6 +215,7 @@ class L3Detector:
         cache: L3ContentCache | None = None,
         deterministic_only: bool = False,
         allowlist: "Allowlist | None" = None,
+        dismissal_log_path: str | None = None,
     ) -> None:
         self._adjudicator = adjudicator
         self._cache = cache if cache is not None else L3ContentCache()
@@ -224,6 +225,14 @@ class L3Detector:
         # ADR-0010 allowlist: rejected tokens are filtered before adjudication so
         # the learning loop's "reject" verdict actually suppresses re-detection.
         self._allowlist = allowlist
+        # ADR-0032 / issue #133: opt-in local capture of dismissed candidates, to
+        # curate the seeded allowlist. None (default/unset) is the exact today's
+        # behavior -- no file created or written. Dedup is a small in-process set,
+        # deliberately separate from the (text, context)-keyed content cache above:
+        # the same token dismissed 200 times across one system prompt writes exactly
+        # one line, not 200.
+        self._dismissal_log_path = dismissal_log_path
+        self._logged_dismissals: set[str] = set()
 
     def detect(
         self,
@@ -239,6 +248,7 @@ class L3Detector:
         ):
             cached = self._cache.get(candidate)
             if cached is not None:
+                self._maybe_log_dismissal(candidate, cached)
                 results.append((candidate, cached))
                 continue
             try:
@@ -255,5 +265,25 @@ class L3Detector:
                     f"L3 adjudication failed for candidate (ref: hash:{digest}): {exc}"
                 ) from exc
             self._cache.put(candidate, decision)
+            self._maybe_log_dismissal(candidate, decision)
             results.append((candidate, decision))
         return results
+
+    def _maybe_log_dismissal(
+        self, candidate: CandidateSpan, decision: L3Adjudication
+    ) -> None:
+        """Append a dismissed candidate's bare token text to the dismissal log, the
+        first time that exact token is dismissed in the process's lifetime (ADR-0032).
+
+        Only ``candidate.text`` is ever written -- never ``candidate.context``: the
+        curation rule (ADR-0023) is a property of the word itself, not the sentence
+        it appeared in. Open-append immediately (not buffered) so a killed process
+        doesn't lose the session's dismissal data.
+        """
+        if self._dismissal_log_path is None or decision.is_entity:
+            return
+        if candidate.text in self._logged_dismissals:
+            return
+        self._logged_dismissals.add(candidate.text)
+        with open(self._dismissal_log_path, "a", encoding="utf-8") as handle:
+            handle.write(candidate.text + "\n")

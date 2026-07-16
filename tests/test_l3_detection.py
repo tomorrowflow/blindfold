@@ -293,6 +293,66 @@ def test_content_cache_is_bounded_and_evicts_the_least_recently_used_entry():
     assert cache.get(yasmin) is None
 
 
+def test_l3_dismissal_log_writes_dismissed_token(tmp_path):
+    # ADR-0032 / issue #133: when BLINDFOLD_L3_DISMISSAL_LOG is set, a dismissed
+    # candidate (is_entity: false) is appended to the file so a curator can review
+    # it to seed the allowlist.
+    log_path = tmp_path / "dismissals.txt"
+    adjudicator = _RecordingAdjudicator({"Klaus": L3Adjudication(is_entity=False)})
+    detector = L3Detector(adjudicator, dismissal_log_path=str(log_path))
+
+    detector.detect("Please brief Klaus tomorrow.", known_entities=[])
+
+    assert log_path.read_text(encoding="utf-8") == "Klaus\n"
+
+
+def test_l3_dismissal_log_dedups_the_same_token_across_contexts_and_turns(tmp_path):
+    # ADR-0032 / issue #133 acceptance criterion: the same word dismissed 200 times
+    # across one system prompt (here: three occurrences, each in a different context
+    # window, across two separate detect() calls/agent turns) writes exactly one
+    # line -- dedup is per-token, not per (text, context) cache slot.
+    log_path = tmp_path / "dismissals.txt"
+    adjudicator = _RecordingAdjudicator({"Klaus": L3Adjudication(is_entity=False)})
+    detector = L3Detector(adjudicator, dismissal_log_path=str(log_path))
+    turn_one = "Klaus opened the meeting. " * 3 + "Klaus closed it too."
+
+    detector.detect(turn_one, known_entities=[])
+    detector.detect(turn_one, known_entities=[])  # agent turn 2, same transcript
+
+    assert len(adjudicator.calls) > 1  # distinct contexts really did fire multiple calls
+    assert log_path.read_text(encoding="utf-8") == "Klaus\n"
+
+
+def test_l3_dismissal_log_unset_creates_no_file(tmp_path):
+    # Acceptance criterion (issue #133): BLINDFOLD_L3_DISMISSAL_LOG unset (the
+    # dismissal_log_path default) preserves today's exact behavior -- no file
+    # created or written, even when candidates are dismissed.
+    log_path = tmp_path / "dismissals.txt"
+    adjudicator = _RecordingAdjudicator({"Klaus": L3Adjudication(is_entity=False)})
+    detector = L3Detector(adjudicator)
+
+    detector.detect("Please brief Klaus tomorrow.", known_entities=[])
+
+    assert not log_path.exists()
+
+
+def test_l3_dismissal_log_never_logs_context_or_confirmed_candidates(tmp_path):
+    # Acceptance criterion (issue #133): only the bare token text is ever logged --
+    # never candidate.context, never a confirmed candidate's text (is_entity: true
+    # already flows to the review inbox unchanged; it has nowhere to go here).
+    log_path = tmp_path / "dismissals.txt"
+    adjudicator = _RecordingAdjudicator(
+        {"Klaus": L3Adjudication(is_entity=False), "Yasmin": L3Adjudication(is_entity=True)}
+    )
+    detector = L3Detector(adjudicator, dismissal_log_path=str(log_path))
+    text = "the padding is identical and unrelated. " * 3 + "We met Klaus and Yasmin today."
+
+    detector.detect(text, known_entities=[])
+
+    assert log_path.read_text(encoding="utf-8") == "Klaus\n"
+    assert "context" not in log_path.read_text(encoding="utf-8")
+
+
 def test_deterministic_only_opt_in_skips_l3_entirely():
     # ADR-0009: the per-workspace opt-in degrades to deterministic-only. With L3
     # skipped, no adjudicator call is made — even when novel candidates exist —

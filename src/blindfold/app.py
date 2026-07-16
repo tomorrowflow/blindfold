@@ -188,6 +188,21 @@ def _build_l3_adjudicator(settings: Settings) -> L3Adjudicator:
     return OllamaAdjudicator(base_url=settings.l3_base_url, model=settings.l3_model)
 
 
+def _build_l3_detector(settings: Settings, allowlist: Allowlist) -> L3Detector:
+    """Build the production L3 detector from ``settings`` (ADR-0032, issue #133).
+
+    Threads ``BLINDFOLD_L3_DISMISSAL_LOG`` into the detector the same way
+    ``_build_l3_adjudicator`` threads ``BLINDFOLD_L3_API_KEY`` into the client
+    (issue #130) -- unset (default) reproduces today's behavior exactly, no
+    dismissal-log file created or written.
+    """
+    return L3Detector(
+        _build_l3_adjudicator(settings),
+        allowlist=allowlist,
+        dismissal_log_path=settings.l3_dismissal_log or None,
+    )
+
+
 # Process-wide surrogate mapping built from the entity-graph repository seam (the seeded
 # real->surrogate pairs, including variations), NOT a hardcoded dict. Keeping it a
 # singleton makes surrogates stable across exchanges within the process (leak-audit
@@ -217,7 +232,7 @@ del _seeded_token
 # `_allowlist` (issue #71) so a seeded or learned reject actually suppresses
 # candidacy in production, not just in tests that build their own detector+allowlist
 # pair. Tests substitute their own detector via dependency_overrides[get_l3_detector].
-_l3_detector = L3Detector(_build_l3_adjudicator(get_settings()), allowlist=_allowlist)
+_l3_detector = _build_l3_detector(get_settings(), _allowlist)
 
 # Process-wide workspace-policy registry and audit log (ADR-0009). Persistence and
 # RBAC-scoped audit access are out of scope this slice — see policy.py.

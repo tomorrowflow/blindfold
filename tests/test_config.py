@@ -108,6 +108,18 @@ def test_settings_l3_api_key_is_read_from_env(monkeypatch):
     assert get_settings().l3_api_key == "sk-omlx-secret"
 
 
+def test_settings_l3_dismissal_log_defaults_to_empty_string(monkeypatch):
+    # Empty means off -- no dismissal-log file created or written (ADR-0032, issue #133).
+    monkeypatch.delenv("BLINDFOLD_L3_DISMISSAL_LOG", raising=False)
+    assert get_settings().l3_dismissal_log == ""
+
+
+def test_settings_l3_dismissal_log_is_read_from_env(monkeypatch, tmp_path):
+    log_path = str(tmp_path / "dismissals.txt")
+    monkeypatch.setenv("BLINDFOLD_L3_DISMISSAL_LOG", log_path)
+    assert get_settings().l3_dismissal_log == log_path
+
+
 def test_settings_openai_upstream_base_url_defaults_to_empty_string(monkeypatch):
     # Empty means "not set" — the OpenAI chat-completions path falls back to the
     # shared BLINDFOLD_UPSTREAM_BASE_URL (issue #76, transport sliver of #37).

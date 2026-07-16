@@ -45,6 +45,10 @@ L3 adjudicator (ADR-0022 / ADR-0031 / issue #57, #121, #122):
                              (default) means "no key" -- unchanged behavior for oMLX
                              installs run with `skip_api_key_verification: true`.
                              No equivalent for the Ollama provider.
+  BLINDFOLD_L3_DISMISSAL_LOG — opt-in local capture of dismissed L3 candidates, to
+                             curate the seeded allowlist (ADR-0032, issue #133). A
+                             file path; empty (default) means off -- no file created
+                             or written, no behavior change from today.
 
 Serve bind address (ADR-0021 / ADR-0027, issue #91):
   BLINDFOLD_HOST           — bind host `blindfold serve` reports itself at (default:
@@ -80,6 +84,7 @@ class Settings:
     l3_model: str = ""
     l3_provider: str = DEFAULT_L3_PROVIDER
     l3_api_key: str = ""
+    l3_dismissal_log: str = ""
     openai_upstream_base_url: str = ""
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
@@ -108,6 +113,7 @@ def get_settings() -> Settings:
         l3_model=os.environ.get("BLINDFOLD_L3_MODEL", ""),
         l3_provider=os.environ.get("BLINDFOLD_L3_PROVIDER", DEFAULT_L3_PROVIDER),
         l3_api_key=os.environ.get("BLINDFOLD_L3_API_KEY", ""),
+        l3_dismissal_log=os.environ.get("BLINDFOLD_L3_DISMISSAL_LOG", ""),
         openai_upstream_base_url=os.environ.get("BLINDFOLD_OPENAI_UPSTREAM_BASE_URL", ""),
         host=os.environ.get("BLINDFOLD_HOST", DEFAULT_HOST),
         port=int(os.environ.get("BLINDFOLD_PORT", DEFAULT_PORT)),
