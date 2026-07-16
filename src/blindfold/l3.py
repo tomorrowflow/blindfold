@@ -16,7 +16,9 @@ agent turns.
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
+import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from functools import lru_cache
@@ -36,6 +38,16 @@ _CONTEXT_WINDOW = 40
 _CAPITALIZED_RE = re.compile(r"\b[A-ZÄÖÜ][a-zäöüß]+\b")
 
 _STOPWORDS_PATH = Path(__file__).with_name("l3_stopwords_en_de.txt")
+
+logger = logging.getLogger(__name__)
+
+# Issue #134: a live-testing session reported 250+ sequential adjudication calls
+# against a cold allowlist with no way to tell, while it was happening, whether the
+# request was still progressing or stuck -- only raw per-call httpx log lines. This
+# is how often (in candidates processed) L3Detector.detect() logs a progress line
+# for a single pass, so an operator tailing logs sees forward progress mid-request
+# instead of only after the whole pass completes.
+_DEFAULT_PROGRESS_LOG_INTERVAL = 25
 
 
 @lru_cache(maxsize=1)
@@ -216,6 +228,7 @@ class L3Detector:
         deterministic_only: bool = False,
         allowlist: "Allowlist | None" = None,
         dismissal_log_path: str | None = None,
+        progress_log_interval: int = _DEFAULT_PROGRESS_LOG_INTERVAL,
     ) -> None:
         self._adjudicator = adjudicator
         self._cache = cache if cache is not None else L3ContentCache()
@@ -233,6 +246,8 @@ class L3Detector:
         # one line, not 200.
         self._dismissal_log_path = dismissal_log_path
         self._logged_dismissals: set[str] = set()
+        # Issue #134: how many candidates between progress log lines (see detect()).
+        self._progress_log_interval = progress_log_interval
 
     def detect(
         self,
@@ -243,6 +258,8 @@ class L3Detector:
         if self._deterministic_only:
             return []
         results: list[tuple[CandidateSpan, L3Adjudication]] = []
+        pass_started_at = time.monotonic()
+        processed = 0
         for candidate in select_candidate_spans(
             text, known_entities, self._allowlist, declared_tools
         ):
@@ -250,6 +267,8 @@ class L3Detector:
             if cached is not None:
                 self._maybe_log_dismissal(candidate, cached)
                 results.append((candidate, cached))
+                processed += 1
+                self._maybe_log_progress(processed, pass_started_at)
                 continue
             try:
                 decision = self._adjudicator.adjudicate(candidate)
@@ -267,7 +286,28 @@ class L3Detector:
             self._cache.put(candidate, decision)
             self._maybe_log_dismissal(candidate, decision)
             results.append((candidate, decision))
+            processed += 1
+            self._maybe_log_progress(processed, pass_started_at)
         return results
+
+    def _maybe_log_progress(self, processed: int, pass_started_at: float) -> None:
+        """Log forward progress every ``progress_log_interval`` candidates (issue #134).
+
+        Fires mid-pass, not just on completion, so an operator tailing logs during a
+        long run (the live-testing report: 250+ sequential candidates against a cold
+        allowlist) sees a periodic signal that the request is still moving, without
+        waiting for it to finish. Observability-only: never changes an adjudication
+        result, cache entry, or dismissal-log write. Scrubbed by construction --
+        candidate count and elapsed seconds only, never candidate text.
+        """
+        if processed % self._progress_log_interval != 0:
+            return
+        elapsed_s = time.monotonic() - pass_started_at
+        logger.info(
+            "l3_detect_progress: candidates_processed=%d elapsed_s=%.1f",
+            processed,
+            elapsed_s,
+        )
 
     def _maybe_log_dismissal(
         self, candidate: CandidateSpan, decision: L3Adjudication

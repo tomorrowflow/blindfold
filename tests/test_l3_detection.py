@@ -10,6 +10,7 @@ tests assert what crossed that seam, never internal call shapes (leak-audit).
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
 
@@ -366,3 +367,34 @@ def test_deterministic_only_opt_in_skips_l3_entirely():
 
     assert result == []
     assert adjudicator.calls == []
+
+
+def test_l3_detect_logs_periodic_progress_during_a_long_pass(caplog):
+    # Issue #134: a request with many L3 candidates (the live-testing report cited
+    # 250+ sequential adjudication calls against a cold allowlist) gave an operator
+    # tailing logs no signal of forward progress until the whole pass completed.
+    # detect() now surfaces periodic progress -- candidates processed so far this
+    # request, elapsed wall-clock since the pass started -- at a fixed interval, so
+    # an operator watching logs sees it update mid-pass rather than only at the end.
+    nato = (
+        "Alfa Bravo Charlie Delta Echo Foxtrot Golf Hotel India Juliett Kilo Lima"
+    )
+    text = " and ".join(nato.split())
+    adjudicator = _RecordingAdjudicator()
+    detector = L3Detector(adjudicator, progress_log_interval=5)
+
+    with caplog.at_level(logging.INFO, logger="blindfold.l3"):
+        result = detector.detect(text, known_entities=[])
+
+    # 12 candidates at an interval of 5 -> progress logged after the 5th and 10th,
+    # never a partial multiple, and never after the last (completion isn't "progress").
+    progress_records = [
+        record for record in caplog.records if "l3_detect_progress" in record.getMessage()
+    ]
+    assert len(progress_records) == 2
+    assert "candidates_processed=5" in progress_records[0].getMessage()
+    assert "candidates_processed=10" in progress_records[1].getMessage()
+    assert "elapsed" in progress_records[0].getMessage()
+    # Observability-only: the L3 verdicts themselves are unaffected.
+    assert len(result) == 12
+    assert len(adjudicator.calls) == 12
