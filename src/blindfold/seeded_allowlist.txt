@@ -22,6 +22,8 @@ Ollama
 # Languages / frameworks / dev infrastructure
 React
 Git
+Github
+Slack
 Linear
 Grafana
 Prisma
@@ -39,6 +41,12 @@ Supabase
 Postgres
 FastAPI
 OpenBao
+Spring
+Boot
+#
+# Common agent tool names in prose
+Grep
+Glob
 #
 # Blindfold's own identifiers (project + tooling), public once shipped
 Blindfold

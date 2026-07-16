@@ -81,6 +81,19 @@ def test_seeded_allowlist_excludes_tokens_that_fail_the_curation_rule():
     assert tokens.isdisjoint(_CURATION_REJECTS)
 
 
+def test_seeded_allowlist_contains_the_issue_137_dismissal_batch():
+    # Acceptance criterion (issue #137): six tokens surfaced by the ADR-0032
+    # dismissal log, vetted against the ADR-0023 curation rule -- public
+    # vendor/framework/tool identifiers, implausible as a protected referent
+    # when unregistered.
+    tokens = load_seeded_allowlist_tokens()
+
+    assert {"Github", "Slack", "Spring", "Boot", "Grep", "Glob"} <= tokens
+    # "Don" and "Darwin" were dismissed in the same batch but fail the
+    # curation rule (plausible as protected referents) -- must stay out.
+    assert tokens.isdisjoint({"Don", "Darwin"})
+
+
 def test_seeded_token_is_never_flagged_as_an_l3_candidate_span():
     # Acceptance criterion: seeded tokens are never flagged as L3 candidate spans.
     allowlist = Allowlist()
@@ -124,6 +137,25 @@ def test_newly_seeded_public_tool_identifiers_are_never_flagged_as_l3_candidate_
             "Supacode",
         }
     )
+
+
+def test_issue_137_batch_is_never_flagged_as_an_l3_candidate_span():
+    # Acceptance criterion (issue #137): each of the six tokens suppresses
+    # candidacy in select_candidate_spans, mid-sentence in capitalized form
+    # (not positional-capitalization noise, so they need an explicit entry
+    # rather than relying on the ADR-0033 positional case heuristic).
+    allowlist = Allowlist()
+    for token in load_seeded_allowlist_tokens():
+        allowlist.add(token)
+
+    text = (
+        "I pushed the branch to Github, pinged the team on Slack, wired up "
+        "Spring Boot, then ran Grep and Glob to find the callers."
+    )
+    candidates = select_candidate_spans(text, known_entities=[], allowlist=allowlist)
+
+    flagged = {c.text for c in candidates}
+    assert flagged.isdisjoint({"Github", "Slack", "Spring", "Boot", "Grep", "Glob"})
 
 
 def _make_stub_upstream(scripted_response: dict, recorded: list[httpx.Request]):
@@ -355,6 +387,57 @@ async def test_registered_term_equal_to_a_newly_seeded_token_is_still_blindfolde
     assert "Northwind Datastore" in egressed
     # Clause B/D: the client gets the real value back, closed-world restored.
     assert "Supabase" in resp.json()["content"][0]["text"]
+
+
+@pytest.mark.anyio
+async def test_registered_term_equal_to_an_issue_137_token_is_still_blindfolded():
+    # Acceptance criterion (issue #137): the Term-always-wins guarantee
+    # extends to this batch too. A workspace whose own protected Term
+    # happens to be named "Slack" must still see it blindfolded.
+    assert "Slack" in load_seeded_allowlist_tokens()
+    mapping = SurrogateMapping.from_pairs([("Slack", "Northwind Comms")])
+    allowlist = Allowlist()
+    for token in load_seeded_allowlist_tokens():
+        allowlist.add(token)
+    detector = L3Detector(_NeverAnEntityAdjudicator(), allowlist=allowlist)
+    scripted_response = {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "Acknowledged, Northwind Comms."}],
+        "model": "claude-3-5-sonnet",
+        "stop_reason": "end_turn",
+    }
+    recorded: list[httpx.Request] = []
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(
+        scripted_response, recorded
+    )
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_review_inbox] = lambda: ReviewInbox()
+    app.dependency_overrides[get_l3_detector] = lambda: detector
+    app.dependency_overrides[get_allowlist] = lambda: allowlist
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            resp = await client.post(
+                "/v1/messages",
+                json={
+                    "model": "m",
+                    "messages": [{"role": "user", "content": "Slack is down again."}],
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    egressed = recorded[0].content.decode("utf-8")
+    # Clause A: the real Term never crossed egress; only its surrogate did.
+    assert "Slack" not in egressed
+    assert "Northwind Comms" in egressed
+    # Clause B/D: the client gets the real value back, closed-world restored.
+    assert "Slack" in resp.json()["content"][0]["text"]
 
 
 def test_learned_reject_still_suppresses_candidacy_alongside_seeded_tokens():
