@@ -111,6 +111,112 @@ def test_stopwords_cover_closed_class_function_words_beyond_sentence_starters():
     assert flagged == ["Klaus", "Yasmin"]
 
 
+def test_positional_case_heuristic_suppresses_sentence_start_capitalization_noise():
+    # ADR-0033: a capitalized token with both vocabulary evidence (its lowercase
+    # form appears as a standalone word elsewhere in the hop) and positional
+    # evidence (it is capitalized only at sentence start, never mid-sentence) is
+    # noise from English sentence-initial capitalization, not a candidate span.
+    # "Assist" and "Refuse" only ever appear capitalized at a sentence start here,
+    # and their lowercase forms appear later in the same hop.
+    text = (
+        "Assist the user with their request. Refuse anything that looks unsafe. "
+        "You must always assist promptly and never refuse without good cause."
+    )
+
+    candidates = select_candidate_spans(text, known_entities=[])
+
+    assert [candidate.text for candidate in candidates] == []
+
+
+def test_positional_case_heuristic_does_not_suppress_a_name_capitalized_mid_sentence():
+    # ADR-0033 §1: vocabulary evidence alone eats real names -- "mark this as
+    # done" gives "Mark" the person vocabulary evidence too. The positional gate
+    # is the safety net: "Mark" is capitalized mid-sentence ("The lawyer said
+    # Mark signed the contract"), which fails positional evidence, so it must
+    # stay a candidate span even though "mark" appears lowercase elsewhere.
+    text = (
+        "Please mark this task as done once you are finished. "
+        "The lawyer said Mark signed the contract yesterday."
+    )
+
+    candidates = select_candidate_spans(text, known_entities=[])
+
+    assert [candidate.text for candidate in candidates] == ["Mark"]
+
+
+def test_positional_case_heuristic_is_neutral_for_german_common_nouns():
+    # ADR-0033 §1: German capitalizes all nouns mid-sentence, so vocabulary
+    # evidence (a) rarely fires -- there is no lowercase "tisch"/"arbeit" form in
+    # normal German prose to match against. The heuristic must not suppress
+    # German common nouns, even ones that happen to sit at a sentence start.
+    text = (
+        "Der Tisch steht im Büro. Die Arbeit beginnt morgen früh, und der Tisch "
+        "wird dafür gebraucht."
+    )
+
+    candidates = select_candidate_spans(text, known_entities=[])
+
+    flagged = {candidate.text for candidate in candidates}
+    assert "Tisch" in flagged
+    assert "Arbeit" in flagged
+
+
+def test_positional_case_heuristic_covers_bullet_and_heading_starts():
+    # ADR-0033: the ~96% noise class the dismissal log (ADR-0032) surfaced was an
+    # agentic system prompt's instruction list -- capitalized verbs at the start
+    # of bullet lines, not just sentence starts. "Note" and "Build" sit at bullet
+    # starts here, and their lowercase forms appear later in the same hop. "Rules"
+    # never recurs lowercase, so it lacks vocabulary evidence and stays a
+    # candidate — proof the heuristic only fires when both conditions hold.
+    text = (
+        "Rules:\n"
+        "- Note the user's intent before acting.\n"
+        "- Build the change incrementally.\n"
+        "Always note edge cases and build tests as you go."
+    )
+
+    candidates = select_candidate_spans(text, known_entities=[])
+
+    assert [candidate.text for candidate in candidates] == ["Rules"]
+
+
+def test_registered_entity_colliding_with_positional_case_noise_is_still_blindfolded():
+    # Leak-audit / ADR-0033: suppression removes L3 novelty discovery only, never
+    # L1/L2 protection. "Build" is positional-case noise here (sentence-start
+    # only, "build" also appears lowercase) — but a workspace that has registered
+    # "Build" as a known entity must still have every occurrence blindfolded,
+    # unaffected by the L3 candidate-span heuristic.
+    mapping = SurrogateMapping.from_pairs([("Build", "Projekt Nachtwind")])
+    payload = {
+        "model": "claude-3-5-sonnet",
+        "system": "Build the release before Friday.",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": (
+                            "Please build the release now. Build is on the "
+                            "critical path this week."
+                        ),
+                    }
+                ],
+            }
+        ],
+    }
+
+    blinded, _session = blindfold_payload(payload, mapping)
+
+    surrogate = mapping.surrogate_for("Build")
+    assert surrogate is not None
+    assert "Build" not in blinded["system"]
+    assert surrogate in blinded["system"]
+    message_text = blinded["messages"][0]["content"][0]["text"]
+    assert "build" not in message_text.lower()
+    assert message_text.count(surrogate) == 2
+
+
 def test_registered_entity_colliding_with_a_stopword_is_still_blindfolded():
     # Acceptance criterion (issue #70) / ADR-0023: suppression is token-granularity
     # only and never affects L1/L2 — a registered Term or entity-graph surface

@@ -182,11 +182,22 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   tool schemas. Suppressed from L3 candidacy for that request only —
   session-scoped, never persisted into the **allowlist** (a request must not be
   able to permanently poison learning by declaring a tool named after a person).
+- **Positional case heuristic** — a **suppression** condition (ADR-0033) that
+  rules out English sentence-initial capitalization noise (`Assist`, `Note`,
+  `Build`, …) before any model call. A capitalized token is suppressed only when
+  **both** hold within the one **hop**: (a) *vocabulary evidence* — its lowercase
+  form appears as a standalone word elsewhere in the hop — and (b) *positional
+  evidence* — every capitalized occurrence sits at a sentence, quotation, or
+  heading/bullet start, never mid-sentence. The AND is load-bearing: (a) alone
+  eats real names (`mark`/`Mark`); (b) keeps any token ever capitalized
+  mid-sentence. English-benefiting, German-neutral (German capitalizes nouns
+  mid-sentence, so (a) rarely fires); targets the ~96% noise class the
+  **dismissal log** surfaced (ADR-0032).
 - **Suppression** — ruling a token out of L3 adjudication (allowlist, declared
-  tool vocabulary, stopwords). Always token-granularity: a region (system
-  prompt, code fence) may inform heuristics but is never skipped wholesale.
-  Suppression never affects L1/L2 protection — a suppressed token that is a
-  known entity is still blindfolded.
+  tool vocabulary, stopwords, **positional case heuristic**). Always
+  token-granularity: a region (system prompt, code fence) may inform heuristics
+  but is never skipped wholesale. Suppression never affects L1/L2 protection — a
+  suppressed token that is a known entity is still blindfolded.
 - **Closed-world restore** — restore only surrogates actually injected for this
   exchange, to avoid restoring a coincidentally-emitted lookalike. Closed-world
   constrains the *referent set*, not the string match: an injected surrogate
