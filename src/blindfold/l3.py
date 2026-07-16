@@ -265,25 +265,22 @@ class L3Detector:
         ):
             cached = self._cache.get(candidate)
             if cached is not None:
-                self._maybe_log_dismissal(candidate, cached)
-                results.append((candidate, cached))
-                processed += 1
-                self._maybe_log_progress(processed, pass_started_at)
-                continue
-            try:
-                decision = self._adjudicator.adjudicate(candidate)
-            except Exception as exc:
-                # Fail-closed (ADR-0009): a novel candidate we couldn't adjudicate
-                # is exactly the case where letting the payload through would risk
-                # leaking an undiscovered entity. Block.
-                # SEC-7 (issue #48): the candidate is, by definition, unresolved —
-                # it may be a real entity value never minted a surrogate. Reference
-                # it by a hashed id (ADR-0009's scrub fallback), never the plaintext.
-                digest = hashlib.sha256(candidate.text.encode("utf-8")).hexdigest()[:12]
-                raise L3Unavailable(
-                    f"L3 adjudication failed for candidate (ref: hash:{digest}): {exc}"
-                ) from exc
-            self._cache.put(candidate, decision)
+                decision = cached
+            else:
+                try:
+                    decision = self._adjudicator.adjudicate(candidate)
+                except Exception as exc:
+                    # Fail-closed (ADR-0009): a novel candidate we couldn't adjudicate
+                    # is exactly the case where letting the payload through would risk
+                    # leaking an undiscovered entity. Block.
+                    # SEC-7 (issue #48): the candidate is, by definition, unresolved —
+                    # it may be a real entity value never minted a surrogate. Reference
+                    # it by a hashed id (ADR-0009's scrub fallback), never the plaintext.
+                    digest = hashlib.sha256(candidate.text.encode("utf-8")).hexdigest()[:12]
+                    raise L3Unavailable(
+                        f"L3 adjudication failed for candidate (ref: hash:{digest}): {exc}"
+                    ) from exc
+                self._cache.put(candidate, decision)
             self._maybe_log_dismissal(candidate, decision)
             results.append((candidate, decision))
             processed += 1
