@@ -149,6 +149,21 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   **allowlist**ed. L3's verdict on a **candidate span** decides whether a span
   denotes one; it enters the world with a **provisional surrogate** and is
   confirmed or rejected through the **review inbox**.
+- **Dismissal** — L3's `is_entity: false` verdict on a **candidate span**: the
+  opposite of confirmation. A dismissed candidate never enters the **review
+  inbox** and mints no **provisional surrogate** — distinct from a human
+  **reject**, which acts on a candidate L3 already confirmed. Dismissals are the
+  bulk of L3 traffic in an agentic session (framework/tool vocabulary in the
+  system prompt) and are the raw material the **seeded allowlist** is curated
+  from (ADR-0032).
+- **Dismissal log** — an opt-in, local-only diagnostic file
+  (`BLINDFOLD_L3_DISMISSAL_LOG`, ADR-0032) capturing each distinct
+  **dismissal**'s token text — never its surrounding context — deduped per
+  process; off by default. Exists solely to give a curator real evidence to
+  extend the **seeded allowlist** with, the same evidence-first method issues
+  #71/#87 used. v1 curation is manual (a human reads the log and hand-edits
+  `seeded_allowlist.txt`); a management-app roundtrip to promote entries
+  directly is deferred (v2).
 - **Review inbox** — the queue of **provisional**ly-blindfolded novel candidates
   awaiting human confirmation.
 - **Provisional surrogate** — the fake auto-minted for a novel entity at request
