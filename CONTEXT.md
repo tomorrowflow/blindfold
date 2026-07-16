@@ -85,10 +85,11 @@ to add it via `/grill-with-docs`, not to invent a synonym.
     fuzzy, first-name ambiguity), German-aware.
   - **L3** — **candidate-span adjudication**, run only on spans the deterministic
     passes can't resolve. L3 names the *role*, not a model choice: any on-device
-    implementation behind the adjudicator seam (LLM via Ollama today; a small
-    local classifier or a cascade tomorrow) is L3. Full-document ML detection is
-    *not* L3 — that would be a new concept requiring its own term and ADR
-    (ADR-0003 rejected it deliberately).
+    implementation behind the adjudicator seam is L3 — a local LLM (Ollama /
+    oMLX) alone, or a local NER confirmer (GLiNER) chained before the LLM to
+    skip the expensive call for spans it can confirm directly (ADR-0033). Full-document
+    ML detection is *not* L3 — that would be a new concept requiring its own term
+    and ADR (ADR-0003 rejected it deliberately).
 - **Candidate span** — a flagged span (unknown capitalized token, fuzzy near-miss,
   ambiguous first name) handed to L3, plus minimal context. L3 cost scales with the
   number of candidate spans, not payload size. A span already occupied by an
@@ -182,22 +183,22 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   tool schemas. Suppressed from L3 candidacy for that request only —
   session-scoped, never persisted into the **allowlist** (a request must not be
   able to permanently poison learning by declaring a tool named after a person).
-- **Positional case heuristic** — a **suppression** condition (ADR-0033) that
-  rules out English sentence-initial capitalization noise (`Assist`, `Note`,
-  `Build`, …) before any model call. A capitalized token is suppressed only when
-  **both** hold within the one **hop**: (a) *vocabulary evidence* — its lowercase
-  form appears as a standalone word elsewhere in the hop — and (b) *positional
-  evidence* — every capitalized occurrence sits at a sentence, quotation, or
-  heading/bullet start, never mid-sentence. The AND is load-bearing: (a) alone
-  eats real names (`mark`/`Mark`); (b) keeps any token ever capitalized
-  mid-sentence. English-benefiting, German-neutral (German capitalizes nouns
-  mid-sentence, so (a) rarely fires); targets the ~96% noise class the
-  **dismissal log** surfaced (ADR-0032).
 - **Suppression** — ruling a token out of L3 adjudication (allowlist, declared
   tool vocabulary, stopwords, **positional case heuristic**). Always
   token-granularity: a region (system prompt, code fence) may inform heuristics
-  but is never skipped wholesale. Suppression never affects L1/L2 protection — a
-  suppressed token that is a known entity is still blindfolded.
+  but is never skipped wholesale. Suppression never affects L1/L2 protection —
+  a suppressed token that is a known entity is still blindfolded.
+- **Positional case heuristic** — a **Suppression** condition (ADR-0033) that
+  eliminates English positional-capitalization noise from L3 candidacy before
+  any model call. A capitalized token is suppressed when *both* (a) it appears
+  lowercase elsewhere in the same **hop** text (vocabulary evidence) *and* (b)
+  it appears only at sentence/quotation/heading start in that hop, never
+  mid-sentence in capitalized form (positional evidence). The AND requirement
+  guards the **Don/Mark/Stone failure mode**: a real first name appearing
+  mid-sentence in capitalized form always fails condition (b) and is never
+  suppressed. English-benefiting, German-neutral: German capitalizes all nouns
+  mid-sentence, so condition (a) rarely fires for German vocabulary and German
+  candidates pass through unchanged.
 - **Closed-world restore** — restore only surrogates actually injected for this
   exchange, to avoid restoring a coincidentally-emitted lookalike. Closed-world
   constrains the *referent set*, not the string match: an injected surrogate

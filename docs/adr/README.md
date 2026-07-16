@@ -43,5 +43,6 @@ Vocabulary follows [`../../CONTEXT.md`](../../CONTEXT.md).
 | [0028](0028-canonical-rbac-role-vocabulary.md) | Canonical RBAC role vocabulary — viewer, curator, re-identifier, admin | Accepted |
 | [0031](0031-provider-agnostic-l3-adjudicator-omlx.md) | Provider-agnostic L3 adjudicator — add oMLX (OpenAI-compatible) alongside Ollama | Proposed |
 | [0032](0032-l3-dismissal-log-seed-curation.md) | L3 dismissal log — opt-in local capture to curate the seeded allowlist | Proposed |
+| [0033](0033-l3-candidate-precision-positional-case-heuristic-and-gliner-cascade.md) | L3 candidate precision — positional case heuristic and GLiNER cascade adjudicator | Proposed |
 
 New ADRs: copy [`0000-template.md`](0000-template.md), take the next number.
