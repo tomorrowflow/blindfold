@@ -37,6 +37,22 @@ _CONTEXT_WINDOW = 40
 
 _CAPITALIZED_RE = re.compile(r"\b[A-ZÄÖÜ][a-zäöüß]+\b")
 
+# ADR-0033 positional evidence: what precedes a token for it to count as a
+# sentence, quotation, or heading start -- start of the hop text, start of a
+# line (covers markdown headings and bullet/numbered list markers), after
+# sentence-ending punctuation, or right after an opening quotation mark.
+_POSITION_START_RE = re.compile(
+    r"""
+    (?: (?:\A|\n)[ \t]*(?:[#>*+-]+|\d+[.)])?[ \t]*   # start of text/line, optional heading/bullet/numbered marker
+      | [.!?]["'’”)\]]*\s+                  # end of a sentence
+      | ["'‘“]                              # an opening quotation mark
+    )
+    ["'‘“]?                                 # the marker may itself be followed by an opening quote
+    \Z
+    """,
+    re.VERBOSE,
+)
+
 _STOPWORDS_PATH = Path(__file__).with_name("l3_stopwords_en_de.txt")
 
 logger = logging.getLogger(__name__)
@@ -177,8 +193,17 @@ def select_candidate_spans(
     caller. Suppression only removes L3 novelty discovery: a declared name that
     is also a registered Term or entity-graph surface is still blindfolded by the
     deterministic L1/L2 passes, which run before L3 (L2 wins).
+    A fourth suppression condition — the ADR-0033 positional case heuristic —
+    runs after the three above: a token is suppressed when it has both
+    vocabulary evidence (its lowercase form appears as a standalone word
+    elsewhere in this hop) and positional evidence (it is never capitalized
+    mid-sentence in this hop — only at a sentence, quotation, or heading
+    start). The AND is load-bearing: vocabulary evidence alone would eat real
+    names ("mark this as done" would suppress "Mark" the person too); the
+    positional gate protects any token that is ever capitalized mid-sentence.
     """
     known_surfaces = _known_surfaces(known_entities)
+    capitalized_positions = _capitalized_positions(text)
     candidates: list[CandidateSpan] = []
     for match in _CAPITALIZED_RE.finditer(text):
         token = match.group(0)
@@ -190,12 +215,47 @@ def select_candidate_spans(
             continue
         if token in declared_tools:
             continue
+        if _is_positional_case_noise(token, text, capitalized_positions):
+            continue
         start, end = match.start(), match.end()
         context = _context_window(text, start, end)
         candidates.append(
             CandidateSpan(text=token, start=start, end=end, context=context)
         )
     return candidates
+
+
+def _capitalized_positions(text: str) -> dict[str, list[int]]:
+    """Pre-scan: map each exact capitalized token to every start offset where it
+    appears in ``text`` (ADR-0033). Built once per hop so the main candidate loop
+    can check whether a token is *ever* capitalized mid-sentence, not just at the
+    occurrence currently being filtered.
+    """
+    positions: dict[str, list[int]] = {}
+    for match in _CAPITALIZED_RE.finditer(text):
+        positions.setdefault(match.group(0), []).append(match.start())
+    return positions
+
+
+def _is_positional_case_noise(
+    token: str, text: str, capitalized_positions: dict[str, list[int]]
+) -> bool:
+    """ADR-0033: suppress ``token`` only when both hold — (a) vocabulary evidence,
+    its lowercase form appears as a standalone word elsewhere in ``text``, and
+    (b) positional evidence, every capitalized occurrence of ``token`` in ``text``
+    is at a sentence/quotation/heading start (never mid-sentence).
+    """
+    lowered = token.lower()
+    if not re.search(rf"\b{re.escape(lowered)}\b", text):
+        return False
+    return all(
+        _is_start_position(text, pos)
+        for pos in capitalized_positions.get(token, [])
+    )
+
+
+def _is_start_position(text: str, pos: int) -> bool:
+    return bool(_POSITION_START_RE.search(text[:pos]))
 
 
 def _known_surfaces(entities: list[Entity]) -> frozenset[str]:
