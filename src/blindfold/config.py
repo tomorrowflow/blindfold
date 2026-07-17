@@ -39,6 +39,19 @@ L3 adjudicator (ADR-0022 / ADR-0031 / issue #57, #121, #122):
                              own local-only startup guard (a loopback-only base-url
                              check, distinct from Ollama's `:cloud`-tag check --
                              ADR-0031 §3) since it has no `:cloud`-equivalent signal.
+                             When unset, `get_settings()` overlays a persisted
+                             activation Setting instead of falling straight to the
+                             `ollama` default (ADR-0034 §1/§2, issue #145): if
+                             `BLINDFOLD_DATABASE_URL` names a persistent store AND
+                             that store's activation flag is set, this resolves to
+                             `gliner`. Store-gated -- the flag is never consulted
+                             without a persistent store (the ephemeral in-memory
+                             default stays env-only), and explicit env always wins
+                             over the persisted flag (operator/deploy intent). The
+                             persisted read is cached for the process lifetime: a
+                             flag flip takes effect on the *next start*, matching
+                             the startup-resolved, no-runtime-reconfiguration config
+                             model this ADR preserves.
   BLINDFOLD_L3_API_KEY     — optional oMLX API key (ADR-0031 follow-up, issue #130).
                              Sent as `Authorization: Bearer <key>` on oMLX's
                              `/v1/chat/completions` and `/v1/models` calls. Empty
@@ -88,6 +101,7 @@ Data directory (ADR-0034 §3, issue #143):
 
 from __future__ import annotations
 
+import functools
 import os
 import sys
 from dataclasses import dataclass
@@ -148,6 +162,27 @@ class Settings:
         return self.l3_provider
 
 
+@functools.lru_cache(maxsize=None)
+def _read_persisted_l3_gliner_activation(database_url: str) -> bool:
+    """Read the persisted L3 GLiNER-activation flag from the store (ADR-0034 §1/§2,
+    issue #145).
+
+    Lazily imports the Postgres-backed store (like ``app.py``'s ``get_rbac()`` /
+    ``get_entity_graph()`` lazy-hydrate pattern) so importing this module never pulls
+    in ``psycopg`` for the common case where no persistent store is configured.
+
+    Cached per ``database_url`` for the process lifetime: config stays
+    startup-resolved (ADR-0034 §1 -- "no mutable runtime config"), so a flag flip
+    takes effect on the *next start*, not mid-process. Without this, ``get_settings()``
+    -- called on every request via ``Depends(get_settings)`` -- would issue a live
+    Postgres round trip per request merely to re-check a flag that, by design, cannot
+    have changed since this process started.
+    """
+    from .store.activation_settings import PostgresActivationSettingsStore
+
+    return PostgresActivationSettingsStore(database_url).get_l3_gliner_activated()
+
+
 def resolve_data_dir() -> str:
     """Resolve Blindfold's install-global **Data directory** (ADR-0034 §3).
 
@@ -169,6 +204,22 @@ def resolve_data_dir() -> str:
 
 
 def get_settings() -> Settings:
+    database_url = os.environ.get("BLINDFOLD_DATABASE_URL", "")
+    l3_provider_env = os.environ.get("BLINDFOLD_L3_PROVIDER")
+    if l3_provider_env is not None:
+        # Explicit env wins over the persisted flag -- operator/deploy intent
+        # (ADR-0034 §1). The persisted-flag read is skipped entirely, not just
+        # overridden after the fact.
+        l3_provider = l3_provider_env
+    elif database_url and _read_persisted_l3_gliner_activation(database_url):
+        # Store-gated (ADR-0034 §2): the persisted flag is only ever consulted
+        # when a persistent store is configured. On the ephemeral in-memory
+        # default (database_url == "") this branch is never reached, so GLiNER
+        # stays env-only there.
+        l3_provider = "gliner"
+    else:
+        l3_provider = DEFAULT_L3_PROVIDER
+
     return Settings(
         upstream_base_url=os.environ.get(
             "BLINDFOLD_UPSTREAM_BASE_URL", DEFAULT_UPSTREAM_BASE_URL
@@ -179,7 +230,7 @@ def get_settings() -> Settings:
         dev_mode=os.environ.get("BLINDFOLD_DEV_MODE", "") not in ("", "0", "false", "False"),
         l3_base_url=os.environ.get("BLINDFOLD_L3_BASE_URL", DEFAULT_L3_BASE_URL),
         l3_model=os.environ.get("BLINDFOLD_L3_MODEL", ""),
-        l3_provider=os.environ.get("BLINDFOLD_L3_PROVIDER", DEFAULT_L3_PROVIDER),
+        l3_provider=l3_provider,
         l3_api_key=os.environ.get("BLINDFOLD_L3_API_KEY", ""),
         l3_dismissal_log=os.environ.get("BLINDFOLD_L3_DISMISSAL_LOG", ""),
         l3_gliner_model_path=os.environ.get("BLINDFOLD_L3_GLINER_MODEL_PATH", ""),
@@ -190,5 +241,5 @@ def get_settings() -> Settings:
         openai_upstream_base_url=os.environ.get("BLINDFOLD_OPENAI_UPSTREAM_BASE_URL", ""),
         host=os.environ.get("BLINDFOLD_HOST", DEFAULT_HOST),
         port=int(os.environ.get("BLINDFOLD_PORT", DEFAULT_PORT)),
-        database_url=os.environ.get("BLINDFOLD_DATABASE_URL", ""),
+        database_url=database_url,
     )

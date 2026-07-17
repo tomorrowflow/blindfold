@@ -193,5 +193,9 @@ def test_settings_database_url_defaults_to_empty_string(monkeypatch):
 
 
 def test_settings_database_url_is_read_from_env(monkeypatch):
+    # BLINDFOLD_L3_PROVIDER set explicitly so this test -- about database_url alone --
+    # doesn't incidentally exercise the persisted-gliner-activation store read
+    # (ADR-0034 §1/§2, issue #145): explicit env short-circuits that read entirely.
+    monkeypatch.setenv("BLINDFOLD_L3_PROVIDER", DEFAULT_L3_PROVIDER)
     monkeypatch.setenv("BLINDFOLD_DATABASE_URL", "postgresql://user:pass@localhost/blindfold")
     assert get_settings().database_url == "postgresql://user:pass@localhost/blindfold"

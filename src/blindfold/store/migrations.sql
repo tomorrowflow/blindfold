@@ -148,3 +148,13 @@ CREATE TABLE IF NOT EXISTS reidentify_mappings (
     ciphertext TEXT NOT NULL,
     UNIQUE (surrogate, workspace)
 );
+
+-- L3 GLiNER cascade activation Setting (ADR-0034 §1/§2, issue #145): a single
+-- persisted boolean flag, install-global (not per-workspace). Singleton row keyed by
+-- a boolean primary key forced to TRUE, so there is exactly one row ever. Setup's
+-- opt-in toggle writes it; config.py's persisted-overlay-on-env read consumes it at
+-- startup, only when a persistent store (this table's home) is configured.
+CREATE TABLE IF NOT EXISTS l3_gliner_activation (
+    id        BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id),
+    activated BOOLEAN NOT NULL DEFAULT FALSE
+);
