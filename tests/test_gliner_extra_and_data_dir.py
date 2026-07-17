@@ -12,6 +12,7 @@ transmitted, or restored anywhere in this file.
 
 from __future__ import annotations
 
+import re
 import tomllib
 from pathlib import Path
 
@@ -28,20 +29,25 @@ def _pyproject() -> dict:
     return tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
 
 
+def _dist_names(requirements: list[str]) -> set[str]:
+    # Strip the version specifier off each PEP 508 requirement, leaving the bare
+    # distribution name (e.g. "gliner>=0.2.13" -> "gliner").
+    return {re.split(r"[<>=]", req, maxsplit=1)[0].strip() for req in requirements}
+
+
 def test_gliner_extra_bundles_gliner_and_onnxruntime():
     # ADR-0034 §6: gliner + onnxruntime ship as an optional extra, not a base
     # dependency -- the 197 MB model and ONNX runtime are opt-in weight.
     extras = _pyproject()["project"]["optional-dependencies"]
     assert "gliner" in extras
-    extra_names = {req.split(">")[0].split("=")[0].split("<")[0].strip() for req in extras["gliner"]}
+    extra_names = _dist_names(extras["gliner"])
     assert "gliner" in extra_names
     assert "onnxruntime" in extra_names
 
 
 def test_base_dependencies_do_not_include_gliner_or_onnxruntime():
     # Base install must not pull the 197 MB model runtime -- it's opt-in weight.
-    base_deps = _pyproject()["project"]["dependencies"]
-    base_names = {req.split(">")[0].split("=")[0].split("<")[0].strip() for req in base_deps}
+    base_names = _dist_names(_pyproject()["project"]["dependencies"])
     assert "gliner" not in base_names
     assert "onnxruntime" not in base_names
 
