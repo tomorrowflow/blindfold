@@ -39,6 +39,17 @@ test.describe("Setup — empty-store forced redirect", () => {
     const thirdParty = [...requestHosts].filter((host) => host !== firstPartyHost);
     expect(thirdParty, `unexpected non-loopback requests: ${thirdParty.join(", ")}`).toEqual([]);
   });
+
+  test("the Enhanced local detection toggle is hidden on the in-memory default store (ADR-0034 §2, issue #146)", async ({
+    operatorPage,
+  }) => {
+    // This fixture never sets BLINDFOLD_DATABASE_URL, so /v1/status's
+    // config.has_persistent_store is false -- restart-to-activate is incoherent
+    // on the ephemeral in-memory default, so the toggle must not even be offered.
+    await operatorPage.goto("/ui/setup");
+    await expect(operatorPage.getByTestId("setup-workspace-name")).toBeVisible();
+    await expect(operatorPage.getByTestId("setup-gliner-checkbox")).toHaveCount(0);
+  });
 });
 
 test.describe("Setup — create first workspace", () => {

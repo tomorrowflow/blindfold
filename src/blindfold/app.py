@@ -121,7 +121,12 @@ from .l3 import (
     L3Detector,
     L3Unavailable,
 )
-from .l3_gliner import GlinerCascadeAdjudicator, GlinerOnnxClassifier
+from .gliner_provisioning import (
+    GlinerDigestMismatchError,
+    GlinerHubClient,
+    provision_gliner_model,
+)
+from .l3_gliner import GlinerCascadeAdjudicator, GlinerExtraMissingError, GlinerOnnxClassifier
 from .l3_openai_compat import OpenAICompatibleAdjudicator, ping_omlx
 from .ollama import OllamaAdjudicator, ping_ollama
 from .policy import (
@@ -468,6 +473,44 @@ def get_rbac() -> RbacRegistry:
     if _rbac_fallback is None:
         _rbac_fallback = RbacRegistry()
     return _rbac_fallback
+
+
+def get_data_dir() -> str:
+    """Blindfold's install-global **Data directory** (ADR-0034 §3), where the
+    GLiNER cascade model lands. Its own dependency seam so tests can point
+    provisioning at a tmp_path without touching the real OS app-data location.
+    """
+    from .config import resolve_data_dir
+
+    return resolve_data_dir()
+
+
+def get_gliner_hub_client() -> GlinerHubClient:
+    """The GLiNER provisioning network boundary (ADR-0034 §4) -- production wires
+    the real ``HuggingFaceHubClient``; tests substitute a recording stub.
+    """
+    from .gliner_provisioning import HuggingFaceHubClient
+
+    return HuggingFaceHubClient()
+
+
+def get_activation_settings_store() -> "PostgresActivationSettingsStore | None":
+    """The persisted L3-GLiNER-activation Setting store (ADR-0034 §1/§2, issue
+    #145), or ``None`` when no persistent store is configured.
+
+    Store-gated: constructed lazily per-call (mirrors ``get_rbac()``'s pattern) so
+    importing this module never pulls in ``psycopg`` for the common case where
+    ``BLINDFOLD_DATABASE_URL`` is unset. ``None`` is the store-gate signal the
+    gliner-provision endpoint refuses on -- restart-to-activate is incoherent on
+    the ephemeral in-memory default (ADR-0034 §2).
+    """
+    database_url = get_settings().database_url
+    if not database_url:
+        return None
+
+    from .store.activation_settings import PostgresActivationSettingsStore
+
+    return PostgresActivationSettingsStore(database_url)
 
 
 def get_reidentify_store() -> ReIdentificationStore:
@@ -927,6 +970,9 @@ async def status(
             "fail_closed_policy": (
                 "deterministic-only" if policy.deterministic_only else "fail-closed"
             ),
+            # ADR-0034 §2: Setup's "Enhanced local detection" toggle is store-gated
+            # -- the SPA reads this to decide whether to render the toggle at all.
+            "has_persistent_store": bool(settings.database_url),
         },
     }
 
@@ -1484,6 +1530,68 @@ async def seed_workspace(
         repo.seed_reidentify_store(reidentify_store, transit, workspace=slug)
 
     return {"workspace": slug, "seeded": True}
+
+
+@app.post("/v1/management/workspaces/{slug}/gliner-provision")
+async def provision_gliner(
+    slug: str,
+    request: Request,
+    rbac: RbacRegistry = Depends(get_rbac),
+    settings: Settings = Depends(get_settings),
+    data_dir: str = Depends(get_data_dir),
+    hub_client: GlinerHubClient = Depends(get_gliner_hub_client),
+    activation_store: "PostgresActivationSettingsStore | None" = Depends(
+        get_activation_settings_store
+    ),
+) -> dict:
+    """Setup's opt-in "Enhanced local detection" toggle (ADR-0034 §1/§5, issue
+    #146) -- download the GLiNER cascade model (issue #144's
+    ``provision_gliner_model``) and persist the activation flag (issue #145's
+    ``PostgresActivationSettingsStore``) so the *next* start activates the cascade.
+
+    Gated by the ``admin`` role on ``slug`` (same convention as ``seed_workspace``)
+    -- the Setup creator already holds it from creating the workspace (issue #107).
+    Provisioning itself is install-global, not workspace data; ``slug`` is only the
+    RBAC anchor Setup already has in hand at this point in the flow.
+
+    Store-gated (ADR-0034 §2): refuses with 409 when no persistent store is
+    configured -- restart-to-activate would wipe the ephemeral in-memory default,
+    so the toggle that reaches this endpoint is hidden there client-side, and this
+    is the server-side backstop for that same invariant.
+
+    A digest mismatch (tampered/corrupted download, ADR-0034 §4) or a missing
+    ``blindfold[gliner]`` extra (ADR-0034 §6) is refused with a 4xx/5xx and the
+    activation flag is left untouched -- Setup's own caller treats this call as
+    non-blocking (a failure never blocks completing Setup), so the flag must not
+    be set on a provisioning failure.
+    """
+    _require_role(request, slug, "admin", rbac)
+
+    if activation_store is None:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Enhanced local detection requires a persistent store "
+                "(BLINDFOLD_DATABASE_URL) -- restart-to-activate is incoherent on "
+                "the ephemeral in-memory default (ADR-0034 §2)."
+            ),
+        )
+
+    try:
+        result = await run_in_threadpool(
+            provision_gliner_model,
+            data_dir,
+            settings.l3_gliner_model_path,
+            hub_client,
+        )
+    except GlinerExtraMissingError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except GlinerDigestMismatchError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    activation_store.set_l3_gliner_activated(True)
+
+    return {"status": result.status, "path": result.path}
 
 
 @app.post("/v1/management/workspaces/{slug}/seed/preview")

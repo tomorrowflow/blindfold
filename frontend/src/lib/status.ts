@@ -36,6 +36,10 @@ export type StatusResponse = {
     upstream_base_url: string;
     l3_model: string | null;
     fail_closed_policy: string;
+    // ADR-0034 §2: true iff a persistent store (BLINDFOLD_DATABASE_URL) is
+    // configured -- Setup's "Enhanced local detection" toggle is store-gated,
+    // hidden on the ephemeral in-memory default (issue #146).
+    has_persistent_store: boolean;
   };
 };
 

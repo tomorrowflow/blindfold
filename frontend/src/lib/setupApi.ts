@@ -24,6 +24,11 @@ export type SeedResult = {
   seeded: boolean;
 };
 
+export type GlinerProvisionResult = {
+  status: "already_provisioned" | "downloaded";
+  path: string;
+};
+
 // Preview-row problem codes the server's seed/preview endpoint returns (issue
 // #127): "duplicate" is a blind-index equality match against an existing entity
 // (ADR-0018); "unknown_relation"/"orientation_violation" are entity_relationships
@@ -120,4 +125,20 @@ export async function importSeedBundle(targetSlug: string, file: File): Promise<
     throw new Error("Not valid JSON");
   }
   return seedWorkspace(targetSlug, bundle);
+}
+
+// Setup's opt-in "Enhanced local detection" toggle (ADR-0034 §1/§5, issue #146):
+// downloads the GLiNER cascade model and persists the activation flag that
+// takes effect on the *next* Blindfold restart. Targets an explicit,
+// already-created workspace slug purely as the RBAC anchor (the admin grant
+// Setup's create step just issued) -- provisioning itself is install-global,
+// not workspace data. Store-gated server-side (409 with no persistent store)
+// mirroring the toggle's own client-side visibility gate.
+export async function provisionGliner(targetSlug: string): Promise<GlinerProvisionResult> {
+  const r = await fetch(
+    `/v1/management/workspaces/${encodeURIComponent(targetSlug)}/gliner-provision`,
+    { method: "POST" },
+  );
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  return r.json();
 }

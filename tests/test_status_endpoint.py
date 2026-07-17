@@ -58,6 +58,7 @@ async def test_status_endpoint_returns_the_settled_contract_shape():
         "upstream_base_url",
         "l3_model",
         "fail_closed_policy",
+        "has_persistent_store",
     }
 
 
@@ -336,8 +337,40 @@ async def test_config_never_carries_the_openbao_token_or_any_secret(monkeypatch)
         "upstream_base_url",
         "l3_model",
         "fail_closed_policy",
+        "has_persistent_store",
     }
     assert secret_token not in str(body)
+
+
+@pytest.mark.anyio
+async def test_config_has_persistent_store_reflects_whether_a_database_url_is_configured(
+    monkeypatch,
+):
+    # ADR-0034 §2: Setup's "Enhanced local detection" toggle is store-gated -- the
+    # SPA reads this field to decide whether to render it at all.
+    monkeypatch.delenv("BLINDFOLD_DATABASE_URL", raising=False)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://proxy.test") as client:
+        unset_resp = await client.get("/v1/status")
+
+    assert unset_resp.json()["config"]["has_persistent_store"] is False
+
+    monkeypatch.setenv("BLINDFOLD_DATABASE_URL", "postgresql://u:p@localhost/db")
+    # Pin the provider explicitly so get_settings() never dereferences database_url
+    # for the persisted-l3-gliner-activation overlay (config.py, ADR-0034 §1) --
+    # this test is only about the has_persistent_store signal, not that overlay.
+    monkeypatch.setenv("BLINDFOLD_L3_PROVIDER", "ollama")
+    # A configured database_url also routes get_entity_graph() at a live
+    # PostgresEntityGraphStore -- stub it so this test doesn't need real Postgres
+    # (Docker-gated store round-trips are covered elsewhere).
+    app.dependency_overrides[get_entity_graph] = lambda: EntityGraph()
+    try:
+        async with httpx.AsyncClient(transport=transport, base_url="http://proxy.test") as client:
+            set_resp = await client.get("/v1/status")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert set_resp.json()["config"]["has_persistent_store"] is True
 
 
 @pytest.mark.anyio

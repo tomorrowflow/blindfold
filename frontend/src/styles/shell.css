@@ -2549,6 +2549,12 @@ body {
   color: #b3261e;
 }
 
+.bf-setup-field-help {
+  margin: 2px 0 0 22px;
+  font-size: 0.75rem;
+  color: var(--bf-muted);
+}
+
 /* -----------------------------------------------------------------------
    Entity list empty state (issue #109) -- persistent Seed bundle import +
    one-click Sample data, reachable any time a workspace has zero entities
