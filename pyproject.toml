@@ -12,6 +12,14 @@ dependencies = [
     "uvicorn>=0.30",
 ]
 
+[project.optional-dependencies]
+# ADR-0034 §6: the GLiNER cascade's local NER model + ONNX runtime are opt-in
+# weight (~197 MB), never a base dependency. Install with `blindfold[gliner]`.
+gliner = [
+    "gliner>=0.2.13",
+    "onnxruntime>=1.19",
+]
+
 [project.scripts]
 blindfold = "blindfold.__main__:main"
 

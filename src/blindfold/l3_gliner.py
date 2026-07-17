@@ -40,12 +40,30 @@ class GlinerClassifier(Protocol):
 _GLINER_LABELS = ("person", "organization", "product", "codename")
 
 
+class GlinerExtraMissingError(RuntimeError):
+    """Raised when the GLiNER cascade is activated but the ``blindfold[gliner]``
+    extra (``gliner`` + ``onnxruntime``) is not installed (ADR-0034 §6).
+
+    ``gliner``/``onnxruntime`` are opt-in weight (~197 MB), never a base
+    dependency -- a bare ``ImportError`` from the deferred import below would
+    otherwise surface as an unexplained crash with no actionable next step.
+    """
+
+
 def _load_gliner_model(model_path: str):
     # Deferred import: the ``gliner`` package (ONNX/CPU inference) is an optional
-    # dependency of this seam, not a hard package dependency -- config/deployment
-    # wiring for it is a separate slice. No network call: GLiNER model loading reads
-    # only from ``model_path`` on local disk.
-    from gliner import GLiNER
+    # dependency of this seam (``blindfold[gliner]``, ADR-0034 §6), not a base
+    # package dependency. No network call: GLiNER model loading reads only from
+    # ``model_path`` on local disk.
+    try:
+        from gliner import GLiNER
+    except ImportError as exc:
+        raise GlinerExtraMissingError(
+            "the GLiNER cascade requires the 'blindfold[gliner]' extra "
+            "(gliner + onnxruntime), which is not installed; run "
+            "`uv pip install 'blindfold[gliner]'` (or `pip install "
+            "'blindfold[gliner]'`) to enable it."
+        ) from exc
 
     return GLiNER.from_pretrained(model_path)
 

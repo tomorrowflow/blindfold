@@ -76,12 +76,22 @@ Serve bind address (ADR-0021 / ADR-0027, issue #91):
   BLINDFOLD_PORT           — bind port, same purpose (default: 25463; moved off 8000,
                              which collides with oMLX/LM Studio's own default, ADR-0031
                              §4 — "BLIND" on a phone keypad).
+
+Data directory (ADR-0034 §3, issue #143):
+  BLINDFOLD_DATA_DIR       — install-global on-disk location for large local assets
+                             (e.g. the GLiNER cascade model), distinct from the
+                             store. Default: the OS app-data convention (see
+                             `resolve_data_dir`). Not yet read by any code path in
+                             this slice -- provisioning that consumes it (Setup's
+                             GLiNER download) is a separate slice (ADR-0034 §1).
 """
 
 from __future__ import annotations
 
 import os
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 DEFAULT_UPSTREAM_BASE_URL = "https://api.anthropic.com"
 DEFAULT_OPENBAO_ADDR = "http://localhost:8200"
@@ -136,6 +146,26 @@ class Settings:
         if self.l3_provider == "gliner":
             return self.l3_inner_provider
         return self.l3_provider
+
+
+def resolve_data_dir() -> str:
+    """Resolve Blindfold's install-global **Data directory** (ADR-0034 §3).
+
+    ``BLINDFOLD_DATA_DIR`` overrides when set. Otherwise defaults to the OS
+    app-data convention: ``~/Library/Application Support/blindfold/`` on macOS,
+    ``$XDG_DATA_HOME/blindfold/`` on Linux. Distinct from the **store** (entities,
+    mapping, RBAC) -- this holds large local *assets* (e.g. the GLiNER cascade
+    model), never per-workspace data.
+    """
+    override = os.environ.get("BLINDFOLD_DATA_DIR", "")
+    if override:
+        return override
+    if sys.platform == "darwin":
+        return str(Path.home() / "Library" / "Application Support" / "blindfold")
+    xdg_data_home = os.environ.get("XDG_DATA_HOME", "") or str(
+        Path.home() / ".local" / "share"
+    )
+    return str(Path(xdg_data_home) / "blindfold")
 
 
 def get_settings() -> Settings:
