@@ -15,9 +15,13 @@ dependencies = [
 [project.optional-dependencies]
 # ADR-0034 §6: the GLiNER cascade's local NER model + ONNX runtime are opt-in
 # weight (~197 MB), never a base dependency. Install with `blindfold[gliner]`.
+# huggingface_hub ships transitively via gliner's own deps too, but this module
+# (gliner_provisioning.py) imports it directly (ADR-0034 §4), so it's pinned
+# explicitly rather than relied on implicitly.
 gliner = [
     "gliner>=0.2.13",
     "onnxruntime>=1.19",
+    "huggingface_hub>=0.35",
 ]
 
 [project.scripts]
