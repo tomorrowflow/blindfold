@@ -4,6 +4,7 @@
 // this slice's scope (StubView covered "Settings" generically before this).
 
 import { usePreferences, type Density } from "../components/PreferencesContext";
+import { SettingsDetection } from "../components/SettingsDetection";
 import { SettingsImport } from "../components/SettingsImport";
 import { SettingsPolicy } from "../components/SettingsPolicy";
 
@@ -48,6 +49,7 @@ export function Settings() {
         </div>
       </section>
       <SettingsPolicy />
+      <SettingsDetection />
       <SettingsImport />
       <p className="bf-settings-field-hint" data-testid="settings-no-export-note">
         No export. Colleague sharing goes through the shared surrogate store and

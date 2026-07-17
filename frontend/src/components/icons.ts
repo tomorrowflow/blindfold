@@ -32,4 +32,6 @@ export {
   UserRound,
   // Access view (issue #103)
   Plus,
+  // Settings -> Detection view (issue #147)
+  RefreshCw,
 } from "lucide-react";
