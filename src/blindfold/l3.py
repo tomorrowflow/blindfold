@@ -39,11 +39,16 @@ _CAPITALIZED_RE = re.compile(r"\b[A-ZÄÖÜ][a-zäöüß]+\b")
 
 # ADR-0033 positional evidence: what precedes a token for it to count as a
 # sentence, quotation, or heading start -- start of the hop text, start of a
-# line (covers markdown headings and bullet/numbered list markers), after
-# sentence-ending punctuation, or right after an opening quotation mark.
+# line (covers markdown headings and bullet/numbered list markers, optionally
+# followed by a bold-label marker -- issue #141: "- **Assist**: ..." nests a
+# bold label inside a bullet, separated from the bullet marker by a space),
+# after sentence-ending punctuation, or right after an opening quotation mark.
 _POSITION_START_RE = re.compile(
     r"""
-    (?: (?:\A|\n)[ \t]*(?:[#>*+-]+|\d+[.)])?[ \t]*   # start of text/line, optional heading/bullet/numbered marker
+    (?: (?:\A|\n)[ \t]*(?:[#>*+-]+|\d+[.)])?[ \t]*(?:\*\*|__)?[ \t]*
+                                             # start of text/line, optional heading/
+                                             # bullet/numbered marker, optional
+                                             # bold-label marker (**Label**/__Label__)
       | [.!?]["'’”)\]]*\s+                  # end of a sentence
       | ["'‘“]                              # an opening quotation mark
     )

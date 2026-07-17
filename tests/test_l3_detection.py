@@ -180,6 +180,82 @@ def test_positional_case_heuristic_covers_bullet_and_heading_starts():
     assert [candidate.text for candidate in candidates] == ["Rules"]
 
 
+def test_positional_case_heuristic_covers_bullet_with_bold_label_start():
+    # Issue #141 (ADR-0033 gap): Claude Code's system prompt structures bullets as
+    # bold labels -- "- **Assist**: ..." -- not bare "- Assist: ...". The bullet
+    # marker and the bold marker are separated by a space, which the original
+    # _POSITION_START_RE (one contiguous marker group) failed to recognise as
+    # sentence-initial. "Assist" and "Refuse" sit exclusively at bullet+bold-label
+    # starts here, and their lowercase forms recur later in the same hop.
+    text = (
+        "- **Assist** the user with their request.\n"
+        "- **Refuse** anything that looks unsafe.\n"
+        "You must always assist promptly and never refuse without good cause."
+    )
+
+    candidates = select_candidate_spans(text, known_entities=[])
+
+    assert [candidate.text for candidate in candidates] == []
+
+
+def test_positional_case_heuristic_covers_numbered_and_underscore_bold_label_starts():
+    # Issue #141: the same bullet+bold-label gap applies to numbered lists
+    # ("1. **Sending**: ...") and underscore-style bold labels ("__Storing__:
+    # ..."), both cited in the issue's dismissal-log examples. Both sit
+    # exclusively at marker starts here, with lowercase forms recurring later.
+    text = (
+        "1. **Sending** the request to the queue.\n"
+        "2. __Storing__ the response for later.\n"
+        "Always finish sending before storing the result."
+    )
+
+    candidates = select_candidate_spans(text, known_entities=[])
+
+    assert [candidate.text for candidate in candidates] == []
+
+
+def test_positional_case_heuristic_does_not_suppress_inline_bold_mid_sentence():
+    # Issue #141 fail-closed invariant: a bold span mid-sentence (not at a line
+    # start) must never be treated as sentence-initial just because it is
+    # wrapped in "**...**" -- only a bold label that itself begins the line
+    # counts as positional evidence. "Mark" here is inline bold mid-sentence,
+    # so it must stay a candidate even though "mark" recurs lowercase.
+    text = (
+        "Please mark this task as done once you are finished. "
+        "The lawyer said **Mark** signed the contract yesterday."
+    )
+
+    candidates = select_candidate_spans(text, known_entities=[])
+
+    assert [candidate.text for candidate in candidates] == ["Mark"]
+
+
+def test_positional_case_heuristic_live_regression_agentic_system_prompt_shape():
+    # Issue #141 acceptance criterion: the live-test 2026-07-17 dismissal log
+    # against a Claude Code system-prompt-shaped hop. "Assist", "Refuse",
+    # "Sending", "Storing" sit exclusively at bullet/heading/bold-label starts
+    # and recur lowercase -- they must no longer reach L3 candidacy. "Darwin"
+    # (a proper noun, no lowercase recurrence) and "January" (mid-sentence
+    # capitalization) must continue to be flagged -- fail-closed is unaffected.
+    text = (
+        "## Behavior\n"
+        "- **Assist** the user with their request.\n"
+        "- **Refuse** anything that looks unsafe.\n"
+        "\n"
+        "**Sending:** outbound data is scrubbed first.\n"
+        "**Storing:** responses are cached locally.\n"
+        "\n"
+        "You must always assist promptly, never refuse without good cause, "
+        "and keep sending and storing scoped to this session. "
+        "The project lead said Darwin approved the plan starting in January."
+    )
+
+    candidates = select_candidate_spans(text, known_entities=[])
+
+    flagged = {candidate.text for candidate in candidates}
+    assert flagged == {"Behavior", "Darwin", "January"}
+
+
 def test_registered_entity_colliding_with_positional_case_noise_is_still_blindfolded():
     # Leak-audit / ADR-0033: suppression removes L3 novelty discovery only, never
     # L1/L2 protection. "Build" is positional-case noise here (sentence-start

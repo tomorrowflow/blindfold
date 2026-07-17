@@ -140,7 +140,13 @@ confidence to inform the escalation decision, if GLiNER is extended to return sc
   tokens suppressed by the heuristic — with the same risk profile as a human "reject"
   in the review inbox (ADR-0023 §1 framing).
 - **Deferred:** wordfreq frequency-confidence scoring; GLiNER German coverage
-  validation; sentence-boundary detection refinements for condition (b).
+  validation. Sentence-boundary detection for condition (b) originally covered
+  only bare newlines and terminal punctuation; issue #141 (live-test 2026-07-17)
+  extended it to also recognise list/numbered-list markers, Markdown heading
+  markers, and bold-label markers (`**Label**:` / `__Label__:`) — including when
+  a bold label nests inside a bullet (`- **Assist**: ...`), which the original
+  single contiguous marker match missed. Further sentence-boundary refinements
+  beyond markers remain open if future live-testing surfaces more noise classes.
 
 ## Alternatives considered
 
