@@ -28,8 +28,11 @@ Degraded browser-verify specs, launched by `playwright.config.ts`'s second
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import os
+import tempfile
+from pathlib import Path
 
 import httpx
 import uvicorn
@@ -39,6 +42,9 @@ from blindfold.app import (
     get_allowlist,
     get_audit_log,
     get_entity_graph,
+    get_gliner_activation_store,
+    get_gliner_hub_client,
+    get_gliner_provisioning_tracker,
     get_l3_health_probe,
     get_rbac,
     get_reidentify_store,
@@ -50,6 +56,7 @@ from blindfold.app import (
     get_upstream_health,
 )
 from blindfold.entity_graph import EntityGraph
+from blindfold.gliner_status import GlinerProvisioningTracker
 from blindfold.policy import AuditLog, AuditRecord
 from blindfold.rbac import RbacRegistry
 from blindfold.reidentify import InMemoryReIdentificationStore
@@ -60,6 +67,10 @@ from blindfold.transit import TransitClient
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("BLINDFOLD_FIXTURE_PORT", "8951"))
+# Settings -> Detection (issue #147, ADR-0034 §5): an install-global, per-process
+# scratch Data directory so every fixture instance starts "not provisioned" --
+# never the real host's app-data path (this is a test fixture, not a real install).
+os.environ.setdefault("BLINDFOLD_DATA_DIR", tempfile.mkdtemp(prefix="blindfold-fixture-data-"))
 FIXTURE_STATE = os.environ.get("BLINDFOLD_FIXTURE_STATE", "protected")
 FORCE_DEPENDENCIES_HEALTHY = FIXTURE_STATE != "degraded"
 # Setup shell spec (issue #107): a third instance with a genuinely empty store —
@@ -149,6 +160,59 @@ def _stub_transit() -> TransitClient:
     )
 
 
+# Settings -> Detection (issue #147, ADR-0034 §5): a network-free stand-in for the
+# GLiNER hub client, and its own small stand-in manifest -- writes/verifies against
+# fabricated bytes rather than the real ~197 MB pinned model, so a browser-driven
+# retry click in this fixture never reaches the real network.
+_STUB_GLINER_FILE_CONTENT = b"fixture stand-in gliner model bytes"
+_STUB_GLINER_MANIFEST = {
+    "gliner_config.json": hashlib.sha256(_STUB_GLINER_FILE_CONTENT).hexdigest()
+}
+
+
+class _StubGlinerHubClient:
+    def snapshot_download(self, *, repo_id, revision, local_dir, allow_patterns):
+        for name in allow_patterns:
+            path = Path(local_dir) / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(_STUB_GLINER_FILE_CONTENT)
+        return local_dir
+
+
+class _InMemoryGlinerActivationStore:
+    """Test double for PostgresActivationSettingsStore's get/set surface (#145) --
+    this fixture has no `BLINDFOLD_DATABASE_URL`, so without this override
+    `get_gliner_activation_store()` would always resolve to `None` and the "restart
+    prompt after a fresh provision" browser-verify criterion could never render.
+    """
+
+    def __init__(self) -> None:
+        self._activated = False
+
+    def get_l3_gliner_activated(self) -> bool:
+        return self._activated
+
+    def set_l3_gliner_activated(self, activated: bool) -> None:
+        self._activated = activated
+
+
+def _apply_gliner_detection_overrides() -> None:
+    """Wire the detection/settings view's seams to fixture-local, network-free
+    doubles (issue #147). The activation store and provisioning tracker must be
+    *single instances* shared across requests (state persists between the GET status
+    read and the POST retry write, within one browser session) -- unlike the stub
+    hub client, which is stateless and safe to reconstruct per request.
+    """
+    import blindfold.gliner_provisioning as gliner_provisioning_module
+
+    gliner_provisioning_module.GLINER_MODEL_MANIFEST = _STUB_GLINER_MANIFEST
+    activation_store = _InMemoryGlinerActivationStore()
+    tracker = GlinerProvisioningTracker()
+    app.dependency_overrides[get_gliner_hub_client] = _StubGlinerHubClient
+    app.dependency_overrides[get_gliner_activation_store] = lambda: activation_store
+    app.dependency_overrides[get_gliner_provisioning_tracker] = lambda: tracker
+
+
 def _build_empty_app():
     """A genuinely empty store: no workspace, no entity, no RBAC grant.
 
@@ -186,6 +250,7 @@ def _build_empty_app():
         app.dependency_overrides[get_transit_health_probe] = _all_healthy
         app.dependency_overrides[get_store_health_probe] = _all_healthy
 
+    _apply_gliner_detection_overrides()
     return app
 
 
@@ -325,6 +390,7 @@ def build_app():
         app.dependency_overrides[get_transit_health_probe] = _all_healthy
         app.dependency_overrides[get_store_health_probe] = _all_healthy
 
+    _apply_gliner_detection_overrides()
     return app
 
 

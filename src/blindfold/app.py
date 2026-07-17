@@ -114,6 +114,12 @@ from .engine import (
     restore_response,
     restore_tool_call_json,
 )
+from .gliner_provisioning import GlinerHubClient, HuggingFaceHubClient
+from .gliner_status import (
+    GlinerProvisioningTracker,
+    gliner_detection_status,
+    retry_gliner_provisioning,
+)
 from .l3 import (
     CandidateSpan,
     L3Adjudication,
@@ -279,6 +285,11 @@ _audit_log = AuditLog()
 # entity plaintext. Tests substitute via dependency_overrides[get_block_history].
 _block_history = BlockHistory(window_minutes=15)
 
+# Process-wide record of the last GLiNER provisioning retry's outcome (ADR-0034 §5,
+# issue #147), backing the detection/settings management view's "verification
+# failed" state. Tests substitute via dependency_overrides[get_gliner_provisioning_tracker].
+_gliner_provisioning_tracker = GlinerProvisioningTracker()
+
 # /v1/status's health probes (issue #92): a short TTL absorbs a poll storm (the status
 # endpoint is polled ~5s) against L3/Transit. Kept as module-global CachedHealthProbe
 # instances (not built per-request) so the TTL is actually meaningful across polls.
@@ -433,6 +444,34 @@ def get_audit_log() -> AuditLog:
 
 def get_block_history() -> BlockHistory:
     return _block_history
+
+
+def get_gliner_provisioning_tracker() -> GlinerProvisioningTracker:
+    return _gliner_provisioning_tracker
+
+
+def get_gliner_hub_client() -> GlinerHubClient:
+    return HuggingFaceHubClient()
+
+
+def get_gliner_activation_store():
+    """The persisted L3 GLiNER activation-flag store (ADR-0034 §1/§2, issue #145),
+    or ``None`` when no persistent store is configured.
+
+    Store-gated (ADR-0034 §2): the ephemeral in-memory default has no activation-flag
+    counterpart, so an unset ``BLINDFOLD_DATABASE_URL`` means the detection/settings
+    view always reads ``activated=False`` from this seam. Lazy import mirrors
+    get_rbac()'s rationale -- importing this module never pulls in psycopg for the
+    common case where no persistent store is configured. Tests override via
+    dependency_overrides[get_gliner_activation_store].
+    """
+    database_url = get_settings().database_url
+    if not database_url:
+        return None
+
+    from .store.activation_settings import PostgresActivationSettingsStore
+
+    return PostgresActivationSettingsStore(database_url)
 
 
 def get_upstream_health() -> RecentFailureHealth:
@@ -1755,6 +1794,52 @@ async def put_workspace_policy(
         )
 
     return _policy_response(policies.for_workspace(slug))
+
+
+@app.get("/v1/management/detection/gliner")
+async def get_gliner_detection_status(
+    workspace: str,
+    request: Request,
+    rbac: RbacRegistry = Depends(get_rbac),
+    settings: Settings = Depends(get_settings),
+    tracker: GlinerProvisioningTracker = Depends(get_gliner_provisioning_tracker),
+    activation_store=Depends(get_gliner_activation_store),
+) -> dict:
+    """Read GLiNER provisioning status for the detection/settings management view
+    (ADR-0034 §5, issue #147).
+
+    Requires the ``admin`` role. Install-global, not per-workspace (ADR-0034 §5) --
+    ``workspace`` names the workspace to check the ``admin`` role against, same
+    admin-gate convention as the workspace policy endpoints, not a scope on the
+    returned data itself.
+    """
+    _require_role(request, workspace, "admin", rbac)
+    activated = activation_store.get_l3_gliner_activated() if activation_store else False
+    return gliner_detection_status(settings=settings, activated=activated, last_error=tracker.last_error)
+
+
+@app.post("/v1/management/detection/gliner/retry")
+async def retry_gliner_detection(
+    workspace: str,
+    request: Request,
+    rbac: RbacRegistry = Depends(get_rbac),
+    settings: Settings = Depends(get_settings),
+    tracker: GlinerProvisioningTracker = Depends(get_gliner_provisioning_tracker),
+    activation_store=Depends(get_gliner_activation_store),
+    hub_client: GlinerHubClient = Depends(get_gliner_hub_client),
+) -> dict:
+    """Retry GLiNER provisioning for the failed/absent case (ADR-0034 §5, issue
+    #147).
+
+    Requires the ``admin`` role. A digest-mismatch refusal or a missing
+    ``blindfold[gliner]`` extra is caught and surfaced back through the same status
+    contract as the GET (``status: "verification_failed"``, ``error``) rather than a
+    500 -- this is an admin-surfaced retry action, not the request path.
+    """
+    _require_role(request, workspace, "admin", rbac)
+    return retry_gliner_provisioning(
+        settings=settings, activation_store=activation_store, tracker=tracker, hub_client=hub_client
+    )
 
 
 def _apply_merge_side_effects(
