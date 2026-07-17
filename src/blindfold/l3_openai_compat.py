@@ -21,7 +21,7 @@ import json
 import httpx
 
 from .l3 import CandidateSpan, L3Adjudication
-from .ollama import _PROMPT_TEMPLATE
+from .ollama import _PROMPT_TEMPLATE, _build_batch_prompt, _parse_batch_verdicts
 from .status import DependencyHealth
 
 # Issue #92: /v1/status's l3 dependency probe -- a lightweight local-daemon liveness
@@ -108,3 +108,26 @@ class OpenAICompatibleAdjudicator:
         content = response.json()["choices"][0]["message"]["content"]
         verdict = json.loads(content)
         return L3Adjudication(is_entity=bool(verdict["is_entity"]))
+
+    def adjudicate_batch(
+        self, candidates: list[CandidateSpan]
+    ) -> list[L3Adjudication]:
+        """Adjudicate N candidates in one HTTP call (issue #142) — same contract as
+        :meth:`OllamaAdjudicator.adjudicate_batch`: a network-layer failure
+        propagates (fail-closed for the whole batch); a malformed/short response
+        body degrades to however many verdicts were parseable, positionally,
+        leaving L3Detector to fail-close whatever's missing.
+        """
+        prompt = _build_batch_prompt(candidates)
+        response = self._http.post(
+            f"{self._base_url}/v1/chat/completions",
+            json={
+                "model": self._model,
+                "messages": [{"role": "user", "content": prompt}],
+                "response_format": {"type": "json_object"},
+            },
+            headers=_bearer_auth_headers(self._api_key),
+        )
+        response.raise_for_status()
+        content = response.json()["choices"][0]["message"]["content"]
+        return _parse_batch_verdicts(content)

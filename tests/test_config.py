@@ -127,6 +127,18 @@ def test_settings_openai_upstream_base_url_defaults_to_empty_string(monkeypatch)
     assert get_settings().openai_upstream_base_url == ""
 
 
+def test_settings_l3_batch_size_defaults_to_five(monkeypatch):
+    # Issue #142: conservative default per the issue's own accuracy note (a batch
+    # loses per-span focus as N grows) -- start small, measure before increasing.
+    monkeypatch.delenv("BLINDFOLD_L3_BATCH_SIZE", raising=False)
+    assert get_settings().l3_batch_size == 5
+
+
+def test_settings_l3_batch_size_is_read_from_env(monkeypatch):
+    monkeypatch.setenv("BLINDFOLD_L3_BATCH_SIZE", "10")
+    assert get_settings().l3_batch_size == 10
+
+
 def test_settings_openai_upstream_base_url_is_overridable_via_env(monkeypatch):
     monkeypatch.setenv(
         "BLINDFOLD_OPENAI_UPSTREAM_BASE_URL", "http://openai-upstream.internal"

@@ -72,6 +72,67 @@ _PROMPT_TEMPLATE = (
     "Flagged span: {text}\n"
 )
 
+# Issue #142: the batch counterpart of _PROMPT_TEMPLATE — same adjudication rules,
+# applied independently to each numbered candidate in a single call. The response
+# is wrapped in a "verdicts" object (not a bare array) so the same shape works
+# under oMLX's OpenAI-compatible `response_format: json_object`, which requires a
+# top-level JSON object (l3_openai_compat.py imports this template unchanged).
+_BATCH_PROMPT_TEMPLATE = (
+    "You are adjudicating whether each flagged span in a numbered list of "
+    "candidates names a real-world entity that must be protected: a SPECIFIC, "
+    "private or sensitive real person, organization/company, or secret project/"
+    "initiative — not merely a capitalized word. Reject a span (is_entity: false) "
+    "if it is either of these:\n"
+    "- a common dictionary word that is capitalized only because of its position "
+    "in a sentence or heading (e.g. Single, Tools, Lead);\n"
+    "- a well-known PUBLIC software, framework, operating system, library, or tool "
+    "name (e.g. Vue, Playwright, Darwin, Postgres) — even when it is also a "
+    "generic word, treat it as public software, not a protected referent.\n"
+    "Only answer is_entity: true for a specific, private/sensitive real person, "
+    "organization, or secret project/initiative that fails both rejection rules "
+    "above. Adjudicate each numbered candidate independently, using only that "
+    "candidate's own context — do not let one candidate's verdict influence "
+    "another's. Respond with strict JSON only, of the exact shape "
+    '{{"verdicts": [{{"is_entity": true}}, {{"is_entity": false}}, ...]}} — '
+    "exactly one verdict per candidate, in the same order as listed, no other "
+    "text.\n\n"
+    "{candidates}"
+)
+
+_BATCH_CANDIDATE_TEMPLATE = "{index}. Context: {context}\n   Flagged span: {text}\n"
+
+
+def _build_batch_prompt(candidates: list[CandidateSpan]) -> str:
+    listing = "\n".join(
+        _BATCH_CANDIDATE_TEMPLATE.format(index=index, context=c.context, text=c.text)
+        for index, c in enumerate(candidates, start=1)
+    )
+    return _BATCH_PROMPT_TEMPLATE.format(candidates=listing)
+
+
+def _parse_batch_verdicts(content: str) -> list[L3Adjudication]:
+    """Best-effort, position-preserving parse of a batch response (issue #142).
+
+    A short or malformed response is not an error here — it degrades to however
+    many well-formed verdicts could be parsed off the front of the array (stopping
+    at the first malformed entry, so a later "recovered" entry can't be
+    mis-attributed to an earlier candidate's position). L3Detector pads whatever
+    is missing as ``is_entity: true`` (fail-closed).
+    """
+    try:
+        raw_verdicts = json.loads(content)["verdicts"]
+        if not isinstance(raw_verdicts, list):
+            return []
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return []
+    verdicts: list[L3Adjudication] = []
+    for item in raw_verdicts:
+        try:
+            verdicts.append(L3Adjudication(is_entity=bool(item["is_entity"])))
+        except (KeyError, TypeError):
+            break
+    return verdicts
+
 
 class OllamaAdjudicator:
     """Real local-Ollama client behind the :class:`~blindfold.l3.L3Adjudicator` seam.
@@ -108,3 +169,27 @@ class OllamaAdjudicator:
         response.raise_for_status()
         verdict = json.loads(response.json()["response"])
         return L3Adjudication(is_entity=bool(verdict["is_entity"]))
+
+    def adjudicate_batch(
+        self, candidates: list[CandidateSpan]
+    ) -> list[L3Adjudication]:
+        """Adjudicate N candidates in one HTTP call (issue #142) — amortises the
+        round-trip overhead (connection setup, headers, JSON framing) across the
+        whole batch instead of paying it once per candidate. A network-layer
+        failure propagates (letting L3Detector fail-close the whole batch, same as
+        a single-candidate outage); a malformed/short response body degrades to
+        however many verdicts :func:`_parse_batch_verdicts` could parse, leaving
+        L3Detector to fail-close whatever's missing.
+        """
+        prompt = _build_batch_prompt(candidates)
+        response = self._http.post(
+            f"{self._base_url}/api/generate",
+            json={
+                "model": self._model,
+                "prompt": prompt,
+                "stream": False,
+                "format": "json",
+            },
+        )
+        response.raise_for_status()
+        return _parse_batch_verdicts(response.json()["response"])

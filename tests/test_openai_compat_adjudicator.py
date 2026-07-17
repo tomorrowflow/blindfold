@@ -236,3 +236,141 @@ def test_ping_omlx_reports_unhealthy_scrubbed_detail_when_unreachable():
     http = httpx.Client(transport=httpx.MockTransport(handler))
     health = ping_omlx("http://localhost:8080", http=http)
     assert health == DependencyHealth(healthy=False, detail="omlx unreachable")
+
+
+def test_openai_compatible_adjudicator_batch_sends_one_call_for_n_candidates():
+    # Issue #142: one HTTP round-trip carries every candidate in the batch. The
+    # response body is a JSON *object* (not a bare array) wrapping the verdicts --
+    # oMLX's response_format: json_object requires a top-level object.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["request"] = request
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "verdicts": [
+                                        {"is_entity": True},
+                                        {"is_entity": False},
+                                    ]
+                                }
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+
+    http = httpx.Client(
+        base_url="http://localhost:8080", transport=httpx.MockTransport(handler)
+    )
+    adjudicator = OpenAICompatibleAdjudicator(
+        base_url="http://localhost:8080", model="qwen2.5-7b-mlx", http=http
+    )
+    candidates = [
+        CandidateSpan(text="Quentin", start=0, end=7, context="Please brief Quentin."),
+        CandidateSpan(text="Bash", start=0, end=4, context="Run the Bash script."),
+    ]
+
+    decisions = adjudicator.adjudicate_batch(candidates)
+
+    assert decisions == [
+        L3Adjudication(is_entity=True),
+        L3Adjudication(is_entity=False),
+    ]
+    sent = json.loads(captured["request"].content.decode("utf-8"))
+    assert sent["model"] == "qwen2.5-7b-mlx"
+    prompt = sent["messages"][0]["content"]
+    assert "Quentin" in prompt
+    assert "Bash" in prompt
+    assert "Please brief Quentin." in prompt
+    assert "Run the Bash script." in prompt
+
+
+def test_openai_compatible_adjudicator_batch_sends_a_bearer_token_when_configured():
+    # ADR-0031 follow-up (issue #130): the batch call must authenticate exactly
+    # like the single-candidate call.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["request"] = request
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": json.dumps({"verdicts": [{"is_entity": True}]})}}
+                ]
+            },
+        )
+
+    http = httpx.Client(
+        base_url="http://localhost:8080", transport=httpx.MockTransport(handler)
+    )
+    adjudicator = OpenAICompatibleAdjudicator(
+        base_url="http://localhost:8080",
+        model="qwen2.5-7b-mlx",
+        api_key="sk-omlx-secret",
+        http=http,
+    )
+    candidates = [CandidateSpan(text="Quentin", start=0, end=7, context="ctx-1")]
+
+    adjudicator.adjudicate_batch(candidates)
+
+    assert captured["request"].headers["authorization"] == "Bearer sk-omlx-secret"
+
+
+def test_openai_compatible_adjudicator_batch_tolerates_a_short_verdict_array():
+    # Issue #142 fail-closed contract: mirrors OllamaAdjudicator's tolerance --
+    # a short response degrades to however many verdicts were parseable, never
+    # an exception; L3Detector pads the rest as is_entity: true.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": json.dumps({"verdicts": [{"is_entity": False}]})}}
+                ]
+            },
+        )
+
+    http = httpx.Client(
+        base_url="http://localhost:8080", transport=httpx.MockTransport(handler)
+    )
+    adjudicator = OpenAICompatibleAdjudicator(
+        base_url="http://localhost:8080", model="qwen2.5-7b-mlx", http=http
+    )
+    candidates = [
+        CandidateSpan(text="Quentin", start=0, end=7, context="ctx-1"),
+        CandidateSpan(text="Priya", start=0, end=5, context="ctx-2"),
+    ]
+
+    decisions = adjudicator.adjudicate_batch(candidates)
+
+    assert decisions == [L3Adjudication(is_entity=False)]
+
+
+def test_openai_compatible_adjudicator_batch_propagates_a_local_outage():
+    # ADR-0009 / leak-audit clause F: a network-layer failure of the batch call
+    # propagates so L3Detector fail-closes the whole batch.
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    http = httpx.Client(
+        base_url="http://localhost:8080", transport=httpx.MockTransport(handler)
+    )
+    adjudicator = OpenAICompatibleAdjudicator(
+        base_url="http://localhost:8080", model="qwen2.5-7b-mlx", http=http
+    )
+    candidates = [CandidateSpan(text="Quentin", start=0, end=7, context="ctx-1")]
+
+    try:
+        adjudicator.adjudicate_batch(candidates)
+        raised = False
+    except httpx.ConnectError:
+        raised = True
+    assert raised

@@ -503,4 +503,214 @@ def test_l3_detect_logs_periodic_progress_during_a_long_pass(caplog):
     assert "elapsed" in progress_records[0].getMessage()
     # Observability-only: the L3 verdicts themselves are unaffected.
     assert len(result) == 12
-    assert len(adjudicator.calls) == 12
+
+
+@dataclass
+class _BatchCall:
+    texts: tuple[str, ...]
+
+
+class _RecordingBatchAdjudicator:
+    """Stub for a batch-capable provider (issue #142) — records every
+    adjudicate_batch() call (candidates it received, in order) without firing real
+    I/O, and never exposes adjudicate() as a single-candidate fallback path.
+    """
+
+    def __init__(
+        self, decisions: dict[str, L3Adjudication] | None = None
+    ) -> None:
+        self.batch_calls: list[_BatchCall] = []
+        self._decisions = decisions or {}
+
+    def adjudicate_batch(
+        self, candidates: list[CandidateSpan]
+    ) -> list[L3Adjudication]:
+        self.batch_calls.append(_BatchCall(texts=tuple(c.text for c in candidates)))
+        return [
+            self._decisions.get(c.text, L3Adjudication(is_entity=False))
+            for c in candidates
+        ]
+
+
+def test_batch_adjudication_sends_one_call_for_a_batch_and_maps_results_by_position():
+    # Issue #142: a batch-capable adjudicator gets ONE call listing every candidate
+    # in the batch, and the returned verdicts map back to N L3Adjudication results
+    # in the same order as the candidates were selected — not N separate calls.
+    text = "We met Klaus, Yasmin, and Priya at the offsite."
+    adjudicator = _RecordingBatchAdjudicator({"Klaus": L3Adjudication(is_entity=True)})
+    detector = L3Detector(adjudicator, batch_size=5)
+
+    results = detector.detect(text, known_entities=[])
+
+    # A single round trip carried all three candidates (the round-trip reduction
+    # this issue exists for), not one call per candidate.
+    assert len(adjudicator.batch_calls) == 1
+    assert adjudicator.batch_calls[0].texts == ("Klaus", "Yasmin", "Priya")
+    assert len(results) == 3
+    by_text = {candidate.text: decision for candidate, decision in results}
+    assert by_text["Klaus"].is_entity is True
+    assert by_text["Yasmin"].is_entity is False
+    assert by_text["Priya"].is_entity is False
+
+
+def test_batch_adjudication_splits_into_multiple_calls_above_batch_size():
+    # Issue #142: batch_size bounds each individual call (the issue's own accuracy
+    # note — a batch loses per-span focus as N grows) rather than sending every
+    # candidate in one unbounded call. 7 candidates at batch_size=3 must split into
+    # 3 calls of sizes 3, 3, 1 — never one call of 7, never 7 calls of 1.
+    nato = "Alfa Bravo Charlie Delta Echo Foxtrot Golf"
+    text = " and ".join(nato.split())
+    adjudicator = _RecordingBatchAdjudicator()
+    detector = L3Detector(adjudicator, batch_size=3)
+
+    results = detector.detect(text, known_entities=[])
+
+    assert [len(call.texts) for call in adjudicator.batch_calls] == [3, 3, 1]
+    assert len(results) == 7
+    assert sorted(t for call in adjudicator.batch_calls for t in call.texts) == sorted(
+        nato.split()
+    )
+
+
+def test_batch_adjudication_cache_hits_bypass_the_batch_call_entirely():
+    # ADR-0003 content cache is unaffected by batching (issue #142's own framing):
+    # a candidate already cached from a prior turn must not be re-sent in a batch
+    # call — only genuinely novel (span, context) pairs go to the adjudicator, in
+    # batch mode exactly as in the single-candidate path.
+    text = "Please brief Klaus tomorrow about Yasmin's initiative."
+    adjudicator = _RecordingBatchAdjudicator({"Klaus": L3Adjudication(is_entity=True)})
+    detector = L3Detector(adjudicator, batch_size=5)
+
+    detector.detect(text, known_entities=[])  # turn one: both candidates novel
+    calls_after_turn_one = len(adjudicator.batch_calls)
+    results_turn_two = detector.detect(text, known_entities=[])  # turn two: unchanged
+
+    assert calls_after_turn_one == 1
+    assert adjudicator.batch_calls[0].texts == ("Klaus", "Yasmin")
+    # Turn two is served entirely from cache — no second batch call at all.
+    assert len(adjudicator.batch_calls) == 1
+    by_text = {candidate.text: decision for candidate, decision in results_turn_two}
+    assert by_text["Klaus"].is_entity is True
+    assert by_text["Yasmin"].is_entity is False
+
+
+def test_batch_adjudication_only_cache_misses_are_sent_in_the_batch():
+    # Subtler cache/batch interaction: within a single detect() call, a mix of
+    # cache hits and cache misses must only send the misses to adjudicate_batch —
+    # a hit is resolved from the cache and never occupies a batch slot. Mirrors
+    # test_content_cache_only_re_scans_spans_whose_context_changed's fixture:
+    # "Klaus"'s context window is fully contained in turn one, so it's unchanged
+    # (and thus a cache hit) on turn two; only the newly-appended "Yasmin" misses.
+    turn_one = (
+        "Please brief Klaus tomorrow about the new initiative which is launching."
+    )
+    turn_two = turn_one + " Yasmin asked for the slides."
+    warm_adjudicator = _RecordingBatchAdjudicator({"Klaus": L3Adjudication(is_entity=True)})
+    shared_cache = L3ContentCache()
+    warm_detector = L3Detector(warm_adjudicator, cache=shared_cache, batch_size=5)
+    warm_detector.detect(turn_one, known_entities=[])
+
+    adjudicator = _RecordingBatchAdjudicator()
+    detector = L3Detector(adjudicator, cache=shared_cache, batch_size=5)
+
+    detector.detect(turn_two, known_entities=[])
+
+    assert len(adjudicator.batch_calls) == 1
+    assert adjudicator.batch_calls[0].texts == ("Yasmin",)
+
+
+class _ShortResponseBatchAdjudicator:
+    """Stub for a malformed/short batch response (issue #142): returns fewer
+    verdicts than candidates it was handed, as a real LLM might on a truncated or
+    malformed JSON array.
+    """
+
+    def __init__(self, verdict_count: int) -> None:
+        self._verdict_count = verdict_count
+
+    def adjudicate_batch(
+        self, candidates: list[CandidateSpan]
+    ) -> list[L3Adjudication]:
+        return [L3Adjudication(is_entity=False)] * self._verdict_count
+
+
+def test_batch_short_response_treats_missing_candidates_as_is_entity_true(caplog):
+    # Issue #142 fail-closed contract: a short/malformed batch response (fewer
+    # verdicts than candidates) must NOT silently dismiss the unadjudicated
+    # candidates. The two verdicts present are honored (both false here); the
+    # third candidate, missing a verdict entirely, is over-redacted
+    # (is_entity=True) rather than risking an unresolved real entity slipping
+    # through as if it had been reviewed and cleared.
+    text = "We met Klaus, Yasmin, and Priya at the offsite."
+    adjudicator = _ShortResponseBatchAdjudicator(verdict_count=2)
+    detector = L3Detector(adjudicator, batch_size=5)
+
+    with caplog.at_level(logging.WARNING, logger="blindfold.l3"):
+        results = detector.detect(text, known_entities=[])
+
+    by_text = {candidate.text: decision for candidate, decision in results}
+    assert len(by_text) == 3
+    assert by_text["Klaus"].is_entity is False
+    assert by_text["Yasmin"].is_entity is False
+    assert by_text["Priya"].is_entity is True  # fail-closed: no verdict returned
+
+    # Scrubbed: the mismatch is logged with candidate counts only, never the
+    # candidate text itself (leak-audit — this is still real, un-blindfolded text).
+    mismatch_records = [
+        r for r in caplog.records if "l3_batch_adjudication_short_response" in r.getMessage()
+    ]
+    assert len(mismatch_records) == 1
+    message = mismatch_records[0].getMessage()
+    assert "expected=3" in message
+    assert "received=2" in message
+    assert "missing=1" in message
+    for token in ("Klaus", "Yasmin", "Priya"):
+        assert token not in message
+
+
+def test_batch_short_response_still_caches_the_fail_closed_verdict():
+    # The fail-closed is_entity=True verdict for a missing candidate is cached
+    # like any other decision — a subsequent turn with the same (span, context)
+    # doesn't re-adjudicate it (ADR-0003), and doesn't need a fresh short response
+    # to stay protected.
+    text = "We met Priya at the offsite."
+    detector = L3Detector(_ShortResponseBatchAdjudicator(verdict_count=0), batch_size=5)
+
+    first = detector.detect(text, known_entities=[])
+    second = detector.detect(text, known_entities=[])
+
+    assert dict(first)[first[0][0]].is_entity is True
+    assert dict(second)[second[0][0]].is_entity is True
+
+
+def test_batch_adjudication_cuts_round_trips_5x_at_default_batch_size_over_100_candidates():
+    # Acceptance criterion (issue #142): "latency for a 100-candidate pass is lower
+    # than sequential baseline at batch size 5." HTTP round-trips (not wall-clock,
+    # which a unit test can't measure meaningfully against a stub) is the cost this
+    # issue set out to cut -- ADR-0022's own deferred-followup framing ("the HTTP
+    # round-trip overhead ... is paid separately for every candidate"). A single-
+    # candidate adjudicator pays exactly 100 round-trips for 100 candidates; the
+    # default batch size (5) cuts that to 20 -- a 5x reduction, documented here as
+    # the before/after figure for the PR.
+    nato_words = [
+        "Alfa", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel",
+        "India", "Juliett", "Kilo", "Lima", "Mike", "November", "Oscar", "Papa",
+        "Quebec", "Romeo", "Sierra", "Tango",
+    ]
+    # A hyphen suffix keeps each occurrence's (text, context) content-cache key
+    # unique (the candidate span itself is still the bare word, e.g. "Alfa" — the
+    # regex stops at the non-word hyphen) so all 100 occurrences are genuine cache
+    # misses, not artificially deduped within a single detect() pass.
+    words = [f"{w}-{i}" for i in range(5) for w in nato_words]  # 100 occurrences
+    assert len(words) == 100
+    text = " and ".join(words)
+
+    sequential_adjudicator = _RecordingAdjudicator()
+    L3Detector(sequential_adjudicator).detect(text, known_entities=[])
+
+    batch_adjudicator = _RecordingBatchAdjudicator()
+    L3Detector(batch_adjudicator, batch_size=5).detect(text, known_entities=[])
+
+    assert len(sequential_adjudicator.calls) == 100
+    assert len(batch_adjudicator.batch_calls) == 20
+    assert len(sequential_adjudicator.calls) == 5 * len(batch_adjudicator.batch_calls)

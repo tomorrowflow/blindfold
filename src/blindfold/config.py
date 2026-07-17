@@ -59,6 +59,14 @@ L3 adjudicator (ADR-0022 / ADR-0031 / issue #57, #121, #122):
                              `BLINDFOLD_L3_PROVIDER=gliner` -- `BLINDFOLD_L3_PROVIDER`
                              itself already names the client directly for the
                              `ollama`/`omlx` (non-cascade) case. Default: `ollama`.
+  BLINDFOLD_L3_BATCH_SIZE  — how many candidates L3Detector.detect() accumulates
+                             into a single adjudicate_batch() call, for adjudicators
+                             that support the batch seam (issue #142). Default: 5
+                             (conservative -- a batch loses per-span accuracy as N
+                             grows, per the issue's own note). Adjudicators that
+                             don't support batching are unaffected -- the existing
+                             single-candidate path remains valid regardless of this
+                             setting.
 
 Serve bind address (ADR-0021 / ADR-0027, issue #91):
   BLINDFOLD_HOST           — bind host `blindfold serve` reports itself at (default:
@@ -79,6 +87,7 @@ DEFAULT_UPSTREAM_BASE_URL = "https://api.anthropic.com"
 DEFAULT_OPENBAO_ADDR = "http://localhost:8200"
 DEFAULT_L3_BASE_URL = "http://localhost:11434"
 DEFAULT_L3_PROVIDER = "ollama"
+DEFAULT_L3_BATCH_SIZE = 5
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 25463
 
@@ -97,6 +106,7 @@ class Settings:
     l3_dismissal_log: str = ""
     l3_gliner_model_path: str = ""
     l3_inner_provider: str = DEFAULT_L3_PROVIDER
+    l3_batch_size: int = DEFAULT_L3_BATCH_SIZE
     openai_upstream_base_url: str = ""
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
@@ -144,6 +154,9 @@ def get_settings() -> Settings:
         l3_dismissal_log=os.environ.get("BLINDFOLD_L3_DISMISSAL_LOG", ""),
         l3_gliner_model_path=os.environ.get("BLINDFOLD_L3_GLINER_MODEL_PATH", ""),
         l3_inner_provider=os.environ.get("BLINDFOLD_L3_INNER_PROVIDER", DEFAULT_L3_PROVIDER),
+        l3_batch_size=int(
+            os.environ.get("BLINDFOLD_L3_BATCH_SIZE", DEFAULT_L3_BATCH_SIZE)
+        ),
         openai_upstream_base_url=os.environ.get("BLINDFOLD_OPENAI_UPSTREAM_BASE_URL", ""),
         host=os.environ.get("BLINDFOLD_HOST", DEFAULT_HOST),
         port=int(os.environ.get("BLINDFOLD_PORT", DEFAULT_PORT)),

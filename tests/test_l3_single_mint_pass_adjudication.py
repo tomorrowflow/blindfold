@@ -167,3 +167,74 @@ async def test_l3_unavailable_fails_closed_from_the_mint_pass_not_a_pre_egress_r
     assert body["code"] == "blindfold_fail_closed"
     assert body["sub_reason"] == "l3_unavailable"
     assert recorded == []
+
+
+class _ShortResponseBatchAdjudicator:
+    """Stub for a batch-capable provider (issue #142) that returns a malformed/
+    short verdict array -- zero verdicts for whatever candidates it's handed, the
+    worst case of the issue's fail-closed contract (missing candidates ->
+    is_entity: true).
+    """
+
+    def adjudicate_batch(
+        self, candidates: list[CandidateSpan]
+    ) -> list[L3Adjudication]:
+        return []
+
+
+@pytest.mark.anyio
+async def test_batch_short_response_still_blindfolds_the_candidate_never_egresses_plaintext():
+    # Issue #142 leak-audit clause A: a short/malformed batch response must not
+    # let an unadjudicated novel candidate slip through as plaintext. If the
+    # fail-closed default were is_entity: false instead of true, "Klaus" would
+    # never be recognized as a candidate at all -- no surrogate minted, no
+    # blindfolding, and the real name would egress to the stub upstream verbatim.
+    # Asserting it does NOT is exactly the regression this test guards against.
+    mapping = _seeded_mapping()
+    inbox = ReviewInbox()
+    detector = L3Detector(_ShortResponseBatchAdjudicator())
+
+    scripted_response = {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "Acknowledged."}],
+        "model": "claude-3-5-sonnet",
+        "stop_reason": "end_turn",
+    }
+    recorded: list[httpx.Request] = []
+    audit_log = get_audit_log()
+    audit_log.records.clear()
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(
+        scripted_response, recorded
+    )
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_review_inbox] = lambda: inbox
+    app.dependency_overrides[get_l3_detector] = lambda: detector
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            resp = await client.post(
+                "/v1/messages",
+                json={
+                    "model": "m",
+                    "messages": [
+                        {"role": "user", "content": "Please brief Klaus tomorrow."}
+                    ],
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+
+    # Clause A: the fail-closed verdict still minted a provisional surrogate, and
+    # only that surrogate egressed -- the real candidate never crossed egress.
+    assert len(recorded) == 1
+    egressed = recorded[0].content.decode("utf-8")
+    assert "Klaus" not in egressed
+    item = inbox.list()[0]
+    assert item.real == "Klaus"
+    assert item.provisional_surrogate in egressed

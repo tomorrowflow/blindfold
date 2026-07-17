@@ -65,6 +65,12 @@ logger = logging.getLogger(__name__)
 # instead of only after the whole pass completes.
 _DEFAULT_PROGRESS_LOG_INTERVAL = 25
 
+# Issue #142: how many candidates L3Detector.detect() accumulates into a single
+# adjudicate_batch() call, when the wired adjudicator supports the batch seam.
+# Conservative default per the issue's own accuracy note (a batched call loses
+# per-span focus as N grows) -- tunable via BLINDFOLD_L3_BATCH_SIZE.
+_DEFAULT_BATCH_SIZE = 5
+
 
 @lru_cache(maxsize=1)
 def _load_sentence_stopwords() -> frozenset[str]:
@@ -132,6 +138,22 @@ class L3Adjudicator(Protocol):
     """
 
     def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication: ...
+
+
+class BatchL3Adjudicator(Protocol):
+    """Optional extension of :class:`L3Adjudicator` (issue #142): a provider that
+    can adjudicate N candidates in a single call, amortising the HTTP round-trip
+    overhead (connection setup, headers, JSON framing) across every candidate in
+    the batch instead of paying it once per candidate.
+
+    ``L3Detector`` duck-types this seam (``hasattr(adjudicator, "adjudicate_batch")``)
+    rather than requiring it — an adjudicator that only implements ``adjudicate``
+    remains fully valid; ``detect()`` falls back to the single-candidate path for it.
+    """
+
+    def adjudicate_batch(
+        self, candidates: list[CandidateSpan]
+    ) -> list[L3Adjudication]: ...
 
 
 _DEFAULT_CACHE_MAX_ENTRIES = 4096
@@ -289,6 +311,7 @@ class L3Detector:
         allowlist: "Allowlist | None" = None,
         dismissal_log_path: str | None = None,
         progress_log_interval: int = _DEFAULT_PROGRESS_LOG_INTERVAL,
+        batch_size: int = _DEFAULT_BATCH_SIZE,
     ) -> None:
         self._adjudicator = adjudicator
         self._cache = cache if cache is not None else L3ContentCache()
@@ -308,6 +331,9 @@ class L3Detector:
         self._logged_dismissals: set[str] = set()
         # Issue #134: how many candidates between progress log lines (see detect()).
         self._progress_log_interval = progress_log_interval
+        # Issue #142: how many candidates to accumulate into one adjudicate_batch()
+        # call, when the wired adjudicator supports it (see _adjudicate_batch()).
+        self._batch_size = batch_size
 
     def detect(
         self,
@@ -320,32 +346,93 @@ class L3Detector:
         results: list[tuple[CandidateSpan, L3Adjudication]] = []
         pass_started_at = time.monotonic()
         processed = 0
+
+        def record(candidate: CandidateSpan, decision: L3Adjudication) -> None:
+            nonlocal processed
+            self._maybe_log_dismissal(candidate, decision)
+            results.append((candidate, decision))
+            processed += 1
+            self._maybe_log_progress(processed, pass_started_at)
+
+        # Issue #142: batch candidates not served from cache into groups of
+        # batch_size and adjudicate each group with one call, when the wired
+        # adjudicator supports it (duck-typed — see BatchL3Adjudicator).
+        batch_capable = hasattr(self._adjudicator, "adjudicate_batch")
+        pending: list[CandidateSpan] = []
+
+        def flush_pending() -> None:
+            if not pending:
+                return
+            for candidate, decision in zip(pending, self._adjudicate_batch(pending)):
+                self._cache.put(candidate, decision)
+                record(candidate, decision)
+            pending.clear()
+
         for candidate in select_candidate_spans(
             text, known_entities, self._allowlist, declared_tools
         ):
             cached = self._cache.get(candidate)
             if cached is not None:
-                decision = cached
-            else:
-                try:
-                    decision = self._adjudicator.adjudicate(candidate)
-                except Exception as exc:
-                    # Fail-closed (ADR-0009): a novel candidate we couldn't adjudicate
-                    # is exactly the case where letting the payload through would risk
-                    # leaking an undiscovered entity. Block.
-                    # SEC-7 (issue #48): the candidate is, by definition, unresolved —
-                    # it may be a real entity value never minted a surrogate. Reference
-                    # it by a hashed id (ADR-0009's scrub fallback), never the plaintext.
-                    digest = hashlib.sha256(candidate.text.encode("utf-8")).hexdigest()[:12]
-                    raise L3Unavailable(
-                        f"L3 adjudication failed for candidate (ref: hash:{digest}): {exc}"
-                    ) from exc
+                record(candidate, cached)
+                continue
+            if not batch_capable:
+                decision = self._adjudicate_one(candidate)
                 self._cache.put(candidate, decision)
-            self._maybe_log_dismissal(candidate, decision)
-            results.append((candidate, decision))
-            processed += 1
-            self._maybe_log_progress(processed, pass_started_at)
+                record(candidate, decision)
+                continue
+            pending.append(candidate)
+            if len(pending) >= self._batch_size:
+                flush_pending()
+        flush_pending()
         return results
+
+    def _adjudicate_one(self, candidate: CandidateSpan) -> L3Adjudication:
+        try:
+            return self._adjudicator.adjudicate(candidate)
+        except Exception as exc:
+            # Fail-closed (ADR-0009): a novel candidate we couldn't adjudicate
+            # is exactly the case where letting the payload through would risk
+            # leaking an undiscovered entity. Block.
+            # SEC-7 (issue #48): the candidate is, by definition, unresolved —
+            # it may be a real entity value never minted a surrogate. Reference
+            # it by a hashed id (ADR-0009's scrub fallback), never the plaintext.
+            digest = hashlib.sha256(candidate.text.encode("utf-8")).hexdigest()[:12]
+            raise L3Unavailable(
+                f"L3 adjudication failed for candidate (ref: hash:{digest}): {exc}"
+            ) from exc
+
+    def _adjudicate_batch(
+        self, candidates: list[CandidateSpan]
+    ) -> list[L3Adjudication]:
+        """Adjudicate one batch (issue #142), fail-closed on both failure modes:
+
+        - the call itself fails (network/daemon down) — same treatment as the
+          single-candidate path: raise ``L3Unavailable``, block by default
+          (ADR-0009). Nothing in this batch has an unresolved verdict slip through.
+        - the call succeeds but returns fewer verdicts than candidates (a
+          malformed or short response) — the issue's own contract: treat the
+          *missing* candidates as ``is_entity: true`` (over-redact rather than
+          silently dismiss a candidate nobody actually adjudicated) instead of
+          failing the whole batch. Logged with the candidate count only — never
+          candidate text.
+        """
+        try:
+            decisions = list(self._adjudicator.adjudicate_batch(candidates))
+        except Exception as exc:
+            raise L3Unavailable(
+                f"L3 batch adjudication failed for {len(candidates)} candidates: {exc}"
+            ) from exc
+        if len(decisions) < len(candidates):
+            missing = len(candidates) - len(decisions)
+            logger.warning(
+                "l3_batch_adjudication_short_response: "
+                "expected=%d received=%d missing=%d",
+                len(candidates),
+                len(decisions),
+                missing,
+            )
+            decisions = decisions + [L3Adjudication(is_entity=True)] * missing
+        return decisions
 
     def _maybe_log_progress(self, processed: int, pass_started_at: float) -> None:
         """Log forward progress every ``progress_log_interval`` candidates (issue #134).

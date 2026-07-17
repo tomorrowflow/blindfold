@@ -132,6 +132,24 @@ def test_build_l3_detector_defaults_dismissal_log_path_to_none():
     assert detector._dismissal_log_path is None
 
 
+def test_build_l3_detector_threads_the_batch_size():
+    # Issue #142: BLINDFOLD_L3_BATCH_SIZE must reach the wired detector, the same
+    # way BLINDFOLD_L3_DISMISSAL_LOG reaches it (#133).
+    settings = Settings(l3_batch_size=10)
+
+    detector = _build_l3_detector(settings, Allowlist())
+
+    assert detector._batch_size == 10
+
+
+def test_build_l3_detector_defaults_batch_size_to_five():
+    settings = Settings()
+
+    detector = _build_l3_detector(settings, Allowlist())
+
+    assert detector._batch_size == 5
+
+
 def test_default_l3_probe_threads_the_api_key_into_ping_omlx(monkeypatch):
     # Acceptance criterion (issue #130): the liveness probe also authenticates, so
     # /v1/status's l3 dependency probe doesn't false-negative against an

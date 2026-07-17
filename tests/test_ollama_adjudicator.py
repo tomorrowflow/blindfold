@@ -172,3 +172,112 @@ def test_ping_ollama_reports_unhealthy_scrubbed_detail_when_unreachable():
     http = httpx.Client(transport=httpx.MockTransport(handler))
     health = ping_ollama("http://localhost:11434", http=http)
     assert health == DependencyHealth(healthy=False, detail="ollama unreachable")
+
+
+def test_ollama_adjudicator_batch_sends_one_call_for_n_candidates():
+    # Issue #142: one HTTP round-trip carries every candidate in the batch, with
+    # each candidate's text and context present in the single prompt sent, and the
+    # response's verdict array maps back positionally.
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["request"] = request
+        return httpx.Response(
+            200,
+            json={
+                "response": json.dumps(
+                    {"verdicts": [{"is_entity": True}, {"is_entity": False}]}
+                )
+            },
+        )
+
+    http = httpx.Client(
+        base_url="http://localhost:11434", transport=httpx.MockTransport(handler)
+    )
+    adjudicator = OllamaAdjudicator(
+        base_url="http://localhost:11434", model="llama3.1", http=http
+    )
+    candidates = [
+        CandidateSpan(text="Quentin", start=0, end=7, context="Please brief Quentin."),
+        CandidateSpan(text="Bash", start=0, end=4, context="Run the Bash script."),
+    ]
+
+    decisions = adjudicator.adjudicate_batch(candidates)
+
+    assert decisions == [
+        L3Adjudication(is_entity=True),
+        L3Adjudication(is_entity=False),
+    ]
+    sent = json.loads(captured["request"].content.decode("utf-8"))
+    assert sent["model"] == "llama3.1"
+    assert "Quentin" in sent["prompt"]
+    assert "Bash" in sent["prompt"]
+    assert "Please brief Quentin." in sent["prompt"]
+    assert "Run the Bash script." in sent["prompt"]
+
+
+def test_ollama_adjudicator_batch_tolerates_a_short_verdict_array():
+    # Issue #142 fail-closed contract: the adjudicator itself doesn't raise on a
+    # short/malformed response -- it returns however many verdicts it could parse,
+    # positionally, and leaves L3Detector to fail-close the rest (is_entity: true).
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, json={"response": json.dumps({"verdicts": [{"is_entity": False}]})}
+        )
+
+    http = httpx.Client(
+        base_url="http://localhost:11434", transport=httpx.MockTransport(handler)
+    )
+    adjudicator = OllamaAdjudicator(
+        base_url="http://localhost:11434", model="llama3.1", http=http
+    )
+    candidates = [
+        CandidateSpan(text="Quentin", start=0, end=7, context="ctx-1"),
+        CandidateSpan(text="Priya", start=0, end=5, context="ctx-2"),
+    ]
+
+    decisions = adjudicator.adjudicate_batch(candidates)
+
+    assert decisions == [L3Adjudication(is_entity=False)]
+
+
+def test_ollama_adjudicator_batch_tolerates_malformed_json():
+    # A completely unparseable response body degrades to zero verdicts, not an
+    # exception -- L3Detector's fail-closed padding handles the rest.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"response": "not json at all"})
+
+    http = httpx.Client(
+        base_url="http://localhost:11434", transport=httpx.MockTransport(handler)
+    )
+    adjudicator = OllamaAdjudicator(
+        base_url="http://localhost:11434", model="llama3.1", http=http
+    )
+    candidates = [CandidateSpan(text="Quentin", start=0, end=7, context="ctx-1")]
+
+    decisions = adjudicator.adjudicate_batch(candidates)
+
+    assert decisions == []
+
+
+def test_ollama_adjudicator_batch_propagates_a_local_outage_so_l3_fails_closed():
+    # ADR-0009 / leak-audit clause F: a network-layer failure of the batch call
+    # itself is not swallowed -- it propagates so L3Detector turns it into the
+    # typed L3Unavailable, same as the single-candidate path.
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("connection refused", request=request)
+
+    http = httpx.Client(
+        base_url="http://localhost:11434", transport=httpx.MockTransport(handler)
+    )
+    adjudicator = OllamaAdjudicator(
+        base_url="http://localhost:11434", model="llama3.1", http=http
+    )
+    candidates = [CandidateSpan(text="Quentin", start=0, end=7, context="ctx-1")]
+
+    try:
+        adjudicator.adjudicate_batch(candidates)
+        raised = False
+    except httpx.ConnectError:
+        raised = True
+    assert raised
