@@ -56,6 +56,11 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   The crown-jewel secret; real-value side is stored encrypted.
 - **Entity graph** — the curated store of entities, variations, relationships, and
   surrogates. The authoritative dictionary the deterministic passes match against.
+- **Data directory** — Blindfold's install-global on-disk location for large local
+  *assets* (detection models, caches), rooted at `BLINDFOLD_DATA_DIR` and defaulting
+  to the OS app-data convention. Distinct from the **store** (entities, **mapping**,
+  RBAC) and never per-**workspace**: it holds capability assets like the **GLiNER
+  cascade** model, not entity data. _Avoid_: cache dir, app dir, home dir.
 - **Variation** — a surface form of an entity (full name, first name, initials,
   nickname, misspelling). Resolving variations to one entity is **coreference**.
 - **Merge** — the curator action that collapses two separate canonical **entities**
