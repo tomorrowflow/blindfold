@@ -234,6 +234,12 @@ to add it via `/grill-with-docs`, not to invent a synonym.
 - **Fail-closed** — when the full detection pipeline can't run, block by default;
   deterministic L1+L2 still protect known entities. A per-workspace opt-in allows
   degrading to deterministic-only.
+- **Audit event** — a recorded **real-space crossing or refusal**: every **Re-identify**
+  attempt (success, denied, failed — SEC-8), every real-name lookup (hit or miss —
+  ADR-0018), every block (fail-closed, leak gate). Surrogate-space structural work
+  (**Merge**, surrogate rename, **Relationship** edits, review-inbox triage) is
+  *never* an audit event — recording that would be history/versioning, a distinct
+  concept requiring its own term. _Avoid_: activity log, event log (for this concept).
 - **Scrubbed reason** — a failure reason string that references an offending entity
   by its surrogate or a hashed id, never the plaintext. The pre-egress leak gate's
   one scrubbed reason routes identically to the 503 body, the audit record, and the
@@ -243,7 +249,13 @@ to add it via `/grill-with-docs`, not to invent a synonym.
 ## Key invariants
 
 - Every hop of every request is blindfolded before egress. Over-redaction is a
-  quality bug; an un-blindfolded real entity is a privacy bug.
+  quality bug (privacy-safe); an un-blindfolded real entity is a privacy bug. But
+  over-redaction is **not free**: a mismatched provisional surrogate (e.g. a
+  person-name minted for a tool token) corrupts the live outbound payload and
+  degrades the provider's answer on every request until review clears it — so
+  detection **precision** and **category-appropriate surrogates** both matter, and
+  "erring toward blindfolding is safe" must not be read as "erring toward
+  blindfolding is costless."
 - Surrogates are stable: a given entity maps to the same surrogate everywhere.
 - Sensitivity (is it blindfolded?) and structure (is it an Org unit?) are independent axes.
   Being an Org unit never makes a referent sensitive, and being sensitive never makes it

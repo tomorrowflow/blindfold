@@ -1,6 +1,10 @@
 # CLAUDE.md
 
-Ddon't use the AskUserQuestion tool.
+Don't use the AskUserQuestion tool.
+
+## Implementation precondition
+
+**All implementation goes through Sandcastle** — the full AFK loop driven by GitHub issues (label `ready-for-agent` + `Sandcastle`). Do NOT implement issues in-session (no `/phase`, no local implement agents); instead prepare the issue (agent brief, labels) so Sandcastle can pick it up. The only exception is small adjustments (typo-level fixes, doc tweaks, config nudges) explicitly requested by the user.
 
 ## Agent skills
 
