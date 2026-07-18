@@ -250,6 +250,15 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   one scrubbed reason routes identically to the 503 body, the audit record, and the
   log — a real value that fails to blindfold must not then leak through the error/
   observability surface meant to report it.
+- **Processing trace** (ADR-0035) — a live, local, in-memory, count-bounded (~200)
+  ring buffer of one scrubbed record per exchange (every hop, streaming and
+  non-streaming, including a clean 0-detection pass-through), replacing `tail`-ing
+  stdout. Never persisted to the store, evaporates on restart — distinct from
+  **Audit event** (a real-space crossing/refusal, durable for the process lifetime)
+  and from history/versioning. A record carries stage outcomes/counts/timings and
+  surrogate/hashed references only, never a real value, raw hop content,
+  candidate-span text, or a payload diff. Exposed viewer-gated and
+  workspace-scoped, the same RBAC story as the audit log.
 
 ## Key invariants
 

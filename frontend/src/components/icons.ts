@@ -34,4 +34,7 @@ export {
   Plus,
   // Settings -> Detection view (issue #147)
   RefreshCw,
+  // Processing trace view (ADR-0035, issue #151)
+  Activity,
+  CloudOff,
 } from "lucide-react";

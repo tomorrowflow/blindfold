@@ -46,6 +46,7 @@ from blindfold.app import (
     get_gliner_hub_client,
     get_gliner_provisioning_tracker,
     get_l3_health_probe,
+    get_processing_trace,
     get_rbac,
     get_reidentify_store,
     get_relationship_store,
@@ -58,6 +59,7 @@ from blindfold.app import (
 from blindfold.entity_graph import EntityGraph
 from blindfold.gliner_status import GlinerProvisioningTracker
 from blindfold.policy import AuditLog, AuditRecord
+from blindfold.processing_trace import ProcessingTraceBuffer
 from blindfold.rbac import RbacRegistry
 from blindfold.reidentify import InMemoryReIdentificationStore
 from blindfold.relationships import RelationshipStore
@@ -372,6 +374,24 @@ def build_app():
     review_inbox.upsert(REVIEW_ITEM_REAL_TWO, context=REVIEW_ITEM_CONTEXT_TWO)
     allowlist = Allowlist()
 
+    # Seeded processing-trace records (ADR-0035, issue #151) for the Processing
+    # trace view's outcome-first grid -- one of each of the 3 outcome buckets.
+    processing_trace = ProcessingTraceBuffer()
+    processing_trace.record(
+        workspace=WORKSPACE, endpoint="messages", streamed=False,
+        outcome="passed", detected=2, duration_ms=118.0,
+    )
+    processing_trace.record(
+        workspace=WORKSPACE, endpoint="messages", streamed=False,
+        outcome="blocked", detected=0, duration_ms=9.0,
+        reason="leak_gate: a mapped entity matched the outbound payload",
+    )
+    processing_trace.record(
+        workspace=WORKSPACE, endpoint="chat_completions", streamed=False,
+        outcome="upstream_error", detected=1, duration_ms=302.0,
+        reason="upstream returned HTTP 500",
+    )
+
     app.dependency_overrides[get_entity_graph] = lambda: graph
     app.dependency_overrides[get_relationship_store] = lambda: relationship_store
     app.dependency_overrides[get_rbac] = lambda: rbac
@@ -380,6 +400,7 @@ def build_app():
     app.dependency_overrides[get_transit_client] = lambda: transit
     app.dependency_overrides[get_review_inbox] = lambda: review_inbox
     app.dependency_overrides[get_allowlist] = lambda: allowlist
+    app.dependency_overrides[get_processing_trace] = lambda: processing_trace
 
     if FORCE_DEPENDENCIES_HEALTHY:
         # See build_app()'s identical override for why upstream is excluded.

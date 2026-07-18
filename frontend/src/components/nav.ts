@@ -1,5 +1,14 @@
 import type { LucideIcon } from "lucide-react";
-import { House, Users, Share2, Inbox, ScrollText, ShieldCheck, Settings } from "./icons";
+import {
+  House,
+  Users,
+  Share2,
+  Inbox,
+  ScrollText,
+  Activity,
+  ShieldCheck,
+  Settings,
+} from "./icons";
 
 export type NavItem = {
   label: string;
@@ -20,6 +29,7 @@ export const PRIMARY_NAV: NavItem[] = [
   { label: "Graph editor", path: "/graph", icon: Share2 },
   { label: "Review inbox", path: "/inbox", icon: Inbox },
   { label: "Audit log", path: "/audit", icon: ScrollText },
+  { label: "Processing trace", path: "/processing-trace", icon: Activity },
 ];
 
 export const SECONDARY_NAV: NavItem[] = [

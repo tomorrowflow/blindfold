@@ -78,6 +78,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections.abc import AsyncIterator, Callable
 from datetime import datetime
 
@@ -142,6 +143,12 @@ from .policy import (
     WorkspacePolicies,
     WorkspacePolicy,
     audit_event_kind,
+)
+from .processing_trace import (
+    OUTCOME_BLOCKED,
+    OUTCOME_PASSED,
+    OUTCOME_UPSTREAM_ERROR,
+    ProcessingTraceBuffer,
 )
 from .rbac import RbacRegistry
 from .relationships import RelationshipEdge, RelationshipStore
@@ -294,6 +301,14 @@ _block_history = BlockHistory(window_minutes=15)
 # issue #147), backing the detection/settings management view's "verification
 # failed" state. Tests substitute via dependency_overrides[get_gliner_provisioning_tracker].
 _gliner_provisioning_tracker = GlinerProvisioningTracker()
+
+# Process-wide, count-bounded ring buffer of scrubbed per-exchange processing-trace
+# records (ADR-0035): a live follow-along view of proxy activity, replacing `tail`ing
+# stdout. Never persisted, never written to the store -- evaporates on restart, same
+# in-memory/process-global shape as `_block_history` (issue #92) but count-bounded
+# rather than time-windowed. Tests substitute via
+# dependency_overrides[get_processing_trace].
+_processing_trace = ProcessingTraceBuffer()
 
 # /v1/status's health probes (issue #92): a short TTL absorbs a poll storm (the status
 # endpoint is polled ~5s) against L3/Transit. Kept as module-global CachedHealthProbe
@@ -452,6 +467,10 @@ def get_audit_log() -> AuditLog:
 
 def get_block_history() -> BlockHistory:
     return _block_history
+
+
+def get_processing_trace() -> ProcessingTraceBuffer:
+    return _processing_trace
 
 
 def get_gliner_provisioning_tracker() -> GlinerProvisioningTracker:
@@ -699,6 +718,40 @@ _L3_UNAVAILABLE_REMEDY = (
     "entities via L1+L2 stay protected, novelty discovery is the documented "
     "loss), or configure L3."
 )
+
+
+def _block_reason(response: JSONResponse) -> str:
+    """Pull the scrubbed ``reason`` back out of a block/upstream-error ``JSONResponse``.
+
+    ADR-0035: the trace record's ``reason`` must be the identical scrubbed string
+    the 503 body / audit record / log line already carry (never re-derived), so this
+    reads it back from the same ``JSONResponse`` :func:`_blocked_response` /
+    :func:`_upstream_error_response` already built rather than threading a parallel
+    copy through every call site.
+    """
+    return json.loads(bytes(response.body))["error"]["reason"]
+
+
+def _record_trace(
+    trace: ProcessingTraceBuffer,
+    workspace: str,
+    endpoint: str,
+    streamed: bool,
+    outcome: str,
+    detected: int,
+    start: float,
+    reason: str | None = None,
+) -> None:
+    """Append one scrubbed processing-trace record for this exchange (ADR-0035)."""
+    trace.record(
+        workspace=workspace,
+        endpoint=endpoint,
+        streamed=streamed,
+        outcome=outcome,
+        detected=detected,
+        duration_ms=(time.monotonic() - start) * 1000,
+        reason=reason,
+    )
 
 
 def _blocked_response(
@@ -1035,10 +1088,13 @@ async def messages(
     audit_log: AuditLog = Depends(get_audit_log),
     block_history: BlockHistory = Depends(get_block_history),
     upstream_health: RecentFailureHealth = Depends(get_upstream_health),
+    trace: ProcessingTraceBuffer = Depends(get_processing_trace),
 ):
+    start = time.monotonic()
     payload = await request.json()
     workspace = _workspace_slug(request)
     policy = policies.for_workspace(workspace)
+    streamed = bool(payload.get("stream"))
 
     effective_l3_detector = None if policy.deterministic_only else l3_detector
     declared_tools = extract_declared_tools_messages(payload)
@@ -1052,32 +1108,58 @@ async def messages(
         block_history,
     )
     if isinstance(result, JSONResponse):
+        _record_trace(
+            trace, workspace, "messages", streamed, OUTCOME_BLOCKED, 0, start,
+            reason=_block_reason(result),
+        )
         return result
     blinded, session = result
     forwarded = _forwarded_headers(request)
 
     block = _leak_gate_or_block(blinded, mapping, workspace, audit_log, block_history)
     if block is not None:
+        _record_trace(
+            trace, workspace, "messages", streamed, OUTCOME_BLOCKED,
+            len(session.injected), start, reason=_block_reason(block),
+        )
         return block
 
-    if payload.get("stream"):
+    if streamed:
         try:
             upstream_response = await upstream.open_stream(blinded, forwarded)
         except UpstreamError as exc:
+            _record_trace(
+                trace, workspace, "messages", streamed, OUTCOME_UPSTREAM_ERROR,
+                len(session.injected), start, reason=str(exc),
+            )
             return _upstream_error_response(exc, workspace, audit_log, upstream_health)
         return StreamingResponse(
-            _stream_restored(upstream_response, session, workspace, audit_log),
+            _stream_restored(
+                upstream_response, session, workspace, audit_log, trace, start
+            ),
             media_type="text/event-stream",
         )
 
     try:
         raw_response = await upstream.send_messages(blinded, forwarded)
     except UpstreamError as exc:
+        _record_trace(
+            trace, workspace, "messages", streamed, OUTCOME_UPSTREAM_ERROR,
+            len(session.injected), start, reason=str(exc),
+        )
         return _upstream_error_response(exc, workspace, audit_log, upstream_health)
     restored = restore_response(raw_response, session)
     block = _resolution_gate_or_block(restored, session, workspace, audit_log, block_history)
     if block is not None:
+        _record_trace(
+            trace, workspace, "messages", streamed, OUTCOME_BLOCKED,
+            len(session.injected), start, reason=_block_reason(block),
+        )
         return block
+    _record_trace(
+        trace, workspace, "messages", streamed, OUTCOME_PASSED,
+        len(session.injected), start,
+    )
     return restored
 
 
@@ -1092,7 +1174,9 @@ async def chat_completions(
     audit_log: AuditLog = Depends(get_audit_log),
     block_history: BlockHistory = Depends(get_block_history),
     upstream_health: RecentFailureHealth = Depends(get_upstream_health),
+    trace: ProcessingTraceBuffer = Depends(get_processing_trace),
 ):
+    start = time.monotonic()
     payload = await request.json()
     if payload.get("stream"):
         return _reject_openai_stream()
@@ -1111,11 +1195,19 @@ async def chat_completions(
         block_history,
     )
     if isinstance(result, JSONResponse):
+        _record_trace(
+            trace, workspace, "chat_completions", False, OUTCOME_BLOCKED, 0, start,
+            reason=_block_reason(result),
+        )
         return result
     blinded, session = result
 
     block = _leak_gate_or_block(blinded, mapping, workspace, audit_log, block_history)
     if block is not None:
+        _record_trace(
+            trace, workspace, "chat_completions", False, OUTCOME_BLOCKED,
+            len(session.injected), start, reason=_block_reason(block),
+        )
         return block
 
     try:
@@ -1123,11 +1215,23 @@ async def chat_completions(
             blinded, _forwarded_headers(request)
         )
     except UpstreamError as exc:
+        _record_trace(
+            trace, workspace, "chat_completions", False, OUTCOME_UPSTREAM_ERROR,
+            len(session.injected), start, reason=str(exc),
+        )
         return _upstream_error_response(exc, workspace, audit_log, upstream_health)
     restored = restore_chat_completion(raw_response, session)
     block = _resolution_gate_or_block(restored, session, workspace, audit_log, block_history)
     if block is not None:
+        _record_trace(
+            trace, workspace, "chat_completions", False, OUTCOME_BLOCKED,
+            len(session.injected), start, reason=_block_reason(block),
+        )
         return block
+    _record_trace(
+        trace, workspace, "chat_completions", False, OUTCOME_PASSED,
+        len(session.injected), start,
+    )
     return restored
 
 
@@ -1203,6 +1307,8 @@ async def _stream_restored(
     session: ExchangeSession,
     workspace: str,
     audit_log: AuditLog,
+    trace: ProcessingTraceBuffer,
+    start: float,
 ) -> AsyncIterator[bytes]:
     """Stream restored SSE bytes to the client.
 
@@ -1245,6 +1351,8 @@ async def _stream_restored(
     text_block_indices: set[int] = set()
     emitted: list[bytes] = []
     buffer = ""
+    disconnected = False
+    disconnect_reason = ""
     try:
         async for raw in upstream_response.aiter_bytes():
             buffer += raw.decode("utf-8")
@@ -1289,6 +1397,8 @@ async def _stream_restored(
                 reason=str(exc),
             )
         )
+        disconnected = True
+        disconnect_reason = str(exc)
     finally:
         await upstream_response.aclose()
 
@@ -1297,17 +1407,33 @@ async def _stream_restored(
             {"stream": b"".join(emitted).decode("utf-8", errors="replace")}, session
         )
     except UnresolvedSurrogateError as exc:
+        reason = (
+            f"resolution_gate detected an injected surrogate left unresolved "
+            f"in the streamed response: {exc}"
+        )
         audit_log.append(
             AuditRecord(
                 workspace=workspace,
                 event="blocked-unresolved-surrogate",
-                reason=(
-                    f"resolution_gate detected an injected surrogate left unresolved "
-                    f"in the streamed response: {exc}"
-                ),
+                reason=reason,
             )
         )
+        _record_trace(
+            trace, workspace, "messages", True, OUTCOME_BLOCKED,
+            len(session.injected), start, reason=reason,
+        )
         raise
+
+    if disconnected:
+        _record_trace(
+            trace, workspace, "messages", True, OUTCOME_UPSTREAM_ERROR,
+            len(session.injected), start, reason=disconnect_reason,
+        )
+    else:
+        _record_trace(
+            trace, workspace, "messages", True, OUTCOME_PASSED,
+            len(session.injected), start,
+        )
 
 
 async def _process_sse_event(
@@ -1471,6 +1597,25 @@ async def list_audit_events(
         and (since_dt is None or datetime.fromisoformat(r.ts) >= since_dt)
     ]
     return {"events": events}
+
+
+@app.get("/v1/management/processing-trace")
+async def list_processing_trace(
+    request: Request,
+    workspace: str,
+    rbac: RbacRegistry = Depends(get_rbac),
+    trace: ProcessingTraceBuffer = Depends(get_processing_trace),
+) -> dict:
+    """List recent processing-trace records scoped to a workspace (ADR-0035).
+
+    Same `viewer`-role gate + workspace scoping as the audit log (ADR-0011 / #16):
+    a live follow-along view of proxy activity is real-space-adjacent (detection
+    counts, outcomes, timings) even though each record is scrubbed by construction
+    (never a real value, raw hop text, candidate-span text, or a payload diff).
+    """
+    _require_role(request, workspace, "viewer", rbac)
+    records = [r.to_dict() for r in trace.recent() if r.workspace == workspace]
+    return {"records": records}
 
 
 @app.get("/v1/management/workspaces")

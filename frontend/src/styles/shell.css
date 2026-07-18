@@ -676,6 +676,50 @@ body {
 }
 
 /* -----------------------------------------------------------------------
+   Processing trace view (ADR-0035, issue #151)
+   ----------------------------------------------------------------------- */
+
+.bf-processing-trace-controls {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-shrink: 0;
+}
+
+.bf-processing-trace-paused-label {
+  color: #6b7589;
+}
+
+.bf-trace-outcome-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.bf-trace-outcome-pill--passed {
+  background: #f2fbf5;
+  color: var(--bf-ok);
+  border: 1px solid var(--bf-ok);
+}
+
+.bf-trace-outcome-pill--blocked {
+  background: #fff5f5;
+  color: var(--bf-red);
+  border: 1px solid var(--bf-red);
+}
+
+.bf-trace-outcome-pill--upstream-error {
+  background: var(--bf-border-soft);
+  color: #6b7589;
+  border: 1px solid var(--bf-border);
+}
+
+/* -----------------------------------------------------------------------
    Toast outlet (issue #95)
    ----------------------------------------------------------------------- */
 
