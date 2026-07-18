@@ -299,6 +299,18 @@ def _context_window(text: str, start: int, end: int) -> str:
     return text[left:right]
 
 
+def count_capitalized_tokens(text: str) -> int:
+    """Count every raw capitalized-token occurrence in ``text``, before suppression.
+
+    Issue #153 (processing trace per-hop detail, ADR-0035): the trace's "suppressed"
+    count is (this raw count) - (candidates :meth:`L3Detector.detect` actually
+    considered), so it must count every occurrence :func:`select_candidate_spans`
+    would later filter (stopwords, known entities, declared tools, positional-case
+    noise) — never the already-filtered candidate count.
+    """
+    return sum(1 for _ in _CAPITALIZED_RE.finditer(text))
+
+
 class L3Detector:
     """Drive the L3 candidate-span seam: select → cache check → adjudicate.
 
@@ -317,9 +329,14 @@ class L3Detector:
         dismissal_log_path: str | None = None,
         progress_log_interval: int = _DEFAULT_PROGRESS_LOG_INTERVAL,
         batch_size: int = _DEFAULT_BATCH_SIZE,
+        provider_name: str = "ollama",
     ) -> None:
         self._adjudicator = adjudicator
         self._cache = cache if cache is not None else L3ContentCache()
+        # Issue #153 (processing trace L3 column, ADR-0035): a label only, never
+        # used to select behavior here -- "ollama" reproduces
+        # config.DEFAULT_L3_PROVIDER for every existing caller that doesn't name one.
+        self.provider_name = provider_name
         # ADR-0009: per-workspace opt-in to skip L3 entirely. Known-entity protection
         # via L1+L2 still runs; novelty discovery is the documented loss.
         self._deterministic_only = deterministic_only

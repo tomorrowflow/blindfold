@@ -6,13 +6,13 @@ import { test, expect } from "./fixtures";
 // Passed, one Blocked, and one Upstream-error record for the "acme" workspace.
 
 test.describe("Processing trace — alice (holds viewer)", () => {
-  test("renders header, subtitle and the three-column grid", async ({ alicePage }) => {
+  test("renders header, subtitle and the five-column grid", async ({ alicePage }) => {
     await alicePage.goto("/ui/processing-trace");
     const view = alicePage.getByTestId("processing-trace-page");
     await expect(view.locator("h1")).toHaveText("Processing trace");
     await expect(view).toContainText("never a");
     const headers = alicePage.locator("[data-testid='processing-trace-table'] th");
-    await expect(headers).toHaveText(["Outcome", "Time", "Detected"]);
+    await expect(headers).toHaveText(["Outcome", "Time", "Detected", "L3", "Hops"]);
   });
 
   test("shows the seeded passed, blocked and upstream-error rows", async ({ alicePage }) => {
@@ -42,6 +42,47 @@ test.describe("Processing trace — alice (holds viewer)", () => {
     await expect(alicePage.getByTestId("processing-trace-freshness")).toContainText("polled");
     await alicePage.getByTestId("processing-trace-paused-button").click();
     await expect(alicePage.getByTestId("processing-trace-freshness")).toContainText("Paused");
+  });
+
+  test("L3 column shows provider + timing when L3 ran, em-dash otherwise", async ({
+    alicePage,
+  }) => {
+    // Issue #153: the seeded "passed" record ran L3 through "ollama" (42ms); the
+    // seeded "blocked"/"upstream_error" records never blindfolded a hop at all, so
+    // their L3 cell must read the em-dash, never a stale/zero value.
+    await alicePage.goto("/ui/processing-trace");
+    const l3Cells = alicePage.getByTestId("processing-trace-row-l3");
+    await expect(l3Cells).toHaveCount(3);
+    await expect(l3Cells.filter({ hasText: "ollama" })).toHaveText("ollama (42ms)");
+    const dashes = await l3Cells.allTextContents();
+    expect(dashes.filter((text) => text === "—")).toHaveLength(2);
+  });
+
+  test("clicking a row expands inline into one card per hop, in pipeline order", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto("/ui/processing-trace");
+    await expect(alicePage.getByTestId("processing-trace-hop-card")).toHaveCount(0);
+
+    // The seeded "passed" row carries 2 hops (system, user).
+    const hopsToggle = alicePage
+      .getByTestId("processing-trace-row-hops-toggle")
+      .filter({ hasText: "2" });
+    await hopsToggle.click();
+
+    const cards = alicePage.getByTestId("processing-trace-hop-card");
+    await expect(cards).toHaveCount(2);
+    await expect(cards.nth(0)).toContainText("system");
+    await expect(cards.nth(1)).toContainText("user");
+    // The user hop's L3 breakdown (1 confirmed, 1 dismissed, 2 suppressed) and its
+    // injected-surrogate chips render -- scrubbed tokens only, never a real value.
+    await expect(cards.nth(1)).toContainText("1 confirmed, 1 dismissed, 2 suppressed");
+    await expect(cards.nth(1)).toContainText("Tobias Lehmann");
+
+    // Collapsing hides the cards again without losing the seeded rows.
+    await hopsToggle.click();
+    await expect(alicePage.getByTestId("processing-trace-hop-card")).toHaveCount(0);
+    await expect(alicePage.getByTestId("processing-trace-row")).toHaveCount(3);
   });
 });
 

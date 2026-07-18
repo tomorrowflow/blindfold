@@ -720,6 +720,105 @@ body {
   border: 1px solid var(--bf-border);
 }
 
+/* Processing trace: inline per-hop expansion (ADR-0035, issue #153). */
+
+.bf-trace-row-clickable {
+  cursor: pointer;
+}
+
+.bf-trace-row-clickable:hover {
+  background: #fafbfc;
+}
+
+.bf-trace-hops-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.bf-trace-hops-chevron {
+  transition: transform 0.15s ease;
+  transform: rotate(-90deg);
+}
+
+.bf-trace-hops-chevron--expanded {
+  transform: rotate(0deg);
+}
+
+.bf-trace-expansion-row td {
+  padding: 0;
+  border-bottom: 1px solid var(--bf-border);
+}
+
+.bf-trace-hop-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 16px;
+  background: var(--bf-canvas);
+}
+
+@keyframes bfFadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.bf-trace-hop-card {
+  background: #fafbfc;
+  border: 1px solid var(--bf-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  animation: bfFadeIn 0.15s ease;
+}
+
+.bf-trace-hop-card-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  font-size: 0.8125rem;
+}
+
+.bf-trace-hop-card-index {
+  font-weight: 600;
+}
+
+.bf-trace-hop-card-kind {
+  color: #6b7589;
+  font-family: var(--bf-font-mono);
+}
+
+.bf-trace-hop-card-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0 0 6px;
+}
+
+.bf-trace-hop-card-stats dt {
+  font-size: 0.6875rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #6b7589;
+}
+
+.bf-trace-hop-card-stats dd {
+  margin: 0;
+  font-size: 0.8125rem;
+}
+
+.bf-trace-hop-card-surrogates {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
 /* -----------------------------------------------------------------------
    Toast outlet (issue #95)
    ----------------------------------------------------------------------- */

@@ -2,13 +2,18 @@
 // the proxy is doing per request, replacing `tail`ing stdout. GET
 // /v1/management/processing-trace, viewer-gated + workspace-scoped the same way the
 // audit log is (#16). Every row is a scrubbed exchange-level record -- outcome,
-// time, and a detection rollup count only; per-hop detail, the L3 column, reveal
-// and deep-links land in follow-up slices.
+// time, a detection rollup count, and (issue #153) an L3 provider/timing column
+// plus a Hops column that expands inline into one card per hop; reveal and
+// deep-links remain out of scope for this slice.
 
-import { useEffect, useState } from "react";
-import { Lock, CheckCircle2, AlertTriangle, CloudOff } from "../components/icons";
+import { Fragment, useEffect, useState } from "react";
+import { Lock, CheckCircle2, AlertTriangle, CloudOff, ChevronDown } from "../components/icons";
 import { useWorkspace } from "../components/WorkspaceContext";
-import { fetchProcessingTrace, type ProcessingTraceRecord } from "../lib/processingTraceApi";
+import {
+  fetchProcessingTrace,
+  type ProcessingTraceHop,
+  type ProcessingTraceRecord,
+} from "../lib/processingTraceApi";
 
 const POLL_INTERVAL_MS = 2000;
 const FRESHNESS_TICK_MS = 1000;
@@ -31,6 +36,61 @@ function formatTime(ts: string): string {
   return Number.isNaN(date.getTime()) ? ts : date.toLocaleTimeString();
 }
 
+function formatMs(ms: number): string {
+  return `${Math.round(ms)}ms`;
+}
+
+function formatL1Counts(counts: Record<string, number>): string {
+  const entries = Object.entries(counts);
+  if (entries.length === 0) return "0";
+  return entries.map(([kind, count]) => `${kind} ${count}`).join(", ");
+}
+
+// One hop's scrubbed detail card (ADR-0035 per-hop expansion, issue #153): L1/L2/L3
+// + suppression counts, L1/L2 timings, and this hop's own injected-surrogate chips
+// (display only -- reveal lands in a follow-up slice). Never a real value,
+// candidate-span text, or raw hop text -- the API only ever sends scrubbed fields.
+function HopCard({ hop }: { hop: ProcessingTraceHop }) {
+  return (
+    <div className="bf-trace-hop-card" data-testid="processing-trace-hop-card">
+      <div className="bf-trace-hop-card-header">
+        <span className="bf-trace-hop-card-index">Hop {hop.hop_index + 1}</span>
+        <span className="bf-trace-hop-card-kind">{hop.hop_kind}</span>
+      </div>
+      <dl className="bf-trace-hop-card-stats">
+        <div>
+          <dt>L1</dt>
+          <dd className="bf-mono-cell">
+            {formatL1Counts(hop.l1_counts)} ({formatMs(hop.l1_duration_ms)})
+          </dd>
+        </div>
+        <div>
+          <dt>L2</dt>
+          <dd className="bf-mono-cell">
+            {hop.l2_count} ({formatMs(hop.l2_duration_ms)})
+          </dd>
+        </div>
+        <div>
+          <dt>L3</dt>
+          <dd className="bf-mono-cell">
+            {hop.l3_confirmed} confirmed, {hop.l3_dismissed} dismissed, {hop.l3_suppressed}{" "}
+            suppressed
+          </dd>
+        </div>
+      </dl>
+      {hop.surrogates.length > 0 && (
+        <div className="bf-trace-hop-card-surrogates">
+          {hop.surrogates.map((surrogate, i) => (
+            <span key={i} className="bf-merge-card-chip">
+              {surrogate}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ProcessingTrace() {
   const { activeWorkspace } = useWorkspace();
   const workspace = activeWorkspace?.slug ?? null;
@@ -42,6 +102,22 @@ export function ProcessingTrace() {
   const [pollOk, setPollOk] = useState(true);
   const [lastPolledAt, setLastPolledAt] = useState<number | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  // Which rows are expanded (issue #153) -- keyed by row index within the
+  // newest-first `rows` array, so expansion state survives a poll tick as long as
+  // the row's position doesn't shift.
+  const [expandedRows, setExpandedRows] = useState<Set<number>>(new Set());
+
+  function toggleRow(index: number) {
+    setExpandedRows((prev) => {
+      const next = new Set(prev);
+      if (next.has(index)) {
+        next.delete(index);
+      } else {
+        next.add(index);
+      }
+      return next;
+    });
+  }
 
   // Live | Paused pill drives the poll (ADR-0035 decision 9/10): pausing simply
   // stops the interval, it does not clear the already-rendered rows.
@@ -171,32 +247,79 @@ export function ProcessingTrace() {
                 <th>Outcome</th>
                 <th>Time</th>
                 <th>Detected</th>
+                <th>L3</th>
+                <th>Hops</th>
               </tr>
             </thead>
             <tbody>
               {rows.map((row, i) => {
                 const meta = OUTCOME_META[row.outcome];
                 const Icon = meta.icon;
+                const expanded = expandedRows.has(i);
+                const hopCount = row.hops.length;
                 return (
-                  <tr key={i} data-testid="processing-trace-row">
-                    <td>
-                      <span
-                        className={`bf-trace-outcome-pill ${meta.className}`}
-                        data-outcome={row.outcome}
-                        data-testid="processing-trace-row-outcome"
-                      >
-                        <Icon size={14} />
-                        {meta.label}
-                      </span>
-                    </td>
-                    <td className="bf-mono-cell">{formatTime(row.ts)}</td>
-                    <td className="bf-mono-cell">{row.detected}</td>
-                  </tr>
+                  <Fragment key={i}>
+                    <tr
+                      className="bf-trace-row-clickable"
+                      onClick={() => toggleRow(i)}
+                      data-testid="processing-trace-row"
+                    >
+                      <td>
+                        <span
+                          className={`bf-trace-outcome-pill ${meta.className}`}
+                          data-outcome={row.outcome}
+                          data-testid="processing-trace-row-outcome"
+                        >
+                          <Icon size={14} />
+                          {meta.label}
+                        </span>
+                      </td>
+                      <td className="bf-mono-cell">{formatTime(row.ts)}</td>
+                      <td className="bf-mono-cell">{row.detected}</td>
+                      <td className="bf-mono-cell" data-testid="processing-trace-row-l3">
+                        {row.l3_provider
+                          ? `${row.l3_provider} (${formatMs(row.l3_duration_ms ?? 0)})`
+                          : "—"}
+                      </td>
+                      <td>
+                        <span
+                          className="bf-trace-hops-toggle"
+                          data-testid="processing-trace-row-hops-toggle"
+                          data-expanded={expanded}
+                        >
+                          <span className="bf-mono-cell">{hopCount}</span>
+                          <ChevronDown
+                            size={14}
+                            className={`bf-trace-hops-chevron${
+                              expanded ? " bf-trace-hops-chevron--expanded" : ""
+                            }`}
+                          />
+                        </span>
+                      </td>
+                    </tr>
+                    {expanded && (
+                      <tr className="bf-trace-expansion-row">
+                        <td colSpan={5}>
+                          <div
+                            className="bf-trace-hop-cards"
+                            data-testid="processing-trace-hop-cards"
+                          >
+                            {row.hops.map((hop) => (
+                              <HopCard key={hop.hop_index} hop={hop} />
+                            ))}
+                            {hopCount === 0 && (
+                              <p className="bf-empty">No hop detail for this exchange.</p>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 );
               })}
               {rows.length === 0 && (
                 <tr>
-                  <td colSpan={3} className="bf-empty">
+                  <td colSpan={5} className="bf-empty">
                     No processing-trace records yet.
                   </td>
                 </tr>

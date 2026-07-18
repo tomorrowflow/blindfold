@@ -18,11 +18,13 @@ import functools
 import hashlib
 import logging
 import re
+import time
 from collections.abc import Callable
+from dataclasses import dataclass, field
 from typing import Any
 
 from .detection import detect_l2, detect_pii
-from .l3 import L3Detector
+from .l3 import L3Detector, count_capitalized_tokens
 from .review import ReviewInbox
 from .surrogates import SurrogateMapping
 
@@ -37,11 +39,108 @@ class UnresolvedSurrogateError(Exception):
     """An injected surrogate was left unresolved in the client-visible response."""
 
 
+@dataclass(frozen=True)
+class HopDetail:
+    """One hop's scrubbed detection detail (ADR-0035 per-hop expansion, issue #153).
+
+    Counts and timings only — never a real value, candidate-span text, or raw hop
+    text. ``surrogates`` holds only the surrogate tokens injected for this hop (safe
+    to display: a surrogate is never a real value by construction).
+    """
+
+    hop_index: int
+    hop_kind: str  # "system" | a message role ("user"/"assistant") | "tool_result"
+    l1_counts: dict[str, int]  # PII kind -> count
+    l1_duration_ms: float
+    l2_count: int
+    l2_duration_ms: float
+    l3_confirmed: int
+    l3_dismissed: int
+    l3_suppressed: int
+    l3_provider: str | None
+    l3_duration_ms: float | None
+    surrogates: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "hop_index": self.hop_index,
+            "hop_kind": self.hop_kind,
+            "l1_counts": dict(self.l1_counts),
+            "l1_duration_ms": self.l1_duration_ms,
+            "l2_count": self.l2_count,
+            "l2_duration_ms": self.l2_duration_ms,
+            "l3_confirmed": self.l3_confirmed,
+            "l3_dismissed": self.l3_dismissed,
+            "l3_suppressed": self.l3_suppressed,
+            "l3_provider": self.l3_provider,
+            "l3_duration_ms": self.l3_duration_ms,
+            "surrogates": list(self.surrogates),
+        }
+
+
+@dataclass
+class _HopContext:
+    """Mutable per-hop accumulator threaded through the blindfold walk (issue #153).
+
+    Created fresh for each hop (system prompt, each message) in
+    :func:`blindfold_payload` / :func:`blindfold_chat_completions_payload` and
+    folded into a frozen :class:`HopDetail` once that hop finishes.
+    """
+
+    l3_provider: str | None = None
+    l1_counts: dict[str, int] = field(default_factory=dict)
+    l1_duration_ms: float = 0.0
+    l2_count: int = 0
+    l2_duration_ms: float = 0.0
+    l3_confirmed: int = 0
+    l3_dismissed: int = 0
+    l3_suppressed: int = 0
+    l3_duration_ms: float = 0.0
+    l3_ran: bool = False
+    surrogates: list[str] = field(default_factory=list)
+
+
+def _finish_hop(ctx: _HopContext, hop_kind: str, hop_index: int) -> HopDetail:
+    return HopDetail(
+        hop_index=hop_index,
+        hop_kind=hop_kind,
+        l1_counts=dict(ctx.l1_counts),
+        l1_duration_ms=ctx.l1_duration_ms,
+        l2_count=ctx.l2_count,
+        l2_duration_ms=ctx.l2_duration_ms,
+        l3_confirmed=ctx.l3_confirmed,
+        l3_dismissed=ctx.l3_dismissed,
+        l3_suppressed=ctx.l3_suppressed,
+        l3_provider=ctx.l3_provider if ctx.l3_ran else None,
+        l3_duration_ms=ctx.l3_duration_ms if ctx.l3_ran else None,
+        surrogates=tuple(ctx.surrogates),
+    )
+
+
+def _hop_kind_for_message(message: dict[str, Any]) -> str:
+    """Classify a message's hop kind (ADR-0002: system prompt / user turn / tool-result).
+
+    A Chat Completions tool-response message (``role: "tool"``) and an Anthropic
+    Messages user turn carrying a ``tool_result`` content block are both
+    "tool_result" hops; everything else is labeled by its own ``role``.
+    """
+    if message.get("role") == "tool":
+        return "tool_result"
+    content = message.get("content")
+    if isinstance(content, list):
+        for block in content:
+            if isinstance(block, dict) and block.get("type") == "tool_result":
+                return "tool_result"
+    role = message.get("role")
+    return role if isinstance(role, str) else "user"
+
+
 class ExchangeSession:
     """Records the surrogates injected for a single exchange (for closed-world restore)."""
 
     def __init__(self) -> None:
         self.injected: dict[str, str] = {}  # surrogate -> real
+        self.hops: list[HopDetail] = []  # scrubbed per-hop detail (ADR-0035, issue #153)
 
     def record(self, surrogate: str, real: str) -> None:
         self.injected[surrogate] = real
@@ -68,19 +167,30 @@ def blindfold_payload(
     itself declares (see :func:`extract_declared_tools_messages`) — suppressed from
     L3 candidacy for every hop of this request only. Never persisted, never state
     on ``l3_detector``.
+
+    The resulting ``session.hops`` (issue #153, ADR-0035) labels each hop's L3
+    detail with ``l3_detector.provider_name`` when ``l3_detector`` ran for that hop
+    — a display-only string, never used to select behavior here.
     """
     session = ExchangeSession()
     out = copy.deepcopy(payload)
+    l3_provider = l3_detector.provider_name if l3_detector is not None else None
 
     system = out.get("system")
     if system is not None:
+        ctx = _HopContext(l3_provider=l3_provider)
         out["system"] = _blindfold_system(
-            system, mapping, session, l3_detector, inbox, declared_tools
+            system, mapping, session, l3_detector, inbox, declared_tools, ctx
         )
+        session.hops.append(_finish_hop(ctx, "system", len(session.hops)))
 
     for message in out.get("messages", []):
+        ctx = _HopContext(l3_provider=l3_provider)
         message["content"] = _blindfold_content(
-            message.get("content"), mapping, session, l3_detector, inbox, declared_tools
+            message.get("content"), mapping, session, l3_detector, inbox, declared_tools, ctx
+        )
+        session.hops.append(
+            _finish_hop(ctx, _hop_kind_for_message(message), len(session.hops))
         )
 
     _blindfold_tools_messages(out.get("tools"), mapping, session)
@@ -105,10 +215,15 @@ def blindfold_chat_completions_payload(
     """
     session = ExchangeSession()
     out = copy.deepcopy(payload)
+    l3_provider = l3_detector.provider_name if l3_detector is not None else None
 
     for message in out.get("messages", []):
+        ctx = _HopContext(l3_provider=l3_provider)
         message["content"] = _blindfold_content(
-            message.get("content"), mapping, session, l3_detector, inbox, declared_tools
+            message.get("content"), mapping, session, l3_detector, inbox, declared_tools, ctx
+        )
+        session.hops.append(
+            _finish_hop(ctx, _hop_kind_for_message(message), len(session.hops))
         )
 
     _blindfold_tools_chat_completions(out.get("tools"), mapping, session)
@@ -210,12 +325,17 @@ def _blindfold_system(
     l3_detector: L3Detector | None,
     inbox: ReviewInbox | None,
     declared_tools: frozenset[str] = frozenset(),
+    hop_ctx: "_HopContext | None" = None,
 ) -> Any:
     if isinstance(system, str):
-        return _blindfold_text(system, mapping, session, l3_detector, inbox, declared_tools)
+        return _blindfold_text(
+            system, mapping, session, l3_detector, inbox, declared_tools, hop_ctx
+        )
     if isinstance(system, list):
         return [
-            _blindfold_block(block, mapping, session, l3_detector, inbox, declared_tools)
+            _blindfold_block(
+                block, mapping, session, l3_detector, inbox, declared_tools, hop_ctx
+            )
             for block in system
         ]
     return system
@@ -228,12 +348,17 @@ def _blindfold_content(
     l3_detector: L3Detector | None,
     inbox: ReviewInbox | None,
     declared_tools: frozenset[str] = frozenset(),
+    hop_ctx: "_HopContext | None" = None,
 ) -> Any:
     if isinstance(content, str):
-        return _blindfold_text(content, mapping, session, l3_detector, inbox, declared_tools)
+        return _blindfold_text(
+            content, mapping, session, l3_detector, inbox, declared_tools, hop_ctx
+        )
     if isinstance(content, list):
         return [
-            _blindfold_block(block, mapping, session, l3_detector, inbox, declared_tools)
+            _blindfold_block(
+                block, mapping, session, l3_detector, inbox, declared_tools, hop_ctx
+            )
             for block in content
         ]
     return content
@@ -246,17 +371,18 @@ def _blindfold_block(
     l3_detector: L3Detector | None,
     inbox: ReviewInbox | None,
     declared_tools: frozenset[str] = frozenset(),
+    hop_ctx: "_HopContext | None" = None,
 ) -> Any:
     if not isinstance(block, dict):
         return block
     block_type = block.get("type")
     if block_type == "text" and isinstance(block.get("text"), str):
         block["text"] = _blindfold_text(
-            block["text"], mapping, session, l3_detector, inbox, declared_tools
+            block["text"], mapping, session, l3_detector, inbox, declared_tools, hop_ctx
         )
     elif block_type == "tool_result":
         block["content"] = _blindfold_content(
-            block.get("content"), mapping, session, l3_detector, inbox, declared_tools
+            block.get("content"), mapping, session, l3_detector, inbox, declared_tools, hop_ctx
         )
     elif block_type == "tool_use":
         # Tool-call JSON (issue #11): the assistant's prior tool_use.input is echoed
@@ -264,7 +390,7 @@ def _blindfold_block(
         # and blindfold any real entity inside its structured args so clause A holds
         # across every hop, not just text blocks.
         block["input"] = _blindfold_json_value(
-            block.get("input"), mapping, session, l3_detector, inbox, declared_tools
+            block.get("input"), mapping, session, l3_detector, inbox, declared_tools, hop_ctx
         )
     return block
 
@@ -276,18 +402,25 @@ def _blindfold_json_value(
     l3_detector: L3Detector | None,
     inbox: ReviewInbox | None,
     declared_tools: frozenset[str] = frozenset(),
+    hop_ctx: "_HopContext | None" = None,
 ) -> Any:
     """Recursively rewrite every string leaf in a JSON-shaped value via L1+L2."""
     if isinstance(value, str):
-        return _blindfold_text(value, mapping, session, l3_detector, inbox, declared_tools)
+        return _blindfold_text(
+            value, mapping, session, l3_detector, inbox, declared_tools, hop_ctx
+        )
     if isinstance(value, dict):
         return {
-            k: _blindfold_json_value(v, mapping, session, l3_detector, inbox, declared_tools)
+            k: _blindfold_json_value(
+                v, mapping, session, l3_detector, inbox, declared_tools, hop_ctx
+            )
             for k, v in value.items()
         }
     if isinstance(value, list):
         return [
-            _blindfold_json_value(item, mapping, session, l3_detector, inbox, declared_tools)
+            _blindfold_json_value(
+                item, mapping, session, l3_detector, inbox, declared_tools, hop_ctx
+            )
             for item in value
         ]
     return value
@@ -300,23 +433,35 @@ def _blindfold_text(
     l3_detector: L3Detector | None = None,
     inbox: ReviewInbox | None = None,
     declared_tools: frozenset[str] = frozenset(),
+    hop_ctx: "_HopContext | None" = None,
 ) -> str:
     """Rewrite ``text`` by replacing every L2-detected entity span with its surrogate.
 
     L2 (ADR-0003) flags candidate spans at token boundaries — no substring over-
     redaction. Variations of one entity share its surrogate (coreference, ADR-0004),
     so all hits restore to the same canonical real value via ``session``.
+
+    ``hop_ctx`` (issue #153, ADR-0035), when provided, accumulates this call's
+    scrubbed L1/L2/L3 counts, timings, and injected surrogate tokens for the
+    processing trace's per-hop detail — never a real value or candidate-span text.
     """
     result = text
+    l2_started_at = time.monotonic()
     spans = detect_l2(result, mapping.entities())
     if spans:
         # Replace right-to-left so earlier spans' offsets stay valid mid-rewrite.
         for span in sorted(spans, key=lambda s: s.start, reverse=True):
             result = result[: span.start] + span.surrogate + result[span.end :]
             session.record(span.surrogate, span.real)
+            if hop_ctx is not None:
+                hop_ctx.surrogates.append(span.surrogate)
+    if hop_ctx is not None:
+        hop_ctx.l2_count += len(spans)
+        hop_ctx.l2_duration_ms += (time.monotonic() - l2_started_at) * 1000
     # L1 deterministic PII (ADR-0003): regex over the full text, reserved-namespace
     # surrogates (ADR-0005). Runs after the dictionary pass so any entity-graph
     # match has already won; PII spans cover what L1 alone is meant to catch.
+    l1_started_at = time.monotonic()
     for span in detect_pii(result):
         if span.value not in result:
             continue
@@ -329,6 +474,11 @@ def _blindfold_text(
         surrogate = mapping.mint_pii(span.kind, span.value)
         result = result.replace(span.value, surrogate)
         session.record(surrogate, span.value)
+        if hop_ctx is not None:
+            hop_ctx.l1_counts[span.kind] = hop_ctx.l1_counts.get(span.kind, 0) + 1
+            hop_ctx.surrogates.append(surrogate)
+    if hop_ctx is not None:
+        hop_ctx.l1_duration_ms += (time.monotonic() - l1_started_at) * 1000
     # L3 candidate-span adjudication (ADR-0003 / ADR-0010): novel capitalized tokens
     # the deterministic passes couldn't resolve. Confirmed candidates get a
     # **provisional** surrogate minted by the inbox (NOT the main mapping — keeping
@@ -336,7 +486,17 @@ def _blindfold_text(
     # land in the review inbox for async human review. Auto-blindfold is non-
     # blocking — the request never stalls waiting on the reviewer.
     if l3_detector is not None and inbox is not None:
+        l3_started_at = time.monotonic()
         adjudications = l3_detector.detect(result, mapping.entities(), declared_tools)
+        if hop_ctx is not None:
+            confirmed = sum(1 for _, decision in adjudications if decision.is_entity)
+            hop_ctx.l3_ran = True
+            hop_ctx.l3_confirmed += confirmed
+            hop_ctx.l3_dismissed += len(adjudications) - confirmed
+            hop_ctx.l3_suppressed += max(
+                0, count_capitalized_tokens(result) - len(adjudications)
+            )
+            hop_ctx.l3_duration_ms += (time.monotonic() - l3_started_at) * 1000
         # A surrogate injected earlier in this same pass (L2 dict match, L1 PII, or
         # by a prior hop already recorded in ``session``) must never be treated as a
         # fresh novel candidate — mirrors the L1 PII guard just above
@@ -349,7 +509,7 @@ def _blindfold_text(
         )
         # Re-resolve candidate offsets against the current ``result`` because L2/L1
         # have already rewritten the text out from under L3's original start/end.
-        spans: list[tuple[int, int, str, str]] = []
+        spans = []
         for candidate, decision in adjudications:
             if not decision.is_entity:
                 continue
@@ -372,6 +532,8 @@ def _blindfold_text(
         ):
             result = result[:start] + surrogate + result[end:]
             session.record(surrogate, real)
+            if hop_ctx is not None:
+                hop_ctx.surrogates.append(surrogate)
     return result
 
 

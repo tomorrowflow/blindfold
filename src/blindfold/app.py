@@ -252,6 +252,7 @@ def _build_l3_detector(settings: Settings, allowlist: Allowlist) -> L3Detector:
         allowlist=allowlist,
         dismissal_log_path=settings.l3_dismissal_log or None,
         batch_size=settings.l3_batch_size,
+        provider_name=settings.l3_provider,
     )
 
 
@@ -741,8 +742,21 @@ def _record_trace(
     detected: int,
     start: float,
     reason: str | None = None,
+    session: ExchangeSession | None = None,
 ) -> None:
-    """Append one scrubbed processing-trace record for this exchange (ADR-0035)."""
+    """Append one scrubbed processing-trace record for this exchange (ADR-0035).
+
+    ``session`` (issue #153, per-hop expansion), when the exchange got far enough
+    to blindfold at least one hop, supplies ``session.hops`` -- serialized here into
+    the already-scrubbed dicts the record stores, plus the exchange-level L3
+    provider/timing rollup the collapsed row's L3 column reads. ``None`` (a block
+    raised before any hop was blindfolded) reproduces today's "no hop detail"
+    behavior exactly.
+    """
+    hops = [hop.to_dict() for hop in session.hops] if session is not None else []
+    l3_hops = [hop for hop in session.hops if hop.l3_provider is not None] if session else []
+    l3_provider = l3_hops[0].l3_provider if l3_hops else None
+    l3_duration_ms = sum(hop.l3_duration_ms for hop in l3_hops) if l3_hops else None
     trace.record(
         workspace=workspace,
         endpoint=endpoint,
@@ -751,6 +765,9 @@ def _record_trace(
         detected=detected,
         duration_ms=(time.monotonic() - start) * 1000,
         reason=reason,
+        hops=hops,
+        l3_provider=l3_provider,
+        l3_duration_ms=l3_duration_ms,
     )
 
 
@@ -1120,7 +1137,7 @@ async def messages(
     if block is not None:
         _record_trace(
             trace, workspace, "messages", streamed, OUTCOME_BLOCKED,
-            len(session.injected), start, reason=_block_reason(block),
+            len(session.injected), start, reason=_block_reason(block), session=session,
         )
         return block
 
@@ -1130,7 +1147,7 @@ async def messages(
         except UpstreamError as exc:
             _record_trace(
                 trace, workspace, "messages", streamed, OUTCOME_UPSTREAM_ERROR,
-                len(session.injected), start, reason=str(exc),
+                len(session.injected), start, reason=str(exc), session=session,
             )
             return _upstream_error_response(exc, workspace, audit_log, upstream_health)
         return StreamingResponse(
@@ -1145,7 +1162,7 @@ async def messages(
     except UpstreamError as exc:
         _record_trace(
             trace, workspace, "messages", streamed, OUTCOME_UPSTREAM_ERROR,
-            len(session.injected), start, reason=str(exc),
+            len(session.injected), start, reason=str(exc), session=session,
         )
         return _upstream_error_response(exc, workspace, audit_log, upstream_health)
     restored = restore_response(raw_response, session)
@@ -1153,12 +1170,12 @@ async def messages(
     if block is not None:
         _record_trace(
             trace, workspace, "messages", streamed, OUTCOME_BLOCKED,
-            len(session.injected), start, reason=_block_reason(block),
+            len(session.injected), start, reason=_block_reason(block), session=session,
         )
         return block
     _record_trace(
         trace, workspace, "messages", streamed, OUTCOME_PASSED,
-        len(session.injected), start,
+        len(session.injected), start, session=session,
     )
     return restored
 
@@ -1206,7 +1223,7 @@ async def chat_completions(
     if block is not None:
         _record_trace(
             trace, workspace, "chat_completions", False, OUTCOME_BLOCKED,
-            len(session.injected), start, reason=_block_reason(block),
+            len(session.injected), start, reason=_block_reason(block), session=session,
         )
         return block
 
@@ -1217,7 +1234,7 @@ async def chat_completions(
     except UpstreamError as exc:
         _record_trace(
             trace, workspace, "chat_completions", False, OUTCOME_UPSTREAM_ERROR,
-            len(session.injected), start, reason=str(exc),
+            len(session.injected), start, reason=str(exc), session=session,
         )
         return _upstream_error_response(exc, workspace, audit_log, upstream_health)
     restored = restore_chat_completion(raw_response, session)
@@ -1225,12 +1242,12 @@ async def chat_completions(
     if block is not None:
         _record_trace(
             trace, workspace, "chat_completions", False, OUTCOME_BLOCKED,
-            len(session.injected), start, reason=_block_reason(block),
+            len(session.injected), start, reason=_block_reason(block), session=session,
         )
         return block
     _record_trace(
         trace, workspace, "chat_completions", False, OUTCOME_PASSED,
-        len(session.injected), start,
+        len(session.injected), start, session=session,
     )
     return restored
 
@@ -1431,19 +1448,19 @@ async def _stream_restored(
         )
         _record_trace(
             trace, workspace, "messages", True, OUTCOME_BLOCKED,
-            len(session.injected), start, reason=reason,
+            len(session.injected), start, reason=reason, session=session,
         )
         raise
 
     if disconnected:
         _record_trace(
             trace, workspace, "messages", True, OUTCOME_UPSTREAM_ERROR,
-            len(session.injected), start, reason=disconnect_reason,
+            len(session.injected), start, reason=disconnect_reason, session=session,
         )
     else:
         _record_trace(
             trace, workspace, "messages", True, OUTCOME_PASSED,
-            len(session.injected), start,
+            len(session.injected), start, session=session,
         )
 
 

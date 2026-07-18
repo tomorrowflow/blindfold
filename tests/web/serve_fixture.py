@@ -375,11 +375,45 @@ def build_app():
     allowlist = Allowlist()
 
     # Seeded processing-trace records (ADR-0035, issue #151) for the Processing
-    # trace view's outcome-first grid -- one of each of the 3 outcome buckets.
+    # trace view's outcome-first grid -- one of each of the 3 outcome buckets. The
+    # "passed" record also carries per-hop detail (issue #153) so the inline
+    # expansion + L3 column have something to render in the fixture.
     processing_trace = ProcessingTraceBuffer()
     processing_trace.record(
         workspace=WORKSPACE, endpoint="messages", streamed=False,
         outcome="passed", detected=2, duration_ms=118.0,
+        hops=[
+            {
+                "hop_index": 0,
+                "hop_kind": "system",
+                "l1_counts": {},
+                "l1_duration_ms": 0.1,
+                "l2_count": 1,
+                "l2_duration_ms": 0.4,
+                "l3_confirmed": 0,
+                "l3_dismissed": 0,
+                "l3_suppressed": 0,
+                "l3_provider": None,
+                "l3_duration_ms": None,
+                "surrogates": ["Berta Vogel"],
+            },
+            {
+                "hop_index": 1,
+                "hop_kind": "user",
+                "l1_counts": {"email": 1},
+                "l1_duration_ms": 0.2,
+                "l2_count": 0,
+                "l2_duration_ms": 0.1,
+                "l3_confirmed": 1,
+                "l3_dismissed": 1,
+                "l3_suppressed": 2,
+                "l3_provider": "ollama",
+                "l3_duration_ms": 42.0,
+                "surrogates": ["notice@bramblewick.invalid", "Tobias Lehmann"],
+            },
+        ],
+        l3_provider="ollama",
+        l3_duration_ms=42.0,
     )
     processing_trace.record(
         workspace=WORKSPACE, endpoint="messages", streamed=False,

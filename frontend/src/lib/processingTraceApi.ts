@@ -4,6 +4,24 @@
 
 export type ProcessingTraceOutcome = "passed" | "blocked" | "upstream_error";
 
+// One hop's scrubbed detection detail (ADR-0035 per-hop expansion, issue #153) --
+// counts, timings, and a hop's own injected surrogate tokens only, never a real
+// value, candidate-span text, or raw hop text.
+export type ProcessingTraceHop = {
+  hop_index: number;
+  hop_kind: string;
+  l1_counts: Record<string, number>;
+  l1_duration_ms: number;
+  l2_count: number;
+  l2_duration_ms: number;
+  l3_confirmed: number;
+  l3_dismissed: number;
+  l3_suppressed: number;
+  l3_provider: string | null;
+  l3_duration_ms: number | null;
+  surrogates: string[];
+};
+
 export type ProcessingTraceRecord = {
   ts: string;
   workspace: string;
@@ -13,6 +31,9 @@ export type ProcessingTraceRecord = {
   detected: number;
   duration_ms: number;
   reason: string | null;
+  hops: ProcessingTraceHop[];
+  l3_provider: string | null;
+  l3_duration_ms: number | null;
 };
 
 export type ProcessingTraceFetchResult =

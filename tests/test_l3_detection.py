@@ -25,6 +25,7 @@ from blindfold.l3 import (
     L3Detector,
     L3Unavailable,
     _SENTENCE_STOPWORDS,
+    count_capitalized_tokens,
     select_candidate_spans,
 )
 from blindfold.surrogates import SurrogateMapping
@@ -949,3 +950,29 @@ def test_batch_adjudication_still_cuts_inner_llm_calls_when_batches_under_return
     assert total_calls == 40
     # Still well under the 100 calls a fully per-candidate pass would cost.
     assert total_calls < 100
+
+
+def test_count_capitalized_tokens_counts_every_raw_capitalized_occurrence():
+    # Issue #153: the processing trace's per-hop "suppressed" count is derived as
+    # (raw capitalized tokens) - (candidates actually handed to L3), so this raw
+    # count must include tokens select_candidate_spans() would later filter out
+    # (stopwords, known entities, declared tools, positional-case noise) --
+    # otherwise "suppressed" would always read zero.
+    text = "Please brief Klaus and Petra tomorrow. Petra agreed."
+
+    assert count_capitalized_tokens(text) == 4  # Please, Klaus, Petra, Petra
+
+
+def test_l3_detector_provider_name_defaults_to_ollama():
+    # Issue #153: the processing trace's L3 column needs a provider label even
+    # for existing callers that construct L3Detector without naming one --
+    # "ollama" reproduces today's only production default (config.DEFAULT_L3_PROVIDER).
+    detector = L3Detector(_RecordingAdjudicator())
+
+    assert detector.provider_name == "ollama"
+
+
+def test_l3_detector_provider_name_reflects_configured_provider():
+    detector = L3Detector(_RecordingAdjudicator(), provider_name="omlx")
+
+    assert detector.provider_name == "omlx"

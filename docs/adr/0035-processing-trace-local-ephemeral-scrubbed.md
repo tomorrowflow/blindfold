@@ -103,6 +103,24 @@ the **"gate"** half of a **"gate, then enrich"** ordering): a future candidate-s
 highlight in the review inbox makes that plaintext more prominent, and must not
 land before the endpoint is access-controlled.
 
+### 12. Per-hop expansion + L3 provider/timing (issue #153)
+
+The second grain level decision 5 deferred: a ring-buffer record now also carries
+per-hop detail (hop kind + index, L1 counts by PII kind, L2 count, L3
+confirmed/dismissed/suppressed, an injected-surrogate token list) alongside an
+exchange-level L3 provider + timing rollup, still scrubbed by construction — never
+a real value, candidate-span text, or raw hop text. A surrogate token itself is not
+a real value (it's the fake stand-in), so its presence in the per-hop detail does
+not weaken decision 4's scrub. The collapsed row gains an **L3** column (provider +
+total L3 time, "—" when no hop ran L3) and a **Hops** column (count + chevron)
+that expands the row inline into one `#fafbfc` card per hop, in pipeline order.
+
+> Issue #153's own body cites this as "decision 8"; decision 8 in this file is
+> "Nav placement" (see above). This numbering mismatch is the same kind of gap
+> issue #151 flagged when reconstructing this file from citations across #151/
+> #152 — a maintainer should reconcile against an original draft if one exists.
+> This slice is filed under a new decision 12 rather than overwriting decision 8.
+
 ## Consequences
 
 - The trace is an *operational* surface, not a compliance one — it complements,
@@ -110,6 +128,6 @@ land before the endpoint is access-controlled.
 - Because records are scrubbed by construction, this ADR does not expand what
   data the proxy request path exposes; it only adds an observability tap on
   outcomes that already exist (mint/leak-gate/upstream/resolution-gate).
-- Follow-up slices (per-hop detail, an L3 column, reveal, deep-links) will need
-  to reconcile added detail against the same scrubbed-by-construction invariant
-  this ADR establishes for the record shape.
+- Per-hop detail and the L3 column landed in issue #153, reconciled against this
+  same scrubbed-by-construction invariant (a surrogate token, never a real value
+  or candidate-span text). Reveal and deep-links remain future slices.

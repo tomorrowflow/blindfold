@@ -395,5 +395,73 @@ async def test_trace_record_never_carries_the_real_entity_value():
     assert record.detected > 0
     serialized = str(record.to_dict())
     assert martin not in serialized
-    assert surrogate not in serialized
     assert "Ping" not in serialized  # no raw hop text / payload diff
+    # Issue #153 (per-hop expansion): the hop's injected-surrogate reference is a
+    # scrubbed, display-only surrogate token, deliberately present -- the acceptance
+    # criterion this test predates (#151) never carried hop detail at all, so a
+    # surrogate token had nowhere to appear; a surrogate is never a real value by
+    # construction, so its presence here does not weaken the leak-audit property.
+    assert surrogate in serialized
+
+
+class _ConfirmQuentinAdjudicator:
+    """Stub: confirms exactly one novel candidate ("Quentin"), dismisses the rest."""
+
+    def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
+        return L3Adjudication(is_entity=candidate.text == "Quentin")
+
+
+@pytest.mark.anyio
+async def test_passed_record_carries_scrubbed_per_hop_detail_and_l3_rollup():
+    # Issue #153 (ADR-0035 per-hop expansion): a single-hop exchange with a
+    # confirmed + a dismissed L3 candidate produces exactly one HopDetail whose
+    # counts/provider/timing feed both the hop card and the collapsed row's L3
+    # column -- and the record never carries the candidate's own text.
+    recorded: list[httpx.Request] = []
+    trace = ProcessingTraceBuffer()
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(
+        {"content": [{"type": "text", "text": "ok"}]}, recorded
+    )
+    app.dependency_overrides[get_l3_detector] = lambda: L3Detector(
+        _ConfirmQuentinAdjudicator(), provider_name="omlx"
+    )
+    app.dependency_overrides[get_processing_trace] = lambda: trace
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            resp = await client.post(
+                "/v1/messages",
+                json={
+                    "model": "m",
+                    "messages": [
+                        {"role": "user", "content": "Please ask Quentin to review the Report."}
+                    ],
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    record = trace.recent()[0]
+    assert record.outcome == "passed"
+    assert record.l3_provider == "omlx"
+    assert record.l3_duration_ms is not None
+    assert record.l3_duration_ms >= 0
+
+    assert len(record.hops) == 1
+    hop = record.hops[0]
+    assert hop["hop_kind"] == "user"
+    assert hop["hop_index"] == 0
+    assert hop["l3_confirmed"] == 1  # Quentin
+    assert hop["l3_dismissed"] == 1  # Report
+    assert hop["l3_suppressed"] == 1  # "Please" is a stopword
+    assert hop["l3_provider"] == "omlx"
+    assert hop["l3_duration_ms"] is not None
+
+    serialized = str(record.to_dict())
+    # The confirmed candidate's own text never appears -- only its surrogate token.
+    assert "Quentin" not in serialized
+    assert "Report" not in serialized
+    assert "Please ask" not in serialized  # no raw hop text

@@ -15,6 +15,7 @@ candidate-span text, or a payload diff.
 from __future__ import annotations
 
 from collections import deque
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Callable
@@ -34,7 +35,14 @@ def _utc_now_iso() -> str:
 
 @dataclass(frozen=True)
 class ProcessingTraceRecord:
-    """One scrubbed, exchange-level processing-trace record (ADR-0035)."""
+    """One scrubbed, exchange-level processing-trace record (ADR-0035).
+
+    ``hops`` (issue #153, per-hop expansion) carries one already-scrubbed dict per
+    hop (see :meth:`~blindfold.engine.HopDetail.to_dict`) -- counts, timings, and
+    surrogate tokens only, never a real value, candidate-span text, or raw hop
+    text. ``l3_provider``/``l3_duration_ms`` are the exchange-level rollup the
+    collapsed row's L3 column reads: ``None`` when no hop actually ran L3.
+    """
 
     ts: str
     workspace: str
@@ -44,6 +52,9 @@ class ProcessingTraceRecord:
     detected: int
     duration_ms: float
     reason: str | None = None
+    hops: tuple[dict, ...] = ()
+    l3_provider: str | None = None
+    l3_duration_ms: float | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -55,6 +66,9 @@ class ProcessingTraceRecord:
             "detected": self.detected,
             "duration_ms": self.duration_ms,
             "reason": self.reason,
+            "hops": list(self.hops),
+            "l3_provider": self.l3_provider,
+            "l3_duration_ms": self.l3_duration_ms,
         }
 
 
@@ -82,6 +96,9 @@ class ProcessingTraceBuffer:
         detected: int,
         duration_ms: float,
         reason: str | None = None,
+        hops: Sequence[dict] = (),
+        l3_provider: str | None = None,
+        l3_duration_ms: float | None = None,
     ) -> None:
         self._entries.append(
             ProcessingTraceRecord(
@@ -93,6 +110,9 @@ class ProcessingTraceBuffer:
                 detected=detected,
                 duration_ms=duration_ms,
                 reason=reason,
+                hops=tuple(hops),
+                l3_provider=l3_provider,
+                l3_duration_ms=l3_duration_ms,
             )
         )
 
