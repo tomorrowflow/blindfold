@@ -188,12 +188,42 @@ def test_refuse_if_gliner_model_missing_blocks_a_nonexistent_file(tmp_path):
         refuse_if_gliner_model_missing(settings)
 
 
-def test_refuse_if_gliner_model_missing_allows_a_readable_file(tmp_path):
+def test_refuse_if_gliner_model_missing_blocks_a_single_file_path(tmp_path):
+    # Issue #150's path-shape check: the canonical model shape is a *directory*
+    # (resolve_gliner_model_path/provision_gliner_model/is_already_provisioned all
+    # agree), so a lone file at the configured path is the wrong shape and must
+    # still fail closed, not be accepted as "readable".
     model_path = tmp_path / "gliner-pii-edge-v1.0.onnx"
     model_path.write_bytes(b"stub-onnx-bytes")
     settings = Settings(l3_provider="gliner", l3_gliner_model_path=str(model_path))
 
+    with pytest.raises(GlinerModelMissingError):
+        refuse_if_gliner_model_missing(settings)
+
+
+def test_refuse_if_gliner_model_missing_allows_a_provisioned_model_directory(tmp_path):
+    # Issue #150: resolve_gliner_model_path/provision_gliner_model/is_already_
+    # provisioned all agree the model lives at a *directory*
+    # (<data_dir>/models/gliner-pii-edge-v1.0/), not a single file -- the guard
+    # must accept that shape too, or a Setup-provisioned model still refuses to
+    # start (the bug this issue reports).
+    model_dir = tmp_path / "gliner-pii-edge-v1.0"
+    model_dir.mkdir()
+    (model_dir / "gliner_config.json").write_text("{}")
+    settings = Settings(l3_provider="gliner", l3_gliner_model_path=str(model_dir))
+
     refuse_if_gliner_model_missing(settings)
+
+
+def test_refuse_if_gliner_model_missing_blocks_an_empty_provisioned_directory(tmp_path):
+    # A directory that exists but holds no model files is not "provisioned" --
+    # mirrors is_already_provisioned's own any(path.iterdir()) check.
+    model_dir = tmp_path / "gliner-pii-edge-v1.0"
+    model_dir.mkdir()
+    settings = Settings(l3_provider="gliner", l3_gliner_model_path=str(model_dir))
+
+    with pytest.raises(GlinerModelMissingError):
+        refuse_if_gliner_model_missing(settings)
 
 
 def test_refuse_if_gliner_model_missing_is_a_noop_for_the_ollama_provider():

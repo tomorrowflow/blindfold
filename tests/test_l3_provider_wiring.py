@@ -69,12 +69,23 @@ def test_build_l3_adjudicator_stays_unconfigured_when_omlx_has_no_model():
     assert isinstance(adjudicator, _UnconfiguredAdjudicator)
 
 
-def test_build_l3_adjudicator_wires_gliner_cascade_with_ollama_inner_by_default():
+def _make_provisioned_model_dir(tmp_path):
+    # Issue #150: the canonical GLiNER model shape is a *directory*
+    # (resolve_gliner_model_path/provision_gliner_model/is_already_provisioned all
+    # agree), so wiring tests need a real provisioned directory, not a bare string.
+    model_dir = tmp_path / "gliner-pii-edge-v1.0"
+    model_dir.mkdir()
+    (model_dir / "gliner_config.json").write_text("{}")
+    return str(model_dir)
+
+
+def test_build_l3_adjudicator_wires_gliner_cascade_with_ollama_inner_by_default(tmp_path):
     # ADR-0033 §2 / issue #139: BLINDFOLD_L3_PROVIDER=gliner activates the cascade;
     # the inner LLM defaults to ollama (BLINDFOLD_L3_INNER_PROVIDER unset).
+    model_path = _make_provisioned_model_dir(tmp_path)
     settings = Settings(
         l3_provider="gliner",
-        l3_gliner_model_path="/models/gliner-pii-edge-v1.0.onnx",
+        l3_gliner_model_path=model_path,
         l3_model="llama3.1",
         l3_base_url="http://localhost:11434",
     )
@@ -83,16 +94,16 @@ def test_build_l3_adjudicator_wires_gliner_cascade_with_ollama_inner_by_default(
 
     assert isinstance(adjudicator, GlinerCascadeAdjudicator)
     assert isinstance(adjudicator._classifier, GlinerOnnxClassifier)
-    assert adjudicator._classifier._model_path == "/models/gliner-pii-edge-v1.0.onnx"
+    assert adjudicator._classifier._model_path == model_path
     assert isinstance(adjudicator._inner, OllamaAdjudicator)
 
 
-def test_build_l3_adjudicator_wires_gliner_cascade_with_omlx_inner():
+def test_build_l3_adjudicator_wires_gliner_cascade_with_omlx_inner(tmp_path):
     # BLINDFOLD_L3_INNER_PROVIDER selects the inner client when the cascade is active
     # (BLINDFOLD_L3_PROVIDER itself now names the cascade, not the inner client).
     settings = Settings(
         l3_provider="gliner",
-        l3_gliner_model_path="/models/gliner-pii-edge-v1.0.onnx",
+        l3_gliner_model_path=_make_provisioned_model_dir(tmp_path),
         l3_inner_provider="omlx",
         l3_model="qwen2.5-7b-mlx",
         l3_base_url="http://localhost:8080",
@@ -110,6 +121,39 @@ def test_build_l3_adjudicator_gliner_stays_unconfigured_with_no_model_path():
     adjudicator = _build_l3_adjudicator(settings)
 
     assert isinstance(adjudicator, _UnconfiguredAdjudicator)
+
+
+def test_build_l3_adjudicator_gliner_stays_unconfigured_when_path_resolved_but_not_provisioned(
+    tmp_path,
+):
+    # Issue #150: get_settings() now resolves l3_gliner_model_path from the Data
+    # directory even when nothing has been provisioned there yet -- a non-empty path
+    # must not be mistaken for "configured". Fail-closed (ADR-0009) requires an
+    # existence/provisioned check, not just a truthiness check on the path string.
+    settings = Settings(
+        l3_provider="gliner", l3_gliner_model_path=str(tmp_path / "gliner-pii-edge-v1.0")
+    )
+
+    adjudicator = _build_l3_adjudicator(settings)
+
+    assert isinstance(adjudicator, _UnconfiguredAdjudicator)
+
+
+def test_build_l3_adjudicator_wires_gliner_cascade_for_a_provisioned_model_directory(tmp_path):
+    # The positive counterpart: a genuinely provisioned model directory (matching
+    # provision_gliner_model's own on-disk shape) must activate the cascade.
+    model_path = _make_provisioned_model_dir(tmp_path)
+    settings = Settings(
+        l3_provider="gliner",
+        l3_gliner_model_path=model_path,
+        l3_model="llama3.1",
+        l3_base_url="http://localhost:11434",
+    )
+
+    adjudicator = _build_l3_adjudicator(settings)
+
+    assert isinstance(adjudicator, GlinerCascadeAdjudicator)
+    assert adjudicator._classifier._model_path == model_path
 
 
 def test_build_l3_detector_threads_the_dismissal_log_path(tmp_path):
@@ -174,28 +218,39 @@ def test_default_l3_probe_threads_the_api_key_into_ping_omlx(monkeypatch):
     assert captured == {"base_url": "http://localhost:8080", "api_key": "sk-omlx-secret"}
 
 
-def test_default_l3_probe_reports_healthy_for_a_readable_gliner_model_file(monkeypatch, tmp_path):
-    # ADR-0033 §2, issue #139: a fast local file-readable check, no model load.
-    model_path = tmp_path / "gliner-pii-edge-v1.0.onnx"
-    model_path.write_bytes(b"stub-onnx-bytes")
+def test_default_l3_probe_reports_healthy_for_a_provisioned_gliner_model_directory(
+    monkeypatch, tmp_path
+):
+    # ADR-0033 §2 / ADR-0034 §3, issue #139 / #150: a fast local provisioned-
+    # directory check, no model load -- and matches the directory shape
+    # provision_gliner_model/is_already_provisioned actually use.
+    model_path = _make_provisioned_model_dir(tmp_path)
     monkeypatch.setenv("BLINDFOLD_L3_PROVIDER", "gliner")
-    monkeypatch.setenv("BLINDFOLD_L3_GLINER_MODEL_PATH", str(model_path))
+    monkeypatch.setenv("BLINDFOLD_L3_GLINER_MODEL_PATH", model_path)
 
     health = _default_l3_probe()
 
     assert health.healthy is True
 
 
-def test_default_l3_probe_reports_unhealthy_for_a_missing_gliner_model_file(monkeypatch, tmp_path):
+def test_default_l3_probe_reports_unhealthy_for_a_missing_gliner_model_directory(
+    monkeypatch, tmp_path
+):
     monkeypatch.setenv("BLINDFOLD_L3_PROVIDER", "gliner")
-    monkeypatch.setenv("BLINDFOLD_L3_GLINER_MODEL_PATH", str(tmp_path / "missing.onnx"))
+    monkeypatch.setenv("BLINDFOLD_L3_GLINER_MODEL_PATH", str(tmp_path / "missing"))
 
     health = _default_l3_probe()
 
     assert health.healthy is False
 
 
-def test_default_l3_probe_reports_unhealthy_for_an_unconfigured_gliner_model_path(monkeypatch):
+def test_default_l3_probe_reports_unhealthy_for_an_unconfigured_gliner_model_path(
+    monkeypatch, tmp_path
+):
+    # BLINDFOLD_DATA_DIR pinned to an empty tmp_path so the Data-dir fallback
+    # (issue #150) resolves to a real-but-unprovisioned path, not whatever happens
+    # to be on the machine actually running this test.
+    monkeypatch.setenv("BLINDFOLD_DATA_DIR", str(tmp_path))
     monkeypatch.setenv("BLINDFOLD_L3_PROVIDER", "gliner")
     monkeypatch.setenv("BLINDFOLD_L3_GLINER_MODEL_PATH", "")
 

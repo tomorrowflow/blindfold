@@ -77,3 +77,38 @@ def test_persisted_gliner_flag_is_not_honored_on_the_ephemeral_in_memory_default
     monkeypatch.setattr(config, "_read_persisted_l3_gliner_activation", _fail_if_called)
 
     assert get_settings().l3_provider == DEFAULT_L3_PROVIDER
+
+
+def test_restart_to_activate_end_to_end_finds_the_setup_provisioned_model(
+    monkeypatch, tmp_path
+):
+    """Issue #150's own acceptance criterion, driven end to end through the real
+    seams a restart actually exercises: persisted activation flag set (ADR-0034 §1/
+    §2, issue #145) + a Setup-provisioned model under the Data directory (issue
+    #146), with neither BLINDFOLD_L3_PROVIDER nor BLINDFOLD_L3_GLINER_MODEL_PATH set
+    -- get_settings() must resolve l3_provider="gliner" *and* a l3_gliner_model_path
+    that actually points at the provisioned model, so _build_l3_adjudicator
+    (app.py) returns a real GlinerCascadeAdjudicator, not the fail-closed
+    _UnconfiguredAdjudicator this issue reports.
+    """
+    from blindfold.app import _build_l3_adjudicator, _UnconfiguredAdjudicator
+    from blindfold.l3_gliner import GlinerCascadeAdjudicator
+
+    model_dir = tmp_path / "data" / "models" / "gliner-pii-edge-v1.0"
+    model_dir.mkdir(parents=True)
+    (model_dir / "gliner_config.json").write_text("{}")
+
+    monkeypatch.delenv("BLINDFOLD_L3_PROVIDER", raising=False)
+    monkeypatch.delenv("BLINDFOLD_L3_GLINER_MODEL_PATH", raising=False)
+    monkeypatch.setenv("BLINDFOLD_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("BLINDFOLD_DATABASE_URL", "postgresql://user:pass@localhost/blindfold")
+    monkeypatch.setattr(config, "_read_persisted_l3_gliner_activation", lambda database_url: True)
+
+    settings = get_settings()
+    assert settings.l3_provider == "gliner"
+    assert settings.l3_gliner_model_path == str(model_dir)
+
+    adjudicator = _build_l3_adjudicator(settings)
+
+    assert isinstance(adjudicator, GlinerCascadeAdjudicator)
+    assert not isinstance(adjudicator, _UnconfiguredAdjudicator)

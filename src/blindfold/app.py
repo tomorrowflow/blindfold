@@ -80,7 +80,6 @@ import json
 import logging
 from collections.abc import AsyncIterator, Callable
 from datetime import datetime
-from pathlib import Path
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
@@ -89,7 +88,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from .allowlist_seed import load_seeded_allowlist_tokens
 from .bootstrap import bootstrap_from_vendored_seed
-from .config import Settings, get_settings
+from .config import Settings, get_settings, raw_l3_gliner_model_path_override
 from .entity_graph import (
     CrossKindMergeError,
     EntityGraph,
@@ -130,6 +129,7 @@ from .l3 import (
 from .gliner_provisioning import (
     GlinerDigestMismatchError,
     GlinerHubClient,
+    is_already_provisioned,
     provision_gliner_model,
 )
 from .l3_gliner import GlinerCascadeAdjudicator, GlinerExtraMissingError, GlinerOnnxClassifier
@@ -193,12 +193,19 @@ def _build_l3_adjudicator(settings: Settings) -> L3Adjudicator:
     ``BLINDFOLD_L3_PROVIDER=gliner`` (ADR-0033 §2, issue #139) activates the GLiNER
     cascade instead: a :class:`~blindfold.l3_gliner.GlinerCascadeAdjudicator` wrapping
     the same inner-LLM adjudicator this function would otherwise return directly (see
-    :func:`_build_inner_l3_adjudicator`). An empty ``l3_gliner_model_path`` falls back
-    to ``_UnconfiguredAdjudicator`` too, mirroring the empty-``l3_model`` fallback —
-    GLiNER unconfigured is exactly as fail-closed as the plain LLM path unconfigured.
+    :func:`_build_inner_l3_adjudicator`). ``settings.l3_gliner_model_path`` is always
+    Data-dir-resolved (issue #150, ``get_settings()``), so an empty/unreachable path
+    is no longer the only "unconfigured" signal -- a resolved path with nothing
+    actually provisioned there falls back to ``_UnconfiguredAdjudicator`` too, checked
+    the same way (:func:`~blindfold.gliner_provisioning.is_already_provisioned`) the
+    startup guard and the detection/settings status view do, so all three never
+    disagree on the same on-disk state. GLiNER unconfigured/unprovisioned is exactly
+    as fail-closed as the plain LLM path unconfigured.
     """
     if settings.l3_provider == "gliner":
-        if not settings.l3_gliner_model_path:
+        if not settings.l3_gliner_model_path or not is_already_provisioned(
+            settings.l3_gliner_model_path
+        ):
             return _UnconfiguredAdjudicator()
         return GlinerCascadeAdjudicator(
             classifier=GlinerOnnxClassifier(settings.l3_gliner_model_path),
@@ -316,11 +323,16 @@ _upstream_health = RecentFailureHealth(unhealthy_window_seconds=_UPSTREAM_UNHEAL
 def _default_l3_probe() -> DependencyHealth:
     settings = get_settings()
     if settings.l3_provider == "gliner":
-        # ADR-0033 §2, issue #139: a fast local file-readable check, not a live ping
-        # -- GLiNER has no network client to probe, and loading the ONNX model on
-        # every /v1/status poll (~5s cadence) would be far too expensive.
-        if not settings.l3_gliner_model_path or not Path(settings.l3_gliner_model_path).is_file():
-            return DependencyHealth(healthy=False, detail="gliner model file not found")
+        # ADR-0033 §2 / ADR-0034 §3, issue #139 / #150: a fast local provisioned-
+        # directory check, not a live ping -- GLiNER has no network client to probe,
+        # and loading the ONNX model on every /v1/status poll (~5s cadence) would be
+        # far too expensive. Same shape check as the startup guard and the
+        # detection/settings status view (is_already_provisioned), so none of the
+        # three ever disagree on the same on-disk state.
+        if not settings.l3_gliner_model_path or not is_already_provisioned(
+            settings.l3_gliner_model_path
+        ):
+            return DependencyHealth(healthy=False, detail="gliner model not provisioned")
         return DependencyHealth(healthy=True)
     if not settings.l3_model:
         return DependencyHealth(healthy=False, detail="no L3 adjudicator configured")
@@ -1576,7 +1588,6 @@ async def provision_gliner(
     slug: str,
     request: Request,
     rbac: RbacRegistry = Depends(get_rbac),
-    settings: Settings = Depends(get_settings),
     data_dir: str = Depends(get_data_dir),
     hub_client: GlinerHubClient = Depends(get_gliner_hub_client),
     activation_store: "PostgresActivationSettingsStore | None" = Depends(
@@ -1617,10 +1628,16 @@ async def provision_gliner(
         )
 
     try:
+        # The raw override, not `settings.l3_gliner_model_path` (issue #150: that
+        # field is now Data-dir-resolved for the startup guard/adjudicator builder,
+        # via `resolve_data_dir()` against the real env). This endpoint owns its own
+        # data-dir resolution seam (`data_dir`, above) so tests never touch the real
+        # OS data dir; feeding it the already-resolved settings field would silently
+        # bypass that seam and provision against the real default instead.
         result = await run_in_threadpool(
             provision_gliner_model,
             data_dir,
-            settings.l3_gliner_model_path,
+            raw_l3_gliner_model_path_override(),
             hub_client,
         )
     except GlinerExtraMissingError as exc:

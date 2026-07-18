@@ -16,7 +16,6 @@ from __future__ import annotations
 import ipaddress
 import logging
 import os
-from pathlib import Path
 from typing import Callable
 from urllib.parse import urlparse
 
@@ -24,6 +23,7 @@ import uvicorn
 
 from .config import DEFAULT_HOST, DEFAULT_PORT, Settings, get_settings
 from .entity_graph import EntityGraph
+from .gliner_provisioning import is_already_provisioned
 from .ollama import is_cloud_model
 from .transit import TransitClient
 
@@ -61,15 +61,20 @@ class OmlxLoopbackRequiredError(RuntimeError):
 
 
 class GlinerModelMissingError(RuntimeError):
-    """Raised when ``BLINDFOLD_L3_PROVIDER=gliner`` is configured with no readable
-    GLiNER model file (ADR-0033 §2, issue #139).
+    """Raised when ``BLINDFOLD_L3_PROVIDER=gliner`` is configured with no provisioned
+    GLiNER model directory (ADR-0033 §2 / ADR-0034 §3, issue #139 / #150).
 
-    GLiNER's local-only invariant is a readable on-disk model path, not a network
+    GLiNER's local-only invariant is a provisioned on-disk model path, not a network
     reachability check (unlike Ollama's ``:cloud``-tag / oMLX's loopback-base-url
     checks) -- there is no network client behind the GLiNER classifier at all
-    (l3_gliner.py). Failing at startup rather than mid-request keeps the failure mode
-    identical to the other local-only guards: an actionable error before the ASGI
-    server accepts traffic, not a per-candidate runtime surprise.
+    (l3_gliner.py). The model is a *directory*
+    (``<data_dir>/models/gliner-pii-edge-v1.0/``, per ``resolve_gliner_model_path`` /
+    ``provision_gliner_model``, ADR-0034 §3-§5), not a single file -- checked the same
+    way ``is_already_provisioned`` and the detection/settings status view
+    (``gliner_status.py``) do, so this guard and that view never disagree on the same
+    on-disk state (issue #150). Failing at startup rather than mid-request keeps the
+    failure mode identical to the other local-only guards: an actionable error before
+    the ASGI server accepts traffic, not a per-candidate runtime surprise.
     """
 
 
@@ -181,23 +186,29 @@ def refuse_if_omlx_non_loopback(settings: Settings | None = None) -> None:
 
 def refuse_if_gliner_model_missing(settings: Settings | None = None) -> None:
     """Fail fast (ADR-0033 §2) if ``BLINDFOLD_L3_PROVIDER=gliner`` names an empty or
-    unreadable GLiNER model path.
+    unprovisioned GLiNER model path.
 
-    No-op for every other ``l3_provider`` value. Like the other local-only guards,
-    there is no opt-in flag: an unreadable model path here would otherwise surface as
-    a runtime ``_UnconfiguredAdjudicator`` fail-closed 503 per candidate mid-request
-    (:func:`~blindfold.app._build_l3_adjudicator`) rather than a clear error before the
-    process starts accepting traffic.
+    No-op for every other ``l3_provider`` value. ``settings.l3_gliner_model_path`` is
+    already Data-dir-resolved by :func:`~blindfold.config.get_settings` (issue #150) --
+    this only checks that a model is actually *provisioned* there
+    (:func:`~blindfold.gliner_provisioning.is_already_provisioned`, the same
+    directory-shape check ``provision_gliner_model`` and the detection/settings status
+    view use), not merely that the path string is non-empty. Like the other
+    local-only guards, there is no opt-in flag: an unprovisioned model path here
+    would otherwise surface as a runtime ``_UnconfiguredAdjudicator`` fail-closed 503
+    per candidate mid-request (:func:`~blindfold.app._build_l3_adjudicator`) rather
+    than a clear error before the process starts accepting traffic.
     """
     settings = settings or get_settings()
     if settings.l3_provider != "gliner":
         return
     path = settings.l3_gliner_model_path
-    if not path or not Path(path).is_file():
+    if not path or not is_already_provisioned(path):
         raise GlinerModelMissingError(
-            f"refusing to start: BLINDFOLD_L3_PROVIDER=gliner requires a readable "
-            f"BLINDFOLD_L3_GLINER_MODEL_PATH (got {path!r}); configure it to point at "
-            "a local GLiNER ONNX model file."
+            f"refusing to start: BLINDFOLD_L3_PROVIDER=gliner requires a provisioned "
+            f"GLiNER model directory (got {path!r}); run Setup's \"Enhanced local "
+            "detection\" opt-in, or point BLINDFOLD_L3_GLINER_MODEL_PATH at a local "
+            "GLiNER model directory."
         )
 
 

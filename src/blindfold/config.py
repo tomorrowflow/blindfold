@@ -62,10 +62,18 @@ L3 adjudicator (ADR-0022 / ADR-0031 / issue #57, #121, #122):
                              curate the seeded allowlist (ADR-0032, issue #133). A
                              file path; empty (default) means off -- no file created
                              or written, no behavior change from today.
-  BLINDFOLD_L3_GLINER_MODEL_PATH — path to a local GLiNER ONNX model file
-                             (ADR-0033 §2, issue #139). `BLINDFOLD_L3_PROVIDER=gliner`
-                             activates the GLiNER cascade adjudicator using this
-                             model; empty (default) means GLiNER is unconfigured.
+  BLINDFOLD_L3_GLINER_MODEL_PATH — the low-level override / air-gapped escape hatch
+                             naming a local GLiNER model *directory* (ADR-0033 §2 /
+                             ADR-0034 §3, issue #139 / #150). `BLINDFOLD_L3_PROVIDER=
+                             gliner` activates the GLiNER cascade adjudicator using
+                             this model. Empty (default) does *not* mean
+                             unconfigured: `get_settings()` falls back to the
+                             Data-dir default (`resolve_gliner_model_path`,
+                             `<data_dir>/models/gliner-pii-edge-v1.0/`) so a model
+                             provisioned via Setup's opt-in (issue #146) is found
+                             without hand-setting this var (issue #150) -- set it
+                             explicitly only to point at a different/air-gapped
+                             model directory.
   BLINDFOLD_L3_INNER_PROVIDER — which client (`ollama` or `omlx`) the GLiNER
                              cascade's inner LLM adjudicator uses (ADR-0033 §2,
                              issue #139). Only consulted when
@@ -94,9 +102,13 @@ Data directory (ADR-0034 §3, issue #143):
   BLINDFOLD_DATA_DIR       — install-global on-disk location for large local assets
                              (e.g. the GLiNER cascade model), distinct from the
                              store. Default: the OS app-data convention (see
-                             `resolve_data_dir`). Not yet read by any code path in
-                             this slice -- provisioning that consumes it (Setup's
-                             GLiNER download) is a separate slice (ADR-0034 §1).
+                             `resolve_data_dir`). Read by `get_settings()` to
+                             resolve the effective `l3_gliner_model_path` (issue
+                             #150) -- the startup guard (`serve.py`) and the L3
+                             adjudicator builder (`app.py`) both see the resolved
+                             value, so a Setup-provisioned model (issue #146)
+                             activates on restart without hand-setting
+                             `BLINDFOLD_L3_GLINER_MODEL_PATH`.
 """
 
 from __future__ import annotations
@@ -106,6 +118,8 @@ import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+
+from .gliner_provisioning import resolve_gliner_model_path
 
 DEFAULT_UPSTREAM_BASE_URL = "https://api.anthropic.com"
 DEFAULT_OPENBAO_ADDR = "http://localhost:8200"
@@ -203,6 +217,21 @@ def resolve_data_dir() -> str:
     return str(Path(xdg_data_home) / "blindfold")
 
 
+def raw_l3_gliner_model_path_override() -> str:
+    """The raw ``BLINDFOLD_L3_GLINER_MODEL_PATH`` override, unresolved against the
+    Data directory (ADR-0034 §3, issue #150).
+
+    ``Settings.l3_gliner_model_path`` (via :func:`get_settings`) already carries
+    the Data-dir-resolved effective path, for consumers (the startup guard, the
+    adjudicator builder) that just want "where the model is." A caller that owns
+    its *own* data-dir resolution seam -- the interactive provisioning endpoint,
+    which accepts an injected ``data_dir`` so tests never touch the real OS
+    data dir -- needs the override alone, or it would double-apply Data-dir
+    resolution against the real (untestable) default and bypass its own seam.
+    """
+    return os.environ.get("BLINDFOLD_L3_GLINER_MODEL_PATH", "")
+
+
 def get_settings() -> Settings:
     database_url = os.environ.get("BLINDFOLD_DATABASE_URL", "")
     l3_provider_env = os.environ.get("BLINDFOLD_L3_PROVIDER")
@@ -233,7 +262,9 @@ def get_settings() -> Settings:
         l3_provider=l3_provider,
         l3_api_key=os.environ.get("BLINDFOLD_L3_API_KEY", ""),
         l3_dismissal_log=os.environ.get("BLINDFOLD_L3_DISMISSAL_LOG", ""),
-        l3_gliner_model_path=os.environ.get("BLINDFOLD_L3_GLINER_MODEL_PATH", ""),
+        l3_gliner_model_path=resolve_gliner_model_path(
+            resolve_data_dir(), os.environ.get("BLINDFOLD_L3_GLINER_MODEL_PATH", "")
+        ),
         l3_inner_provider=os.environ.get("BLINDFOLD_L3_INNER_PROVIDER", DEFAULT_L3_PROVIDER),
         l3_batch_size=int(
             os.environ.get("BLINDFOLD_L3_BATCH_SIZE", DEFAULT_L3_BATCH_SIZE)

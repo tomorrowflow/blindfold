@@ -199,3 +199,34 @@ def test_settings_database_url_is_read_from_env(monkeypatch):
     monkeypatch.setenv("BLINDFOLD_L3_PROVIDER", DEFAULT_L3_PROVIDER)
     monkeypatch.setenv("BLINDFOLD_DATABASE_URL", "postgresql://user:pass@localhost/blindfold")
     assert get_settings().database_url == "postgresql://user:pass@localhost/blindfold"
+
+
+def test_settings_gliner_model_path_resolves_from_data_dir_when_env_unset(
+    monkeypatch, tmp_path
+):
+    # Issue #150: BLINDFOLD_L3_GLINER_MODEL_PATH unset must not mean "unconfigured"
+    # forever -- Setup's opt-in (ADR-0034 §1, issue #146) provisions the model under
+    # the Data directory (resolve_data_dir), and get_settings() must resolve it there
+    # the same way gliner_status.py's status view already does, or the startup guard
+    # and adjudicator builder never find the Setup-provisioned model.
+    monkeypatch.setenv("BLINDFOLD_DATA_DIR", str(tmp_path))
+    monkeypatch.delenv("BLINDFOLD_L3_GLINER_MODEL_PATH", raising=False)
+
+    settings = get_settings()
+
+    assert settings.l3_gliner_model_path == str(
+        tmp_path / "models" / "gliner-pii-edge-v1.0"
+    )
+
+
+def test_settings_gliner_model_path_env_override_still_wins_over_data_dir(
+    monkeypatch, tmp_path
+):
+    # ADR-0034 §3: BLINDFOLD_L3_GLINER_MODEL_PATH remains the low-level override /
+    # air-gapped escape hatch -- it must take precedence over the Data-dir default.
+    monkeypatch.setenv("BLINDFOLD_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("BLINDFOLD_L3_GLINER_MODEL_PATH", "/air-gapped/gliner-model")
+
+    settings = get_settings()
+
+    assert settings.l3_gliner_model_path == "/air-gapped/gliner-model"
