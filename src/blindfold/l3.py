@@ -115,12 +115,18 @@ class CandidateSpan:
     The ``context`` field is what L3 actually sees — a window of characters around
     the span, not the full payload. Keeping the window small is what decouples L3
     latency from payload size (ADR-0003).
+
+    ``context_offset`` is the start index of this exact occurrence of ``text``
+    within ``context`` (ADR-0035, issue #155) — derived from the span's own
+    ``start``/``end`` position, not a text search, so it points at the correct
+    occurrence even when ``text`` repeats or is inflected elsewhere in the window.
     """
 
     text: str
     start: int
     end: int
     context: str
+    context_offset: int = 0
 
 
 @dataclass(frozen=True)
@@ -245,9 +251,15 @@ def select_candidate_spans(
         if _is_positional_case_noise(token, text, capitalized_positions):
             continue
         start, end = match.start(), match.end()
-        context = _context_window(text, start, end)
+        context, context_offset = _context_window(text, start, end)
         candidates.append(
-            CandidateSpan(text=token, start=start, end=end, context=context)
+            CandidateSpan(
+                text=token,
+                start=start,
+                end=end,
+                context=context,
+                context_offset=context_offset,
+            )
         )
     return candidates
 
@@ -293,10 +305,10 @@ def _known_surfaces(entities: list[Entity]) -> frozenset[str]:
     return frozenset(surfaces)
 
 
-def _context_window(text: str, start: int, end: int) -> str:
+def _context_window(text: str, start: int, end: int) -> tuple[str, int]:
     left = max(0, start - _CONTEXT_WINDOW)
     right = min(len(text), end + _CONTEXT_WINDOW)
-    return text[left:right]
+    return text[left:right], start - left
 
 
 def count_capitalized_tokens(text: str) -> int:

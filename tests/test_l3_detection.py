@@ -79,6 +79,28 @@ def test_l3_invoked_only_on_candidate_spans_with_minimal_context():
         assert len(call.context) < len(text)
 
 
+def test_context_offset_locates_the_correct_occurrence_when_the_token_repeats():
+    # ADR-0035 (issue #155): the review inbox highlights the candidate span in
+    # place within its context window. That requires the offset to be derived
+    # from the candidate's own positional span, not a fragile text search --
+    # a search would always land on the first occurrence, which is wrong when
+    # the same token repeats in the context window.
+    text = "Please tell Klaus that Klaus will call back tomorrow for review notes."
+
+    candidates = select_candidate_spans(text, known_entities=[])
+
+    klaus_candidates = [c for c in candidates if c.text == "Klaus"]
+    assert len(klaus_candidates) == 2
+    first, second = klaus_candidates
+    for candidate in (first, second):
+        offset = candidate.context_offset
+        assert candidate.context[offset : offset + len(candidate.text)] == "Klaus"
+    # Proof it's the *correct* occurrence, not just the first match: the text
+    # immediately preceding each highlighted span differs between the two.
+    assert first.context[: first.context_offset].endswith("tell ")
+    assert second.context[: second.context_offset].endswith("that ")
+
+
 def test_l3_does_not_re_flag_entities_already_covered_by_l2():
     # ADR-0003: L3 adjudicates the *leftovers* — tokens the entity-graph dictionary
     # didn't already match. A token whose surface is a canonical or variation of a

@@ -522,7 +522,10 @@ def _blindfold_text(
             ):
                 continue
             item = inbox.upsert(
-                candidate.text, candidate.context, known_values=mapping.real_values()
+                candidate.text,
+                candidate.context,
+                known_values=mapping.real_values(),
+                context_offset=candidate.context_offset,
             )
             spans.append(
                 (hit, hit + len(candidate.text), item.provisional_surrogate, candidate.text)

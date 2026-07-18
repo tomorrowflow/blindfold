@@ -1275,6 +1275,7 @@ async def list_review_inbox(
                 "real": item.real,
                 "provisional_surrogate": item.provisional_surrogate,
                 "context": item.context,
+                "context_offset": item.context_offset,
             }
             for item in inbox.list()
         ]

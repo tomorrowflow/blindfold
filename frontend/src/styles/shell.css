@@ -2263,6 +2263,14 @@ body {
   font-size: 0.875rem;
 }
 
+.bf-review-inbox-item-highlight {
+  background: var(--bf-border-soft);
+  border: 1px solid var(--bf-border);
+  border-radius: 4px;
+  padding: 0 2px;
+  color: inherit;
+}
+
 .bf-review-inbox-item-actions {
   display: flex;
   gap: 8px;

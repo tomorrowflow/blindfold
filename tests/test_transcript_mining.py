@@ -73,6 +73,33 @@ class _StubAdjudicator:
         return L3Adjudication(is_entity=False)
 
 
+def test_mined_proposal_context_offset_is_the_candidate_spans_own_position():
+    # ADR-0035 decision 11 (issue #155): mining reuses the same L3 candidate-span
+    # seam the live request path uses, so it must thread context_offset through
+    # the same way -- not a naive text search, which mis-highlights when the
+    # real value is a substring of an unrelated, longer token earlier in the
+    # window ("Klausenburg" contains "Klaus").
+    mapping = _seeded_mapping()
+    inbox = ReviewInbox()
+    allowlist = Allowlist()
+    adjudicator = _StubAdjudicator(confirm={"Klaus"})
+    detector = L3Detector(adjudicator, allowlist=allowlist)
+
+    transcripts = [
+        "We visited Klausenburg last year. Please brief Klaus tomorrow about the trip.",
+    ]
+
+    mine_transcripts(transcripts, detector, mapping, inbox)
+
+    item = inbox.list()[0]
+    assert item.real == "Klaus"
+    offset = item.context_offset
+    assert item.context[offset : offset + len("Klaus")] == "Klaus"
+    naive_offset = item.context.find("Klaus")
+    assert naive_offset != offset
+    assert item.context[naive_offset : naive_offset + len("Klausenburg")] == "Klausenburg"
+
+
 def test_mining_a_transcript_proposes_novel_entities_to_review_inbox():
     # AC1: a mining job scans historical transcripts and proposes candidate
     # entities into the review inbox. Novel = NOT in the entity-graph seed.
