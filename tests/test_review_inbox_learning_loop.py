@@ -42,10 +42,12 @@ from blindfold.app import (
     get_allowlist,
     get_l3_detector,
     get_mapping,
+    get_rbac,
     get_review_inbox,
     get_upstream_client,
 )
 from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
+from blindfold.rbac import RbacRegistry
 from blindfold.review import Allowlist, ReviewInbox
 from blindfold.store import vendored_seed_repository
 from blindfold.surrogates import SurrogateMapping
@@ -168,6 +170,9 @@ async def test_review_inbox_api_lists_provisional_candidates():
         "stop_reason": "end_turn",
     }
     recorded: list[httpx.Request] = []
+    rbac = RbacRegistry()
+    rbac.grant("alice", "ws-a", "viewer")
+
     app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(
         scripted_response, recorded
     )
@@ -175,6 +180,7 @@ async def test_review_inbox_api_lists_provisional_candidates():
     app.dependency_overrides[get_review_inbox] = lambda: inbox
     app.dependency_overrides[get_allowlist] = lambda: allowlist
     app.dependency_overrides[get_l3_detector] = lambda: detector
+    app.dependency_overrides[get_rbac] = lambda: rbac
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
@@ -189,7 +195,11 @@ async def test_review_inbox_api_lists_provisional_candidates():
                     ],
                 },
             )
-            listed = await client.get("/v1/management/review-inbox")
+            listed = await client.get(
+                "/v1/management/review-inbox",
+                params={"workspace": "ws-a"},
+                headers={"x-blindfold-identity": "alice"},
+            )
     finally:
         app.dependency_overrides.clear()
 

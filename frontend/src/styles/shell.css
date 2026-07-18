@@ -613,7 +613,8 @@ body {
   gap: 12px;
 }
 
-.bf-audit-log-locked {
+.bf-audit-log-locked,
+.bf-review-inbox-locked {
   display: flex;
   align-items: center;
   gap: 10px;

@@ -25,8 +25,10 @@ from blindfold.app import (
     app,
     get_allowlist,
     get_mapping,
+    get_rbac,
     get_review_inbox,
 )
+from blindfold.rbac import RbacRegistry
 from blindfold.review import Allowlist, ReviewInbox
 from blindfold.store import vendored_seed_repository
 from blindfold.surrogates import SurrogateMapping
@@ -34,6 +36,16 @@ from blindfold.surrogates import SurrogateMapping
 
 def _seeded_mapping() -> SurrogateMapping:
     return SurrogateMapping.from_pairs(vendored_seed_repository().seeded_pairs())
+
+
+_VIEWER_HEADERS = {"x-blindfold-identity": "alice"}
+_VIEWER_PARAMS = {"workspace": "ws-a"}
+
+
+def _viewer_rbac() -> RbacRegistry:
+    rbac = RbacRegistry()
+    rbac.grant("alice", "ws-a", "viewer")
+    return rbac
 
 
 @pytest.mark.anyio
@@ -51,12 +63,19 @@ async def test_post_action_removes_item_from_subsequent_list_so_ui_can_reactivel
     app.dependency_overrides[get_review_inbox] = lambda: inbox
     app.dependency_overrides[get_mapping] = lambda: mapping
     app.dependency_overrides[get_allowlist] = lambda: allowlist
+    app.dependency_overrides[get_rbac] = _viewer_rbac
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
             transport=transport, base_url="http://proxy.test"
         ) as client:
-            listed = (await client.get("/v1/management/review-inbox")).json()["items"]
+            listed = (
+                await client.get(
+                    "/v1/management/review-inbox",
+                    params=_VIEWER_PARAMS,
+                    headers=_VIEWER_HEADERS,
+                )
+            ).json()["items"]
             assert {item["real"] for item in listed} == {"Klaus", "Yasmin"}
 
             # Reactive remove on confirm.
@@ -66,7 +85,11 @@ async def test_post_action_removes_item_from_subsequent_list_so_ui_can_reactivel
             )
             assert confirmed.status_code == 200
             after_confirm = (
-                await client.get("/v1/management/review-inbox")
+                await client.get(
+                    "/v1/management/review-inbox",
+                    params=_VIEWER_PARAMS,
+                    headers=_VIEWER_HEADERS,
+                )
             ).json()["items"]
             assert {item["real"] for item in after_confirm} == {"Yasmin"}
 
@@ -77,7 +100,11 @@ async def test_post_action_removes_item_from_subsequent_list_so_ui_can_reactivel
             )
             assert rejected.status_code == 200
             after_reject = (
-                await client.get("/v1/management/review-inbox")
+                await client.get(
+                    "/v1/management/review-inbox",
+                    params=_VIEWER_PARAMS,
+                    headers=_VIEWER_HEADERS,
+                )
             ).json()["items"]
             assert after_reject == []
     finally:
