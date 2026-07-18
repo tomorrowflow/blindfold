@@ -16,31 +16,39 @@
 
 import { useEffect, useState } from "react";
 import { useReviewInboxPending } from "../components/ReviewInboxContext";
-import { Check, CheckCircle2 } from "../components/icons";
+import { useWorkspace } from "../components/WorkspaceContext";
+import { Check, CheckCircle2, Lock } from "../components/icons";
+import { fetchReviewInbox, type ReviewItem } from "../lib/reviewInboxApi";
 
-const LIST_URL = "/v1/management/review-inbox";
 const CONFIRM_URL = (id: string) => `/v1/management/review-inbox/${encodeURIComponent(id)}/confirm`;
 const REJECT_URL = (id: string) => `/v1/management/review-inbox/${encodeURIComponent(id)}/reject`;
 
-type ReviewItem = {
-  id: string;
-  real: string;
-  provisional_surrogate: string;
-  context: string;
-};
-
 export function ReviewInbox() {
+  const { activeWorkspace } = useWorkspace();
+  const workspace = activeWorkspace?.slug ?? null;
+
   const [items, setItems] = useState<ReviewItem[] | null>(null);
+  const [locked, setLocked] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { refreshPending } = useReviewInboxPending();
 
   useEffect(() => {
+    if (!workspace) {
+      setItems([]);
+      return;
+    }
     let cancelled = false;
-    fetch(LIST_URL)
-      .then((r) => r.json())
-      .then((data: { items: ReviewItem[] }) => {
-        if (!cancelled) setItems(data.items ?? []);
+    setLocked(false);
+    fetchReviewInbox(workspace)
+      .then((result) => {
+        if (cancelled) return;
+        if (result.locked) {
+          setLocked(true);
+          setItems([]);
+        } else {
+          setItems(result.items);
+        }
       })
       .catch(() => {
         if (!cancelled) setItems([]);
@@ -48,7 +56,7 @@ export function ReviewInbox() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [workspace]);
 
   async function triage(item: ReviewItem, url: string) {
     setBusyId(item.id);
@@ -73,8 +81,14 @@ export function ReviewInbox() {
         discard the candidate.
       </p>
       {error && <p className="bf-review-inbox-error">{error}</p>}
-      {items === null && <p className="bf-review-inbox-loading">Loading…</p>}
-      {items !== null && items.length === 0 && (
+      {items === null && !locked && <p className="bf-review-inbox-loading">Loading…</p>}
+      {locked && (
+        <div className="bf-review-inbox-locked" data-testid="review-inbox-locked">
+          <Lock size={20} />
+          <span>You need the viewer role to see the review inbox for this workspace.</span>
+        </div>
+      )}
+      {items !== null && !locked && items.length === 0 && (
         <div className="bf-review-inbox-empty" data-testid="review-inbox-empty">
           <span className="bf-review-inbox-empty-badge" data-testid="review-inbox-empty-badge">
             <CheckCircle2 size={28} aria-hidden="true" />
@@ -83,7 +97,7 @@ export function ReviewInbox() {
           <p>Every provisional candidate has been reviewed.</p>
         </div>
       )}
-      {items !== null && items.length > 0 && (
+      {items !== null && !locked && items.length > 0 && (
         <ul className="bf-review-inbox-list">
           {items.map((item) => (
             <li key={item.id} className="bf-review-inbox-item" data-testid="review-inbox-item">

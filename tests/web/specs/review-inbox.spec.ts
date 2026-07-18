@@ -4,31 +4,37 @@ import { test, expect } from "./fixtures";
 // embedded Vue page (`/ui/review-inbox`, retired) into the unified shell at `/ui/inbox`,
 // restyled to the token set. The sidebar's Review inbox nav item carries a lime
 // pending-count badge fed by the same `review_inbox.pending` count `/v1/status`
-// exposes (issue #92) — confirm/reject behavior itself is unchanged (ported from the
-// legacy page's tests, `tests/test_review_inbox_spa.py` / `test_review_inbox_learning_loop.py`).
+// exposes (issue #92, deliberately NOT workspace-gated) — confirm/reject behavior
+// itself is unchanged (ported from the legacy page's tests,
+// `tests/test_review_inbox_spa.py` / `test_review_inbox_learning_loop.py`).
+//
+// GET /v1/management/review-inbox is now `viewer`-gated (ADR-0035, issue #152) —
+// same gate as the audit log view (audit-log-shell.spec.ts) — so the list/triage
+// specs below run as `alicePage` (holds `viewer` on WORKSPACE per serve_fixture.py);
+// a separate describe block below covers the locked treatment for a caller without it.
 //
 // Fixture seeds two provisional candidates (serve_fixture.py): "Klaus Bergmann" and
 // "Nordwind Systems".
 
-test.describe("review inbox", () => {
-  test("sidebar shows the pending-count badge matching /v1/status", async ({ page }) => {
-    await page.goto("/ui/");
-    await expect(page.getByTestId("review-inbox-badge")).toHaveText("2");
+test.describe("review inbox — alice (holds viewer)", () => {
+  test("sidebar shows the pending-count badge matching /v1/status", async ({ alicePage }) => {
+    await alicePage.goto("/ui/");
+    await expect(alicePage.getByTestId("review-inbox-badge")).toHaveText("2");
   });
 
   test("header carries the comp subtitle and constrains content to an 820px centered column", async ({
-    page,
+    alicePage,
   }) => {
-    await page.goto("/ui/inbox");
-    await expect(page.getByRole("heading", { name: "Review inbox" })).toBeVisible();
-    await expect(page.getByText(
+    await alicePage.goto("/ui/inbox");
+    await expect(alicePage.getByRole("heading", { name: "Review inbox" })).toBeVisible();
+    await expect(alicePage.getByText(
       "Provisional surrogates detected in traffic. Confirm to keep, or reject to discard the candidate."
     )).toBeVisible();
 
-    const column = page.getByTestId("review-inbox-page");
+    const column = alicePage.getByTestId("review-inbox-page");
     await expect(column).toHaveCSS("max-width", "820px");
     const columnBox = await column.boundingBox();
-    const mainBox = await page.locator(".bf-main").boundingBox();
+    const mainBox = await alicePage.locator(".bf-main").boundingBox();
     if (!columnBox || !mainBox) throw new Error("missing bounding box");
     const leftGap = columnBox.x - mainBox.x;
     const rightGap = mainBox.x + mainBox.width - (columnBox.x + columnBox.width);
@@ -36,15 +42,15 @@ test.describe("review inbox", () => {
   });
 
   test("inbox lists provisional candidates with real value, mono surrogate, and context", async ({
-    page,
+    alicePage,
   }) => {
-    await page.goto("/ui/inbox");
-    await expect(page.getByRole("heading", { name: "Review inbox" })).toBeVisible();
+    await alicePage.goto("/ui/inbox");
+    await expect(alicePage.getByRole("heading", { name: "Review inbox" })).toBeVisible();
 
-    const items = page.getByTestId("review-inbox-item");
+    const items = alicePage.getByTestId("review-inbox-item");
     await expect(items).toHaveCount(2);
 
-    const klaus = page.getByTestId("review-inbox-item").filter({ hasText: "Klaus Bergmann" });
+    const klaus = alicePage.getByTestId("review-inbox-item").filter({ hasText: "Klaus Bergmann" });
     await expect(klaus).toBeVisible();
     await expect(klaus).toContainText("Please brief Klaus Bergmann on the merger tomorrow.");
 
@@ -61,36 +67,48 @@ test.describe("review inbox", () => {
   });
 
   test("confirming an item removes it from the list and decrements the sidebar badge", async ({
-    page,
+    alicePage,
   }) => {
-    await page.goto("/ui/inbox");
-    const klaus = page.getByTestId("review-inbox-item").filter({ hasText: "Klaus Bergmann" });
+    await alicePage.goto("/ui/inbox");
+    const klaus = alicePage.getByTestId("review-inbox-item").filter({ hasText: "Klaus Bergmann" });
     await klaus.getByRole("button", { name: "Confirm" }).click();
 
-    await expect(page.getByTestId("review-inbox-item")).toHaveCount(1);
-    await expect(page.getByTestId("review-inbox-badge")).toHaveText("1");
+    await expect(alicePage.getByTestId("review-inbox-item")).toHaveCount(1);
+    await expect(alicePage.getByTestId("review-inbox-badge")).toHaveText("1");
   });
 
   test("rejecting the last item shows the empty state and clears the sidebar badge", async ({
-    page,
+    alicePage,
   }) => {
     // Runs after the "confirming an item" test above (shared server, sequential
     // workers) — "Klaus Bergmann" is already triaged, so "Nordwind Systems" is the
     // one remaining item.
-    await page.goto("/ui/inbox");
-    await expect(page.getByTestId("review-inbox-item")).toHaveCount(1);
+    await alicePage.goto("/ui/inbox");
+    await expect(alicePage.getByTestId("review-inbox-item")).toHaveCount(1);
 
-    await page
+    await alicePage
       .getByTestId("review-inbox-item")
       .filter({ hasText: "Nordwind Systems" })
       .getByRole("button", { name: "Reject" })
       .click();
 
-    const empty = page.getByTestId("review-inbox-empty");
+    const empty = alicePage.getByTestId("review-inbox-empty");
     await expect(empty).toBeVisible();
-    await expect(page.getByTestId("review-inbox-empty-badge")).toBeVisible();
+    await expect(alicePage.getByTestId("review-inbox-empty-badge")).toBeVisible();
     await expect(empty.getByRole("heading", { name: "Inbox clear" })).toBeVisible();
     await expect(empty).toContainText("Every provisional candidate has been reviewed.");
-    await expect(page.getByTestId("review-inbox-badge")).toHaveCount(0);
+    await expect(alicePage.getByTestId("review-inbox-badge")).toHaveCount(0);
+  });
+});
+
+test.describe("review inbox — dave (curator only, no viewer)", () => {
+  test("shows the locked state, not an error or the candidates' real values", async ({
+    davePage,
+  }) => {
+    await davePage.goto("/ui/inbox");
+    await expect(davePage.getByTestId("review-inbox-locked")).toContainText(
+      "You need the viewer role"
+    );
+    await expect(davePage.getByTestId("review-inbox-item")).toHaveCount(0);
   });
 });

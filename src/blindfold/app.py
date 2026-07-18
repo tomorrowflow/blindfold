@@ -1133,9 +1133,20 @@ async def chat_completions(
 
 @app.get("/v1/management/review-inbox")
 async def list_review_inbox(
+    request: Request,
+    workspace: str,
+    rbac: RbacRegistry = Depends(get_rbac),
     inbox: ReviewInbox = Depends(get_review_inbox),
 ) -> dict:
-    """List provisional candidates awaiting human review (ADR-0010 / ADR-0011)."""
+    """List provisional candidates awaiting human review (ADR-0010 / ADR-0011).
+
+    Requires the calling identity to hold the ``viewer`` role on ``workspace``
+    (ADR-0035 decision 11): this list renders **real** plaintext (``real`` +
+    surrounding ``context``) for provisional candidates, the same sensitivity
+    class the audit log already ``viewer``-gates (issue #16) -- same gate,
+    same ``workspace`` query-param anchor as :func:`list_audit_events`.
+    """
+    _require_role(request, workspace, "viewer", rbac)
     return {
         "items": [
             {
