@@ -65,7 +65,10 @@ def mine_transcripts(
                 continue
             proposed.append(
                 inbox.upsert(
-                    candidate.text, candidate.context, known_values=mapping.real_values()
+                    candidate.text,
+                    candidate.context,
+                    known_values=mapping.real_values(),
+                    context_offset=candidate.context_offset,
                 )
             )
     return MiningReport(transcripts_scanned=scanned, proposed=proposed)

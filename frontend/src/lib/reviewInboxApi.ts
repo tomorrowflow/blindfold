@@ -7,6 +7,7 @@ export type ReviewItem = {
   real: string;
   provisional_surrogate: string;
   context: string;
+  context_offset: number;
 };
 
 export type ReviewInboxFetchResult = { locked: true } | { locked: false; items: ReviewItem[] };

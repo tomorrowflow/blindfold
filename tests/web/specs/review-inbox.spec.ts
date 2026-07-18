@@ -66,6 +66,32 @@ test.describe("review inbox — alice (holds viewer)", () => {
     );
   });
 
+  test("candidate span is highlighted in place within the context, with a neutral tint", async ({
+    alicePage,
+  }) => {
+    // ADR-0035 decision 11 (issue #155): context_offset (backend-derived) lets
+    // the SPA wrap exactly the candidate span, not the whole context sentence.
+    await alicePage.goto("/ui/inbox");
+
+    const klaus = alicePage.getByTestId("review-inbox-item").filter({ hasText: "Klaus Bergmann" });
+    const highlight = klaus.getByTestId("review-inbox-item-highlight");
+    await expect(highlight).toHaveText("Klaus Bergmann");
+    await expect(klaus.getByTestId("review-inbox-item-context")).toContainText(
+      "Please brief Klaus Bergmann on the merger tomorrow."
+    );
+
+    // Neutral tint: the border-soft/border tokens, never ochre/red/curator-green.
+    const backgroundColor = await highlight.evaluate(
+      (el) => getComputedStyle(el).backgroundColor
+    );
+    const ochre = "rgb(250, 246, 236)"; // --bf-ochre-bg
+    const red = "rgb(179, 38, 30)"; // --bf-red
+    const curatorGreen = "rgb(231, 243, 236)"; // --bf-curator-bg
+    expect(backgroundColor).not.toBe(ochre);
+    expect(backgroundColor).not.toBe(red);
+    expect(backgroundColor).not.toBe(curatorGreen);
+  });
+
   test("confirming an item removes it from the list and decrements the sidebar badge", async ({
     alicePage,
   }) => {

@@ -46,13 +46,17 @@ class ReviewItem:
     ``real`` is the novel token L3 confirmed as an entity; ``provisional_surrogate``
     is the fake that egressed upstream; ``context`` is the small window around
     the candidate (the same window L3 saw — ADR-0003) so the reviewer can decide
-    without re-opening the original transcript.
+    without re-opening the original transcript. ``context_offset`` is the start
+    index of ``real`` inside ``context`` (ADR-0035 decision 11, issue #155) —
+    derived from the candidate span's own position, so the frontend can highlight
+    the correct occurrence in place without a fragile ``indexOf`` search.
     """
 
     id: str
     real: str
     provisional_surrogate: str
     context: str
+    context_offset: int
 
 
 class ReviewInbox:
@@ -80,7 +84,11 @@ class ReviewInbox:
         self._pool_position: int = 0
 
     def upsert(
-        self, real: str, context: str, known_values: Iterable[str] = ()
+        self,
+        real: str,
+        context: str,
+        known_values: Iterable[str] = (),
+        context_offset: int | None = None,
     ) -> ReviewItem:
         """Add (or reuse) a provisional inbox entry for ``real`` and return it.
 
@@ -91,6 +99,13 @@ class ReviewInbox:
         is the closed-world set of known entities' canonical names + Variations
         (the same set the pre-egress leak gate checks); a pool entry that contains
         one as a substring is skipped, never assigned to any item.
+
+        ``context_offset`` (ADR-0035 decision 11, issue #155) should be the
+        candidate span's own position within ``context`` — the real detection
+        call sites (``engine.py``, ``mining.py``) always pass it, derived from
+        ``CandidateSpan.context_offset``. When omitted, it falls back to the
+        first occurrence of ``real`` in ``context`` — only correct for callers
+        (tests, simple fixtures) that don't have a positional span to hand.
         """
         existing_id = self._by_real.get(real)
         if existing_id is not None:
@@ -100,11 +115,14 @@ class ReviewInbox:
         surrogate, self._pool_position = _next_provisional(
             self._pool_position, known_values
         )
+        if context_offset is None:
+            context_offset = max(0, context.find(real))
         item = ReviewItem(
             id=item_id,
             real=real,
             provisional_surrogate=surrogate,
             context=context,
+            context_offset=context_offset,
         )
         self._items[item_id] = item
         self._by_real[real] = item_id

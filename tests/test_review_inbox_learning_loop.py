@@ -146,6 +146,74 @@ async def test_novel_candidate_is_auto_blindfolded_with_provisional_surrogate_an
     assert item.real == novel
     assert item.provisional_surrogate in egressed
     assert item.provisional_surrogate != novel
+    # ADR-0035 decision 11 (issue #155): context_offset is derived from the
+    # candidate span's own position in the mint pass, not a frontend indexOf.
+    offset = item.context_offset
+    assert item.context[offset : offset + len(novel)] == novel
+
+
+@pytest.mark.anyio
+async def test_context_offset_is_the_candidate_spans_own_position_not_a_text_search():
+    # ADR-0035 decision 11 (issue #155): context_offset must come from the
+    # confirmed candidate's own positional span (engine.py's mint pass), not a
+    # naive text search over the context window -- a search is substring-based
+    # and would mis-highlight when the real value occurs as a substring of an
+    # unrelated, longer token earlier in the window ("Klausenburg" contains
+    # "Klaus"). L3 confirms only the standalone "Klaus" token as an entity.
+    mapping = _seeded_mapping()
+    inbox = ReviewInbox()
+    allowlist = Allowlist()
+    adjudicator = _StubAdjudicator(confirm={"Klaus"})
+    detector = L3Detector(adjudicator)
+
+    scripted_response = {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "Acknowledged."}],
+        "model": "claude-3-5-sonnet",
+        "stop_reason": "end_turn",
+    }
+    recorded: list[httpx.Request] = []
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(
+        scripted_response, recorded
+    )
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_review_inbox] = lambda: inbox
+    app.dependency_overrides[get_allowlist] = lambda: allowlist
+    app.dependency_overrides[get_l3_detector] = lambda: detector
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            await client.post(
+                "/v1/messages",
+                json={
+                    "model": "m",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": (
+                                "We visited Klausenburg last year. Please brief "
+                                "Klaus tomorrow about the trip."
+                            ),
+                        }
+                    ],
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    item = inbox.list()[0]
+    assert item.real == "Klaus"
+    offset = item.context_offset
+    assert item.context[offset : offset + len("Klaus")] == "Klaus"
+    # A naive substring search over the context finds "Klaus" inside
+    # "Klausenburg" first -- the wrong occurrence. The real offset must not be it.
+    naive_offset = item.context.find("Klaus")
+    assert naive_offset != offset
+    assert item.context[naive_offset : naive_offset + len("Klausenburg")] == "Klausenburg"
 
 
 @pytest.mark.anyio
@@ -217,6 +285,10 @@ async def test_review_inbox_api_lists_provisional_candidates():
     # The context carries the surrounding window L3 saw — proves it's the
     # candidate-span context (not the full payload), per ADR-0003.
     assert "Yasmin" in entry["context"]
+    # ADR-0035 decision 11 (issue #155): context_offset lets the SPA highlight
+    # the candidate span in place within context, at the correct occurrence.
+    offset = entry["context_offset"]
+    assert entry["context"][offset : offset + len("Yasmin")] == "Yasmin"
 
 
 @pytest.mark.anyio

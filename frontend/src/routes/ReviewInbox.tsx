@@ -13,6 +13,13 @@
 // swatch + kind label on each candidate row is NOT rendered here; inventing a
 // kind would misrepresent data the pipeline never produced. Attaching a real
 // kind signal to ReviewItem is a backend slice, out of this issue's CSS/JSX scope.
+//
+// Candidate-span highlight (ADR-0035 decision 11, issue #155): context_offset
+// is backend-derived from the candidate span's own position, so the context
+// window is sliced (not searched) into before/span/after. The highlight tint
+// is neutral (--bf-border / --bf-border-soft) — not --bf-ochre-* (reserved for
+// audited reveal), not a kind color (kind is unknown for a pending candidate),
+// not red (not a block), not curator-green (would pre-suggest Confirm).
 
 import { useEffect, useState } from "react";
 import { useReviewInboxPending } from "../components/ReviewInboxContext";
@@ -22,6 +29,20 @@ import { fetchReviewInbox, type ReviewItem } from "../lib/reviewInboxApi";
 
 const CONFIRM_URL = (id: string) => `/v1/management/review-inbox/${encodeURIComponent(id)}/confirm`;
 const REJECT_URL = (id: string) => `/v1/management/review-inbox/${encodeURIComponent(id)}/reject`;
+
+function ContextWithHighlight({ item }: { item: ReviewItem }) {
+  const offset = item.context_offset;
+  const end = offset + item.real.length;
+  return (
+    <p className="bf-review-inbox-item-context" data-testid="review-inbox-item-context">
+      {item.context.slice(0, offset)}
+      <mark className="bf-review-inbox-item-highlight" data-testid="review-inbox-item-highlight">
+        {item.context.slice(offset, end)}
+      </mark>
+      {item.context.slice(end)}
+    </p>
+  );
+}
 
 export function ReviewInbox() {
   const { activeWorkspace } = useWorkspace();
@@ -107,7 +128,7 @@ export function ReviewInbox() {
                   → {item.provisional_surrogate}
                 </span>
               </div>
-              <p className="bf-review-inbox-item-context">{item.context}</p>
+              <ContextWithHighlight item={item} />
               <div className="bf-review-inbox-item-actions">
                 <button
                   type="button"
