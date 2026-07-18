@@ -415,11 +415,17 @@ class L3Detector:
           single-candidate path: raise ``L3Unavailable``, block by default
           (ADR-0009). Nothing in this batch has an unresolved verdict slip through.
         - the call succeeds but returns fewer verdicts than candidates (a
-          malformed or short response) — the issue's own contract: treat the
-          *missing* candidates as ``is_entity: true`` (over-redact rather than
-          silently dismiss a candidate nobody actually adjudicated) instead of
-          failing the whole batch. Logged with the candidate count only — never
-          candidate text.
+          malformed or short response) — issue #148 (#142 regression): live
+          testing against a real weak local model showed this is common, not
+          rare, so before over-redacting, retry the missing candidates one at a
+          time through the adjudicator's plain ``adjudicate()`` seam — the same
+          simple, already-reliable prompt/parse path every batch-capable
+          provider (Ollama, oMLX) also implements, predating batching. Only a
+          candidate that *still* has no verdict after that retry (the seam is
+          unavailable, or the retry itself raises) falls back to ``is_entity:
+          true`` (over-redact rather than silently dismiss a candidate nobody
+          actually adjudicated). The warning is logged only for that genuine
+          residual shortfall — never candidate text, count only.
         """
         try:
             decisions = list(self._adjudicator.adjudicate_batch(candidates))
@@ -428,16 +434,50 @@ class L3Detector:
                 f"L3 batch adjudication failed for {len(candidates)} candidates: {exc}"
             ) from exc
         if len(decisions) < len(candidates):
-            missing = len(candidates) - len(decisions)
-            logger.warning(
-                "l3_batch_adjudication_short_response: "
-                "expected=%d received=%d missing=%d",
-                len(candidates),
-                len(decisions),
-                missing,
-            )
-            decisions = decisions + [L3Adjudication(is_entity=True)] * missing
+            missing_candidates = candidates[len(decisions):]
+            recovered, still_missing = self._retry_missing(missing_candidates)
+            decisions = decisions + recovered
+            if still_missing:
+                logger.warning(
+                    "l3_batch_adjudication_short_response: "
+                    "expected=%d received=%d missing=%d",
+                    len(candidates),
+                    len(candidates) - still_missing,
+                    still_missing,
+                )
         return decisions
+
+    def _retry_missing(
+        self, missing_candidates: list[CandidateSpan]
+    ) -> tuple[list[L3Adjudication], int]:
+        """Best-effort per-candidate recovery for a batch shortfall (issue #148),
+        position-preserving: returns exactly ``len(missing_candidates)`` verdicts,
+        in the same order, so the caller's positional mapping back to candidates
+        stays correct regardless of which individual retries succeed.
+
+        Only attempted when the adjudicator also exposes the plain single-
+        candidate seam (duck-typed, mirroring ``BatchL3Adjudicator`` itself) —
+        a batch-only adjudicator has no fallback to retry through, so every
+        missing candidate stays genuinely missing (fail-closed). A retry that
+        itself raises (e.g. the same outage that truncated the batch) also
+        fails closed for just that candidate rather than a fresh
+        ``L3Unavailable`` — one flaky candidate in an otherwise-recovered batch
+        doesn't need to block the whole pass.
+        """
+        if not hasattr(self._adjudicator, "adjudicate"):
+            return (
+                [L3Adjudication(is_entity=True)] * len(missing_candidates),
+                len(missing_candidates),
+            )
+        resolved: list[L3Adjudication] = []
+        still_missing = 0
+        for candidate in missing_candidates:
+            try:
+                resolved.append(self._adjudicator.adjudicate(candidate))
+            except Exception:
+                resolved.append(L3Adjudication(is_entity=True))
+                still_missing += 1
+        return resolved, still_missing
 
     def _maybe_log_progress(self, processed: int, pass_started_at: float) -> None:
         """Log forward progress every ``progress_log_interval`` candidates (issue #134).

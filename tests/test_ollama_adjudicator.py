@@ -16,7 +16,12 @@ import json
 import httpx
 
 from blindfold.l3 import CandidateSpan, L3Adjudication
-from blindfold.ollama import _PROMPT_TEMPLATE, OllamaAdjudicator, is_cloud_model
+from blindfold.ollama import (
+    _PROMPT_TEMPLATE,
+    _build_batch_prompt,
+    OllamaAdjudicator,
+    is_cloud_model,
+)
 
 
 def test_ollama_adjudicator_sends_the_candidate_and_context_and_confirms_an_entity():
@@ -172,6 +177,28 @@ def test_ping_ollama_reports_unhealthy_scrubbed_detail_when_unreachable():
     http = httpx.Client(transport=httpx.MockTransport(handler))
     health = ping_ollama("http://localhost:11434", http=http)
     assert health == DependencyHealth(healthy=False, detail="ollama unreachable")
+
+
+def test_build_batch_prompt_states_the_exact_expected_verdict_count():
+    # Issue #148 (#142 regression): live testing against a real local model
+    # (oMLX gemma-4-e2b-it-4bit) showed received<expected verdicts almost every
+    # batch call -- the root cause is the prompt/format, not the parser (the
+    # parser already round-trips a well-formed N-item array losslessly, see
+    # test_ollama_adjudicator_batch_sends_one_call_for_n_candidates). The prior
+    # prompt only said "exactly one verdict per candidate" without ever stating
+    # the concrete N, leaving a weak model to guess how many items to emit.
+    # Naming N explicitly is the low-risk half of the fix (the other half is
+    # L3Detector's per-candidate retry-recovery for whatever still comes up
+    # short, see test_l3_detection.py).
+    candidates = [
+        CandidateSpan(text="Quentin", start=0, end=7, context="ctx-1"),
+        CandidateSpan(text="Priya", start=0, end=5, context="ctx-2"),
+        CandidateSpan(text="Yasmin", start=0, end=6, context="ctx-3"),
+    ]
+
+    prompt = _build_batch_prompt(candidates)
+
+    assert "exactly 3 verdicts" in prompt
 
 
 def test_ollama_adjudicator_batch_sends_one_call_for_n_candidates():

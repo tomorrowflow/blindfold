@@ -710,6 +710,114 @@ class _ShortResponseBatchAdjudicator:
         return [L3Adjudication(is_entity=False)] * self._verdict_count
 
 
+class _RetryCapableShortResponseBatchAdjudicator:
+    """Stub for the real-world shape (issue #148, #142 regression): a provider
+    that under-returns on the batch call — exactly like a weak local model that
+    ignores the numbered-list instruction — but, unlike
+    ``_ShortResponseBatchAdjudicator``, also implements the plain single-
+    candidate ``adjudicate()`` the same provider classes (Ollama, oMLX) always
+    ship. L3Detector should recover the shortfall through that already-reliable
+    seam instead of immediately over-redacting.
+    """
+
+    def __init__(self, verdict_count: int, single_decisions: dict[str, L3Adjudication]) -> None:
+        self._verdict_count = verdict_count
+        self._single_decisions = single_decisions
+        self.single_calls: list[str] = []
+
+    def adjudicate_batch(
+        self, candidates: list[CandidateSpan]
+    ) -> list[L3Adjudication]:
+        return [L3Adjudication(is_entity=False)] * self._verdict_count
+
+    def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
+        self.single_calls.append(candidate.text)
+        return self._single_decisions[candidate.text]
+
+
+def test_batch_short_response_recovers_missing_verdicts_via_single_candidate_retry(caplog):
+    # Issue #148 (#142 regression): live testing showed batch calls almost always
+    # under-return. Root cause is the prompt/format (see
+    # test_build_batch_prompt_states_the_exact_expected_verdict_count), not the
+    # parser -- but a genuinely short response still needs handling. Rather than
+    # immediately over-redacting every missing candidate, L3Detector retries the
+    # shortfall through the adjudicator's plain single-candidate adjudicate()
+    # seam (the reliable, already-battle-tested path predating batching) before
+    # falling back to the fail-closed pad. A full recovery is not a "genuine"
+    # model shortfall, so no warning fires.
+    text = "We met Klaus, Yasmin, and Priya at the offsite."
+    adjudicator = _RetryCapableShortResponseBatchAdjudicator(
+        verdict_count=2,
+        single_decisions={"Priya": L3Adjudication(is_entity=True)},
+    )
+    detector = L3Detector(adjudicator, batch_size=5)
+
+    with caplog.at_level(logging.WARNING, logger="blindfold.l3"):
+        results = detector.detect(text, known_entities=[])
+
+    by_text = {candidate.text: decision for candidate, decision in results}
+    assert len(by_text) == 3
+    assert by_text["Klaus"].is_entity is False
+    assert by_text["Yasmin"].is_entity is False
+    # Recovered via retry, not the fail-closed pad -- reflects the real verdict.
+    assert by_text["Priya"].is_entity is True
+    assert adjudicator.single_calls == ["Priya"]
+
+    # Fully recovered -- not a "genuine" model shortfall, so no warning.
+    mismatch_records = [
+        r for r in caplog.records if "l3_batch_adjudication_short_response" in r.getMessage()
+    ]
+    assert mismatch_records == []
+
+
+class _RetryFailsBatchAdjudicator:
+    """Stub for the genuine-shortfall case (issue #148): both the batch call AND
+    the single-candidate retry come up short for the same candidate (e.g. the
+    same outage/flake truncated both). This must still fail closed and still
+    warn — the retry is a best-effort recovery, not a second silent-drop risk.
+    """
+
+    def __init__(self, verdict_count: int) -> None:
+        self._verdict_count = verdict_count
+
+    def adjudicate_batch(
+        self, candidates: list[CandidateSpan]
+    ) -> list[L3Adjudication]:
+        return [L3Adjudication(is_entity=False)] * self._verdict_count
+
+    def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
+        raise RuntimeError("local daemon flaked on the retry too")
+
+
+def test_batch_short_response_retry_failure_still_fails_closed_and_warns(caplog):
+    # Issue #148: when the per-candidate retry (test_batch_short_response_
+    # recovers_missing_verdicts_via_single_candidate_retry) is ALSO unable to
+    # resolve a candidate, this is a genuine model/daemon shortfall, not a
+    # transient batch-format hiccup — the existing #142 fail-closed contract
+    # (over-redact, warn with scrubbed counts) still applies unchanged.
+    text = "We met Klaus, Yasmin, and Priya at the offsite."
+    adjudicator = _RetryFailsBatchAdjudicator(verdict_count=2)
+    detector = L3Detector(adjudicator, batch_size=5)
+
+    with caplog.at_level(logging.WARNING, logger="blindfold.l3"):
+        results = detector.detect(text, known_entities=[])
+
+    by_text = {candidate.text: decision for candidate, decision in results}
+    assert len(by_text) == 3
+    assert by_text["Priya"].is_entity is True  # fail-closed: retry also failed
+
+    mismatch_records = [
+        r for r in caplog.records if "l3_batch_adjudication_short_response" in r.getMessage()
+    ]
+    assert len(mismatch_records) == 1
+    message = mismatch_records[0].getMessage()
+    assert "expected=3" in message
+    assert "received=2" in message
+    assert "missing=1" in message
+    for token in ("Klaus", "Yasmin", "Priya"):
+        assert token not in message
+
+
 def test_batch_short_response_treats_missing_candidates_as_is_entity_true(caplog):
     # Issue #142 fail-closed contract: a short/malformed batch response (fewer
     # verdicts than candidates) must NOT silently dismiss the unadjudicated
@@ -790,3 +898,54 @@ def test_batch_adjudication_cuts_round_trips_5x_at_default_batch_size_over_100_c
     assert len(sequential_adjudicator.calls) == 100
     assert len(batch_adjudicator.batch_calls) == 20
     assert len(sequential_adjudicator.calls) == 5 * len(batch_adjudicator.batch_calls)
+
+
+class _PartlyShortRetryCapableBatchAdjudicator:
+    """Records both batch calls and single-candidate retry calls, and under-
+    returns by a fixed amount on every batch — the representative live-traffic
+    shape from issue #148's report (short, but not empty, most batches).
+    """
+
+    def __init__(self, shortfall_per_batch: int) -> None:
+        self._shortfall_per_batch = shortfall_per_batch
+        self.batch_calls: list[int] = []
+        self.single_calls: list[str] = []
+
+    def adjudicate_batch(
+        self, candidates: list[CandidateSpan]
+    ) -> list[L3Adjudication]:
+        self.batch_calls.append(len(candidates))
+        verdict_count = max(0, len(candidates) - self._shortfall_per_batch)
+        return [L3Adjudication(is_entity=False)] * verdict_count
+
+    def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
+        self.single_calls.append(candidate.text)
+        return L3Adjudication(is_entity=False)
+
+
+def test_batch_adjudication_still_cuts_inner_llm_calls_when_batches_under_return():
+    # Issue #148 acceptance criterion: batching must still measurably reduce
+    # inner-LLM call count vs per-candidate even on a representative batch where
+    # most batch calls under-return by a small amount (the live-testing shape) —
+    # the retry-recovery this issue adds (test_batch_short_response_recovers_
+    # missing_verdicts_via_single_candidate_retry) trades one extra call per
+    # missing candidate, not a full per-candidate fallback for the whole batch.
+    nato_words = [
+        "Alfa", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel",
+        "India", "Juliett", "Kilo", "Lima", "Mike", "November", "Oscar", "Papa",
+        "Quebec", "Romeo", "Sierra", "Tango",
+    ]
+    words = [f"{w}-{i}" for i in range(5) for w in nato_words]  # 100 occurrences
+    text = " and ".join(words)
+
+    # Every 5-candidate batch under-returns by 1 (4 of 5), the report's "off by
+    # a little" case -- each shortfall is recovered by exactly one retry call.
+    adjudicator = _PartlyShortRetryCapableBatchAdjudicator(shortfall_per_batch=1)
+    L3Detector(adjudicator, batch_size=5).detect(text, known_entities=[])
+
+    total_calls = len(adjudicator.batch_calls) + len(adjudicator.single_calls)
+    assert len(adjudicator.batch_calls) == 20
+    assert len(adjudicator.single_calls) == 20  # one retry per under-returned batch
+    assert total_calls == 40
+    # Still well under the 100 calls a fully per-candidate pass would cost.
+    assert total_calls < 100

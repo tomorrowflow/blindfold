@@ -77,12 +77,23 @@ _PROMPT_TEMPLATE = (
 # is wrapped in a "verdicts" object (not a bare array) so the same shape works
 # under oMLX's OpenAI-compatible `response_format: json_object`, which requires a
 # top-level JSON object (l3_openai_compat.py imports this template unchanged).
+#
+# Issue #148 (#142 regression): live testing against a real weak local model
+# showed received<expected verdicts on almost every batch call, typically
+# exactly 1 regardless of N — the model wasn't told *how many* verdicts to
+# produce, only "one per candidate," and a weak model reading a numbered list
+# apparently often collapses that into a single overall judgment. Naming the
+# count explicitly, twice (both up front and again at the response-shape
+# instruction), is the low-risk half of the fix; the parser itself already
+# round-trips a well-formed N-item array losslessly, so this is a prompt/format
+# fix, not a parser fix.
 _BATCH_PROMPT_TEMPLATE = (
-    "You are adjudicating whether each flagged span in a numbered list of "
-    "candidates names a real-world entity that must be protected: a SPECIFIC, "
-    "private or sensitive real person, organization/company, or secret project/"
-    "initiative — not merely a capitalized word. Reject a span (is_entity: false) "
-    "if it is either of these:\n"
+    "You are adjudicating {count} flagged spans, listed below as a numbered "
+    "list of candidates. Each span may or may not name a real-world entity that "
+    "must be protected: a SPECIFIC, private or sensitive real person, "
+    "organization/company, or secret project/initiative — not merely a "
+    "capitalized word. Reject a span (is_entity: false) if it is either of "
+    "these:\n"
     "- a common dictionary word that is capitalized only because of its position "
     "in a sentence or heading (e.g. Single, Tools, Lead);\n"
     "- a well-known PUBLIC software, framework, operating system, library, or tool "
@@ -94,8 +105,8 @@ _BATCH_PROMPT_TEMPLATE = (
     "candidate's own context — do not let one candidate's verdict influence "
     "another's. Respond with strict JSON only, of the exact shape "
     '{{"verdicts": [{{"is_entity": true}}, {{"is_entity": false}}, ...]}} — '
-    "exactly one verdict per candidate, in the same order as listed, no other "
-    "text.\n\n"
+    "your \"verdicts\" array MUST contain exactly {count} verdicts, one per "
+    "candidate below, in the same order as listed, no other text.\n\n"
     "{candidates}"
 )
 
@@ -107,7 +118,7 @@ def _build_batch_prompt(candidates: list[CandidateSpan]) -> str:
         _BATCH_CANDIDATE_TEMPLATE.format(index=index, context=c.context, text=c.text)
         for index, c in enumerate(candidates, start=1)
     )
-    return _BATCH_PROMPT_TEMPLATE.format(candidates=listing)
+    return _BATCH_PROMPT_TEMPLATE.format(count=len(candidates), candidates=listing)
 
 
 def _parse_batch_verdicts(content: str) -> list[L3Adjudication]:
