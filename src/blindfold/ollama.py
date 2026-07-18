@@ -127,8 +127,9 @@ def _parse_batch_verdicts(content: str) -> list[L3Adjudication]:
     A short or malformed response is not an error here — it degrades to however
     many well-formed verdicts could be parsed off the front of the array (stopping
     at the first malformed entry, so a later "recovered" entry can't be
-    mis-attributed to an earlier candidate's position). L3Detector pads whatever
-    is missing as ``is_entity: true`` (fail-closed).
+    mis-attributed to an earlier candidate's position). L3Detector then retries
+    whatever is missing one candidate at a time (issue #148) and pads only the
+    genuine residual as ``is_entity: true`` (fail-closed).
     """
     try:
         raw_verdicts = json.loads(content)["verdicts"]
