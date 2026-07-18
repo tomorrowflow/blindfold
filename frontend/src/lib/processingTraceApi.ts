@@ -4,6 +4,19 @@
 
 export type ProcessingTraceOutcome = "passed" | "blocked" | "upstream_error";
 
+// A hop-injected surrogate's reveal lifecycle (ADR-0035, issue #154), classified
+// live at serve time against the review inbox / surrogate mapping -- never a real
+// value. "pending" carries the review item's own id for the inbox deep-link;
+// "confirmed" is reveal-eligible via the existing audited Re-identify path;
+// "rejected" (recognized by neither store -- triaged away) gets no affordance.
+export type ProcessingTraceSurrogateLifecycle = "pending" | "confirmed" | "rejected";
+
+export type ProcessingTraceSurrogate = {
+  token: string;
+  lifecycle: ProcessingTraceSurrogateLifecycle;
+  review_item_id: string | null;
+};
+
 // One hop's scrubbed detection detail (ADR-0035 per-hop expansion, issue #153) --
 // counts, timings, and a hop's own injected surrogate tokens only, never a real
 // value, candidate-span text, or raw hop text.
@@ -19,7 +32,7 @@ export type ProcessingTraceHop = {
   l3_suppressed: number;
   l3_provider: string | null;
   l3_duration_ms: number | null;
-  surrogates: string[];
+  surrogates: ProcessingTraceSurrogate[];
 };
 
 export type ProcessingTraceRecord = {

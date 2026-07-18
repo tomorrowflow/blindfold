@@ -121,6 +121,20 @@ that expands the row inline into one `#fafbfc` card per hop, in pipeline order.
 > #152 — a maintainer should reconcile against an original draft if one exists.
 > This slice is filed under a new decision 12 rather than overwriting decision 8.
 
+### 13. Audited Reveal + Review-inbox deep-link, classified live (issue #154)
+
+A per-hop surrogate token (decision 12) is now enriched, at serve time only, with
+a **reveal lifecycle** — `confirmed` (already re-identifiable; the SPA renders the
+existing audited Reveal control, the same Re-identify path the entity list/graph
+editor already use, not a new endpoint), `pending` (still a provisional candidate
+in the review inbox; the SPA renders a "Pending review" deep-link carrying the
+review item's own id, never the inbox's real `context`), or `rejected` (recognized
+by neither store; no affordance). The classification is computed fresh on every
+`GET /v1/management/processing-trace` call against the review inbox and the
+surrogate mapping — **never captured into the ring buffer itself**, which still
+stores plain surrogate-token strings, so the buffer's own scrub invariant
+(decision 4) is untouched by this slice.
+
 ## Consequences
 
 - The trace is an *operational* surface, not a compliance one — it complements,
@@ -130,4 +144,5 @@ that expands the row inline into one `#fafbfc` card per hop, in pipeline order.
   outcomes that already exist (mint/leak-gate/upstream/resolution-gate).
 - Per-hop detail and the L3 column landed in issue #153, reconciled against this
   same scrubbed-by-construction invariant (a surrogate token, never a real value
-  or candidate-span text). Reveal and deep-links remain future slices.
+  or candidate-span text). Reveal and deep-links landed in issue #154 (decision
+  13), reusing the existing audited Re-identify path rather than a new endpoint.

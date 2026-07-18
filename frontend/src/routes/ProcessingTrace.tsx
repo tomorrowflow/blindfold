@@ -7,12 +7,15 @@
 // deep-links remain out of scope for this slice.
 
 import { Fragment, useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { Lock, CheckCircle2, AlertTriangle, CloudOff, ChevronDown } from "../components/icons";
+import { RevealButton } from "../components/RevealButton";
 import { useWorkspace } from "../components/WorkspaceContext";
 import {
   fetchProcessingTrace,
   type ProcessingTraceHop,
   type ProcessingTraceRecord,
+  type ProcessingTraceSurrogate,
 } from "../lib/processingTraceApi";
 
 const POLL_INTERVAL_MS = 2000;
@@ -46,11 +49,64 @@ function formatL1Counts(counts: Record<string, number>): string {
   return entries.map(([kind, count]) => `${kind} ${count}`).join(", ");
 }
 
+// One hop-injected surrogate's chip (issue #154, ADR-0035): degrades with the
+// surrogate's own reveal lifecycle -- "confirmed" reuses the existing audited
+// Reveal control (Re-identify path the audit log/entity list already use, not a
+// new endpoint); "pending" is still a provisional candidate awaiting triage, so
+// it renders a deep-link into the Review inbox instead (never the inbox's own
+// real `context`); "rejected" (recognized by neither store) gets no affordance
+// at all, just the bare token.
+function HopSurrogateChip({
+  surrogate,
+  workspace,
+  canReveal,
+}: {
+  surrogate: ProcessingTraceSurrogate;
+  workspace: string;
+  canReveal: boolean;
+}) {
+  if (surrogate.lifecycle === "confirmed") {
+    return (
+      <span className="bf-merge-card-chip bf-trace-hop-surrogate-chip">
+        {surrogate.token}
+        <RevealButton workspace={workspace} surrogate={surrogate.token} canReveal={canReveal} compact />
+      </span>
+    );
+  }
+  if (surrogate.lifecycle === "pending") {
+    return (
+      <span className="bf-merge-card-chip bf-trace-hop-surrogate-chip">
+        {surrogate.token}
+        <Link
+          to="/inbox"
+          className="bf-trace-pending-review-link"
+          data-testid="processing-trace-pending-review-link"
+        >
+          Pending review →
+        </Link>
+      </span>
+    );
+  }
+  return (
+    <span className="bf-merge-card-chip" data-testid="processing-trace-rejected-surrogate-chip">
+      {surrogate.token}
+    </span>
+  );
+}
+
 // One hop's scrubbed detail card (ADR-0035 per-hop expansion, issue #153): L1/L2/L3
-// + suppression counts, L1/L2 timings, and this hop's own injected-surrogate chips
-// (display only -- reveal lands in a follow-up slice). Never a real value,
+// + suppression counts, L1/L2 timings, and this hop's own injected-surrogate chips,
+// each degrading by reveal lifecycle (issue #154). Never a real value,
 // candidate-span text, or raw hop text -- the API only ever sends scrubbed fields.
-function HopCard({ hop }: { hop: ProcessingTraceHop }) {
+function HopCard({
+  hop,
+  workspace,
+  canReveal,
+}: {
+  hop: ProcessingTraceHop;
+  workspace: string;
+  canReveal: boolean;
+}) {
   return (
     <div className="bf-trace-hop-card" data-testid="processing-trace-hop-card">
       <div className="bf-trace-hop-card-header">
@@ -81,9 +137,12 @@ function HopCard({ hop }: { hop: ProcessingTraceHop }) {
       {hop.surrogates.length > 0 && (
         <div className="bf-trace-hop-card-surrogates">
           {hop.surrogates.map((surrogate, i) => (
-            <span key={i} className="bf-merge-card-chip">
-              {surrogate}
-            </span>
+            <HopSurrogateChip
+              key={i}
+              surrogate={surrogate}
+              workspace={workspace}
+              canReveal={canReveal}
+            />
           ))}
         </div>
       )}
@@ -94,6 +153,9 @@ function HopCard({ hop }: { hop: ProcessingTraceHop }) {
 export function ProcessingTrace() {
   const { activeWorkspace } = useWorkspace();
   const workspace = activeWorkspace?.slug ?? null;
+  // Same role check EntityList/GraphEditor already use to gate RevealButton
+  // (ADR-0015): re-identifier on the active workspace, not viewer.
+  const canReveal = activeWorkspace?.roles.includes("re-identifier") ?? false;
 
   const [records, setRecords] = useState<ProcessingTraceRecord[]>([]);
   const [locked, setLocked] = useState(false);
@@ -305,7 +367,12 @@ export function ProcessingTrace() {
                             data-testid="processing-trace-hop-cards"
                           >
                             {row.hops.map((hop) => (
-                              <HopCard key={hop.hop_index} hop={hop} />
+                              <HopCard
+                                key={hop.hop_index}
+                                hop={hop}
+                                workspace={workspace!}
+                                canReveal={canReveal}
+                              />
                             ))}
                             {hopCount === 0 && (
                               <p className="bf-empty">No hop detail for this exchange.</p>

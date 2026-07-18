@@ -1,9 +1,20 @@
-import { test, expect } from "./fixtures";
+import { test, expect, auditEventsFor } from "./fixtures";
 
 // Processing trace view (ADR-0035, issue #151): a live follow-along view of what
 // the proxy did per request, GET /v1/management/processing-trace, viewer-gated +
 // workspace-scoped the same way the audit log is (#16). serve_fixture.py seeds one
 // Passed, one Blocked, and one Upstream-error record for the "acme" workspace.
+//
+// Issue #154 (audited Reveal + Review-inbox deep-link): the seeded "passed"
+// record's hop-0 carries two surrogates exercising two of the three reveal
+// lifecycles -- "Berta Vogel" (confirmed: seeded into the trace's own
+// SurrogateMapping + reidentify store) and "Igor Talvik" (rejected: recognized
+// by neither store). Hop-1 carries the review inbox's own first provisional
+// surrogate (pending: still awaiting triage).
+const TRACE_HOP_SURROGATE = "Berta Vogel";
+const TRACE_HOP_REAL = "Klaus Weber";
+const TRACE_HOP_REJECTED_SURROGATE = "Igor Talvik";
+const TRACE_HOP_PENDING_SURROGATE = "Alex Brenner"; // review inbox's first provisional pool entry
 
 test.describe("Processing trace — alice (holds viewer)", () => {
   test("renders header, subtitle and the five-column grid", async ({ alicePage }) => {
@@ -77,12 +88,72 @@ test.describe("Processing trace — alice (holds viewer)", () => {
     // The user hop's L3 breakdown (1 confirmed, 1 dismissed, 2 suppressed) and its
     // injected-surrogate chips render -- scrubbed tokens only, never a real value.
     await expect(cards.nth(1)).toContainText("1 confirmed, 1 dismissed, 2 suppressed");
-    await expect(cards.nth(1)).toContainText("Tobias Lehmann");
+    await expect(cards.nth(1)).toContainText(TRACE_HOP_PENDING_SURROGATE);
 
     // Collapsing hides the cards again without losing the seeded rows.
     await hopsToggle.click();
     await expect(alicePage.getByTestId("processing-trace-hop-card")).toHaveCount(0);
     await expect(alicePage.getByTestId("processing-trace-row")).toHaveCount(3);
+  });
+
+  test("a confirmed surrogate exposes the audited Reveal control, revealing logs an audit event", async ({
+    alicePage,
+    baseURL,
+  }) => {
+    // Issue #154: reuses the existing Re-identify path (not a new endpoint) --
+    // same reveal-btn/reveal-confirm/reveal-value affordance as the entity list.
+    await alicePage.goto("/ui/processing-trace");
+    await alicePage
+      .getByTestId("processing-trace-row-hops-toggle")
+      .filter({ hasText: "2" })
+      .click();
+    const systemCard = alicePage.getByTestId("processing-trace-hop-card").first();
+    const chip = systemCard.locator(".bf-trace-hop-surrogate-chip", {
+      hasText: TRACE_HOP_SURROGATE,
+    });
+    await chip.getByTestId("reveal-btn").click();
+    await chip.getByTestId("reveal-confirm").click();
+    await expect(chip.getByTestId("reveal-value")).toHaveText(`real: ${TRACE_HOP_REAL}`);
+
+    const reveals = await auditEventsFor(baseURL!, "re-identified", "alice");
+    expect(reveals.some((r) => r.reason.includes(TRACE_HOP_SURROGATE))).toBe(true);
+  });
+
+  test("a pending novel candidate renders a Review-inbox deep-link instead of Reveal", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto("/ui/processing-trace");
+    await alicePage
+      .getByTestId("processing-trace-row-hops-toggle")
+      .filter({ hasText: "2" })
+      .click();
+    const userCard = alicePage.getByTestId("processing-trace-hop-card").nth(1);
+    const chip = userCard.locator(".bf-trace-hop-surrogate-chip", {
+      hasText: TRACE_HOP_PENDING_SURROGATE,
+    });
+    await expect(chip.getByTestId("reveal-btn")).toHaveCount(0);
+    const link = chip.getByTestId("processing-trace-pending-review-link");
+    await expect(link).toHaveText("Pending review →");
+    await link.click();
+    await expect(alicePage).toHaveURL(/\/ui\/inbox$/);
+    await expect(alicePage.getByTestId("review-inbox-page")).toBeVisible();
+  });
+
+  test("a surrogate recognized by neither store renders no reveal affordance", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto("/ui/processing-trace");
+    await alicePage
+      .getByTestId("processing-trace-row-hops-toggle")
+      .filter({ hasText: "2" })
+      .click();
+    const systemCard = alicePage.getByTestId("processing-trace-hop-card").first();
+    const chip = alicePage
+      .getByTestId("processing-trace-rejected-surrogate-chip")
+      .filter({ hasText: TRACE_HOP_REJECTED_SURROGATE });
+    await expect(chip).toBeVisible();
+    await expect(systemCard.getByTestId("reveal-btn")).toHaveCount(1); // only the confirmed chip's
+    await expect(chip.getByTestId("processing-trace-pending-review-link")).toHaveCount(0);
   });
 });
 

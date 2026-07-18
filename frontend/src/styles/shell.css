@@ -819,6 +819,25 @@ body {
   gap: 4px;
 }
 
+/* Reveal-lifecycle surrogate chip (issue #154, ADR-0035): the bare
+   .bf-merge-card-chip token plus its own inline Reveal control or
+   Review-inbox deep-link. */
+.bf-trace-hop-surrogate-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Deliberately --bf-ink underlined, not --bf-ochre (reserved for audited
+   reveal) and not a kind color (kind is unknown for a pending candidate) --
+   same reasoning ReviewInbox.tsx's own candidate-span highlight documents. */
+.bf-trace-pending-review-link {
+  color: var(--bf-ink);
+  text-decoration: underline;
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
 /* -----------------------------------------------------------------------
    Toast outlet (issue #95)
    ----------------------------------------------------------------------- */

@@ -46,6 +46,7 @@ from blindfold.app import (
     get_gliner_hub_client,
     get_gliner_provisioning_tracker,
     get_l3_health_probe,
+    get_mapping,
     get_processing_trace,
     get_rbac,
     get_reidentify_store,
@@ -65,6 +66,8 @@ from blindfold.reidentify import InMemoryReIdentificationStore
 from blindfold.relationships import RelationshipStore
 from blindfold.review import Allowlist, ReviewInbox
 from blindfold.status import DependencyHealth
+from blindfold.store import vendored_seed_repository
+from blindfold.surrogates import SurrogateMapping
 from blindfold.transit import TransitClient
 
 HOST = "127.0.0.1"
@@ -123,6 +126,14 @@ REVIEW_ITEM_CONTEXT_ONE = "Please brief Klaus Bergmann on the merger tomorrow."
 REVIEW_ITEM_REAL_TWO = "Nordwind Systems"
 REVIEW_ITEM_CONTEXT_TWO = "Nordwind Systems signed the new contract yesterday."
 
+# Processing trace's own "confirmed" surrogate chip (issue #154, ADR-0035): a
+# hop-injected surrogate that's already a re-identifiable known entity, distinct
+# from every entity-list/graph-editor fixture entity above so trace-view reveal
+# specs never collide with theirs.
+TRACE_HOP_REAL = "Klaus Weber"
+TRACE_HOP_SURROGATE = "Berta Vogel"
+CIPHERTEXT_TRACE_HOP = "vault:v1:enc:klaus-weber"
+
 
 def _stub_transit() -> TransitClient:
     """A TransitClient whose decrypt() resolves the fixture's pre-seeded real
@@ -139,6 +150,7 @@ def _stub_transit() -> TransitClient:
         CIPHERTEXT_ORG2: REAL_ORG2,
         CIPHERTEXT_PERSON3: REAL_PERSON3,
         CIPHERTEXT_ORG3: REAL_ORG3,
+        CIPHERTEXT_TRACE_HOP: TRACE_HOP_REAL,
     }
     minted_counter = [0]
 
@@ -365,19 +377,38 @@ def build_app():
             (ORG2_SURROGATE, WORKSPACE): CIPHERTEXT_ORG2,
             (PERSON3_SURROGATE, WORKSPACE): CIPHERTEXT_PERSON3,
             (ORG3_SURROGATE, WORKSPACE): CIPHERTEXT_ORG3,
+            (TRACE_HOP_SURROGATE, WORKSPACE): CIPHERTEXT_TRACE_HOP,
         }
     )
     transit = _stub_transit()
 
     review_inbox = ReviewInbox()
-    review_inbox.upsert(REVIEW_ITEM_REAL_ONE, context=REVIEW_ITEM_CONTEXT_ONE)
+    review_item_one = review_inbox.upsert(REVIEW_ITEM_REAL_ONE, context=REVIEW_ITEM_CONTEXT_ONE)
     review_inbox.upsert(REVIEW_ITEM_REAL_TWO, context=REVIEW_ITEM_CONTEXT_TWO)
     allowlist = Allowlist()
+
+    # Processing trace's own surrogate-mapping (issue #154, ADR-0035): the exact
+    # same seeded pairs the module-global `_mapping` singleton starts from, plus
+    # two additive seeds so the trace's own fixture surrogates (TRACE_HOP_SURROGATE,
+    # the email PII surrogate below) classify as reveal-eligible ("confirmed") --
+    # never a fresh, unseeded mapping, so rename/merge/confirm specs elsewhere
+    # keep seeing the identical default entity set.
+    processing_trace_mapping = SurrogateMapping.from_pairs(
+        vendored_seed_repository().seeded_pairs()
+    )
+    processing_trace_mapping.seed(TRACE_HOP_REAL, TRACE_HOP_SURROGATE)
+    processing_trace_mapping.seed("ops@bramblewick.example", "notice@bramblewick.invalid")
 
     # Seeded processing-trace records (ADR-0035, issue #151) for the Processing
     # trace view's outcome-first grid -- one of each of the 3 outcome buckets. The
     # "passed" record also carries per-hop detail (issue #153) so the inline
-    # expansion + L3 column have something to render in the fixture.
+    # expansion + L3 column have something to render in the fixture. Its
+    # surrogates (issue #154) exercise all three reveal lifecycles:
+    # TRACE_HOP_SURROGATE and the email surrogate are seeded into
+    # processing_trace_mapping above ("confirmed" -> Reveal control);
+    # review_item_one's own provisional surrogate is still sitting in
+    # review_inbox ("pending" -> Review-inbox deep-link); "Igor Talvik" is
+    # recognized by neither store ("rejected" -> no affordance).
     processing_trace = ProcessingTraceBuffer()
     processing_trace.record(
         workspace=WORKSPACE, endpoint="messages", streamed=False,
@@ -395,7 +426,7 @@ def build_app():
                 "l3_suppressed": 0,
                 "l3_provider": None,
                 "l3_duration_ms": None,
-                "surrogates": ["Berta Vogel"],
+                "surrogates": [TRACE_HOP_SURROGATE, "Igor Talvik"],
             },
             {
                 "hop_index": 1,
@@ -409,7 +440,7 @@ def build_app():
                 "l3_suppressed": 2,
                 "l3_provider": "ollama",
                 "l3_duration_ms": 42.0,
-                "surrogates": ["notice@bramblewick.invalid", "Tobias Lehmann"],
+                "surrogates": ["notice@bramblewick.invalid", review_item_one.provisional_surrogate],
             },
         ],
         l3_provider="ollama",
@@ -435,6 +466,7 @@ def build_app():
     app.dependency_overrides[get_review_inbox] = lambda: review_inbox
     app.dependency_overrides[get_allowlist] = lambda: allowlist
     app.dependency_overrides[get_processing_trace] = lambda: processing_trace
+    app.dependency_overrides[get_mapping] = lambda: processing_trace_mapping
 
     if FORCE_DEPENDENCIES_HEALTHY:
         # See build_app()'s identical override for why upstream is excluded.

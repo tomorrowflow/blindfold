@@ -1628,12 +1628,45 @@ async def list_audit_events(
     return {"events": events}
 
 
+def _hop_surrogate_lifecycle(
+    surrogates: list[str], inbox: ReviewInbox, mapping: SurrogateMapping
+) -> list[dict]:
+    """Classify each hop-injected surrogate's reveal lifecycle (ADR-0035, issue #154).
+
+    Computed live at serve time (never captured into the ring buffer — the buffer
+    itself still stores plain surrogate-token strings, untouched by this slice):
+
+    - ``pending`` — still a provisional candidate awaiting triage in the review
+      inbox -> the SPA renders a "Pending review" deep-link (``review_item_id``),
+      never the inbox's own real plaintext.
+    - ``confirmed`` — already a re-identifiable known entity (seeded or L1/L2
+      minted) -> the SPA renders the existing audited Reveal control.
+    - ``rejected`` — recognized by neither store (triaged away) -> no affordance.
+    """
+    pending_by_surrogate = {item.provisional_surrogate: item.id for item in inbox.list()}
+    classified = []
+    for token in surrogates:
+        review_item_id = pending_by_surrogate.get(token)
+        if review_item_id is not None:
+            lifecycle = "pending"
+        elif mapping.is_known_surrogate(token):
+            lifecycle = "confirmed"
+        else:
+            lifecycle = "rejected"
+        classified.append(
+            {"token": token, "lifecycle": lifecycle, "review_item_id": review_item_id}
+        )
+    return classified
+
+
 @app.get("/v1/management/processing-trace")
 async def list_processing_trace(
     request: Request,
     workspace: str,
     rbac: RbacRegistry = Depends(get_rbac),
     trace: ProcessingTraceBuffer = Depends(get_processing_trace),
+    inbox: ReviewInbox = Depends(get_review_inbox),
+    mapping: SurrogateMapping = Depends(get_mapping),
 ) -> dict:
     """List recent processing-trace records scoped to a workspace (ADR-0035).
 
@@ -1641,9 +1674,22 @@ async def list_processing_trace(
     a live follow-along view of proxy activity is real-space-adjacent (detection
     counts, outcomes, timings) even though each record is scrubbed by construction
     (never a real value, raw hop text, candidate-span text, or a payload diff).
+
+    Each hop's ``surrogates`` list (issue #153) is enriched here with a reveal
+    *lifecycle* (issue #154, ADR-0035) classified live against the review inbox
+    and the surrogate mapping — see :func:`_hop_surrogate_lifecycle`.
     """
     _require_role(request, workspace, "viewer", rbac)
     records = [r.to_dict() for r in trace.recent() if r.workspace == workspace]
+    for record in records:
+        # Each hop dict here is the same object the ring buffer stores (to_dict()
+        # only copies the outer list, not each hop) -- build a new dict rather
+        # than mutating hop["surrogates"] in place, so this endpoint stays
+        # idempotent across the live view's repeated polls against one buffer.
+        record["hops"] = [
+            {**hop, "surrogates": _hop_surrogate_lifecycle(hop["surrogates"], inbox, mapping)}
+            for hop in record["hops"]
+        ]
     return {"records": records}
 
 
