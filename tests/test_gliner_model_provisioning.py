@@ -20,6 +20,7 @@ from blindfold.gliner_provisioning import (
     GLINER_REPO_REVISION,
     GlinerDigestMismatchError,
     HuggingFaceHubClient,
+    is_gliner_model_ready,
     provision_gliner_model,
     resolve_gliner_model_path,
 )
@@ -67,6 +68,33 @@ def test_resolve_gliner_model_path_honors_explicit_override():
         data_dir="/data/blindfold",
         model_path_override="/mnt/air-gapped/gliner-model",
     ) == "/mnt/air-gapped/gliner-model"
+
+
+def test_is_gliner_model_ready_true_for_a_provisioned_directory(tmp_path):
+    model_dir = tmp_path / "gliner-pii-edge-v1.0"
+    model_dir.mkdir()
+    (model_dir / "gliner_config.json").write_text("{}")
+
+    assert is_gliner_model_ready(str(model_dir)) is True
+
+
+def test_is_gliner_model_ready_false_for_empty_string(tmp_path, monkeypatch):
+    # Issue #150 fail-closed guard: `is_already_provisioned("")` would resolve to
+    # Path(".") -- the (non-empty) cwd -- and wrongly report provisioned. The shared
+    # predicate must reject the empty path before it ever reaches that check, so the
+    # startup guard / adjudicator builder / probe never mistake "unconfigured" for
+    # "ready". Pinned cwd to a populated tmp_path to make the footgun observable.
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "some-file").write_text("x")
+
+    assert is_gliner_model_ready("") is False
+
+
+def test_is_gliner_model_ready_false_for_an_empty_directory(tmp_path):
+    model_dir = tmp_path / "gliner-pii-edge-v1.0"
+    model_dir.mkdir()
+
+    assert is_gliner_model_ready(str(model_dir)) is False
 
 
 def test_provision_skips_download_when_model_already_present(tmp_path):

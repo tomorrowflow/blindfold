@@ -129,7 +129,7 @@ from .l3 import (
 from .gliner_provisioning import (
     GlinerDigestMismatchError,
     GlinerHubClient,
-    is_already_provisioned,
+    is_gliner_model_ready,
     provision_gliner_model,
 )
 from .l3_gliner import GlinerCascadeAdjudicator, GlinerExtraMissingError, GlinerOnnxClassifier
@@ -197,15 +197,13 @@ def _build_l3_adjudicator(settings: Settings) -> L3Adjudicator:
     Data-dir-resolved (issue #150, ``get_settings()``), so an empty/unreachable path
     is no longer the only "unconfigured" signal -- a resolved path with nothing
     actually provisioned there falls back to ``_UnconfiguredAdjudicator`` too, checked
-    the same way (:func:`~blindfold.gliner_provisioning.is_already_provisioned`) the
+    the same way (:func:`~blindfold.gliner_provisioning.is_gliner_model_ready`) the
     startup guard and the detection/settings status view do, so all three never
     disagree on the same on-disk state. GLiNER unconfigured/unprovisioned is exactly
     as fail-closed as the plain LLM path unconfigured.
     """
     if settings.l3_provider == "gliner":
-        if not settings.l3_gliner_model_path or not is_already_provisioned(
-            settings.l3_gliner_model_path
-        ):
+        if not is_gliner_model_ready(settings.l3_gliner_model_path):
             return _UnconfiguredAdjudicator()
         return GlinerCascadeAdjudicator(
             classifier=GlinerOnnxClassifier(settings.l3_gliner_model_path),
@@ -327,11 +325,9 @@ def _default_l3_probe() -> DependencyHealth:
         # directory check, not a live ping -- GLiNER has no network client to probe,
         # and loading the ONNX model on every /v1/status poll (~5s cadence) would be
         # far too expensive. Same shape check as the startup guard and the
-        # detection/settings status view (is_already_provisioned), so none of the
+        # detection/settings status view (is_gliner_model_ready), so none of the
         # three ever disagree on the same on-disk state.
-        if not settings.l3_gliner_model_path or not is_already_provisioned(
-            settings.l3_gliner_model_path
-        ):
+        if not is_gliner_model_ready(settings.l3_gliner_model_path):
             return DependencyHealth(healthy=False, detail="gliner model not provisioned")
         return DependencyHealth(healthy=True)
     if not settings.l3_model:

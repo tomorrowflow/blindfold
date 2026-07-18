@@ -23,7 +23,7 @@ import uvicorn
 
 from .config import DEFAULT_HOST, DEFAULT_PORT, Settings, get_settings
 from .entity_graph import EntityGraph
-from .gliner_provisioning import is_already_provisioned
+from .gliner_provisioning import is_gliner_model_ready
 from .ollama import is_cloud_model
 from .transit import TransitClient
 
@@ -70,7 +70,7 @@ class GlinerModelMissingError(RuntimeError):
     (l3_gliner.py). The model is a *directory*
     (``<data_dir>/models/gliner-pii-edge-v1.0/``, per ``resolve_gliner_model_path`` /
     ``provision_gliner_model``, ADR-0034 §3-§5), not a single file -- checked the same
-    way ``is_already_provisioned`` and the detection/settings status view
+    way ``is_gliner_model_ready`` and the detection/settings status view
     (``gliner_status.py``) do, so this guard and that view never disagree on the same
     on-disk state (issue #150). Failing at startup rather than mid-request keeps the
     failure mode identical to the other local-only guards: an actionable error before
@@ -191,7 +191,7 @@ def refuse_if_gliner_model_missing(settings: Settings | None = None) -> None:
     No-op for every other ``l3_provider`` value. ``settings.l3_gliner_model_path`` is
     already Data-dir-resolved by :func:`~blindfold.config.get_settings` (issue #150) --
     this only checks that a model is actually *provisioned* there
-    (:func:`~blindfold.gliner_provisioning.is_already_provisioned`, the same
+    (:func:`~blindfold.gliner_provisioning.is_gliner_model_ready`, the same
     directory-shape check ``provision_gliner_model`` and the detection/settings status
     view use), not merely that the path string is non-empty. Like the other
     local-only guards, there is no opt-in flag: an unprovisioned model path here
@@ -203,7 +203,7 @@ def refuse_if_gliner_model_missing(settings: Settings | None = None) -> None:
     if settings.l3_provider != "gliner":
         return
     path = settings.l3_gliner_model_path
-    if not path or not is_already_provisioned(path):
+    if not is_gliner_model_ready(path):
         raise GlinerModelMissingError(
             f"refusing to start: BLINDFOLD_L3_PROVIDER=gliner requires a provisioned "
             f"GLiNER model directory (got {path!r}); run Setup's \"Enhanced local "

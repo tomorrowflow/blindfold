@@ -118,6 +118,19 @@ def is_already_provisioned(model_path: str) -> bool:
     return path.is_dir() and any(path.iterdir())
 
 
+def is_gliner_model_ready(model_path: str) -> bool:
+    """True if ``model_path`` names an actually-provisioned GLiNER model directory
+    (ADR-0033 §2 / ADR-0034 §3, issue #150).
+
+    The single fail-closed predicate the startup guard (``serve.py``), the L3
+    adjudicator builder and the ``/v1/status`` probe (``app.py``) all share, so none
+    of the three can disagree on the same on-disk state. Guards the empty-string case
+    explicitly: :func:`is_already_provisioned` alone would resolve ``""`` to ``Path(".")``
+    (the cwd) and wrongly report it provisioned.
+    """
+    return bool(model_path) and is_already_provisioned(model_path)
+
+
 @dataclass(frozen=True)
 class ProvisionResult:
     """Outcome of :func:`provision_gliner_model` (ADR-0034 §4-§5)."""
