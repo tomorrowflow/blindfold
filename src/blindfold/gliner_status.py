@@ -14,6 +14,8 @@ itself, never a real-entity value; this module touches no request-path code.
 
 from __future__ import annotations
 
+from typing import Callable
+
 from .config import Settings, resolve_data_dir
 from .gliner_provisioning import (
     GlinerDigestMismatchError,
@@ -22,7 +24,11 @@ from .gliner_provisioning import (
     provision_gliner_model,
     resolve_gliner_model_path,
 )
-from .l3_gliner import GlinerActivationSmokeTestFailedError, GlinerExtraMissingError
+from .l3_gliner import (
+    GlinerActivationSmokeTestFailedError,
+    GlinerClassifier,
+    GlinerExtraMissingError,
+)
 
 
 class GlinerProvisioningTracker:
@@ -88,7 +94,7 @@ def retry_gliner_provisioning(
     tracker: GlinerProvisioningTracker,
     hub_client: GlinerHubClient | None = None,
     manifest: dict[str, str] | None = None,
-    classifier_factory=None,
+    classifier_factory: Callable[[str], GlinerClassifier] | None = None,
 ) -> dict:
     """Re-run provisioning for the detection/settings view's retry action (ADR-0034
     §5).
