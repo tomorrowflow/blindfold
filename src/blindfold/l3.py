@@ -58,6 +58,21 @@ _POSITION_START_RE = re.compile(
     re.VERBOSE,
 )
 
+# ADR-0033 update (issue #161): a *mandatory* bullet/numbered-list marker --
+# never a bare heading ('#'), blockquote ('>'), or unmarked paragraph start --
+# right after the start of text/line. Narrower than `_POSITION_START_RE`'s
+# marker group on purpose: a list item is strong positional evidence on its
+# own (see `_is_positional_case_noise`), a heading or bare paragraph start is
+# not (a heading like "## Behavior" or a label like "Rules:" still needs
+# vocabulary evidence, or a single occurrence would be suppressed as noise).
+_LIST_MARKER_START_RE = re.compile(
+    r"""
+    (?:\A|\n)[ \t]*(?:[*+-]|\d+[.)])[ \t]*(?:\*\*|__)?[ \t]*
+    \Z
+    """,
+    re.VERBOSE,
+)
+
 _STOPWORDS_PATH = Path(__file__).with_name("l3_stopwords_en_de.txt")
 
 logger = logging.getLogger(__name__)
@@ -227,13 +242,18 @@ def select_candidate_spans(
     is also a registered Term or entity-graph surface is still blindfolded by the
     deterministic L1/L2 passes, which run before L3 (L2 wins).
     A fourth suppression condition — the ADR-0033 positional case heuristic —
-    runs after the three above: a token is suppressed when it has both
-    vocabulary evidence (its lowercase form appears as a standalone word
-    elsewhere in this hop) and positional evidence (it is never capitalized
-    mid-sentence in this hop — only at a sentence, quotation, or heading
-    start). The AND is load-bearing: vocabulary evidence alone would eat real
-    names ("mark this as done" would suppress "Mark" the person too); the
-    positional gate protects any token that is ever capitalized mid-sentence.
+    runs after the three above: a token is suppressed when it has positional
+    evidence (it is never capitalized mid-sentence in this hop — only at a
+    sentence, quotation, heading, or list-marker start) AND either vocabulary
+    evidence (its lowercase form appears as a standalone word elsewhere in
+    this hop) or list-marker evidence (issue #161: at least one occurrence
+    sits at a list/numbered-marker start specifically, the shape of an
+    agentic system prompt's one-off skill/tool list, where "vocabulary
+    evidence" would never fire since each item's name is used exactly once).
+    The positional gate is load-bearing either way: vocabulary evidence alone
+    would eat real names ("mark this as done" would suppress "Mark" the
+    person too); the positional gate protects any token that is ever
+    capitalized mid-sentence, regardless of which suppression signal fired.
     """
     known_surfaces = _known_surfaces(known_entities)
     capitalized_positions = _capitalized_positions(text)
@@ -279,22 +299,38 @@ def _capitalized_positions(text: str) -> dict[str, list[int]]:
 def _is_positional_case_noise(
     token: str, text: str, capitalized_positions: dict[str, list[int]]
 ) -> bool:
-    """ADR-0033: suppress ``token`` only when both hold — (a) vocabulary evidence,
-    its lowercase form appears as a standalone word elsewhere in ``text``, and
-    (b) positional evidence, every capitalized occurrence of ``token`` in ``text``
-    is at a sentence/quotation/heading start (never mid-sentence).
+    """ADR-0033: suppress ``token`` when positional evidence holds -- every
+    capitalized occurrence of ``token`` in ``text`` is at a sentence/quotation/
+    heading/list-marker start (never mid-sentence) -- AND either of two signals
+    confirms it isn't a real referent:
+
+    (a) vocabulary evidence: its lowercase form appears as a standalone word
+        elsewhere in ``text``; or
+    (b) (issue #161) list-marker evidence: at least one occurrence sits at a
+        *list/numbered-marker* start specifically (not a bare heading or
+        unmarked paragraph start) -- the shape of an agentic system prompt's
+        skill/tool list ("- Compact the conversation…"), where each item is a
+        one-off command name that never recurs lowercase in the same hop.
+
+    The positional gate is load-bearing either way: a token ever capitalized
+    mid-sentence ("The lawyer said Mark signed the contract") fails it and
+    stays a candidate regardless of vocabulary or list-marker evidence.
     """
-    lowered = token.lower()
-    if not re.search(rf"\b{re.escape(lowered)}\b", text):
+    positions = capitalized_positions.get(token, [])
+    if not all(_is_start_position(text, pos) for pos in positions):
         return False
-    return all(
-        _is_start_position(text, pos)
-        for pos in capitalized_positions.get(token, [])
-    )
+    lowered = token.lower()
+    if re.search(rf"\b{re.escape(lowered)}\b", text):
+        return True
+    return any(_is_list_marker_position(text, pos) for pos in positions)
 
 
 def _is_start_position(text: str, pos: int) -> bool:
     return bool(_POSITION_START_RE.search(text[:pos]))
+
+
+def _is_list_marker_position(text: str, pos: int) -> bool:
+    return bool(_LIST_MARKER_START_RE.search(text[:pos]))
 
 
 def _known_surfaces(entities: list[Entity]) -> frozenset[str]:
