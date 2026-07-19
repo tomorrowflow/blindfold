@@ -58,6 +58,33 @@ class _RecordingAdjudicator:
         return self._decisions.get(candidate.text, L3Adjudication(is_entity=False))
 
 
+@dataclass
+class _BatchCall:
+    texts: tuple[str, ...]
+
+
+class _RecordingBatchInnerAdjudicator:
+    """Stub for a batch-capable inner adjudicator (Ollama/oMLX, issue #157) --
+    records every ``adjudicate_batch()`` call, never exposes single-candidate
+    ``adjudicate()`` as a fallback (mirrors test_l3_detection.py's
+    ``_RecordingBatchAdjudicator``, which asserts the batch path is genuinely taken
+    rather than falling back unnoticed).
+    """
+
+    def __init__(self, decisions: dict[str, L3Adjudication] | None = None) -> None:
+        self.batch_calls: list[_BatchCall] = []
+        self._decisions = decisions or {}
+
+    def adjudicate_batch(
+        self, candidates: list[CandidateSpan]
+    ) -> list[L3Adjudication]:
+        self.batch_calls.append(_BatchCall(texts=tuple(c.text for c in candidates)))
+        return [
+            self._decisions.get(c.text, L3Adjudication(is_entity=False))
+            for c in candidates
+        ]
+
+
 def test_gliner_positive_confirms_entity_without_calling_the_inner_adjudicator():
     # Position A (ADR-0033 Mode A): a GLiNER-positive span (PER/ORG/product/codename)
     # is accepted outright -- a false positive here is over-redaction (a quality bug,
@@ -112,6 +139,175 @@ def test_l3_content_cache_caches_the_cascades_final_verdict_transparently():
 
     assert len(classifier.calls) == 1
     assert inner.calls == []
+
+
+def test_l3_detector_takes_the_batch_path_once_the_cascade_implements_adjudicate_batch():
+    # Issue #157's own motivating bug: L3Detector.detect() duck-types the batch path
+    # via hasattr(adjudicator, "adjudicate_batch") (l3.py). Before this slice, the
+    # cascade lacked that method, so BLINDFOLD_L3_PROVIDER=gliner silently fell back
+    # to one inner call per candidate (l3.py's per-candidate branch) regardless of
+    # batch_size. Now hasattr is true, and an N-candidate pass collapses into ONE
+    # inner.adjudicate_batch call carrying every GLiNER-negative -- not N inner calls.
+    classifier = _RecordingClassifier(positives=frozenset({"Klaus"}))
+    inner = _RecordingBatchInnerAdjudicator()
+    cascade = GlinerCascadeAdjudicator(classifier=classifier, inner=inner)
+
+    assert hasattr(cascade, "adjudicate_batch")
+
+    detector = L3Detector(cascade, batch_size=10)
+    text = "We met Klaus, Yasmin, Priya, and Boris at the offsite."
+
+    results = detector.detect(text, known_entities=[])
+
+    assert len(results) == 4
+    # One inner round trip for the whole negative set (Yasmin, Priya, Boris) --
+    # the collapse this issue exists for -- not one inner call per negative.
+    assert len(inner.batch_calls) == 1
+    assert inner.batch_calls[0].texts == ("Yasmin", "Priya", "Boris")
+
+
+def test_adjudicate_batch_forwards_only_gliner_negatives_to_one_inner_batch_call():
+    # Issue #157: GLiNER classification stays per-candidate (local), but negatives
+    # collapse into ONE inner.adjudicate_batch call carrying exactly the negative
+    # subset -- positives never reach the inner adjudicator, mirroring adjudicate()'s
+    # own Position-A cascade semantics, just batched.
+    classifier = _RecordingClassifier(positives=frozenset({"Klaus", "Priya"}))
+    inner = _RecordingBatchInnerAdjudicator({"Yasmin": L3Adjudication(is_entity=True)})
+    cascade = GlinerCascadeAdjudicator(classifier=classifier, inner=inner)
+    candidates = [
+        CandidateSpan(text="Klaus", start=0, end=5, context="Klaus, Yasmin, Priya"),
+        CandidateSpan(text="Yasmin", start=7, end=13, context="Klaus, Yasmin, Priya"),
+        CandidateSpan(text="Priya", start=15, end=20, context="Klaus, Yasmin, Priya"),
+    ]
+
+    decisions = cascade.adjudicate_batch(candidates)
+
+    assert decisions == [
+        L3Adjudication(is_entity=True),
+        L3Adjudication(is_entity=True),
+        L3Adjudication(is_entity=True),
+    ]
+    assert len(inner.batch_calls) == 1
+    assert inner.batch_calls[0].texts == ("Yasmin",)
+
+
+def test_adjudicate_batch_all_positive_makes_no_inner_call():
+    # M GLiNER-positives, zero negatives -- the inner adjudicator (batch or not)
+    # is never invoked at all.
+    classifier = _RecordingClassifier(positives=frozenset({"Klaus", "Yasmin"}))
+    inner = _RecordingBatchInnerAdjudicator()
+    cascade = GlinerCascadeAdjudicator(classifier=classifier, inner=inner)
+    candidates = [
+        CandidateSpan(text="Klaus", start=0, end=5, context="Klaus and Yasmin"),
+        CandidateSpan(text="Yasmin", start=10, end=16, context="Klaus and Yasmin"),
+    ]
+
+    decisions = cascade.adjudicate_batch(candidates)
+
+    assert decisions == [
+        L3Adjudication(is_entity=True),
+        L3Adjudication(is_entity=True),
+    ]
+    assert inner.batch_calls == []
+
+
+def test_adjudicate_batch_all_negative_sends_the_whole_set_in_one_inner_call():
+    # K GLiNER-negatives, zero positives -- the entire candidate set forwards to
+    # the inner adjudicator in one call.
+    classifier = _RecordingClassifier(positives=frozenset())
+    inner = _RecordingBatchInnerAdjudicator({"Yasmin": L3Adjudication(is_entity=True)})
+    cascade = GlinerCascadeAdjudicator(classifier=classifier, inner=inner)
+    candidates = [
+        CandidateSpan(text="Klaus", start=0, end=5, context="Klaus and Yasmin"),
+        CandidateSpan(text="Yasmin", start=10, end=16, context="Klaus and Yasmin"),
+    ]
+
+    decisions = cascade.adjudicate_batch(candidates)
+
+    assert decisions == [
+        L3Adjudication(is_entity=False),
+        L3Adjudication(is_entity=True),
+    ]
+    assert len(inner.batch_calls) == 1
+    assert inner.batch_calls[0].texts == ("Klaus", "Yasmin")
+
+
+def test_adjudicate_batch_falls_back_to_per_candidate_when_inner_is_not_batch_capable():
+    # Not every inner adjudicator implements adjudicate_batch (issue #142's own
+    # duck-typed contract) -- adjudicate_batch() must still return a correct,
+    # position-preserving result set by falling back to inner.adjudicate() per
+    # negative, one call per negative candidate.
+    classifier = _RecordingClassifier(positives=frozenset({"Klaus"}))
+    inner = _RecordingAdjudicator(decisions={"Yasmin": L3Adjudication(is_entity=True)})
+    cascade = GlinerCascadeAdjudicator(classifier=classifier, inner=inner)
+    candidates = [
+        CandidateSpan(text="Klaus", start=0, end=5, context="Klaus and Yasmin"),
+        CandidateSpan(text="Yasmin", start=10, end=16, context="Klaus and Yasmin"),
+        CandidateSpan(text="Please", start=21, end=27, context="Klaus and Yasmin. Please."),
+    ]
+
+    decisions = cascade.adjudicate_batch(candidates)
+
+    assert decisions == [
+        L3Adjudication(is_entity=True),
+        L3Adjudication(is_entity=True),
+        L3Adjudication(is_entity=False),
+    ]
+    assert sorted(call.text for call in inner.calls) == ["Please", "Yasmin"]
+
+
+class _ShortResponseBatchInnerAdjudicator:
+    """Stub for a malformed/short inner batch response (issue #157, mirrors
+    test_l3_detection.py's own short-response stubs): returns fewer verdicts than
+    negatives it was handed, and also exposes single-candidate ``adjudicate()`` so
+    the per-candidate retry recovery has a seam to recover through.
+    """
+
+    def __init__(
+        self, verdict_count: int, single_decisions: dict[str, L3Adjudication]
+    ) -> None:
+        self._verdict_count = verdict_count
+        self._single_decisions = single_decisions
+        self.single_calls: list[str] = []
+
+    def adjudicate_batch(
+        self, candidates: list[CandidateSpan]
+    ) -> list[L3Adjudication]:
+        return [L3Adjudication(is_entity=False)] * self._verdict_count
+
+    def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
+        self.single_calls.append(candidate.text)
+        return self._single_decisions[candidate.text]
+
+
+def test_adjudicate_batch_short_inner_response_retries_then_fails_closed():
+    # ADR-0009 fail-closed (issue #148's own regression shape, mirrored here for
+    # the cascade's nested inner batch call): a short/malformed inner batch
+    # response first retries the missing negatives one at a time through
+    # inner.adjudicate(); only a candidate still unresolved after that falls back
+    # to is_entity=True (over-redact), never a silent dismiss.
+    classifier = _RecordingClassifier(positives=frozenset({"Klaus"}))
+    inner = _ShortResponseBatchInnerAdjudicator(
+        verdict_count=0, single_decisions={"Priya": L3Adjudication(is_entity=False)}
+    )
+    # The batch call returns zero verdicts, so both negatives (Yasmin, Priya) are
+    # retried one at a time. Yasmin is missing from single_decisions -- its retry
+    # call raises KeyError, so it must fail closed (is_entity=True), not silently
+    # vanish. Priya's retry recovers normally.
+    cascade = GlinerCascadeAdjudicator(classifier=classifier, inner=inner)
+    candidates = [
+        CandidateSpan(text="Klaus", start=0, end=5, context="ctx"),
+        CandidateSpan(text="Yasmin", start=7, end=13, context="ctx"),
+        CandidateSpan(text="Priya", start=15, end=20, context="ctx"),
+    ]
+
+    decisions = cascade.adjudicate_batch(candidates)
+
+    assert len(decisions) == 3
+    assert decisions[0] == L3Adjudication(is_entity=True)  # Klaus: GLiNER-positive
+    assert decisions[1] == L3Adjudication(is_entity=True)  # Yasmin: retry raised, over-redact
+    assert decisions[2] == L3Adjudication(is_entity=False)  # Priya: retry recovered
+    assert sorted(inner.single_calls) == ["Priya", "Yasmin"]
 
 
 class _StubGlinerModel:

@@ -10,10 +10,15 @@ re-testing the cascade's own is_entity logic.
 
 Leak-audit clause analysis:
 - A: the stub upstream receives only the surrogate for a GLiNER-positive candidate --
-  the real candidate text never crosses egress.
+  the real candidate text never crosses egress. Issue #157 adds a batch-path variant
+  of the same assertion: two GLiNER-negatives collapsed into one
+  ``inner.adjudicate_batch`` call still leave zero real candidate text in the
+  egressed payload.
 - F: GLiNER-negative routes to the (stubbed) inner adjudicator, which remains the
   sole arbiter of is_entity=False -- unchanged fail-closed behavior, only reached via
-  a different L3Adjudicator concrete class than the plain-Ollama/oMLX path.
+  a different L3Adjudicator concrete class than the plain-Ollama/oMLX path. The
+  batch path's own short/malformed-response fail-closed recovery is exercised at
+  the adjudicator-seam level (test_l3_gliner_cascade.py), not re-proven here.
 - B/C/D/E/G: N/A -- unchanged from the existing L3-detector-substitution tests this
   file mirrors (test_l3_single_mint_pass_adjudication.py); this slice only changes
   which concrete L3Adjudicator app.py wires in, not restore/verify-pass/mapping-store
@@ -66,6 +71,26 @@ class _RecordingInnerAdjudicator:
     def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
         self.calls.append(candidate.text)
         return L3Adjudication(is_entity=candidate.text in self._confirm)
+
+
+class _RecordingBatchInnerAdjudicator:
+    """Stub for a batch-capable inner adjudicator (Ollama/oMLX, issue #157) --
+    records every ``adjudicate_batch()`` call, no single-candidate ``adjudicate()``
+    fallback, so the batch path is genuinely exercised end-to-end through the
+    real request path rather than silently falling back.
+    """
+
+    def __init__(self, confirm: frozenset[str] = frozenset()) -> None:
+        self.batch_calls: list[tuple[str, ...]] = []
+        self._confirm = confirm
+
+    def adjudicate_batch(
+        self, candidates: list[CandidateSpan]
+    ) -> list[L3Adjudication]:
+        self.batch_calls.append(tuple(c.text for c in candidates))
+        return [
+            L3Adjudication(is_entity=c.text in self._confirm) for c in candidates
+        ]
 
 
 def _seeded_mapping() -> SurrogateMapping:
@@ -186,3 +211,65 @@ async def test_gliner_negative_candidate_still_reaches_the_inner_adjudicator():
     assert "Klaus" not in egressed
     item = inbox.list()[0]
     assert item.provisional_surrogate in egressed
+
+
+@pytest.mark.anyio
+async def test_gliner_negatives_batch_through_one_inner_call_stay_leak_clean():
+    # Issue #157: the cascade's adjudicate_batch collapses multiple GLiNER-negatives
+    # into one inner.adjudicate_batch call. Proving this end-to-end through the real
+    # request path (not just the isolated adjudicator-seam tests in
+    # test_l3_gliner_cascade.py) satisfies leak-audit clause A for the new batch
+    # path specifically: only surrogates for both negatives cross egress, and the
+    # client's response (via the review inbox's provisional surrogate) never
+    # carries the real candidate text -- one inner round trip, not two.
+    mapping = _seeded_mapping()
+    inbox = ReviewInbox()
+    classifier = _RecordingClassifier(positives=frozenset())  # GLiNER misses both
+    inner = _RecordingBatchInnerAdjudicator(confirm=frozenset({"Klaus", "Yasmin"}))
+    detector = L3Detector(GlinerCascadeAdjudicator(classifier=classifier, inner=inner))
+
+    scripted_response = {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "Acknowledged."}],
+        "model": "claude-3-5-sonnet",
+        "stop_reason": "end_turn",
+    }
+    recorded: list[httpx.Request] = []
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(
+        scripted_response, recorded
+    )
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_review_inbox] = lambda: inbox
+    app.dependency_overrides[get_l3_detector] = lambda: detector
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            resp = await client.post(
+                "/v1/messages",
+                json={
+                    "model": "m",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "Please brief Klaus and Yasmin tomorrow.",
+                        }
+                    ],
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    # Both GLiNER-negatives collapsed into ONE inner.adjudicate_batch call.
+    assert len(inner.batch_calls) == 1
+    assert sorted(inner.batch_calls[0]) == ["Klaus", "Yasmin"]
+    egressed = recorded[0].content.decode("utf-8")
+    assert "Klaus" not in egressed
+    assert "Yasmin" not in egressed
+    surrogates = {item.provisional_surrogate for item in inbox.list()}
+    assert len(surrogates) == 2
+    assert all(surrogate in egressed for surrogate in surrogates)

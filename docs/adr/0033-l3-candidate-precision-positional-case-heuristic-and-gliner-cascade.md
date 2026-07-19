@@ -147,6 +147,20 @@ confidence to inform the escalation decision, if GLiNER is extended to return sc
   a bold label nests inside a bullet (`- **Assist**: ...`), which the original
   single contiguous marker match missed. Further sentence-boundary refinements
   beyond markers remain open if future live-testing surfaces more noise classes.
+- **Update (issue #157):** `GlinerCascadeAdjudicator` now also implements the
+  optional `BatchL3Adjudicator.adjudicate_batch` seam (issue #142), not just
+  single-candidate `adjudicate`. GLiNER classification stays per-candidate
+  (local, cheap); only the GLiNER-negatives are forwarded to the inner
+  adjudicator, in one `inner.adjudicate_batch` call when it exposes one, else
+  per-candidate through `inner.adjudicate`. Without this, wiring
+  `BLINDFOLD_L3_PROVIDER=gliner` silently disabled #142 batching for the whole
+  pass (`L3Detector.detect()`'s own `hasattr(adjudicator, "adjudicate_batch")`
+  duck-type was false), fanning out one inner call per GLiNER-negative candidate
+  instead of one call per batch. A short/malformed inner batch response is
+  recovered the same way `L3Detector._adjudicate_batch`/`_retry_missing` already
+  do: retry the missing negatives one at a time through `inner.adjudicate`, and
+  only a still-missing candidate falls back to `is_entity=True` (ADR-0009
+  fail-closed).
 
 ## Alternatives considered
 
