@@ -90,7 +90,7 @@ class _RecordingBatchInnerAdjudicator:
 
 
 def test_gliner_positive_confirms_entity_without_calling_the_inner_adjudicator():
-    # Position A (ADR-0033 Mode A): a GLiNER-positive span (PER/ORG/product/codename)
+    # Position A (ADR-0033 Mode A): a GLiNER-positive span (PER/ORG, see _GLINER_LABELS)
     # is accepted outright -- a false positive here is over-redaction (a quality bug,
     # not a privacy bug), so there's no need to spend an inner-adjudicator call on it.
     classifier = _RecordingClassifier(positives=frozenset({"Klaus"}))
