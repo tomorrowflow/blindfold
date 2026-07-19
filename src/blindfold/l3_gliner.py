@@ -8,9 +8,9 @@ class lives entirely behind that seam -- ``L3Detector.detect()``,
 ``select_candidate_spans``, and ``L3ContentCache`` are all unaffected.
 
 Cascade logic (Position A):
-- GLiNER positive (PER/ORG/product/codename) -> confirmed entity immediately, no
-  inner-adjudicator call. A GLiNER false positive is over-redaction -- a quality bug,
-  not a privacy bug -- so accepting it outright is safe.
+- GLiNER positive (PER/ORG, see ``_GLINER_LABELS``) -> confirmed entity immediately,
+  no inner-adjudicator call. A GLiNER false positive is over-redaction -- a quality
+  bug, not a privacy bug -- so accepting it outright is safe.
 - GLiNER negative -> always delegates to the inner adjudicator, which remains the
   sole arbiter of ``is_entity=False``. GLiNER's ~7-10% miss rate means a negative
   alone can't clear a candidate without risking a fail-closed violation (ADR-0009).
@@ -38,9 +38,16 @@ class GlinerClassifier(Protocol):
     def classify(self, candidate: CandidateSpan) -> bool: ...
 
 
-# Zero-shot labels for the GLiNER model (issue #138): PER/ORG/product/codename are
-# specified at inference time, not baked into the model via retraining.
-_GLINER_LABELS = ("person", "organization", "product", "codename")
+# Zero-shot labels for the GLiNER model (issue #138): specified at inference time,
+# not baked into the model via retraining. "product"/"codename" were dropped
+# (issue #163): on agentic system-prompt traffic they confirm generic technical
+# boilerplate ("Tool Runner", "Managed Agents", "Artifacts", "VS Code") as entities
+# -- a GLiNER positive skips the inner adjudicator entirely (ADR-0033 Mode A), so
+# this flooded the review inbox with over-redactions. The privacy target is
+# people/organizations; see ADR-0033's Update note for the recall/precision
+# tradeoff this accepts (a genuine product codename now always escalates to the
+# inner LLM adjudicator instead of being GLiNER-confirmed outright).
+_GLINER_LABELS = ("person", "organization")
 
 
 class GlinerExtraMissingError(RuntimeError):

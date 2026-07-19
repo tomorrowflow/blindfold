@@ -212,6 +212,33 @@ confidence to inform the escalation decision, if GLiNER is extended to return sc
   `knowledgator/gliner-pii-base-v1.0` — see ADR-0034 §4's own update note for the
   full analysis, the new pinned revision, and the activation smoke test this
   issue also added.
+- **Update (issue #163):** `_GLINER_LABELS` drops `product`/`codename`, leaving
+  `("person", "organization")`. Live probing of the shipped
+  `gliner-pii-base-v1.0` (quint8 ONNX, threshold 0.5) against real agent
+  system-prompt text showed `product` matching generic technical boilerplate at
+  high confidence — `Tool Runner` (0.69), `Managed Agents` (0.62), `Artifacts`
+  (0.60), `VS Code` (0.67) — and because a GLiNER positive skips the inner LLM
+  adjudicator entirely (§2's Mode A cascade), each of these was confirmed as an
+  entity outright and flooded the review inbox. `Tool`, `Managed`, `Agents`,
+  `Artifacts`, `Code` all landed in a live Claude Code session's inbox this way.
+  §2's own safety framing ("a GLiNER false positive is over-redaction — a
+  quality bug, not a privacy bug") is exactly why this was tunable without a
+  fail-closed concern: the fix trades recall for precision on a label pair that
+  was never the privacy target (people/organizations are). **Accepted tradeoff:**
+  a genuine product codename mentioned in traffic no longer skips the LLM via a
+  GLiNER positive — it now always escalates to the inner adjudicator, same as any
+  other GLiNER-negative candidate (§2's existing negative path, unchanged). This
+  does not reduce recall for the privacy-critical case: the inner LLM remains the
+  sole arbiter of `is_entity: false` regardless, so a genuine codename that the
+  LLM would confirm is still confirmed, only one hop later and without the
+  GLiNER-positive shortcut. Person/organization detection (the actual privacy
+  target) is unaffected — `Sarah Bergmann` / `Nordwind Logistik`-shaped regression
+  coverage confirms the tuned label set still confirms genuine PII. Not made
+  configurable: the issue's own "if made configurable" acceptance criterion was
+  conditional, and no deployment need for trading precision back for recall on
+  this pair has surfaced yet — the low-level `BLINDFOLD_L3_GLINER_MODEL_PATH`-style
+  escape hatch this repo already uses for other GLiNER knobs is the natural place
+  to add one if that need appears.
 
 ## Alternatives considered
 

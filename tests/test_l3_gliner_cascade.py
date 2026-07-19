@@ -435,6 +435,88 @@ def test_gliner_onnx_classifier_does_not_confirm_a_candidate_outside_any_span(
     assert classifier.classify(candidate) is False
 
 
+class _LabelAwareStubGlinerModel:
+    """Stand-in that mirrors real zero-shot GLiNER label filtering: a seeded span
+    only comes back from ``predict_entities`` when its own tagged label is among
+    the labels requested for that call -- unlike ``_StubGlinerModel`` above, which
+    returns every seeded hit regardless of the requested label set. Needed for
+    issue #163: proving a span disappears once its label is dropped from
+    ``_GLINER_LABELS`` requires a stub that actually respects the requested labels.
+    """
+
+    def __init__(self, tagged_hits: dict[str, str]) -> None:
+        self._tagged_hits = tagged_hits
+
+    def predict_entities(self, text: str, labels: list[str]) -> list[dict]:
+        entities = []
+        for span_text, label in self._tagged_hits.items():
+            if label not in labels:
+                continue
+            start = text.find(span_text)
+            if start != -1:
+                entities.append(
+                    {
+                        "text": span_text,
+                        "label": label,
+                        "start": start,
+                        "end": start + len(span_text),
+                    }
+                )
+        return entities
+
+
+def _candidate_for_token(context: str, token: str) -> CandidateSpan:
+    start = context.find(token)
+    return CandidateSpan(
+        text=token, start=start, end=start + len(token), context=context, context_offset=start
+    )
+
+
+def test_gliner_label_set_no_longer_confirms_system_prompt_product_boilerplate(
+    monkeypatch,
+):
+    # Issue #163 live repro: GLiNER's zero-shot "product" label tags generic
+    # agent/system-prompt vocabulary at high confidence (Tool Runner 0.69, Managed
+    # Agents 0.62, Artifacts 0.60, VS Code 0.67). A GLiNER positive skips the inner
+    # adjudicator entirely (ADR-0033 Mode A) -- over-detection here means this
+    # boilerplate lands in the review inbox as a confirmed entity. The fix tunes
+    # the requested label set for precision on agent traffic, so a model that would
+    # still tag these spans "product" never gets asked for that label in the first
+    # place.
+    context = (
+        "You have access to Tool Runner and Managed Agents and Artifacts. "
+        "Available via claude.ai/code, and IDE extensions (VS Code, JetBrains)."
+    )
+    stub_model = _LabelAwareStubGlinerModel(
+        tagged_hits={
+            "Tool Runner": "product",
+            "Managed Agents": "product",
+            "Artifacts": "product",
+            "VS Code": "product",
+        }
+    )
+    monkeypatch.setattr(l3_gliner, "_load_gliner_model", lambda model_path: stub_model)
+    classifier = GlinerOnnxClassifier(model_path="gliner-pii-base-v1.0")
+
+    for token in ("Tool", "Managed", "Agents", "Artifacts", "Code"):
+        candidate = _candidate_for_token(context, token)
+        assert classifier.classify(candidate) is False
+
+
+def test_gliner_still_confirms_genuine_person_and_organization_entities(monkeypatch):
+    # Acceptance criterion: the tuned label set must not regress genuine PII
+    # detection -- person/organization spans are the actual privacy target.
+    context = "Sarah Bergmann called from Nordwind Logistik about the shipment."
+    stub_model = _LabelAwareStubGlinerModel(
+        tagged_hits={"Sarah Bergmann": "person", "Nordwind Logistik": "organization"}
+    )
+    monkeypatch.setattr(l3_gliner, "_load_gliner_model", lambda model_path: stub_model)
+    classifier = GlinerOnnxClassifier(model_path="gliner-pii-base-v1.0")
+
+    assert classifier.classify(_candidate_for_token(context, "Sarah")) is True
+    assert classifier.classify(_candidate_for_token(context, "Nordwind")) is True
+
+
 class _FakeGLiNERClass:
     """Stand-in for the real ``gliner.GLiNER`` class -- records the kwargs
     ``from_pretrained`` receives, so a test can assert the loader requests the
