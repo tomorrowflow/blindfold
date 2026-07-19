@@ -147,6 +147,51 @@ confidence to inform the escalation decision, if GLiNER is extended to return sc
   a bold label nests inside a bullet (`- **Assist**: ...`), which the original
   single contiguous marker match missed. Further sentence-boundary refinements
   beyond markers remain open if future live-testing surfaces more noise classes.
+- **Update (issue #161):** The AND rule (§1) never caught the dominant noise
+  class in agentic system-prompt/skill-description text: a capitalized
+  command/skill name used **exactly once**, at a bullet or numbered-list-item
+  start (`- Compact the conversation…`, `- Find the relevant skill…`). Such a
+  token has positional evidence (it is never capitalized mid-sentence) but no
+  vocabulary evidence (its lowercase form never recurs elsewhere in the same
+  hop, since it's mentioned only the once) — so the original AND never fired,
+  and a live Claude Code exchange adjudicated 184 such candidates (all
+  dismissed) for ~64.7s. `_is_positional_case_noise` now suppresses a token
+  when positional evidence holds **and either** vocabulary evidence (as
+  before) **or** list-marker evidence: at least one capitalized occurrence
+  sits at a *list/numbered-marker* start specifically (`-`, `*`, `+`, or
+  `1.`/`1)`), never a bare heading (`#`) or an unmarked paragraph/sentence
+  start. The positional gate stays load-bearing regardless of which signal
+  fires: a token ever capitalized mid-sentence anywhere in the hop is never
+  suppressed (`test_positional_case_heuristic_does_not_suppress_a_bullet_
+  initial_name_also_capitalized_mid_sentence`), and a registered entity is
+  unaffected either way (`test_registered_entity_colliding_with_list_marker_
+  noise_is_still_blindfolded`) — L1/L2 protection is untouched, only L3
+  novelty-discovery candidacy changes.
+
+  Headings and bare paragraph starts (`## Behavior`, `Rules:`) deliberately
+  keep requiring vocabulary evidence: unlike a list item, a single heading or
+  label word is common enough as a genuine one-off proper noun (a project or
+  person name used as a section title) that positional evidence alone isn't
+  strong enough. List-item position is the narrower, safer signal — the
+  concrete shape of the observed flood.
+
+  **Residual risk (accepted, extends rather than weakens §1's own
+  reasoning):** a truly novel entity mentioned exactly once, only at a bullet/
+  numbered-list-item start, with no other occurrence in the hop, is now
+  suppressed from L3 candidacy — the same class of risk §1 already accepted
+  for the seeded allowlist and the original AND heuristic (a suppressed token
+  is a novelty-discovery blind spot, not a protection loss; the same recourse
+  as a human "reject" in the review inbox applies: allowlist curation is a
+  quality lever, not the fail-closed boundary).
+
+  Measured: a representative skill-list-shaped system-prompt fixture (30
+  bullet command words drawn from the issue's own dismissal-log excerpt, plus
+  2 genuine novel names) dropped from 34 raw capitalized-token occurrences to
+  3 candidates — the 2 real names plus one heading label lacking both
+  vocabulary and list-marker evidence
+  (`test_candidate_span_count_drops_substantially_over_a_representative_
+  skill_list_system_prompt`).
+
 - **Update (issue #157):** `GlinerCascadeAdjudicator` now also implements the
   optional `BatchL3Adjudicator.adjudicate_batch` seam (issue #142), not just
   single-candidate `adjudicate`. GLiNER classification stays per-candidate

@@ -195,15 +195,20 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   a suppressed token that is a known entity is still blindfolded.
 - **Positional case heuristic** — a **Suppression** condition (ADR-0033) that
   eliminates English positional-capitalization noise from L3 candidacy before
-  any model call. A capitalized token is suppressed when *both* (a) it appears
-  lowercase elsewhere in the same **hop** text (vocabulary evidence) *and* (b)
-  it appears only at sentence/quotation/heading start in that hop, never
-  mid-sentence in capitalized form (positional evidence). The AND requirement
-  guards the **Don/Mark/Stone failure mode**: a real first name appearing
-  mid-sentence in capitalized form always fails condition (b) and is never
-  suppressed. English-benefiting, German-neutral: German capitalizes all nouns
-  mid-sentence, so condition (a) rarely fires for German vocabulary and German
-  candidates pass through unchanged.
+  any model call. A capitalized token is suppressed when (b) it appears only
+  at sentence/quotation/heading/list-marker start in the same **hop** text,
+  never mid-sentence in capitalized form (positional evidence) — *and either*
+  (a) it appears lowercase elsewhere in the same hop (vocabulary evidence) *or*
+  (issue #161) at least one occurrence sits at a list/numbered-marker start
+  specifically, not a bare heading or unmarked paragraph start (list-marker
+  evidence, for a one-off bullet/skill-list command name that never recurs
+  lowercase). The positional gate is always load-bearing: it guards the
+  **Don/Mark/Stone failure mode** — a real first name appearing mid-sentence
+  in capitalized form always fails (b) and is never suppressed, regardless of
+  which of (a)/list-marker evidence would otherwise fire. English-benefiting,
+  German-neutral: German capitalizes all nouns mid-sentence, so vocabulary
+  evidence rarely fires for German vocabulary and German candidates pass
+  through unchanged.
 - **Closed-world restore** — restore only surrogates actually injected for this
   exchange, to avoid restoring a coincidentally-emitted lookalike. Closed-world
   constrains the *referent set*, not the string match: an injected surrogate

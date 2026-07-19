@@ -279,6 +279,45 @@ def test_positional_case_heuristic_live_regression_agentic_system_prompt_shape()
     assert flagged == {"Behavior", "Darwin", "January"}
 
 
+def test_positional_case_heuristic_suppresses_single_occurrence_bullet_command_words():
+    # Issue #161: a live dismissal log (/tmp/blindfold-dismissals-gliner.txt) showed
+    # 184 candidates adjudicated and dismissed from a single Claude Code exchange --
+    # sentence/bullet-initial capitalized common words from the agent's own system
+    # prompt and skill descriptions ("Compact", "Find", "Build", "Triage", ...).
+    # ADR-0033's original AND rule (vocabulary evidence + positional evidence) never
+    # catches these: each is a one-off skill/command name in its own bullet, so it
+    # never recurs lowercase elsewhere in the hop -- vocabulary evidence (a) never
+    # fires, even though positional evidence (b) does. "Compact", "Find", and
+    # "Build" each appear exactly once, at a bullet-marker start, with no lowercase
+    # recurrence anywhere in this hop.
+    text = (
+        "- Compact the conversation to save space.\n"
+        "- Find the relevant skill for this task.\n"
+        "- Build a prototype from the plan.\n"
+    )
+
+    candidates = select_candidate_spans(text, known_entities=[])
+
+    assert [candidate.text for candidate in candidates] == []
+
+
+def test_positional_case_heuristic_does_not_suppress_a_bullet_initial_name_also_capitalized_mid_sentence():
+    # Issue #161 acceptance criterion: a real entity appearing bullet-initial AND
+    # elsewhere mid-sentence must still be adjudicated, not over-suppressed by the
+    # new list-marker evidence path. "Mark" sits at a bullet-marker start here (no
+    # vocabulary evidence -- "mark" never recurs lowercase) but also appears
+    # mid-sentence later in the same hop, so positional evidence (b) fails and
+    # list-marker evidence never gets a chance to fire.
+    text = (
+        "- Mark the pull request as ready.\n"
+        "The lawyer said Mark signed the contract yesterday.\n"
+    )
+
+    candidates = select_candidate_spans(text, known_entities=[])
+
+    assert [candidate.text for candidate in candidates] == ["Mark", "Mark"]
+
+
 def test_registered_entity_colliding_with_positional_case_noise_is_still_blindfolded():
     # Leak-audit / ADR-0033: suppression removes L3 novelty discovery only, never
     # L1/L2 protection. "Build" is positional-case noise here (sentence-start
@@ -314,6 +353,41 @@ def test_registered_entity_colliding_with_positional_case_noise_is_still_blindfo
     message_text = blinded["messages"][0]["content"][0]["text"]
     assert "build" not in message_text.lower()
     assert message_text.count(surrogate) == 2
+
+
+def test_registered_entity_colliding_with_list_marker_noise_is_still_blindfolded():
+    # Leak-audit (clause A) / issue #161: the new list-marker-evidence suppression
+    # path removes L3 novelty discovery only, never L1/L2 protection. "Triage" here
+    # is list-marker noise (a bullet-initial, single-occurrence command name with
+    # no lowercase recurrence -- exactly the new #161 path) -- but a workspace
+    # that has registered "Triage" as a known entity must still have every
+    # occurrence blindfolded, unaffected by the L3 candidate-span heuristic.
+    mapping = SurrogateMapping.from_pairs([("Triage", "Projekt Nachtwind")])
+    payload = {
+        "model": "claude-3-5-sonnet",
+        "system": "- Triage: categorizes incoming issues by priority.",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Please triage the new issue and let Triage run.",
+                    }
+                ],
+            }
+        ],
+    }
+
+    blinded, _session = blindfold_payload(payload, mapping)
+
+    surrogate = mapping.surrogate_for("Triage")
+    assert surrogate is not None
+    assert "Triage" not in blinded["system"]
+    assert surrogate in blinded["system"]
+    message_text = blinded["messages"][0]["content"][0]["text"]
+    assert "triage" not in message_text.lower()
+    assert surrogate in message_text
 
 
 def test_registered_entity_colliding_with_a_stopword_is_still_blindfolded():
@@ -381,6 +455,72 @@ def test_candidate_span_count_drops_materially_over_a_representative_agentic_sys
     assert len(raw_capitalized_tokens) == 11
     # Materially fewer candidates reach L3 — only the genuine novel names remain.
     assert sorted(candidate.text for candidate in candidates) == ["Klaus", "Yasmin"]
+
+
+def test_candidate_span_count_drops_substantially_over_a_representative_skill_list_system_prompt():
+    # Acceptance criterion (issue #161): the live-test dismissal log showed 184
+    # candidates adjudicated (and all dismissed) from a single Claude Code exchange
+    # -- a bullet list of one-off skill/command names, each capitalized purely by
+    # bullet-initial position, never recurring lowercase in the same hop. Measured
+    # here against a representative skill-list-shaped fixture (30 bullet command
+    # words drawn from the issue's own dismissal-log excerpt): before this slice,
+    # every one of them would have reached L3 candidacy (no vocabulary evidence,
+    # so ADR-0033's original AND rule never fired). The two genuine novel names
+    # ("Klaus", "Yasmin") must still surface -- suppression is a quality
+    # optimisation over candidate *generation*, never a protection loss.
+    fixture = (
+        "## Skills\n"
+        "- Compact: reduces conversation size by summarizing history.\n"
+        "- Find: locates relevant files in the codebase.\n"
+        "- Build: compiles the project from source.\n"
+        "- Upgrades: applies dependency upgrades safely.\n"
+        "- Audits: runs a security audit over the diff.\n"
+        "- Control: manages background process lifecycle.\n"
+        "- Test: runs the project test suite.\n"
+        "- Break: pauses a running task for inspection.\n"
+        "- Turn: advances the conversation one turn.\n"
+        "- Triage: categorizes incoming issues by priority.\n"
+        "- Create: creates a new branch for the change.\n"
+        "- Drive: drives a remote agent session.\n"
+        "- Load: loads a saved session state.\n"
+        "- Asserts: checks invariants during a run.\n"
+        "- Transit: encrypts secrets via a transit backend.\n"
+        "- Implement: implements one phase of a plan.\n"
+        "- Verify: verifies a change against the suite.\n"
+        "- Iterate: repeats the phase loop.\n"
+        "- Deep: performs deep research on a topic.\n"
+        "- Produces: produces a structured report.\n"
+        "- Teaches: teaches the user a concept.\n"
+        "- Artifacts: manages build artifacts.\n"
+        "- Runtime: configures the runtime environment.\n"
+        "- Serves: serves the local development build.\n"
+        "- Scan: scans the repository for issues.\n"
+        "- Omit: omits a file from the review.\n"
+        "- Reference: references an external doc.\n"
+        "- Launch: launches the application.\n"
+        "- Initialize: initializes a new workspace.\n"
+        "- Complete: marks the task complete.\n"
+        "\n"
+        "Please make sure that Klaus is copied on any message about the finance "
+        "rollout, and that Yasmin approves the final release before it ships.\n"
+    )
+    raw_capitalized_tokens = _TITLE_CASE_WORD_RE.findall(fixture)
+
+    candidates = select_candidate_spans(fixture, known_entities=[])
+
+    # Before this slice: 34 raw capitalized-token occurrences in the fixture (the
+    # 30 bullet command words, the "Skills" heading, "Please", and the 2 real
+    # names). "Please" was already a stopword (ADR-0023); the 30 bullet command
+    # words were not suppressed by anything pre-#161 (no vocabulary evidence, so
+    # ADR-0033's original AND rule never fired) — that's the flood this slice cuts.
+    assert len(raw_capitalized_tokens) == 34
+    # After: only the heading label (no vocabulary or list-marker evidence, so
+    # it isn't suppressed) and the two genuine novel names remain candidates.
+    assert sorted(candidate.text for candidate in candidates) == [
+        "Klaus",
+        "Skills",
+        "Yasmin",
+    ]
 
 
 def test_l3_cost_scales_with_candidate_span_count_not_payload_size():
