@@ -135,6 +135,24 @@ surrogate mapping — **never captured into the ring buffer itself**, which stil
 stores plain surrogate-token strings, so the buffer's own scrub invariant
 (decision 4) is untouched by this slice.
 
+### 14. Split exchange time into blindfold-processing vs. upstream (issue #158)
+
+`duration_ms` (decision 1) is the whole `mint -> forward-to-upstream -> restore ->
+gate` round-trip, but gave no way to tell "blindfold is slow" from "Claude is
+slow." The record now also carries `upstream_duration_ms: float | None` — the
+sub-span actually spent in `upstream.send_messages`/`send_chat_completions`
+(buffered) or `open_stream` (TTFB) plus the full SSE stream consumption
+(streamed, since the client is genuinely waiting the whole span) — `None` when
+the exchange was blocked before it ever reached upstream, mirroring decision
+12's `l3_provider=None` convention. "Blindfold processing time" is *derived*,
+never stored: `duration_ms - upstream_duration_ms`, covering mint (incl. L3) +
+L1/L2 + restore + gates, already broken down further by the per-hop timings
+(decision 12). The collapsed row gains a **Total** column (`duration_ms`) and a
+**Blindfold / Upstream** column showing the derived split, so the trace can
+finally answer "where did the 72 seconds go" at a glance — `formatMs` now
+renders `>=1000ms` as seconds, since exchanges with L3 minting over many
+candidate spans run into the tens of seconds.
+
 ## Consequences
 
 - The trace is an *operational* surface, not a compliance one — it complements,
@@ -146,3 +164,5 @@ stores plain surrogate-token strings, so the buffer's own scrub invariant
   same scrubbed-by-construction invariant (a surrogate token, never a real value
   or candidate-span text). Reveal and deep-links landed in issue #154 (decision
   13), reusing the existing audited Re-identify path rather than a new endpoint.
+  The blindfold-vs-upstream time split (decision 14, issue #158) is plain
+  numbers derived from timings already computed — no new value exposure.

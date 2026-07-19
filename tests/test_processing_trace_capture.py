@@ -118,6 +118,11 @@ async def test_clean_pass_through_produces_exactly_one_passed_record():
     assert record.endpoint == "messages"
     assert record.streamed is False
     assert record.detected == 0
+    # Issue #158: split duration_ms into blindfold-processing vs upstream (Claude)
+    # time -- a passed exchange's upstream_duration_ms is the sub-span of
+    # duration_ms spent in upstream.send_messages only, never re-derived/estimated.
+    assert record.upstream_duration_ms is not None
+    assert 0 <= record.upstream_duration_ms <= record.duration_ms
 
 
 @pytest.mark.anyio
@@ -152,6 +157,10 @@ async def test_l3_unavailable_block_produces_a_blocked_record_with_the_scrubbed_
     record = records[0]
     assert record.outcome == "blocked"
     assert record.reason == resp.json()["error"]["reason"]
+    # Issue #158: this block fires in _mint_or_block, before the exchange ever
+    # reached upstream -- no upstream call happened, so there is no upstream time
+    # to report (mirrors the existing l3_provider=None convention).
+    assert record.upstream_duration_ms is None
 
 
 @pytest.mark.anyio
@@ -241,6 +250,9 @@ async def test_chat_completions_clean_pass_through_produces_exactly_one_passed_r
     assert record.outcome == "passed"
     assert record.endpoint == "chat_completions"
     assert record.streamed is False
+    # Issue #158: same upstream_duration_ms split as /v1/messages' buffered path.
+    assert record.upstream_duration_ms is not None
+    assert 0 <= record.upstream_duration_ms <= record.duration_ms
 
 
 @pytest.mark.anyio
@@ -285,6 +297,12 @@ async def test_streaming_clean_pass_through_produces_exactly_one_passed_record()
     record = records[0]
     assert record.outcome == "passed"
     assert record.streamed is True
+    # Issue #158: for a streamed exchange, upstream_duration_ms must cover
+    # open_stream (TTFB) *plus* the full stream consumption in _stream_restored --
+    # the stream is genuinely open (and the client genuinely waiting) the whole
+    # span, so it all counts as upstream time.
+    assert record.upstream_duration_ms is not None
+    assert 0 <= record.upstream_duration_ms <= record.duration_ms
 
 
 def _sse_event(payload: dict) -> bytes:

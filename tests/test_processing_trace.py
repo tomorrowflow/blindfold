@@ -88,3 +88,43 @@ def test_record_defaults_to_no_hops_and_no_l3_rollup():
     assert record.l3_provider is None
     assert record.l3_duration_ms is None
     assert record.to_dict()["hops"] == []
+
+
+def test_record_carries_upstream_duration_ms():
+    # Issue #158: split exchange duration_ms into blindfold-processing vs
+    # upstream (Claude) time. upstream_duration_ms is None when the exchange never
+    # reached upstream (mirrors today's l3_provider=None convention), a float
+    # otherwise -- never re-derived from duration_ms, always threaded in by the
+    # request-path caller.
+    buffer = ProcessingTraceBuffer(maxlen=3)
+
+    buffer.record(
+        workspace="ws-a",
+        endpoint="messages",
+        streamed=False,
+        outcome="passed",
+        detected=1,
+        duration_ms=100.0,
+        upstream_duration_ms=40.0,
+    )
+
+    record = buffer.recent()[0]
+    assert record.upstream_duration_ms == 40.0
+    assert record.to_dict()["upstream_duration_ms"] == 40.0
+
+
+def test_record_defaults_to_no_upstream_duration():
+    buffer = ProcessingTraceBuffer(maxlen=3)
+
+    buffer.record(
+        workspace="ws-a",
+        endpoint="messages",
+        streamed=False,
+        outcome="blocked",
+        detected=0,
+        duration_ms=1.0,
+    )
+
+    record = buffer.recent()[0]
+    assert record.upstream_duration_ms is None
+    assert record.to_dict()["upstream_duration_ms"] is None

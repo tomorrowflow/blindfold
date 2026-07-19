@@ -743,6 +743,7 @@ def _record_trace(
     start: float,
     reason: str | None = None,
     session: ExchangeSession | None = None,
+    upstream_duration_ms: float | None = None,
 ) -> None:
     """Append one scrubbed processing-trace record for this exchange (ADR-0035).
 
@@ -752,6 +753,11 @@ def _record_trace(
     provider/timing rollup the collapsed row's L3 column reads. ``None`` (a block
     raised before any hop was blindfolded) reproduces today's "no hop detail"
     behavior exactly.
+
+    ``upstream_duration_ms`` (issue #158) is measured by the caller around the
+    actual ``upstream.send_*``/``open_stream`` + stream-consumption span -- never
+    re-derived here -- and stays ``None`` for a block raised before the exchange
+    ever reached upstream, mirroring the ``l3_provider=None`` convention.
     """
     hops = [hop.to_dict() for hop in session.hops] if session is not None else []
     l3_hops = [hop for hop in session.hops if hop.l3_provider is not None] if session else []
@@ -768,6 +774,7 @@ def _record_trace(
         hops=hops,
         l3_provider=l3_provider,
         l3_duration_ms=l3_duration_ms,
+        upstream_duration_ms=upstream_duration_ms,
     )
 
 
@@ -1142,40 +1149,49 @@ async def messages(
         return block
 
     if streamed:
+        upstream_start = time.monotonic()
         try:
             upstream_response = await upstream.open_stream(blinded, forwarded)
         except UpstreamError as exc:
             _record_trace(
                 trace, workspace, "messages", streamed, OUTCOME_UPSTREAM_ERROR,
                 len(session.injected), start, reason=str(exc), session=session,
+                upstream_duration_ms=(time.monotonic() - upstream_start) * 1000,
             )
             return _upstream_error_response(exc, workspace, audit_log, upstream_health)
+        open_stream_duration_ms = (time.monotonic() - upstream_start) * 1000
         return StreamingResponse(
             _stream_restored(
-                upstream_response, session, workspace, audit_log, trace, start
+                upstream_response, session, workspace, audit_log, trace, start,
+                open_stream_duration_ms,
             ),
             media_type="text/event-stream",
         )
 
+    upstream_start = time.monotonic()
     try:
         raw_response = await upstream.send_messages(blinded, forwarded)
     except UpstreamError as exc:
         _record_trace(
             trace, workspace, "messages", streamed, OUTCOME_UPSTREAM_ERROR,
             len(session.injected), start, reason=str(exc), session=session,
+            upstream_duration_ms=(time.monotonic() - upstream_start) * 1000,
         )
         return _upstream_error_response(exc, workspace, audit_log, upstream_health)
+    upstream_duration_ms = (time.monotonic() - upstream_start) * 1000
     restored = restore_response(raw_response, session)
     block = _resolution_gate_or_block(restored, session, workspace, audit_log, block_history)
     if block is not None:
         _record_trace(
             trace, workspace, "messages", streamed, OUTCOME_BLOCKED,
             len(session.injected), start, reason=_block_reason(block), session=session,
+            upstream_duration_ms=upstream_duration_ms,
         )
         return block
     _record_trace(
         trace, workspace, "messages", streamed, OUTCOME_PASSED,
         len(session.injected), start, session=session,
+        upstream_duration_ms=upstream_duration_ms,
     )
     return restored
 
@@ -1227,6 +1243,7 @@ async def chat_completions(
         )
         return block
 
+    upstream_start = time.monotonic()
     try:
         raw_response = await upstream.send_chat_completions(
             blinded, _forwarded_headers(request)
@@ -1235,19 +1252,23 @@ async def chat_completions(
         _record_trace(
             trace, workspace, "chat_completions", False, OUTCOME_UPSTREAM_ERROR,
             len(session.injected), start, reason=str(exc), session=session,
+            upstream_duration_ms=(time.monotonic() - upstream_start) * 1000,
         )
         return _upstream_error_response(exc, workspace, audit_log, upstream_health)
+    upstream_duration_ms = (time.monotonic() - upstream_start) * 1000
     restored = restore_chat_completion(raw_response, session)
     block = _resolution_gate_or_block(restored, session, workspace, audit_log, block_history)
     if block is not None:
         _record_trace(
             trace, workspace, "chat_completions", False, OUTCOME_BLOCKED,
             len(session.injected), start, reason=_block_reason(block), session=session,
+            upstream_duration_ms=upstream_duration_ms,
         )
         return block
     _record_trace(
         trace, workspace, "chat_completions", False, OUTCOME_PASSED,
         len(session.injected), start, session=session,
+        upstream_duration_ms=upstream_duration_ms,
     )
     return restored
 
@@ -1338,6 +1359,7 @@ async def _stream_restored(
     audit_log: AuditLog,
     trace: ProcessingTraceBuffer,
     start: float,
+    open_stream_duration_ms: float,
 ) -> AsyncIterator[bytes]:
     """Stream restored SSE bytes to the client.
 
@@ -1345,6 +1367,9 @@ async def _stream_restored(
     :meth:`~blindfold.upstream.UpstreamClient.open_stream` — headers were received
     (and any connect/TTFB failure reported as a structured JSON error) before the
     caller constructed the ``StreamingResponse`` wrapping this generator (issue #86).
+    ``open_stream_duration_ms`` is that TTFB span, measured by the caller; issue
+    #158's ``upstream_duration_ms`` adds this generator's own stream-consumption
+    time to it, since the client is genuinely waiting on upstream the whole span.
     This function owns closing it (``aclose``) once the body is fully consumed or the
     generator is torn down early.
 
@@ -1382,6 +1407,7 @@ async def _stream_restored(
     buffer = ""
     disconnected = False
     disconnect_reason = ""
+    consume_start = time.monotonic()
     try:
         async for raw in upstream_response.aiter_bytes():
             buffer += raw.decode("utf-8")
@@ -1431,6 +1457,8 @@ async def _stream_restored(
     finally:
         await upstream_response.aclose()
 
+    upstream_duration_ms = open_stream_duration_ms + (time.monotonic() - consume_start) * 1000
+
     try:
         resolution_gate(
             {"stream": b"".join(emitted).decode("utf-8", errors="replace")}, session
@@ -1450,6 +1478,7 @@ async def _stream_restored(
         _record_trace(
             trace, workspace, "messages", True, OUTCOME_BLOCKED,
             len(session.injected), start, reason=reason, session=session,
+            upstream_duration_ms=upstream_duration_ms,
         )
         raise
 
@@ -1457,11 +1486,13 @@ async def _stream_restored(
         _record_trace(
             trace, workspace, "messages", True, OUTCOME_UPSTREAM_ERROR,
             len(session.injected), start, reason=disconnect_reason, session=session,
+            upstream_duration_ms=upstream_duration_ms,
         )
     else:
         _record_trace(
             trace, workspace, "messages", True, OUTCOME_PASSED,
             len(session.injected), start, session=session,
+            upstream_duration_ms=upstream_duration_ms,
         )
 
 

@@ -445,16 +445,24 @@ def build_app():
         ],
         l3_provider="ollama",
         l3_duration_ms=42.0,
+        # Issue #158: upstream (Claude) was fast -- the bulk of this exchange's
+        # 118ms was blindfold's own L3 minting, the exact "90% blindfold" shape
+        # the issue's own live example reports.
+        upstream_duration_ms=15.0,
     )
     processing_trace.record(
         workspace=WORKSPACE, endpoint="messages", streamed=False,
         outcome="blocked", detected=0, duration_ms=9.0,
         reason="leak_gate: a mapped entity matched the outbound payload",
+        # Blocked before the exchange ever reached upstream -- no upstream call
+        # happened (mirrors the l3_provider=None convention).
+        upstream_duration_ms=None,
     )
     processing_trace.record(
         workspace=WORKSPACE, endpoint="chat_completions", streamed=False,
         outcome="upstream_error", detected=1, duration_ms=302.0,
         reason="upstream returned HTTP 500",
+        upstream_duration_ms=302.0,
     )
 
     app.dependency_overrides[get_entity_graph] = lambda: graph

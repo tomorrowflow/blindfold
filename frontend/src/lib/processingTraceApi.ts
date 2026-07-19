@@ -47,6 +47,7 @@ export type ProcessingTraceRecord = {
   hops: ProcessingTraceHop[];
   l3_provider: string | null;
   l3_duration_ms: number | null;
+  upstream_duration_ms: number | null;
 };
 
 export type ProcessingTraceFetchResult =

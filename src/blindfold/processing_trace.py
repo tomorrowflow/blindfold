@@ -42,6 +42,9 @@ class ProcessingTraceRecord:
     surrogate tokens only, never a real value, candidate-span text, or raw hop
     text. ``l3_provider``/``l3_duration_ms`` are the exchange-level rollup the
     collapsed row's L3 column reads: ``None`` when no hop actually ran L3.
+    ``upstream_duration_ms`` (issue #158) is the sub-span of ``duration_ms`` spent
+    waiting on the upstream provider only -- ``None`` when the exchange was blocked
+    before it ever reached upstream, mirroring the ``l3_provider=None`` convention.
     """
 
     ts: str
@@ -55,6 +58,7 @@ class ProcessingTraceRecord:
     hops: tuple[dict, ...] = ()
     l3_provider: str | None = None
     l3_duration_ms: float | None = None
+    upstream_duration_ms: float | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -69,6 +73,7 @@ class ProcessingTraceRecord:
             "hops": list(self.hops),
             "l3_provider": self.l3_provider,
             "l3_duration_ms": self.l3_duration_ms,
+            "upstream_duration_ms": self.upstream_duration_ms,
         }
 
 
@@ -99,6 +104,7 @@ class ProcessingTraceBuffer:
         hops: Sequence[dict] = (),
         l3_provider: str | None = None,
         l3_duration_ms: float | None = None,
+        upstream_duration_ms: float | None = None,
     ) -> None:
         self._entries.append(
             ProcessingTraceRecord(
@@ -113,6 +119,7 @@ class ProcessingTraceBuffer:
                 hops=tuple(hops),
                 l3_provider=l3_provider,
                 l3_duration_ms=l3_duration_ms,
+                upstream_duration_ms=upstream_duration_ms,
             )
         )
 

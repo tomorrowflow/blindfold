@@ -17,13 +17,41 @@ const TRACE_HOP_REJECTED_SURROGATE = "Igor Talvik";
 const TRACE_HOP_PENDING_SURROGATE = "Alex Brenner"; // review inbox's first provisional pool entry
 
 test.describe("Processing trace — alice (holds viewer)", () => {
-  test("renders header, subtitle and the five-column grid", async ({ alicePage }) => {
+  test("renders header, subtitle and the seven-column grid", async ({ alicePage }) => {
     await alicePage.goto("/ui/processing-trace");
     const view = alicePage.getByTestId("processing-trace-page");
     await expect(view.locator("h1")).toHaveText("Processing trace");
     await expect(view).toContainText("never a");
     const headers = alicePage.locator("[data-testid='processing-trace-table'] th");
-    await expect(headers).toHaveText(["Outcome", "Time", "Detected", "L3", "Hops"]);
+    await expect(headers).toHaveText([
+      "Outcome",
+      "Time",
+      "Total",
+      "Blindfold / Upstream",
+      "Detected",
+      "L3",
+      "Hops",
+    ]);
+  });
+
+  test("Total and Blindfold / Upstream columns split the seeded passed row's timing", async ({
+    alicePage,
+  }) => {
+    // Issue #158: the seeded "passed" record is duration_ms=118, upstream_duration_ms=15
+    // -- the split must show the derived blindfold-side share (103ms), never a
+    // re-estimated or stored value.
+    await alicePage.goto("/ui/processing-trace");
+    const totalCells = alicePage.getByTestId("processing-trace-row-total");
+    await expect(totalCells).toHaveCount(3);
+    await expect(totalCells.filter({ hasText: "118ms" })).toHaveCount(1);
+
+    const splitCells = alicePage.getByTestId("processing-trace-row-split");
+    await expect(splitCells.filter({ hasText: "blindfold 103ms / upstream 15ms" })).toHaveCount(1);
+    // The seeded "blocked" record never reached upstream (upstream_duration_ms=None)
+    // -- the whole total is attributed to blindfold, no "/ upstream" suffix. The
+    // other two seeded rows (passed, upstream_error) both did reach upstream.
+    await expect(splitCells.filter({ hasText: "blindfold 9ms" })).toHaveCount(1);
+    await expect(splitCells.filter({ hasText: "/ upstream" })).toHaveCount(2);
   });
 
   test("shows the seeded passed, blocked and upstream-error rows", async ({ alicePage }) => {

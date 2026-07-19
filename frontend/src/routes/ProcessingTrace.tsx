@@ -40,7 +40,27 @@ function formatTime(ts: string): string {
 }
 
 function formatMs(ms: number): string {
+  // Issue #158: exchanges now run into the tens of seconds (GLiNER-cascade L3
+  // minting over a large candidate-span count) -- render >=1000ms as seconds so
+  // the collapsed row stays readable.
+  if (ms >= 1000) {
+    return `${(ms / 1000).toFixed(1)}s`;
+  }
   return `${Math.round(ms)}ms`;
+}
+
+// Issue #158: `duration_ms` is the whole mint -> forward -> restore -> gate
+// round-trip; `upstream_duration_ms` is the sub-span actually spent waiting on
+// the upstream provider (Claude) -- `null` when the exchange never reached
+// upstream (blocked pre-forward), in which case the full total is blindfold-side.
+// The split is derived here, never stored, so it can never drift from the two
+// fields the record actually carries.
+function formatBlindfoldVsUpstream(durationMs: number, upstreamDurationMs: number | null): string {
+  if (upstreamDurationMs === null) {
+    return `blindfold ${formatMs(durationMs)}`;
+  }
+  const blindfoldMs = Math.max(0, durationMs - upstreamDurationMs);
+  return `blindfold ${formatMs(blindfoldMs)} / upstream ${formatMs(upstreamDurationMs)}`;
 }
 
 function formatL1Counts(counts: Record<string, number>): string {
@@ -308,6 +328,8 @@ export function ProcessingTrace() {
               <tr>
                 <th>Outcome</th>
                 <th>Time</th>
+                <th>Total</th>
+                <th>Blindfold / Upstream</th>
                 <th>Detected</th>
                 <th>L3</th>
                 <th>Hops</th>
@@ -337,6 +359,12 @@ export function ProcessingTrace() {
                         </span>
                       </td>
                       <td className="bf-mono-cell">{formatTime(row.ts)}</td>
+                      <td className="bf-mono-cell" data-testid="processing-trace-row-total">
+                        {formatMs(row.duration_ms)}
+                      </td>
+                      <td className="bf-mono-cell" data-testid="processing-trace-row-split">
+                        {formatBlindfoldVsUpstream(row.duration_ms, row.upstream_duration_ms)}
+                      </td>
                       <td className="bf-mono-cell">{row.detected}</td>
                       <td className="bf-mono-cell" data-testid="processing-trace-row-l3">
                         {row.l3_provider
@@ -361,7 +389,7 @@ export function ProcessingTrace() {
                     </tr>
                     {expanded && (
                       <tr className="bf-trace-expansion-row">
-                        <td colSpan={5}>
+                        <td colSpan={7}>
                           <div
                             className="bf-trace-hop-cards"
                             data-testid="processing-trace-hop-cards"
@@ -386,7 +414,7 @@ export function ProcessingTrace() {
               })}
               {rows.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="bf-empty">
+                  <td colSpan={7} className="bf-empty">
                     No processing-trace records yet.
                   </td>
                 </tr>
