@@ -24,7 +24,8 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .detection import detect_l2, detect_pii
-from .l3 import L3Detector, count_capitalized_tokens
+from .l3 import CandidateSpan, L3Detector, count_capitalized_tokens
+from .l3 import _context_window as _l3_context_window
 from .review import ReviewInbox
 from .surrogates import SurrogateMapping
 
@@ -507,29 +508,39 @@ def _blindfold_text(
         injected_surrogate_ranges = _injected_surrogate_ranges(
             result, mapping, session, inbox
         )
-        # Re-resolve candidate offsets against the current ``result`` because L2/L1
-        # have already rewritten the text out from under L3's original start/end.
-        spans = []
-        for candidate, decision in adjudications:
-            if not decision.is_entity:
-                continue
-            hit = result.find(candidate.text)
-            if hit == -1:
-                continue
-            if any(
-                hit >= start and hit + len(candidate.text) <= end
+        # Candidate offsets are already resolved against ``result`` -- L3 detection
+        # (above) ran on this exact string, and nothing rewrites ``result`` between
+        # that call and here.
+        novel_candidates = [
+            candidate
+            for candidate, decision in adjudications
+            if decision.is_entity
+            and not any(
+                candidate.start >= start and candidate.end <= end
                 for start, end in injected_surrogate_ranges
-            ):
-                continue
+            )
+        ]
+        # Coalesce adjacent confirmed candidates into one entity before minting
+        # (issue #162): select_candidate_spans emits single capitalized tokens, so
+        # a multi-word entity ("Sarah Bergmann") surfaces as separately-confirmed
+        # candidates -- both the GLiNER cascade (issue #160: each token covered by
+        # the same multi-word span confirms independently) and the inner-LLM path
+        # produce this shape. Minting each token independently scrambles the
+        # entity into unrelated surrogates before it reaches the provider --
+        # privacy-safe (no real value crosses egress) but incoherent, and noisy
+        # for the review inbox (one item per token instead of one per entity).
+        spans = []
+        for group in _coalesce_adjacent_spans(novel_candidates, result):
+            start, end = group[0].start, group[-1].end
+            real = result[start:end]
+            context, context_offset = _l3_context_window(result, start, end)
             item = inbox.upsert(
-                candidate.text,
-                candidate.context,
+                real,
+                context,
                 known_values=mapping.real_values(),
-                context_offset=candidate.context_offset,
+                context_offset=context_offset,
             )
-            spans.append(
-                (hit, hit + len(candidate.text), item.provisional_surrogate, candidate.text)
-            )
+            spans.append((start, end, item.provisional_surrogate, real))
         for start, end, surrogate, real in sorted(
             spans, key=lambda s: s[0], reverse=True
         ):
@@ -538,6 +549,30 @@ def _blindfold_text(
             if hop_ctx is not None:
                 hop_ctx.surrogates.append(surrogate)
     return result
+
+
+def _coalesce_adjacent_spans(
+    candidates: list[CandidateSpan], text: str
+) -> list[list[CandidateSpan]]:
+    """Group confirmed candidate spans into runs separated only by whitespace in
+    ``text`` (issue #162) -- e.g. ``"Sarah"`` + ``"Bergmann"`` in "Sarah Bergmann".
+    A non-whitespace gap between two confirmed candidates (however short — another
+    word, punctuation) means they're separate entities and must never merge; a
+    newline in the gap is also treated as a break, never bridging a coincidental
+    same-word run across a line boundary.
+    """
+    groups: list[list[CandidateSpan]] = []
+    for candidate in sorted(candidates, key=lambda c: c.start):
+        if groups and _is_whitespace_gap(text, groups[-1][-1].end, candidate.start):
+            groups[-1].append(candidate)
+        else:
+            groups.append([candidate])
+    return groups
+
+
+def _is_whitespace_gap(text: str, prev_end: int, next_start: int) -> bool:
+    gap = text[prev_end:next_start]
+    return gap != "" and "\n" not in gap and gap.strip() == ""
 
 
 def _injected_surrogate_ranges(

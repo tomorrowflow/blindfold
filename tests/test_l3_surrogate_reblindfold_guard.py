@@ -229,8 +229,10 @@ async def test_novel_only_prompt_round_trips_with_no_seeded_entity_present():
     # The mint pass produced provisional inbox entries for the real novel names --
     # not surrogate fragments of each other (a re-adjudication chain would show up
     # here as garbage entries with no relation to "Priya Nadkarni"/"Ravi Deshmukh").
+    # Issue #162: adjacent confirmed tokens coalesce into one entity, so each
+    # multi-word name is a single inbox entry, not one per token.
     inbox_reals = {item.real for item in inbox.list()}
-    assert inbox_reals == {"Priya", "Nadkarni", "Ravi", "Deshmukh", "Tuesday"}
+    assert inbox_reals == {"Priya Nadkarni", "Ravi Deshmukh", "Tuesday"}
 
 
 @pytest.mark.anyio
