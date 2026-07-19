@@ -53,7 +53,7 @@ test.describe("Setup — empty-store forced redirect", () => {
 });
 
 test.describe("Setup — create first workspace", () => {
-  test("creating a workspace (Load sample data left unticked) grants the creator admin and lands in that workspace's empty entity list", async ({
+  test("creating a workspace (Load sample data left unticked) grants the creator every canonical role and lands in that workspace's empty entity list", async ({
     operatorPage,
   }) => {
     await operatorPage.goto("/ui/setup");
@@ -69,15 +69,19 @@ test.describe("Setup — create first workspace", () => {
 
     // The SPA never sends x-blindfold-identity (issue #107's browser-side caller
     // is the default "" identity, ADR-0019's static single-owner model) — verify
-    // the grant landed server-side through the real roles endpoint, exactly the
-    // way an authorized admin would query it.
+    // the founding grant landed server-side through the real roles endpoint,
+    // exactly the way an authorized admin would query it. Issue #156: the founding
+    // identity gets every canonical role (viewer/curator/re-identifier/admin), not
+    // just admin, so it isn't locked out of the viewer-gated views.
     const api = await pwRequest.newContext({ baseURL: EMPTY_BASE_URL });
     const rolesResp = await api.get("/v1/management/workspaces/acme-corp/roles", {
       headers: { "x-blindfold-identity": "" },
     });
     expect(rolesResp.status()).toBe(200);
     const body = await rolesResp.json();
-    expect(body.assignments).toContainEqual({ identity: "", workspace: "acme-corp", role: "admin" });
+    for (const role of ["viewer", "curator", "re-identifier", "admin"]) {
+      expect(body.assignments).toContainEqual({ identity: "", workspace: "acme-corp", role });
+    }
     await api.dispose();
   });
 

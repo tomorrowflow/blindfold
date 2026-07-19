@@ -16,7 +16,7 @@
 export type CreateWorkspaceResult = {
   slug: string;
   name: string;
-  admin_granted: boolean;
+  founding_grant_applied: boolean;
 };
 
 export type SeedResult = {

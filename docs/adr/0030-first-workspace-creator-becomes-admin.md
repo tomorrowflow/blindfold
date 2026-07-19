@@ -44,6 +44,14 @@ the same `RbacRegistry.grant` the role-grant endpoint calls — no bypass path.
 - **Creating an *additional* workspace on a non-empty store is a different,
   admin-gated action** (a v2 concern), not this flow. The auto-admin grant is
   scoped to the empty-store first-run and nowhere else.
+- **Update (issue #156):** the founding grant is every canonical role
+  (`VALID_ROLES` — `viewer`, `curator`, `re-identifier`, `admin`), issued through
+  `bootstrap_admin` (the same helper `BLINDFOLD_BOOTSTRAP_ADMIN` uses), not `admin`
+  alone. `admin` grants the ability to *administer* roles; it does not imply
+  `viewer`/`curator`/`re-identifier` (roles are flat/exact-match, ADR-0028), so an
+  admin-only founding grant left the founding operator locked out of the
+  viewer-gated views (processing trace, review inbox, audit log). Setup and
+  Bootstrap now agree on what "founding admin of a fresh install" means.
 
 ## Consequences
 

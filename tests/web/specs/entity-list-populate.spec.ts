@@ -14,10 +14,10 @@ import { test, expect, request as pwRequest } from "@playwright/test";
 //
 // Each describe block below runs against its OWN genuinely-empty serve_fixture.py
 // instance (ports 8954/8955, BLINDFOLD_FIXTURE_STATE=empty, see
-// playwright.config.ts) -- creating a workspace self-grants admin only when the
-// store was empty beforehand (issue #107's privilege-escalation guard), so each
-// spec needs a store of its own, independent of setup-shell.spec.ts's own
-// empty-store instance too.
+// playwright.config.ts) -- creating a workspace self-grants every canonical role
+// (issue #156) only when the store was empty beforehand (issue #107's
+// privilege-escalation guard), so each spec needs a store of its own, independent
+// of setup-shell.spec.ts's own empty-store instance too.
 //
 // The bundle fixture file is written under os.tmpdir(), NOT testInfo.outputPath():
 // this file's describe titles carry an em dash ("—", matching this repo's other
@@ -59,15 +59,18 @@ test.describe("Setup — create with Load sample data checked", () => {
     await context.close();
 
     // The SPA never sends x-blindfold-identity (ADR-0019's static single-owner
-    // model) — verify the grant landed server-side through the real roles
-    // endpoint, exactly the way an authorized admin would query it.
+    // model) — verify the founding grant landed server-side through the real
+    // roles endpoint, exactly the way an authorized admin would query it. Issue
+    // #156: every canonical role lands, not just admin.
     const api = await pwRequest.newContext({ baseURL: SAMPLE_DATA_BASE_URL });
     const rolesResp = await api.get("/v1/management/workspaces/acme-corp/roles", {
       headers: { "x-blindfold-identity": "" },
     });
     expect(rolesResp.status()).toBe(200);
     const roles = await rolesResp.json();
-    expect(roles.assignments).toContainEqual({ identity: "", workspace: "acme-corp", role: "admin" });
+    for (const role of ["viewer", "curator", "re-identifier", "admin"]) {
+      expect(roles.assignments).toContainEqual({ identity: "", workspace: "acme-corp", role });
+    }
 
     // Sample data never auto-creates `default` (issue #109 AC) — it loaded into
     // the explicit, already-created "acme-corp" workspace. No admin role was ever

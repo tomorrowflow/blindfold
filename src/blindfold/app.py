@@ -88,7 +88,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from .allowlist_seed import load_seeded_allowlist_tokens
-from .bootstrap import bootstrap_from_vendored_seed
+from .bootstrap import bootstrap_admin, bootstrap_from_vendored_seed
 from .config import Settings, get_settings, raw_l3_gliner_model_path_override
 from .entity_graph import (
     CrossKindMergeError,
@@ -1731,11 +1731,15 @@ async def create_workspace(
 ) -> dict:
     """Create a workspace — Setup's create-first-workspace action (issue #107).
 
-    Grants the creating identity ``admin`` on the new workspace, through the same
-    ``RbacRegistry.grant`` every other role-grant path uses, **iff the store was
-    empty before this call**. Creating an additional workspace on an already
-    non-empty store persists it but does not self-grant admin (privilege-escalation
-    guard) — that path is a separate, admin-gated action (v2), not this flow.
+    Grants the creating identity every canonical role (``VALID_ROLES``) on the new
+    workspace, through the same ``bootstrap_admin`` helper the headless
+    `BLINDFOLD_BOOTSTRAP_ADMIN` path uses (itself built on `RbacRegistry.grant`),
+    **iff the store was empty before this call** — so the founding operator can
+    immediately use every management view (issue #156), matching what headless
+    bootstrap already grants. Creating an additional workspace on an already
+    non-empty store persists it but does not self-grant any role
+    (privilege-escalation guard) — that path is a separate, admin-gated action
+    (v2), not this flow.
 
     Ungated (no `_require_role` check): an empty store holds no admin to gate
     against, mirroring the same chicken-and-egg rationale as headless
@@ -1749,9 +1753,9 @@ async def create_workspace(
     was_empty = entity_graph.is_empty()
     entity_graph.create_workspace(slug, name)
     if was_empty:
-        rbac.grant(_caller_identity(request), slug, "admin")
+        bootstrap_admin(rbac, _caller_identity(request), slug)
 
-    return {"slug": slug, "name": name, "admin_granted": was_empty}
+    return {"slug": slug, "name": name, "founding_grant_applied": was_empty}
 
 
 @app.post("/v1/management/workspaces/{slug}/seed")
