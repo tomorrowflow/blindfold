@@ -323,11 +323,14 @@ class _StubGlinerModel:
 
     def predict_entities(self, text: str, labels: list[str]) -> list[dict]:
         self.calls.append((text, labels))
-        return [
-            {"text": token, "label": labels[0]}
-            for token in self._hits
-            if token in text
-        ]
+        entities = []
+        for token in self._hits:
+            start = text.find(token)
+            if start != -1:
+                entities.append(
+                    {"text": token, "label": labels[0], "start": start, "end": start + len(token)}
+                )
+        return entities
 
 
 def test_gliner_onnx_classifier_takes_a_model_path_and_loads_it_only_on_first_classify(
@@ -350,7 +353,11 @@ def test_gliner_onnx_classifier_takes_a_model_path_and_loads_it_only_on_first_cl
     assert load_calls == []  # constructing the classifier loads nothing yet
 
     candidate = CandidateSpan(
-        text="Klaus", start=11, end=16, context="We mention Klaus in passing."
+        text="Klaus",
+        start=11,
+        end=16,
+        context="We mention Klaus in passing.",
+        context_offset=11,
     )
     result = classifier.classify(candidate)
 
@@ -370,6 +377,59 @@ def test_gliner_onnx_classifier_returns_false_when_the_span_is_not_among_the_hit
     classifier = GlinerOnnxClassifier(model_path="gliner-pii-edge-v1.0")
     candidate = CandidateSpan(
         text="Please", start=0, end=6, context="Please brief the team."
+    )
+
+    assert classifier.classify(candidate) is False
+
+
+def test_gliner_onnx_classifier_confirms_a_single_token_candidate_within_a_multi_word_span(
+    monkeypatch,
+):
+    # Issue #160: select_candidate_spans (l3.py) emits single capitalized tokens as
+    # candidates, but GLiNER returns multi-word spans ("John Smith", not "John").
+    # An exact string match between the candidate token and the GLiNER span text
+    # never fires for a multi-word entity -- classify() must confirm when the
+    # GLiNER span *covers* the candidate's character offsets, not only when the
+    # strings are equal.
+    context = "John Smith called from Acme Corporation about Project Falcon."
+    stub_model = _StubGlinerModel(hits=frozenset({"John Smith"}))
+    monkeypatch.setattr(l3_gliner, "_load_gliner_model", lambda model_path: stub_model)
+    classifier = GlinerOnnxClassifier(model_path="gliner-pii-base-v1.0")
+    candidate = CandidateSpan(
+        text="John", start=0, end=4, context=context, context_offset=0
+    )
+
+    assert classifier.classify(candidate) is True
+
+
+def test_gliner_onnx_classifier_confirms_the_second_token_of_a_multi_word_span(
+    monkeypatch,
+):
+    # Acceptance criterion: both tokens of a multi-word span confirm, not just
+    # the one that happens to start at the span's own start offset.
+    context = "John Smith called from Acme Corporation about Project Falcon."
+    stub_model = _StubGlinerModel(hits=frozenset({"John Smith"}))
+    monkeypatch.setattr(l3_gliner, "_load_gliner_model", lambda model_path: stub_model)
+    classifier = GlinerOnnxClassifier(model_path="gliner-pii-base-v1.0")
+    candidate = CandidateSpan(
+        text="Smith", start=5, end=10, context=context, context_offset=5
+    )
+
+    assert classifier.classify(candidate) is True
+
+
+def test_gliner_onnx_classifier_does_not_confirm_a_candidate_outside_any_span(
+    monkeypatch,
+):
+    # Acceptance criterion (fail-closed preserved): a candidate token that GLiNER
+    # doesn't cover with any span still returns False and delegates to the inner
+    # adjudicator, even when other, unrelated spans are present in the same context.
+    context = "John Smith called from Acme Corporation about Project Falcon."
+    stub_model = _StubGlinerModel(hits=frozenset({"John Smith", "Acme Corporation"}))
+    monkeypatch.setattr(l3_gliner, "_load_gliner_model", lambda model_path: stub_model)
+    classifier = GlinerOnnxClassifier(model_path="gliner-pii-base-v1.0")
+    candidate = CandidateSpan(
+        text="Falcon", start=54, end=60, context=context, context_offset=54
     )
 
     assert classifier.classify(candidate) is False

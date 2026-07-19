@@ -103,16 +103,21 @@ class GlinerOnnxClassifier:
         if self._model is None:
             self._model = _load_gliner_model(self._model_path)
         entities = self._model.predict_entities(candidate.context, list(_GLINER_LABELS))
-        return any(entity["text"] == candidate.text for entity in entities)
+        candidate_start = candidate.context_offset
+        candidate_end = candidate_start + len(candidate.text)
+        return any(
+            entity["start"] <= candidate_start and candidate_end <= entity["end"]
+            for entity in entities
+        )
 
 
 # Fixed canned sentence for the post-provision activation smoke test (issue #159).
-# Synthetic, not real user data -- a single-token person span the exact-match
-# classify() logic above can confirm unambiguously, mirroring the single-token
-# names ("Klaus", "Yasmin", ...) this cascade's own tests already use.
+# Synthetic, not real user data -- a single-token person span the classify() logic
+# above can confirm unambiguously, mirroring the single-token names ("Klaus",
+# "Yasmin", ...) this cascade's own tests already use.
 GLINER_SMOKE_TEST_TEXT = "We met Klaus at the offsite; Acme confirmed the contract."
 _GLINER_SMOKE_TEST_CANDIDATE = CandidateSpan(
-    text="Klaus", start=7, end=12, context=GLINER_SMOKE_TEST_TEXT
+    text="Klaus", start=7, end=12, context=GLINER_SMOKE_TEST_TEXT, context_offset=7
 )
 
 
