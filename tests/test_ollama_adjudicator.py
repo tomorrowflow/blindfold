@@ -77,6 +77,46 @@ def test_adjudicator_prompt_requires_a_specific_sensitive_referent_and_rejects_c
     assert '{"is_entity": false}' in prompt
 
 
+def test_adjudicator_single_prompt_rejects_common_verbs_and_action_labels_mid_sentence():
+    # Issue #164: live false-positive evidence (Write/Refactor confirmed as entities
+    # by inner oMLX gemma-2b in a Claude Code exchange). Write/Refactor/Build/Find
+    # are common English verbs used as tool/command labels, capitalized mid-sentence
+    # for emphasis, not because they name a private person, organization, or secret
+    # project/initiative. The third rejection category must appear in the single-
+    # candidate prompt (mirrors the #88 test pattern: assert on real prompt content,
+    # not a fake/inline string).
+    prompt = _PROMPT_TEMPLATE.format(context="Use the Write tool", text="Write")
+    lowered = prompt.lower()
+
+    # Third rejection rule: a common verb, action word, or instruction/tool/command
+    # label -- even capitalized mid-sentence -- must be explicitly rejected.
+    assert "verb" in lowered or "action" in lowered
+    assert "label" in lowered or "instruction" in lowered or "command" in lowered
+    # Representative example words from the issue's live evidence must appear.
+    assert "write" in lowered
+    assert "refactor" in lowered or "build" in lowered or "find" in lowered
+
+
+def test_adjudicator_batch_prompt_rejects_common_verbs_and_action_labels_mid_sentence():
+    # Issue #164: the batch counterpart of the single-candidate test above. Both
+    # _PROMPT_TEMPLATE and _BATCH_PROMPT_TEMPLATE must carry the third rejection
+    # category (the two templates are maintained together in ollama.py, and
+    # OpenAICompatibleAdjudicator imports _build_batch_prompt unchanged from ollama.py).
+    from blindfold.ollama import _build_batch_prompt
+
+    candidates = [
+        CandidateSpan(text="Write", start=8, end=13, context="Use the Write tool"),
+        CandidateSpan(text="Refactor", start=4, end=12, context="Run Refactor now"),
+    ]
+    prompt = _build_batch_prompt(candidates)
+    lowered = prompt.lower()
+
+    assert "verb" in lowered or "action" in lowered
+    assert "label" in lowered or "instruction" in lowered or "command" in lowered
+    assert "write" in lowered
+    assert "refactor" in lowered or "build" in lowered or "find" in lowered
+
+
 def test_ollama_adjudicator_rejects_a_non_entity_candidate():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
