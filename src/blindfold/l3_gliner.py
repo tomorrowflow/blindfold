@@ -103,6 +103,10 @@ class GlinerOnnxClassifier:
         if self._model is None:
             self._model = _load_gliner_model(self._model_path)
         entities = self._model.predict_entities(candidate.context, list(_GLINER_LABELS))
+        # Confirm when a GLiNER span *covers* the candidate's character offsets, not
+        # only when the strings are equal (issue #160): select_candidate_spans emits
+        # single capitalized tokens ("John"), but GLiNER returns multi-word spans
+        # ("John Smith") -- an exact-text match never fires for a multi-word entity.
         candidate_start = candidate.context_offset
         candidate_end = candidate_start + len(candidate.text)
         return any(
