@@ -25,6 +25,10 @@ from typing import Any
 
 from .detection import detect_l2, detect_pii
 from .l3 import CandidateSpan, L3Detector, count_capitalized_tokens
+# Reused to re-window context around a *coalesced* multi-token span (issue #162):
+# no single candidate's ``.context`` covers the merged run, so the inbox item's
+# context/offset are recomputed from the group's start/end via the same windowing
+# L3 uses for a single span.
 from .l3 import _context_window as _l3_context_window
 from .review import ReviewInbox
 from .surrogates import SurrogateMapping
