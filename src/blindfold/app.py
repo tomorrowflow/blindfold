@@ -133,7 +133,13 @@ from .gliner_provisioning import (
     is_gliner_model_ready,
     provision_gliner_model,
 )
-from .l3_gliner import GlinerCascadeAdjudicator, GlinerExtraMissingError, GlinerOnnxClassifier
+from .l3_gliner import (
+    GlinerActivationSmokeTestFailedError,
+    GlinerCascadeAdjudicator,
+    GlinerClassifier,
+    GlinerExtraMissingError,
+    GlinerOnnxClassifier,
+)
 from .l3_openai_compat import OpenAICompatibleAdjudicator, ping_omlx
 from .ollama import OllamaAdjudicator, ping_ollama
 from .policy import (
@@ -559,6 +565,14 @@ def get_gliner_hub_client() -> GlinerHubClient:
     from .gliner_provisioning import HuggingFaceHubClient
 
     return HuggingFaceHubClient()
+
+
+def get_gliner_classifier_factory() -> Callable[[str], GlinerClassifier]:
+    """The GLiNER activation-smoke-test classifier constructor (issue #159) --
+    production wires the real ``GlinerOnnxClassifier``; tests substitute a scripted
+    stub so this seam never needs the real ``gliner`` package installed.
+    """
+    return GlinerOnnxClassifier
 
 
 def get_activation_settings_store() -> "PostgresActivationSettingsStore | None":
@@ -1841,6 +1855,9 @@ async def provision_gliner(
     rbac: RbacRegistry = Depends(get_rbac),
     data_dir: str = Depends(get_data_dir),
     hub_client: GlinerHubClient = Depends(get_gliner_hub_client),
+    classifier_factory: Callable[[str], GlinerClassifier] = Depends(
+        get_gliner_classifier_factory
+    ),
     activation_store: "PostgresActivationSettingsStore | None" = Depends(
         get_activation_settings_store
     ),
@@ -1860,11 +1877,12 @@ async def provision_gliner(
     so the toggle that reaches this endpoint is hidden there client-side, and this
     is the server-side backstop for that same invariant.
 
-    A digest mismatch (tampered/corrupted download, ADR-0034 §4) or a missing
-    ``blindfold[gliner]`` extra (ADR-0034 §6) is refused with a 4xx/5xx and the
-    activation flag is left untouched -- Setup's own caller treats this call as
-    non-blocking (a failure never blocks completing Setup), so the flag must not
-    be set on a provisioning failure.
+    A digest mismatch (tampered/corrupted download, ADR-0034 §4), a missing
+    ``blindfold[gliner]`` extra (ADR-0034 §6), or an activation-smoke-test failure
+    (issue #159 -- the model checksums fine but detects zero entities) is refused
+    with a 4xx/5xx and the activation flag is left untouched -- Setup's own caller
+    treats this call as non-blocking (a failure never blocks completing Setup), so
+    the flag must not be set on a provisioning failure.
     """
     _require_role(request, slug, "admin", rbac)
 
@@ -1890,10 +1908,11 @@ async def provision_gliner(
             data_dir,
             raw_l3_gliner_model_path_override(),
             hub_client,
+            classifier_factory=classifier_factory,
         )
     except GlinerExtraMissingError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except GlinerDigestMismatchError as exc:
+    except (GlinerDigestMismatchError, GlinerActivationSmokeTestFailedError) as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
     activation_store.set_l3_gliner_activated(True)
@@ -2095,18 +2114,26 @@ async def retry_gliner_detection(
     tracker: GlinerProvisioningTracker = Depends(get_gliner_provisioning_tracker),
     activation_store=Depends(get_gliner_activation_store),
     hub_client: GlinerHubClient = Depends(get_gliner_hub_client),
+    classifier_factory: Callable[[str], GlinerClassifier] = Depends(
+        get_gliner_classifier_factory
+    ),
 ) -> dict:
     """Retry GLiNER provisioning for the failed/absent case (ADR-0034 §5, issue
     #147).
 
-    Requires the ``admin`` role. A digest-mismatch refusal or a missing
-    ``blindfold[gliner]`` extra is caught and surfaced back through the same status
-    contract as the GET (``status: "verification_failed"``, ``error``) rather than a
-    500 -- this is an admin-surfaced retry action, not the request path.
+    Requires the ``admin`` role. A digest-mismatch refusal, a missing
+    ``blindfold[gliner]`` extra, or an activation-smoke-test failure (issue #159) is
+    caught and surfaced back through the same status contract as the GET
+    (``status: "verification_failed"``, ``error``) rather than a 500 -- this is an
+    admin-surfaced retry action, not the request path.
     """
     _require_role(request, workspace, "admin", rbac)
     return retry_gliner_provisioning(
-        settings=settings, activation_store=activation_store, tracker=tracker, hub_client=hub_client
+        settings=settings,
+        activation_store=activation_store,
+        tracker=tracker,
+        hub_client=hub_client,
+        classifier_factory=classifier_factory,
     )
 
 

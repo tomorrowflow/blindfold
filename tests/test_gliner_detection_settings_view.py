@@ -32,6 +32,23 @@ _STUB_FILE_CONTENT = b"stand-in gliner model bytes"
 _STUB_MANIFEST = {"gliner_config.json": hashlib.sha256(_STUB_FILE_CONTENT).hexdigest()}
 
 
+class _StubClassifier:
+    """Test double for the GlinerClassifier seam (issue #159's activation smoke
+    test) -- these tests never load a real model, so the smoke test's verdict is
+    scripted instead.
+    """
+
+    def __init__(self, verdict: bool) -> None:
+        self._verdict = verdict
+
+    def classify(self, candidate) -> bool:
+        return self._verdict
+
+
+def _functional_classifier_factory(model_path: str) -> _StubClassifier:
+    return _StubClassifier(verdict=True)
+
+
 class _StubHubClientCorrectDigest:
     """Writes bytes matching ``_STUB_MANIFEST`` -- the digest-verified success path."""
 
@@ -56,8 +73,8 @@ def test_status_is_provisioned_when_model_on_disk_and_not_activated(tmp_path, mo
     monkeypatch.setenv("BLINDFOLD_DATA_DIR", str(tmp_path))
     settings = Settings(l3_gliner_model_path="", database_url="")
     model_path = resolve_gliner_model_path(str(tmp_path))
-    (tmp_path / "models" / "gliner-pii-edge-v1.0").mkdir(parents=True)
-    (tmp_path / "models" / "gliner-pii-edge-v1.0" / "gliner_config.json").write_text("{}")
+    (tmp_path / "models" / "gliner-pii-base-v1.0").mkdir(parents=True)
+    (tmp_path / "models" / "gliner-pii-base-v1.0" / "gliner_config.json").write_text("{}")
 
     result = gliner_detection_status(settings=settings, activated=False, last_error=None)
 
@@ -66,7 +83,7 @@ def test_status_is_provisioned_when_model_on_disk_and_not_activated(tmp_path, mo
 
 
 def _provision_a_model_on_disk(tmp_path: Path) -> None:
-    model_dir = tmp_path / "models" / "gliner-pii-edge-v1.0"
+    model_dir = tmp_path / "models" / "gliner-pii-base-v1.0"
     model_dir.mkdir(parents=True)
     (model_dir / "gliner_config.json").write_text("{}")
 
@@ -134,7 +151,12 @@ def test_retry_reports_an_already_provisioned_model_as_provisioned(tmp_path, mon
     settings = Settings(l3_gliner_model_path="", database_url="")
     tracker = GlinerProvisioningTracker()
 
-    result = retry_gliner_provisioning(settings=settings, activation_store=None, tracker=tracker)
+    result = retry_gliner_provisioning(
+        settings=settings,
+        activation_store=None,
+        tracker=tracker,
+        classifier_factory=_functional_classifier_factory,
+    )
 
     assert result["status"] == "provisioned"
     assert tracker.last_error is None
@@ -159,6 +181,7 @@ def test_retry_activates_the_persisted_flag_on_a_fresh_successful_provision(
         tracker=tracker,
         hub_client=hub_client,
         manifest=_STUB_MANIFEST,
+        classifier_factory=_functional_classifier_factory,
     )
 
     assert store.get_l3_gliner_activated() is True
@@ -180,6 +203,7 @@ def test_retry_does_not_activate_when_no_persistent_store_is_configured(tmp_path
         tracker=tracker,
         hub_client=_StubHubClientCorrectDigest(),
         manifest=_STUB_MANIFEST,
+        classifier_factory=_functional_classifier_factory,
     )
 
     assert result["activated"] is False
@@ -231,7 +255,38 @@ def test_retry_after_a_prior_failure_clears_the_tracker_on_success(tmp_path, mon
     tracker.record_error("a stale prior failure")
 
     _provision_a_model_on_disk(tmp_path)
-    result = retry_gliner_provisioning(settings=settings, activation_store=None, tracker=tracker)
+    result = retry_gliner_provisioning(
+        settings=settings,
+        activation_store=None,
+        tracker=tracker,
+        classifier_factory=_functional_classifier_factory,
+    )
 
     assert result["status"] == "provisioned"
     assert tracker.last_error is None
+
+
+def test_retry_surfaces_an_activation_smoke_test_failure_as_verification_failed(
+    tmp_path, monkeypatch
+):
+    # Issue #159: a model that downloads and checksum-verifies cleanly but detects
+    # zero entities on the canned sentence must surface the same way a digest
+    # mismatch does -- verification_failed, not a silently "successful" provision.
+    monkeypatch.setenv("BLINDFOLD_DATA_DIR", str(tmp_path))
+    settings = Settings(l3_gliner_model_path="", database_url="")
+    tracker = GlinerProvisioningTracker()
+    store = _InMemoryActivationStore(activated=False)
+
+    result = retry_gliner_provisioning(
+        settings=settings,
+        activation_store=store,
+        tracker=tracker,
+        hub_client=_StubHubClientCorrectDigest(),
+        manifest=_STUB_MANIFEST,
+        classifier_factory=lambda model_path: _StubClassifier(verdict=False),
+    )
+
+    assert result["status"] == "verification_failed"
+    assert isinstance(result["error"], str) and "zero entities" in result["error"]
+    assert tracker.last_error == result["error"]
+    assert store.get_l3_gliner_activated() is False

@@ -24,7 +24,7 @@ from blindfold.gliner_provisioning import (
     provision_gliner_model,
     resolve_gliner_model_path,
 )
-from blindfold.l3_gliner import GlinerExtraMissingError
+from blindfold.l3_gliner import GlinerActivationSmokeTestFailedError, GlinerExtraMissingError
 
 
 class _StubHubClient:
@@ -54,10 +54,36 @@ class _StubHubClient:
         return local_dir
 
 
+class _StubClassifier:
+    """Test double for the ``GlinerClassifier`` seam (issue #159's activation smoke
+    test) -- a scripted verdict, standing in for the real ONNX model these
+    provisioning tests never load (mirrors ``_StubHubClient`` standing in for the
+    real network call).
+    """
+
+    def __init__(self, verdict: bool) -> None:
+        self.verdict = verdict
+        self.model_paths: list[str] = []
+
+    def classify(self, candidate) -> bool:
+        return self.verdict
+
+
+def _functional_classifier_factory(model_path: str) -> _StubClassifier:
+    classifier = _StubClassifier(verdict=True)
+    classifier.model_paths.append(model_path)
+    return classifier
+
+
+def _non_functional_classifier_factory(model_path: str) -> _StubClassifier:
+    return _StubClassifier(verdict=False)
+
+
 def test_resolve_gliner_model_path_defaults_under_the_data_dir():
-    # ADR-0034 §3: the model lands at <data_dir>/models/gliner-pii-edge-v1.0/.
+    # ADR-0034 §3 (issue #159 update): the model lands at
+    # <data_dir>/models/gliner-pii-base-v1.0/.
     assert resolve_gliner_model_path(data_dir="/data/blindfold") == (
-        "/data/blindfold/models/gliner-pii-edge-v1.0"
+        "/data/blindfold/models/gliner-pii-base-v1.0"
     )
 
 
@@ -101,11 +127,13 @@ def test_provision_skips_download_when_model_already_present(tmp_path):
     # ADR-0034 §5: an already-present model is detected and the download is
     # skipped ("already provisioned") -- no network call, no hub client needed.
     data_dir = tmp_path / "data"
-    model_dir = data_dir / "models" / "gliner-pii-edge-v1.0"
+    model_dir = data_dir / "models" / "gliner-pii-base-v1.0"
     model_dir.mkdir(parents=True)
     (model_dir / "gliner_config.json").write_text("{}")
 
-    result = provision_gliner_model(data_dir=str(data_dir))
+    result = provision_gliner_model(
+        data_dir=str(data_dir), classifier_factory=_functional_classifier_factory
+    )
 
     assert result.status == "already_provisioned"
     assert result.path == str(model_dir)
@@ -118,7 +146,9 @@ def test_provision_honors_air_gapped_override_already_present(tmp_path):
     (override_dir / "gliner_config.json").write_text("{}")
 
     result = provision_gliner_model(
-        data_dir=str(tmp_path / "unused"), model_path_override=str(override_dir)
+        data_dir=str(tmp_path / "unused"),
+        model_path_override=str(override_dir),
+        classifier_factory=_functional_classifier_factory,
     )
 
     assert result.status == "already_provisioned"
@@ -133,17 +163,79 @@ def test_provision_fetches_the_pinned_repo_and_revision_via_the_hub_client(tmp_p
     data_dir = tmp_path / "data"
 
     result = provision_gliner_model(
-        data_dir=str(data_dir), hub_client=hub_client, manifest=manifest
+        data_dir=str(data_dir),
+        hub_client=hub_client,
+        manifest=manifest,
+        classifier_factory=_functional_classifier_factory,
     )
 
     assert result.status == "downloaded"
-    assert result.path == str(data_dir / "models" / "gliner-pii-edge-v1.0")
+    assert result.path == str(data_dir / "models" / "gliner-pii-base-v1.0")
     assert len(hub_client.calls) == 1
     call = hub_client.calls[0]
     assert call["repo_id"] == GLINER_REPO_ID
     assert call["revision"] == GLINER_REPO_REVISION
     assert call["local_dir"] == result.path
     assert call["allow_patterns"] == list(manifest)
+
+
+def test_provision_runs_the_activation_smoke_test_against_the_provisioned_path(
+    tmp_path,
+):
+    # Issue #159 acceptance criterion: a successful provision is verified
+    # functionally, not just by checksum -- the smoke test classifier is
+    # constructed against the real provisioned model_path.
+    content = b"fake-onnx-weights-for-test"
+    manifest = {"onnx/model_quint8.onnx": hashlib.sha256(content).hexdigest()}
+    hub_client = _StubHubClient(files={"onnx/model_quint8.onnx": content})
+    data_dir = tmp_path / "data"
+
+    result = provision_gliner_model(
+        data_dir=str(data_dir),
+        hub_client=hub_client,
+        manifest=manifest,
+        classifier_factory=_functional_classifier_factory,
+    )
+
+    assert result.status == "downloaded"
+
+
+def test_provision_refuses_and_leaves_the_model_on_disk_when_the_smoke_test_fails(
+    tmp_path,
+):
+    # Issue #159: a model that passes digest verification but detects zero entities
+    # on the canned sentence is refused -- a checksum proves identity, not function.
+    # Unlike a digest mismatch, the (genuinely downloaded, correctly-checksummed)
+    # bytes are left in place: the failure is the model's behavior, not its bytes,
+    # so removing them would not make a retry any more likely to succeed.
+    content = b"fake-onnx-weights-for-test"
+    manifest = {"onnx/model_quint8.onnx": hashlib.sha256(content).hexdigest()}
+    hub_client = _StubHubClient(files={"onnx/model_quint8.onnx": content})
+    data_dir = tmp_path / "data"
+
+    with pytest.raises(GlinerActivationSmokeTestFailedError):
+        provision_gliner_model(
+            data_dir=str(data_dir),
+            hub_client=hub_client,
+            manifest=manifest,
+            classifier_factory=_non_functional_classifier_factory,
+        )
+
+
+def test_provision_runs_the_smoke_test_even_when_already_provisioned(tmp_path):
+    # Issue #159's own live-trace bug: an *existing* provisioned install can be
+    # non-functional too (the exact scenario this issue reports) -- a re-provision
+    # attempt against an already-present model must still refuse if the model
+    # doesn't work, not just skip straight to "already_provisioned".
+    data_dir = tmp_path / "data"
+    model_dir = data_dir / "models" / "gliner-pii-base-v1.0"
+    model_dir.mkdir(parents=True)
+    (model_dir / "gliner_config.json").write_text("{}")
+
+    with pytest.raises(GlinerActivationSmokeTestFailedError):
+        provision_gliner_model(
+            data_dir=str(data_dir), classifier_factory=_non_functional_classifier_factory
+        )
 
 
 def test_provision_refuses_and_cleans_up_on_digest_mismatch(tmp_path):
@@ -157,7 +249,7 @@ def test_provision_refuses_and_cleans_up_on_digest_mismatch(tmp_path):
     with pytest.raises(GlinerDigestMismatchError, match="onnx/model_quint8.onnx"):
         provision_gliner_model(data_dir=str(data_dir), hub_client=hub_client, manifest=manifest)
 
-    model_path = data_dir / "models" / "gliner-pii-edge-v1.0"
+    model_path = data_dir / "models" / "gliner-pii-base-v1.0"
     assert not model_path.exists()
 
 
@@ -175,7 +267,10 @@ def test_provision_retries_cleanly_after_a_digest_mismatch(tmp_path):
     good_content = b"expected-bytes"
     retry_hub_client = _StubHubClient(files={"onnx/model_quint8.onnx": good_content})
     result = provision_gliner_model(
-        data_dir=str(data_dir), hub_client=retry_hub_client, manifest=manifest
+        data_dir=str(data_dir),
+        hub_client=retry_hub_client,
+        manifest=manifest,
+        classifier_factory=_functional_classifier_factory,
     )
 
     assert result.status == "downloaded"

@@ -69,7 +69,7 @@ L3 adjudicator (ADR-0022 / ADR-0031 / issue #57, #121, #122):
                              this model. Empty (default) does *not* mean
                              unconfigured: `get_settings()` falls back to the
                              Data-dir default (`resolve_gliner_model_path`,
-                             `<data_dir>/models/gliner-pii-edge-v1.0/`) so a model
+                             `<data_dir>/models/gliner-pii-base-v1.0/`) so a model
                              provisioned via Setup's opt-in (issue #146) is found
                              without hand-setting this var (issue #150) -- set it
                              explicitly only to point at a different/air-gapped

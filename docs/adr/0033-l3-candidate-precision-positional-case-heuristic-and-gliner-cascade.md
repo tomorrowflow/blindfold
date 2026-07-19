@@ -161,6 +161,12 @@ confidence to inform the escalation decision, if GLiNER is extended to return sc
   do: retry the missing negatives one at a time through `inner.adjudicate`, and
   only a still-missing candidate falls back to `is_entity=True` (ADR-0009
   fail-closed).
+- **Update (issue #159):** the model named above, `gliner-pii-edge-v1.0`, was
+  found non-functional (zero entities detected for any input) under the pinned
+  `gliner`/`transformers` versions and replaced with
+  `knowledgator/gliner-pii-base-v1.0` — see ADR-0034 §4's own update note for the
+  full analysis, the new pinned revision, and the activation smoke test this
+  issue also added.
 
 ## Alternatives considered
 

@@ -107,6 +107,47 @@ produces a clear actionable error at provision/activation time, never a raw
   ephemeral default store. Tracked separately; not fixed here.
 - `wordfreq` frequency scoring remains deferred (ADR-0033 §3), now genuinely gated on
   the GLiNER-on measurement this ADR unblocks.
+- **Update (issue #159):** live testing found `gliner-pii-edge-v1.0` (base encoder
+  `jhu-clsp/ettin-encoder-32m`) detects **zero entities** for every input under the
+  pinned `gliner 0.2.27` / `transformers 5.6.2` — reproduced in isolation across all
+  three backends (PyTorch `from_pretrained`, full ONNX, the manifest-pinned
+  UINT8 ONNX), every label set (blindfold's own and native PII labels), and
+  thresholds down to 0.05, including the model's own README example sentence. A
+  control run of `urchade/gliner_small-v2.1` in the identical environment with
+  blindfold's exact labels detected correctly, ruling out the environment/label
+  choice. §3/§4 above are superseded by:
+  - **Model:** `knowledgator/gliner-pii-base-v1.0` (base encoder
+    `microsoft/deberta-v3-small`), revision
+    `61726e0ad791dcab3e29339bbec3ad42ded65641`, UINT8 ONNX
+    (`onnx/model_quint8.onnx`, ~197 MB — the same footprint §4 originally quoted).
+    Confirmed functional under the identical pinned versions the broken model was
+    tested against (`gliner==0.2.27`, `onnxruntime==1.27.0`,
+    `transformers==5.6.2`) — a single-token person/org canned sentence
+    (`"We met Klaus at the offsite; Acme confirmed the contract."`) resolves both
+    spans at GLiNER's default `threshold=0.5`, and, unlike the edge model, this
+    model's span boundaries also align correctly on the multi-word case (`"John
+    Smith"`, `"Acme Corporation"`) the token-vs-span exact-match bug (a separate,
+    already-tracked issue) would otherwise block.
+  - **Loader/manifest artifact alignment (the second defect §159 reports):** the
+    manifest downloads only the UINT8 ONNX weights + tokenizer/config files, never
+    a PyTorch checkpoint, but the classifier (`l3_gliner.py`) called
+    `GLiNER.from_pretrained(model_path)` with no ONNX flag — a real
+    provisioned-only directory has no `pytorch_model.bin` for that default to find.
+    Fixed by loading the same artifact the manifest pins explicitly:
+    `GLiNER.from_pretrained(model_path, load_onnx_model=True,
+    onnx_model_file="onnx/model_quint8.onnx", local_files_only=True)`.
+  - **Activation smoke test:** a checksum proves the downloaded bytes match the
+    pinned revision, not that the model detects anything — the exact silent-failure
+    mode this issue reports. `provision_gliner_model` now runs a functional check
+    (`run_gliner_activation_smoke_test`, `l3_gliner.py`) after digest verification
+    — on *both* a fresh download and an already-provisioned path (an existing
+    install can be non-functional too, the live scenario this issue reports) —
+    and refuses activation (`GlinerActivationSmokeTestFailedError`, surfaced as
+    `verification_failed` on the detection/settings view, mirroring
+    `GlinerDigestMismatchError`) if it detects zero entities on a fixed canned
+    sentence. Unlike a digest mismatch, the bytes are left on disk on a smoke-test
+    failure — the failure is the model's behavior, not corrupted bytes, so
+    deleting the download would not make a retry more likely to succeed.
 
 ## Alternatives considered
 

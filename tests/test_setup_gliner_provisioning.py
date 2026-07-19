@@ -31,12 +31,30 @@ from blindfold.app import (
     get_activation_settings_store,
     get_data_dir,
     get_entity_graph,
+    get_gliner_classifier_factory,
     get_gliner_hub_client,
     get_rbac,
 )
 from blindfold.entity_graph import EntityGraph
 from blindfold.l3_gliner import GlinerExtraMissingError
 from blindfold.rbac import RbacRegistry
+
+
+class _StubClassifier:
+    """Test double for the GlinerClassifier seam (issue #159's activation smoke
+    test) -- a scripted verdict, standing in for the real ONNX model these HTTP
+    tests never load.
+    """
+
+    def __init__(self, verdict: bool) -> None:
+        self._verdict = verdict
+
+    def classify(self, candidate) -> bool:
+        return self._verdict
+
+
+def _functional_classifier_factory(model_path: str) -> _StubClassifier:
+    return _StubClassifier(verdict=True)
 
 
 def _make_client() -> httpx.AsyncClient:
@@ -73,11 +91,13 @@ def _override(
     activation_store,
     data_dir: str,
     hub_client=None,
+    classifier_factory=_functional_classifier_factory,
 ) -> None:
     app.dependency_overrides[get_entity_graph] = lambda: EntityGraph()
     app.dependency_overrides[get_rbac] = lambda: rbac
     app.dependency_overrides[get_activation_settings_store] = lambda: activation_store
     app.dependency_overrides[get_data_dir] = lambda: data_dir
+    app.dependency_overrides[get_gliner_classifier_factory] = lambda: classifier_factory
     if hub_client is not None:
         app.dependency_overrides[get_gliner_hub_client] = lambda: hub_client
 
@@ -85,7 +105,7 @@ def _override(
 @pytest.mark.anyio
 async def test_provisioning_an_already_present_model_persists_the_activation_flag(tmp_path):
     data_dir = tmp_path / "data"
-    model_dir = data_dir / "models" / "gliner-pii-edge-v1.0"
+    model_dir = data_dir / "models" / "gliner-pii-base-v1.0"
     model_dir.mkdir(parents=True)
     (model_dir / "gliner_config.json").write_text("{}")
 

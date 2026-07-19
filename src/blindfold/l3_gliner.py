@@ -53,6 +53,16 @@ class GlinerExtraMissingError(RuntimeError):
     """
 
 
+# The ONNX artifact GLINER_MODEL_MANIFEST (gliner_provisioning.py) provisions --
+# the loader must request this exact file so the artifact it loads and the artifact
+# the manifest downloads never drift apart (issue #159). A bare
+# ``GLiNER.from_pretrained(model_path)`` defaults to a PyTorch checkpoint
+# (``pytorch_model.bin``), which the manifest never fetches -- in a real
+# provisioned-only directory that silently falls through to whatever GLiNER's own
+# fallback does, not the quantized ONNX weights the manifest actually pins.
+GLINER_ONNX_MODEL_FILE = "onnx/model_quint8.onnx"
+
+
 def _load_gliner_model(model_path: str):
     # Deferred import: the ``gliner`` package (ONNX/CPU inference) is an optional
     # dependency of this seam (``blindfold[gliner]``, ADR-0034 §6), not a base
@@ -68,7 +78,12 @@ def _load_gliner_model(model_path: str):
             "'blindfold[gliner]'`) to enable it."
         ) from exc
 
-    return GLiNER.from_pretrained(model_path)
+    return GLiNER.from_pretrained(
+        model_path,
+        load_onnx_model=True,
+        onnx_model_file=GLINER_ONNX_MODEL_FILE,
+        local_files_only=True,
+    )
 
 
 class GlinerOnnxClassifier:
@@ -89,6 +104,41 @@ class GlinerOnnxClassifier:
             self._model = _load_gliner_model(self._model_path)
         entities = self._model.predict_entities(candidate.context, list(_GLINER_LABELS))
         return any(entity["text"] == candidate.text for entity in entities)
+
+
+# Fixed canned sentence for the post-provision activation smoke test (issue #159).
+# Synthetic, not real user data -- a single-token person span the exact-match
+# classify() logic above can confirm unambiguously, mirroring the single-token
+# names ("Klaus", "Yasmin", ...) this cascade's own tests already use.
+GLINER_SMOKE_TEST_TEXT = "We met Klaus at the offsite; Acme confirmed the contract."
+_GLINER_SMOKE_TEST_CANDIDATE = CandidateSpan(
+    text="Klaus", start=7, end=12, context=GLINER_SMOKE_TEST_TEXT
+)
+
+
+class GlinerActivationSmokeTestFailedError(RuntimeError):
+    """Raised when a provisioned GLiNER model loads but detects zero entities on
+    the fixed canned smoke-test sentence (issue #159) -- refused, not activated,
+    mirroring :class:`~blindfold.gliner_provisioning.GlinerDigestMismatchError`. A
+    checksum proves the downloaded bytes match the pinned revision; it says nothing
+    about whether the model actually detects anything under the installed
+    ``gliner``/``onnxruntime``/``transformers`` versions -- the exact silent-failure
+    mode this issue exists to catch.
+    """
+
+
+def run_gliner_activation_smoke_test(classifier: GlinerClassifier) -> None:
+    """Refuse activation if ``classifier`` detects nothing on the canned sentence
+    (issue #159). Called after digest verification, before a model is considered
+    ready to activate -- see :func:`~blindfold.gliner_provisioning.provision_gliner_model`.
+    """
+    if not classifier.classify(_GLINER_SMOKE_TEST_CANDIDATE):
+        raise GlinerActivationSmokeTestFailedError(
+            "the provisioned GLiNER model detected zero entities on the "
+            "activation smoke test sentence -- refusing to activate; the model "
+            "may be incompatible with the installed gliner/onnxruntime/"
+            "transformers versions (ADR-0034)"
+        )
 
 
 class GlinerCascadeAdjudicator:

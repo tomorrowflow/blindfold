@@ -94,7 +94,7 @@ def test_restart_to_activate_end_to_end_finds_the_setup_provisioned_model(
     from blindfold.app import _build_l3_adjudicator, _UnconfiguredAdjudicator
     from blindfold.l3_gliner import GlinerCascadeAdjudicator
 
-    model_dir = tmp_path / "data" / "models" / "gliner-pii-edge-v1.0"
+    model_dir = tmp_path / "data" / "models" / "gliner-pii-base-v1.0"
     model_dir.mkdir(parents=True)
     (model_dir / "gliner_config.json").write_text("{}")
 

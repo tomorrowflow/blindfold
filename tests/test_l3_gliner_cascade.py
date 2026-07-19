@@ -21,7 +21,11 @@ adjudicator is plugged in.
 
 from __future__ import annotations
 
+import sys
+import types
 from dataclasses import dataclass
+
+import pytest
 
 from blindfold import l3_gliner
 from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
@@ -369,3 +373,54 @@ def test_gliner_onnx_classifier_returns_false_when_the_span_is_not_among_the_hit
     )
 
     assert classifier.classify(candidate) is False
+
+
+class _FakeGLiNERClass:
+    """Stand-in for the real ``gliner.GLiNER`` class -- records the kwargs
+    ``from_pretrained`` receives, so a test can assert the loader requests the
+    exact artifact ``GLINER_MODEL_MANIFEST`` (gliner_provisioning.py) provisions,
+    never a PyTorch default that needs files outside the manifest (issue #159).
+    """
+
+    calls: list[dict] = []
+
+    @classmethod
+    def from_pretrained(cls, model_path, **kwargs):
+        cls.calls.append({"model_path": model_path, **kwargs})
+        return _StubGlinerModel(hits=frozenset({"Klaus"}))
+
+
+def test_load_gliner_model_loads_the_onnx_artifact_the_manifest_provisions(monkeypatch):
+    # Issue #159's loader/manifest artifact-alignment defect: the manifest downloads
+    # only onnx/model_quint8.onnx + configs (never pytorch_model.bin), so the loader
+    # must request that same ONNX artifact by name -- a bare `from_pretrained(path)`
+    # defaults to PyTorch and would find no weights in a real provisioned dir.
+    fake_module = types.ModuleType("gliner")
+    fake_module.GLiNER = _FakeGLiNERClass
+    monkeypatch.setitem(sys.modules, "gliner", fake_module)
+    _FakeGLiNERClass.calls = []
+
+    l3_gliner._load_gliner_model("/data/models/gliner-pii-base-v1.0")
+
+    assert len(_FakeGLiNERClass.calls) == 1
+    call = _FakeGLiNERClass.calls[0]
+    assert call["model_path"] == "/data/models/gliner-pii-base-v1.0"
+    assert call["load_onnx_model"] is True
+    assert call["onnx_model_file"] == l3_gliner.GLINER_ONNX_MODEL_FILE
+    assert call["local_files_only"] is True
+
+
+def test_run_gliner_activation_smoke_test_passes_when_the_canned_sentence_detects():
+    classifier = _RecordingClassifier(positives=frozenset({"Klaus"}))
+
+    l3_gliner.run_gliner_activation_smoke_test(classifier)  # does not raise
+
+
+def test_run_gliner_activation_smoke_test_refuses_when_nothing_is_detected():
+    # Issue #159 acceptance criterion: a model that loads but detects zero entities
+    # on the fixed canned sentence must refuse activation -- a checksum proves
+    # identity, not function.
+    classifier = _RecordingClassifier(positives=frozenset())
+
+    with pytest.raises(l3_gliner.GlinerActivationSmokeTestFailedError):
+        l3_gliner.run_gliner_activation_smoke_test(classifier)

@@ -68,7 +68,7 @@ class GlinerModelMissingError(RuntimeError):
     reachability check (unlike Ollama's ``:cloud``-tag / oMLX's loopback-base-url
     checks) -- there is no network client behind the GLiNER classifier at all
     (l3_gliner.py). The model is a *directory*
-    (``<data_dir>/models/gliner-pii-edge-v1.0/``, per ``resolve_gliner_model_path`` /
+    (``<data_dir>/models/gliner-pii-base-v1.0/``, per ``resolve_gliner_model_path`` /
     ``provision_gliner_model``, ADR-0034 §3-§5), not a single file -- checked the same
     way ``is_gliner_model_ready`` and the detection/settings status view
     (``gliner_status.py``) do, so this guard and that view never disagree on the same

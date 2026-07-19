@@ -15,17 +15,28 @@ import hashlib
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Callable, Protocol
 
-from .l3_gliner import GlinerExtraMissingError
+from .l3_gliner import (
+    GlinerClassifier,
+    GlinerExtraMissingError,
+    GlinerOnnxClassifier,
+    run_gliner_activation_smoke_test,
+)
 
-GLINER_MODEL_DIRNAME = "gliner-pii-edge-v1.0"
+# Issue #159: gliner-pii-edge-v1.0 (base encoder jhu-clsp/ettin-encoder-32m) detects
+# ZERO entities under the pinned gliner/onnxruntime/transformers versions -- verified
+# both live and in isolation (all three backends, all label sets, all thresholds
+# down to 0.05). Replaced with knowledgator/gliner-pii-base-v1.0 (base encoder
+# microsoft/deberta-v3-small), confirmed functional under the same pinned versions
+# (docs/adr/0034 §4 update).
+GLINER_MODEL_DIRNAME = "gliner-pii-base-v1.0"
 
 # ADR-0034 §4: pinned to a specific repo revision (an immutable commit sha), never
 # a moving ref like `main` -- a tampered or unreviewed re-upload under the same ref
 # name must not silently become "the" model.
-GLINER_REPO_ID = "knowledgator/gliner-pii-edge-v1.0"
-GLINER_REPO_REVISION = "9b7f39b0a2da971a5beea78d35f1539d4009c891"
+GLINER_REPO_ID = "knowledgator/gliner-pii-base-v1.0"
+GLINER_REPO_REVISION = "61726e0ad791dcab3e29339bbec3ad42ded65641"
 
 # Expected sha256 digests for the pinned revision's files (ADR-0034 §4), verified
 # against the repo's own published file hashes at that revision -- not fetched from
@@ -34,11 +45,13 @@ GLINER_REPO_REVISION = "9b7f39b0a2da971a5beea78d35f1539d4009c891"
 # ONNX inference path needs -- the pytorch checkpoint and fp16/fp32 ONNX variants in
 # the same repo are never fetched.
 GLINER_MODEL_MANIFEST: dict[str, str] = {
-    "onnx/model_quint8.onnx": "988acb03456b26e2d9f2521016d820310c2ed64deb4a846297d3289f0c2eb7e4",
-    "gliner_config.json": "77e6b57335c4bfd461e9041682196dd6c373a0b09bbd9269ef9e95b807915340",
-    "tokenizer.json": "84b3a9b18f04a0ccd03b72d9f871b7e0bec40fd7021ef50bc30a7c3693c11205",
-    "tokenizer_config.json": "3398f6d1ad4b4c4f9874d390d060a75c58cad5e5ce9b22841b3e40643b4ada27",
-    "special_tokens_map.json": "ea97ecdbcc73713039d8d64dbb05e3689495c96657fbd9a18f5bed381be81049",
+    "onnx/model_quint8.onnx": "0514c8fd86d0513ce5351a3267f132b57d5bcd8f99a90d43cde1228092881d19",
+    "gliner_config.json": "e33d3da38e0d369fa7574668d3798ca6c7d2b23cba7d628507112eeb426aaccb",
+    "tokenizer.json": "ee028763434d18611c1c36356ea1d050e90a9fa94ede57fac48b39f85f818ad1",
+    "tokenizer_config.json": "3ec8a90d8758fbc56d50831990c3a3a65660f020c5b06534adf43b04091ffa9e",
+    "special_tokens_map.json": "b2f1b2f15f29a6b6d9d6ea4eca1675d2c231a71477f151d48f79cc83a625ba21",
+    "added_tokens.json": "c358eb74586ab438484d8acf4534f67283b33041bc5ffee6b20a4a075cdc3cd6",
+    "spm.model": "c679fbf93643d19aab7ee10c0b99e460bdbc02fedf34b92b05af343b4af586fd",
 }
 
 
@@ -100,7 +113,7 @@ def resolve_gliner_model_path(data_dir: str, model_path_override: str = "") -> s
     ``model_path_override`` (``BLINDFOLD_L3_GLINER_MODEL_PATH``) is the low-level
     override / air-gapped escape hatch and takes precedence; otherwise the model
     lands under the install-global **Data directory** at
-    ``<data_dir>/models/gliner-pii-edge-v1.0/``.
+    ``<data_dir>/models/gliner-pii-base-v1.0/``.
     """
     if model_path_override:
         return model_path_override
@@ -144,6 +157,7 @@ def provision_gliner_model(
     model_path_override: str = "",
     hub_client: GlinerHubClient | None = None,
     manifest: dict[str, str] | None = None,
+    classifier_factory: Callable[[str], GlinerClassifier] | None = None,
 ) -> ProvisionResult:
     """Ensure the GLiNER cascade model is available locally (ADR-0034 §4-§5).
 
@@ -155,10 +169,21 @@ def provision_gliner_model(
     ``manifest`` (default: ``GLINER_MODEL_MANIFEST``); a mismatch removes the
     download and raises :class:`GlinerDigestMismatchError` -- refused, not
     activated -- leaving the path clear for a retry (ADR-0034 §5).
+
+    Either way (already-present or freshly downloaded), the model is then put
+    through the activation smoke test (issue #159): a checksum proves the bytes
+    match the pinned revision, not that the model actually detects anything under
+    the installed ``gliner``/``onnxruntime``/``transformers`` versions -- the exact
+    silent-failure mode ``gliner-pii-edge-v1.0`` shipped with. A model that fails
+    the smoke test raises :class:`~blindfold.l3_gliner.GlinerActivationSmokeTestFailedError`
+    and is left on disk (unlike a digest mismatch, the bytes themselves are fine --
+    only a maintainer re-pinning a working model/revision fixes this, not a retry).
     """
     manifest = GLINER_MODEL_MANIFEST if manifest is None else manifest
+    factory = classifier_factory or GlinerOnnxClassifier
     model_path = resolve_gliner_model_path(data_dir, model_path_override)
     if is_already_provisioned(model_path):
+        run_gliner_activation_smoke_test(factory(model_path))
         return ProvisionResult(status="already_provisioned", path=model_path)
 
     client = hub_client or HuggingFaceHubClient()
@@ -179,4 +204,5 @@ def provision_gliner_model(
                 "download has been removed so provisioning can be retried"
             )
 
+    run_gliner_activation_smoke_test(factory(model_path))
     return ProvisionResult(status="downloaded", path=model_path)

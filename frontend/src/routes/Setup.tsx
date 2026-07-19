@@ -35,7 +35,7 @@ import { useWorkspace } from "../components/WorkspaceContext";
 import { createWorkspace, loadSampleData, provisionGliner } from "../lib/setupApi";
 
 const GLINER_HELP_TEXT =
-  "Downloads ~197 MB from Hugging Face (knowledgator/gliner-pii-edge-v1.0).";
+  "Downloads ~197 MB from Hugging Face (knowledgator/gliner-pii-base-v1.0).";
 
 export function Setup() {
   const navigate = useNavigate();

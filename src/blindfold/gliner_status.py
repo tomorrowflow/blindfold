@@ -22,7 +22,7 @@ from .gliner_provisioning import (
     provision_gliner_model,
     resolve_gliner_model_path,
 )
-from .l3_gliner import GlinerExtraMissingError
+from .l3_gliner import GlinerActivationSmokeTestFailedError, GlinerExtraMissingError
 
 
 class GlinerProvisioningTracker:
@@ -88,14 +88,17 @@ def retry_gliner_provisioning(
     tracker: GlinerProvisioningTracker,
     hub_client: GlinerHubClient | None = None,
     manifest: dict[str, str] | None = None,
+    classifier_factory=None,
 ) -> dict:
     """Re-run provisioning for the detection/settings view's retry action (ADR-0034
     §5).
 
-    A digest-mismatch refusal or a missing ``blindfold[gliner]`` extra is caught and
-    recorded on ``tracker`` rather than propagated as a 500 -- this is an
-    admin-surfaced retry action, not the request path, so the failure is surfaced
-    back through the same status contract :func:`gliner_detection_status` returns.
+    A digest-mismatch refusal, a missing ``blindfold[gliner]`` extra, or an
+    activation-smoke-test failure (issue #159 -- the model checksums fine but
+    detects zero entities) is caught and recorded on ``tracker`` rather than
+    propagated as a 500 -- this is an admin-surfaced retry action, not the request
+    path, so the failure is surfaced back through the same status contract
+    :func:`gliner_detection_status` returns.
 
     Retry is only ever reachable from the view's ``not_provisioned`` /
     ``verification_failed`` states (the frontend only offers the action there), so a
@@ -111,8 +114,13 @@ def retry_gliner_provisioning(
             settings.l3_gliner_model_path,
             hub_client=hub_client,
             manifest=manifest,
+            classifier_factory=classifier_factory,
         )
-    except (GlinerDigestMismatchError, GlinerExtraMissingError) as exc:
+    except (
+        GlinerDigestMismatchError,
+        GlinerExtraMissingError,
+        GlinerActivationSmokeTestFailedError,
+    ) as exc:
         tracker.record_error(str(exc))
     else:
         tracker.record_success()

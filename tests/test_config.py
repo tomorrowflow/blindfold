@@ -215,7 +215,7 @@ def test_settings_gliner_model_path_resolves_from_data_dir_when_env_unset(
     settings = get_settings()
 
     assert settings.l3_gliner_model_path == str(
-        tmp_path / "models" / "gliner-pii-edge-v1.0"
+        tmp_path / "models" / "gliner-pii-base-v1.0"
     )
 
 

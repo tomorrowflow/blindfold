@@ -25,6 +25,7 @@ import pytest
 from blindfold.app import (
     app,
     get_gliner_activation_store,
+    get_gliner_classifier_factory,
     get_gliner_hub_client,
     get_gliner_provisioning_tracker,
     get_rbac,
@@ -34,6 +35,22 @@ from blindfold.config import Settings
 from blindfold.gliner_provisioning import resolve_gliner_model_path
 from blindfold.gliner_status import GlinerProvisioningTracker
 from blindfold.rbac import RbacRegistry
+
+
+class _StubClassifier:
+    """Test double for the GlinerClassifier seam (issue #159's activation smoke
+    test) -- these HTTP-level tests never load a real model.
+    """
+
+    def __init__(self, verdict: bool) -> None:
+        self._verdict = verdict
+
+    def classify(self, candidate) -> bool:
+        return self._verdict
+
+
+def _functional_classifier_factory(model_path: str) -> _StubClassifier:
+    return _StubClassifier(verdict=True)
 
 
 class _InMemoryActivationStore:
@@ -171,6 +188,7 @@ async def test_retry_activates_the_persisted_flag_and_prompts_restart(tmp_path, 
     app.dependency_overrides[get_rbac] = lambda: rbac
     app.dependency_overrides[get_gliner_activation_store] = lambda: store
     app.dependency_overrides[get_gliner_provisioning_tracker] = GlinerProvisioningTracker
+    app.dependency_overrides[get_gliner_classifier_factory] = lambda: _functional_classifier_factory
     try:
         async with _make_client() as client:
             resp = await client.post(
