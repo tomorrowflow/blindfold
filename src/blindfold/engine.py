@@ -548,10 +548,18 @@ def _blindfold_text(
             entity_type = _resolve_group_entity_type(
                 entity_type_by_start[candidate.start] for candidate in group
             )
+            # ADR-0037 hardening: also exclude provisional surrogates already
+            # active in the inbox from mint candidacy, not just known real
+            # values -- defense-in-depth so a stale/reset pool cursor (e.g. a
+            # restored-from-store cursor that lagged the persisted items)
+            # can't reissue a surrogate that already maps to a different real.
+            known_values = list(mapping.real_values()) + [
+                existing.provisional_surrogate for existing in inbox.list()
+            ]
             item = inbox.upsert(
                 real,
                 context,
-                known_values=mapping.real_values(),
+                known_values=known_values,
                 context_offset=context_offset,
                 entity_type=entity_type,
             )

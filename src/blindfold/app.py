@@ -635,6 +635,45 @@ def hydrate_allowlist_from_store(
         allowlist.add(token)
 
 
+def get_review_inbox_store() -> "PostgresReviewInboxStore | None":
+    """The persisted review-inbox store (ADR-0037, issue #169), or ``None`` when
+    no persistent store is configured.
+
+    Store-gated, mirroring ``get_allowlist_store()``'s pattern: constructed lazily
+    per-call (never a module-level singleton, no live DB connection at import
+    time) so importing this module never pulls in ``psycopg`` for the common case
+    where ``BLINDFOLD_DATABASE_URL`` is unset. ``None`` is the signal
+    ``hydrate_review_inbox_from_store`` uses to skip persistence entirely --
+    persisting the review inbox also requires Transit (``get_transit_client()``),
+    so this getter alone is not the full gate (issue #149 graceful degradation).
+    """
+    database_url = get_settings().database_url
+    if not database_url:
+        return None
+
+    from .store.review_inbox_store import PostgresReviewInboxStore
+
+    return PostgresReviewInboxStore(database_url)
+
+
+def hydrate_review_inbox_from_store(
+    inbox: ReviewInbox,
+    store: "PostgresReviewInboxStore | None",
+    transit: TransitClient | None,
+) -> None:
+    """Wire persistence into ``inbox`` and hydrate every previously-persisted
+    item + pool cursor (ADR-0037, issue #169) -- acceptance criteria 1/3.
+
+    Called once at startup, after the vendored-seed/allowlist bootstrap. A no-op
+    when ``store`` or ``transit`` is ``None`` (issue #149 graceful degradation):
+    persistence requires BOTH Postgres (to store) and Transit (to encrypt), so the
+    in-memory/ephemeral default stays byte-identical to before this slice.
+    """
+    if store is None or transit is None:
+        return
+    inbox.attach_store(store, transit)
+
+
 def get_reidentify_store() -> ReIdentificationStore:
     """Return the re-identify store, constructed lazily on first call (issue #105).
 
@@ -728,6 +767,15 @@ bootstrap_from_vendored_seed(
 # rejected in a prior process is never re-proposed to the review inbox after a
 # restart. A no-op when BLINDFOLD_DATABASE_URL is unset (acceptance criterion 4).
 hydrate_allowlist_from_store(_allowlist, get_allowlist_store())
+
+# Persisted review-inbox hydration (ADR-0037, issue #169, acceptance criteria
+# 1/3): unions every item + per-pool mint cursor persisted before this restart
+# into `_review_inbox` above, via the same lazy Postgres-or-None seam
+# (get_review_inbox_store) plus Transit (get_transit_client) -- a no-op unless
+# BOTH are configured (acceptance criterion 6, #149 graceful degradation).
+hydrate_review_inbox_from_store(
+    _review_inbox, get_review_inbox_store(), get_transit_client()
+)
 
 
 def _forwarded_headers(request: Request) -> dict[str, str]:

@@ -11,8 +11,11 @@ Bidirectional: confirmations make detection more deterministic over time (L2
 matches it without an L3 call); rejections suppress L3 calls that would re-flag
 a non-sensitive token (e.g. a code identifier).
 
-This slice keeps both stores in-memory and process-local. Persistence lands with
-the management-store slice (ADR-0008/0011).
+The allowlist stays in-memory and process-local (the learned side persists via
+``store/allowlist_store.py``, issue #168). The review inbox is optionally
+persisted through the same store-or-fallback seam (``store/review_inbox_store.py``,
+ADR-0037, issue #169) — a durable real-value surface, Transit-encrypted, unlike
+the dismissal log / processing trace.
 """
 
 from __future__ import annotations
@@ -80,6 +83,7 @@ class ReviewItem:
     provisional_surrogate: str
     context: str
     context_offset: int
+    entity_type: str | None = None
 
 
 class ReviewInbox:
@@ -88,9 +92,21 @@ class ReviewInbox:
     The id is derived from the ``real`` value so the same novel candidate hit
     twice across requests does NOT create a duplicate inbox item (the provisional
     surrogate is also reused via the mapping — clause E-stable).
+
+    Optionally persisted (``store`` + ``transit``, ADR-0037 / issue #169) as a
+    durable real-value surface: ``real``/``context`` reach the store only as
+    Transit ciphertext (plus a blind index for ``real``, for dedup without
+    decrypting), never plaintext. Persistence requires BOTH a store and a
+    Transit client (graceful degradation, issue #149) — with either missing,
+    this stays the plain in-memory/ephemeral inbox, byte-identical to before
+    this slice.
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        store: "ReviewInboxStore | None" = None,
+        transit: "TransitClient | None" = None,
+    ) -> None:
         self._items: dict[str, ReviewItem] = {}
         # real -> id lookup, so re-encountering the same novel value reuses the
         # existing entry instead of minting a duplicate. Persists across remove()
@@ -108,6 +124,42 @@ class ReviewInbox:
         # organization surrogate never advances (or is advanced by) the unrelated
         # person-pool cursor.
         self._pool_positions: dict[str, int] = {}
+        self._store = store
+        self._transit = transit
+
+    def _persistent(self) -> bool:
+        return self._store is not None and self._transit is not None
+
+    def attach_store(
+        self, store: "ReviewInboxStore", transit: "TransitClient | None"
+    ) -> None:
+        """Wire persistence into an already-constructed inbox and hydrate every
+        previously-persisted item + pool cursor (ADR-0037, issue #169).
+
+        Call once, e.g. at process startup, when both dependencies are (or become)
+        available. A no-op for hydration when ``transit`` isn't configured too
+        (issue #149 graceful degradation) — a store alone can't decrypt.
+        """
+        self._store = store
+        self._transit = transit
+        if not self._persistent():
+            return
+        for row in store.list_rows():
+            item_id, real_ciphertext, context_ciphertext, context_offset, surrogate, entity_type = row
+            real = transit.decrypt(real_ciphertext)
+            context = transit.decrypt(context_ciphertext)
+            item = ReviewItem(
+                id=item_id,
+                real=real,
+                provisional_surrogate=surrogate,
+                context=context,
+                context_offset=context_offset,
+                entity_type=entity_type,
+            )
+            self._items[item_id] = item
+            self._by_real[real] = item_id
+            self._minted = max(self._minted, int(item_id))
+        self._pool_positions.update(store.pool_positions())
 
     def upsert(
         self,
@@ -162,10 +214,35 @@ class ReviewInbox:
             provisional_surrogate=surrogate,
             context=context,
             context_offset=context_offset,
+            entity_type=entity_type,
         )
         self._items[item_id] = item
         self._by_real[real] = item_id
+        if self._persistent():
+            self._persist_item(item, pool_key, next_position)
         return item
+
+    def _persist_item(self, item: ReviewItem, pool_key: str, next_position: int) -> None:
+        """Write ``item`` through the store seam as Transit ciphertext (ADR-0037).
+
+        Only ``real`` (+ its blind index) and ``context`` are encrypted;
+        ``provisional_surrogate``/``entity_type`` are never real values, so they
+        are written plaintext, matching the store's own column shapes.
+        """
+        assert self._store is not None and self._transit is not None
+        real_ciphertext = self._transit.encrypt(item.real)
+        real_blind_index = self._transit.blind_index(item.real)
+        context_ciphertext = self._transit.encrypt(item.context)
+        self._store.upsert_row(
+            item.id,
+            real_ciphertext,
+            real_blind_index,
+            context_ciphertext,
+            item.context_offset,
+            item.provisional_surrogate,
+            item.entity_type,
+        )
+        self._store.set_pool_position(pool_key, next_position)
 
     def list(self) -> list[ReviewItem]:
         return list(self._items.values())
@@ -177,6 +254,8 @@ class ReviewInbox:
         item = self._items.pop(item_id, None)
         if item is not None:
             self._by_real.pop(item.real, None)
+            if self._persistent():
+                self._store.remove_row(item_id)
         return item
 
 

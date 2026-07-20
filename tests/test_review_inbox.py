@@ -54,3 +54,23 @@ def test_upsert_keeps_the_default_person_pool_when_entity_type_is_unknown():
     item = inbox.upsert("Klaus", context="Please brief Klaus tomorrow.")
 
     assert item.provisional_surrogate in _PROVISIONAL_POOL
+
+
+def test_upsert_stores_the_entity_type_on_the_item():
+    # Issue #169 / ADR-0037: a restart must reconstruct entity_type, so it has to
+    # live on ReviewItem itself, not just steer pool selection at mint time.
+    inbox = ReviewInbox()
+
+    item = inbox.upsert(
+        "Nordwind Logistik", context="...von Nordwind Logistik", entity_type="organization"
+    )
+
+    assert item.entity_type == "organization"
+
+
+def test_upsert_defaults_entity_type_to_none():
+    inbox = ReviewInbox()
+
+    item = inbox.upsert("Klaus", context="Please brief Klaus tomorrow.")
+
+    assert item.entity_type is None

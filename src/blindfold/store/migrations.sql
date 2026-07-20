@@ -171,3 +171,35 @@ CREATE TABLE IF NOT EXISTS allowlist_entries (
     id    SERIAL PRIMARY KEY,
     token TEXT NOT NULL UNIQUE
 );
+
+-- Review inbox (ADR-0037, issue #169): the provisionally-blindfolded novel
+-- candidates awaiting human review (ADR-0010), persisted as a durable
+-- REAL-VALUE surface -- like the entity graph / reidentify_mappings -- not a
+-- diagnostic one (contrast the dismissal log / processing trace, which
+-- deliberately drop real values). `real` -> Transit ciphertext + a blind
+-- index for dedup-by-real; `context` -> Transit ciphertext, no blind index
+-- (only ever displayed, never looked up); no plaintext column for either.
+-- `provisional_surrogate`/`entity_type` are plaintext -- a surrogate is never
+-- a real value. `id` is caller-assigned (ReviewInbox's own monotonic
+-- counter), not SERIAL, so `_minted` can be derived as max(persisted id) on
+-- load without a separate counter row. A dedicated table, deliberately NOT
+-- `reidentify_mappings` -- keeps provisional surrogates out of the
+-- `/reidentify` path (a non-goal).
+CREATE TABLE IF NOT EXISTS review_inbox (
+    id                    INTEGER PRIMARY KEY,
+    real_ciphertext       TEXT NOT NULL,
+    real_blind_index      TEXT NOT NULL UNIQUE,
+    context_ciphertext    TEXT NOT NULL,
+    context_offset        INTEGER NOT NULL,
+    provisional_surrogate TEXT NOT NULL,
+    entity_type           TEXT
+);
+
+-- Per-pool mint cursor (issue #80/#167), persisted explicitly: a
+-- collision-skipped pool position leaves no trace in the surviving items
+-- above, so the cursor cannot be reconstructed from them and must be stored
+-- directly (ADR-0037).
+CREATE TABLE IF NOT EXISTS review_inbox_pool_positions (
+    pool_key TEXT PRIMARY KEY,
+    position INTEGER NOT NULL
+);
