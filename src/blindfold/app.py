@@ -594,6 +594,47 @@ def get_activation_settings_store() -> "PostgresActivationSettingsStore | None":
     return PostgresActivationSettingsStore(database_url)
 
 
+def get_allowlist_store() -> "PostgresAllowlistStore | None":
+    """The persisted learned-allowlist-reject store (ADR-0010, issue #168), or
+    ``None`` when no persistent store is configured.
+
+    Store-gated, mirroring ``get_activation_settings_store()``'s pattern: constructed
+    lazily per-call (never a module-level singleton, no live DB connection at import
+    time) so importing this module never pulls in ``psycopg`` for the common case
+    where ``BLINDFOLD_DATABASE_URL`` is unset. ``None`` is the signal
+    ``reject_review_item`` uses to skip persistence -- the in-memory ``Allowlist``
+    (``_allowlist``) already carries the learned reject for the rest of this
+    process's lifetime either way, so behavior with no store configured stays
+    byte-identical to before this slice (acceptance criterion 4). Tests override via
+    dependency_overrides[get_allowlist_store].
+    """
+    database_url = get_settings().database_url
+    if not database_url:
+        return None
+
+    from .store.allowlist_store import PostgresAllowlistStore
+
+    return PostgresAllowlistStore(database_url)
+
+
+def hydrate_allowlist_from_store(
+    allowlist: Allowlist, store: "PostgresAllowlistStore | None"
+) -> None:
+    """Load every persisted learned-reject token from ``store`` into ``allowlist``
+    (issue #168, acceptance criteria 2/3).
+
+    Called once at startup, after the vendored-seed load, so the process-global
+    ``_allowlist`` ends up the union of the seed and every reject persisted before
+    this restart -- a rejected token is never re-proposed to the review inbox.
+    ``store=None`` (no persistent store configured) is a no-op: the in-memory
+    default path stays exactly as before this slice (acceptance criterion 4).
+    """
+    if store is None:
+        return
+    for token in store.tokens():
+        allowlist.add(token)
+
+
 def get_reidentify_store() -> ReIdentificationStore:
     """Return the re-identify store, constructed lazily on first call (issue #105).
 
@@ -679,6 +720,14 @@ bootstrap_from_vendored_seed(
     bootstrap_admin_identity=get_settings().bootstrap_admin_identity,
     seed_entity_graph=False,
 )
+
+# Persisted learned-allowlist-reject hydration (issue #168, acceptance criteria
+# 2/3): `_allowlist` above already carries the vendored seed; this unions in every
+# reject persisted before this restart, via the same lazy Postgres-or-None seam
+# every request's reject_review_item uses (get_allowlist_store) -- so a token
+# rejected in a prior process is never re-proposed to the review inbox after a
+# restart. A no-op when BLINDFOLD_DATABASE_URL is unset (acceptance criterion 4).
+hydrate_allowlist_from_store(_allowlist, get_allowlist_store())
 
 
 def _forwarded_headers(request: Request) -> dict[str, str]:
@@ -1347,17 +1396,26 @@ async def reject_review_item(
     item_id: str,
     inbox: ReviewInbox = Depends(get_review_inbox),
     allowlist: Allowlist = Depends(get_allowlist),
+    allowlist_store: "PostgresAllowlistStore | None" = Depends(get_allowlist_store),
 ) -> dict:
     """Reject a candidate → grows the allowlist (ADR-0010).
 
     The token joins the allowlist and is never blindfolded again on subsequent
     requests. Existing exchanges that already restored remain consistent (the
     real-value mapping was only ever local to that exchange's session).
+
+    Also persists the token through the store seam (issue #168) when one is
+    configured, so the reject survives a process restart -- see
+    ``get_allowlist_store()``. With no store configured (the in-memory default),
+    ``allowlist_store`` is ``None`` and this is a no-op: behavior stays exactly
+    as before this slice (acceptance criterion 4).
     """
     item = inbox.get(item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="review item not found")
     allowlist.add(item.real)
+    if allowlist_store is not None:
+        allowlist_store.add(item.real)
     inbox.remove(item_id)
     return {
         "id": item.id,

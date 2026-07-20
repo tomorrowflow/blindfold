@@ -158,3 +158,16 @@ CREATE TABLE IF NOT EXISTS l3_gliner_activation (
     id        BOOLEAN PRIMARY KEY DEFAULT TRUE CHECK (id),
     activated BOOLEAN NOT NULL DEFAULT FALSE
 );
+
+-- Learned allowlist rejects (ADR-0010, issue #168): a bare token a human rejected
+-- from the review inbox, persisted so the reject survives a process restart --
+-- union'd with the vendored seeded_allowlist.txt at startup. Process-global, not
+-- workspace-scoped (deliberate: matches the in-memory Allowlist's own
+-- process-global scope; per-workspace scoping is a follow-up, not this slice).
+-- Only the bare token is ever written here -- never `context` (leak-audit: a
+-- rejected token is already a non-protected value per ADR-0010/ADR-0032, the same
+-- plaintext-token storage class as seeded_allowlist.txt).
+CREATE TABLE IF NOT EXISTS allowlist_entries (
+    id    SERIAL PRIMARY KEY,
+    token TEXT NOT NULL UNIQUE
+);
