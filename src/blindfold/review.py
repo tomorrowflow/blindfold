@@ -22,8 +22,12 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING, Protocol
 
 from .store._mint import collides_with_known_entity
+
+if TYPE_CHECKING:
+    from .transit import TransitClient
 
 # Plausible fake names used to mint **provisional** surrogates. Kept disjoint from
 # the cold-start ``store._mint._PERSON_POOL`` so a rejected provisional never collides
@@ -86,6 +90,37 @@ class ReviewItem:
     entity_type: str | None = None
 
 
+class ReviewInboxStore(Protocol):
+    """Persistence seam for :class:`ReviewInbox` (ADR-0037, issue #169).
+
+    Only Transit ciphertext (+ a blind index for ``real``) is ever written for the
+    two real-value columns -- the store performs no encryption of its own;
+    ``ReviewInbox`` encrypts before / decrypts after calling it. Backed in
+    production by
+    :class:`~blindfold.store.review_inbox_store.PostgresReviewInboxStore`; a
+    recording double stands in for it in the fast unit tests.
+    """
+
+    def upsert_row(
+        self,
+        item_id: str,
+        real_ciphertext: str,
+        real_blind_index: str,
+        context_ciphertext: str,
+        context_offset: int,
+        provisional_surrogate: str,
+        entity_type: str | None,
+    ) -> None: ...
+
+    def remove_row(self, item_id: str) -> None: ...
+
+    def list_rows(self) -> list[tuple[str, str, str, int, str, str | None]]: ...
+
+    def pool_positions(self) -> dict[str, int]: ...
+
+    def set_pool_position(self, pool_key: str, position: int) -> None: ...
+
+
 class ReviewInbox:
     """In-memory queue of provisional candidates, indexed by stable id.
 
@@ -145,7 +180,14 @@ class ReviewInbox:
         if not self._persistent():
             return
         for row in store.list_rows():
-            item_id, real_ciphertext, context_ciphertext, context_offset, surrogate, entity_type = row
+            (
+                item_id,
+                real_ciphertext,
+                context_ciphertext,
+                context_offset,
+                surrogate,
+                entity_type,
+            ) = row
             real = transit.decrypt(real_ciphertext)
             context = transit.decrypt(context_ciphertext)
             item = ReviewItem(
