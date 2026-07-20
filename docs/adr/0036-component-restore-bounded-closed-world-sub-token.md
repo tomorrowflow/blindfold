@@ -59,6 +59,13 @@ Why this is bounded, unlike the matching ADR-0024 rejected: the key set is the s
 finite, **self-minted** set of surrogates injected *this exchange* — not fuzzy search
 over open text. Pass 2 is exact word-boundary matching against enumerated keys.
 
+**Return-path invariant.** Restore is pure substitution against the enumerated
+per-exchange (surrogate + component → real) map. It never re-detects entities in the
+response and never fuzzy-matches — the tracked closed-world set is the sole source of
+truth. This is what keeps the return path simple and bounded: the same tracking done
+on the outbound (blindfold) side, mirrored back on the return side, so component
+restore only adds *keys* to the known map — never a new matching strategy.
+
 The post-restore **resolution gate** (ADR-0020) is unchanged in what it fail-closes
 on: a real-value leak, or a *full injected surrogate* left unresolved. A **leftover
 component** (deliberately left because it was generic or ambiguous) is a synthetic
