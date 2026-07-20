@@ -24,6 +24,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
+from .policy import DEFAULT_WORKSPACE
 from .store._mint import collides_with_known_entity
 
 if TYPE_CHECKING:
@@ -80,6 +81,10 @@ class ReviewItem:
     index of ``real`` inside ``context`` (ADR-0035 decision 11, issue #155) —
     derived from the candidate span's own position, so the frontend can highlight
     the correct occurrence in place without a fragile ``indexOf`` search.
+    ``workspace`` (issue #171) is the workspace slug the candidate was detected
+    under, captured at detection time — confirm reads it to know which
+    workspace's EntityGraph to grow, since it is not itself a real value it is
+    never Transit-encrypted, unlike ``real``/``context``.
     """
 
     id: str
@@ -88,6 +93,7 @@ class ReviewItem:
     context: str
     context_offset: int
     entity_type: str | None = None
+    workspace: str = DEFAULT_WORKSPACE
 
 
 class ReviewInboxStore(Protocol):
@@ -110,11 +116,12 @@ class ReviewInboxStore(Protocol):
         context_offset: int,
         provisional_surrogate: str,
         entity_type: str | None,
+        workspace: str,
     ) -> None: ...
 
     def remove_row(self, item_id: str) -> None: ...
 
-    def list_rows(self) -> list[tuple[str, str, str, int, str, str | None]]: ...
+    def list_rows(self) -> list[tuple[str, str, str, int, str, str | None, str]]: ...
 
     def pool_positions(self) -> dict[str, int]: ...
 
@@ -187,6 +194,7 @@ class ReviewInbox:
                 context_offset,
                 surrogate,
                 entity_type,
+                workspace,
             ) = row
             real = transit.decrypt(real_ciphertext)
             context = transit.decrypt(context_ciphertext)
@@ -197,6 +205,7 @@ class ReviewInbox:
                 context=context,
                 context_offset=context_offset,
                 entity_type=entity_type,
+                workspace=workspace,
             )
             self._items[item_id] = item
             self._by_real[real] = item_id
@@ -210,6 +219,7 @@ class ReviewInbox:
         known_values: Iterable[str] = (),
         context_offset: int | None = None,
         entity_type: str | None = None,
+        workspace: str = DEFAULT_WORKSPACE,
     ) -> ReviewItem:
         """Add (or reuse) a provisional inbox entry for ``real`` and return it.
 
@@ -233,6 +243,11 @@ class ReviewInbox:
         person name. Any other value (including ``None`` -- the inner LLM
         adjudicators don't detect a type) falls back to today's default person
         pool, unchanged.
+
+        ``workspace`` (issue #171) is the workspace this candidate was detected
+        under -- captured on the item so confirm knows which workspace's
+        EntityGraph to grow. Falls back to the default workspace slug for a
+        caller with no workspace in context.
         """
         existing_id = self._by_real.get(real)
         if existing_id is not None:
@@ -257,6 +272,7 @@ class ReviewInbox:
             context=context,
             context_offset=context_offset,
             entity_type=entity_type,
+            workspace=workspace,
         )
         self._items[item_id] = item
         self._by_real[real] = item_id
@@ -268,8 +284,9 @@ class ReviewInbox:
         """Write ``item`` through the store seam as Transit ciphertext (ADR-0037).
 
         Only ``real`` (+ its blind index) and ``context`` are encrypted;
-        ``provisional_surrogate``/``entity_type`` are never real values, so they
-        are written plaintext, matching the store's own column shapes.
+        ``provisional_surrogate``/``entity_type``/``workspace`` are never real
+        values, so they are written plaintext, matching the store's own column
+        shapes (workspace: issue #171).
         """
         assert self._store is not None and self._transit is not None
         real_ciphertext = self._transit.encrypt(item.real)
@@ -283,6 +300,7 @@ class ReviewInbox:
             item.context_offset,
             item.provisional_surrogate,
             item.entity_type,
+            item.workspace,
         )
         self._store.set_pool_position(pool_key, next_position)
 

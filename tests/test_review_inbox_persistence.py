@@ -74,6 +74,7 @@ class _RecordingReviewInboxStore:
         context_offset,
         provisional_surrogate,
         entity_type,
+        workspace,
     ) -> None:
         self.rows[item_id] = (
             real_ciphertext,
@@ -82,6 +83,7 @@ class _RecordingReviewInboxStore:
             context_offset,
             provisional_surrogate,
             entity_type,
+            workspace,
         )
 
     def remove_row(self, item_id) -> None:
@@ -89,7 +91,8 @@ class _RecordingReviewInboxStore:
 
     def list_rows(self):
         return [
-            (item_id, r[0], r[2], r[3], r[4], r[5]) for item_id, r in self.rows.items()
+            (item_id, r[0], r[2], r[3], r[4], r[5], r[6])
+            for item_id, r in self.rows.items()
         ]
 
     def pool_positions(self) -> dict[str, int]:
@@ -157,7 +160,7 @@ def test_attach_store_hydrates_every_persisted_item():
     # Simulates a process restart: a store already holds an item from "before"
     # (encrypted with the same Transit key), and a freshly-constructed inbox
     # (as app.py's bootstrap builds at startup) must reconstruct it in full,
-    # including entity_type (acceptance criterion 1).
+    # including entity_type (acceptance criterion 1) and workspace (issue #171).
     store = _RecordingReviewInboxStore()
     transit = _stub_transit()
     store.upsert_row(
@@ -168,6 +171,7 @@ def test_attach_store_hydrates_every_persisted_item():
         4,
         "Waldstein Industries",
         "organization",
+        "acme",
     )
     store.set_pool_position("organization", 1)
 
@@ -181,6 +185,26 @@ def test_attach_store_hydrates_every_persisted_item():
     assert item.context_offset == 4
     assert item.provisional_surrogate == "Waldstein Industries"
     assert item.entity_type == "organization"
+    assert item.workspace == "acme"
+
+
+def test_attach_store_hydrates_a_pre_migration_row_to_the_default_workspace_slug():
+    # Issue #171: a row persisted before this slice has no workspace of its own
+    # -- the schema migration supplies a default ('default') rather than
+    # failing, so hydration here never crashes or drops the row.
+    from blindfold.policy import DEFAULT_WORKSPACE
+
+    store = _RecordingReviewInboxStore()
+    transit = _stub_transit()
+    store.upsert_row(
+        "1", "vault:v1:X", "blind:X", "vault:v1:ctx", 0, "Surrogate", None,
+        DEFAULT_WORKSPACE,
+    )
+
+    inbox = ReviewInbox()
+    inbox.attach_store(store, transit)
+
+    assert inbox.get("1").workspace == DEFAULT_WORKSPACE
 
 
 def test_attach_store_is_a_no_op_when_transit_is_none():
@@ -188,7 +212,7 @@ def test_attach_store_is_a_no_op_when_transit_is_none():
     # never attempt to decrypt (would crash without a real Transit client).
     store = _RecordingReviewInboxStore()
     store.upsert_row(
-        "1", "vault:v1:X", "blind:X", "vault:v1:ctx", 0, "Surrogate", None
+        "1", "vault:v1:X", "blind:X", "vault:v1:ctx", 0, "Surrogate", None, "default"
     )
 
     inbox = ReviewInbox()
@@ -202,7 +226,8 @@ def test_re_encountering_a_persisted_real_after_restart_reuses_its_item():
     store = _RecordingReviewInboxStore()
     transit = _stub_transit()
     store.upsert_row(
-        "1", "vault:v1:Helga", "blind:Helga", "vault:v1:ctx", 0, "Alex Brenner", None
+        "1", "vault:v1:Helga", "blind:Helga", "vault:v1:ctx", 0, "Alex Brenner", None,
+        "default",
     )
 
     inbox = ReviewInbox()
@@ -322,7 +347,9 @@ def test_hydrate_review_inbox_from_store_is_a_no_op_when_transit_is_none():
     from blindfold.app import hydrate_review_inbox_from_store
 
     store = _RecordingReviewInboxStore()
-    store.upsert_row("1", "vault:v1:X", "blind:X", "vault:v1:ctx", 0, "Surrogate", None)
+    store.upsert_row(
+        "1", "vault:v1:X", "blind:X", "vault:v1:ctx", 0, "Surrogate", None, "default"
+    )
     inbox = ReviewInbox()
 
     hydrate_review_inbox_from_store(inbox, store, None)  # must not raise

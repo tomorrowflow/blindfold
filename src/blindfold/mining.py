@@ -18,6 +18,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from .l3 import L3Detector
+from .policy import DEFAULT_WORKSPACE
 from .review import ReviewInbox, ReviewItem
 from .surrogates import SurrogateMapping
 
@@ -43,6 +44,7 @@ def mine_transcripts(
     detector: L3Detector,
     mapping: SurrogateMapping,
     inbox: ReviewInbox,
+    workspace: str = DEFAULT_WORKSPACE,
 ) -> MiningReport:
     """Scan ``transcripts`` and propose novel L3-confirmed entities to the inbox.
 
@@ -51,6 +53,10 @@ def mine_transcripts(
     adjudicates the leftovers). For every candidate L3 confirms, ``inbox.upsert``
     records the (real, provisional_surrogate, context) tuple — the same shape a
     live request would have produced.
+
+    Mining runs out-of-band, with no request in context (issue #171) — ``workspace``
+    defaults to the default workspace slug so a proposed candidate still lands
+    somewhere confirm can grow, rather than dropping the field.
     """
     # Mining never mutates ``mapping``, so recover the entity-graph record list once
     # rather than per transcript: ``mapping.entities()`` regroups every seeded pair by
@@ -70,6 +76,7 @@ def mine_transcripts(
                     known_values=mapping.real_values(),
                     context_offset=candidate.context_offset,
                     entity_type=decision.entity_type,
+                    workspace=workspace,
                 )
             )
     return MiningReport(transcripts_scanned=scanned, proposed=proposed)

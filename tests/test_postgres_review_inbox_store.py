@@ -55,6 +55,7 @@ def test_upsert_row_then_list_rows_round_trips(pg_dsn):
         7,
         "Alex Brenner",
         None,
+        "acme",
     )
 
     rows = store.list_rows()
@@ -66,8 +67,35 @@ def test_upsert_row_then_list_rows_round_trips(pg_dsn):
             7,
             "Alex Brenner",
             None,
+            "acme",
         )
     ]
+
+
+def test_a_row_persisted_before_the_workspace_column_defaults_to_the_default_workspace_slug(pg_dsn):
+    """Issue #171: the schema migration backfills a pre-existing row's new
+    ``workspace`` column with the default workspace slug rather than failing --
+    simulated here by inserting directly, bypassing ``upsert_row`` (which always
+    supplies a workspace), the same way an already-migrated NOT NULL DEFAULT
+    column would look to a row written before this slice."""
+    import psycopg
+
+    from blindfold.store.review_inbox_store import PostgresReviewInboxStore
+
+    store = PostgresReviewInboxStore(pg_dsn)
+    with psycopg.connect(pg_dsn) as conn:
+        conn.execute(
+            "INSERT INTO review_inbox "
+            "(id, real_ciphertext, real_blind_index, context_ciphertext, "
+            "context_offset, provisional_surrogate, entity_type) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+            ("6", "vault:v1:pre-migration", "blind:pre-migration", "vault:v1:ctx", 0, "Old Surrogate", None),
+        )
+        conn.commit()
+
+    matching = [row for row in store.list_rows() if row[0] == "6"]
+    assert len(matching) == 1
+    assert matching[0][6] == "default"
 
 
 def test_stored_row_holds_only_ciphertext_never_the_plaintext_real_value(pg_dsn):
@@ -87,6 +115,7 @@ def test_stored_row_holds_only_ciphertext_never_the_plaintext_real_value(pg_dsn)
         0,
         "Claudia Reinhardt",
         None,
+        "default",
     )
 
     (item_id, real_ciphertext, context_ciphertext, *_rest) = store.list_rows()[-1]
@@ -98,21 +127,26 @@ def test_upsert_row_updates_an_existing_id_in_place(pg_dsn):
     from blindfold.store.review_inbox_store import PostgresReviewInboxStore
 
     store = PostgresReviewInboxStore(pg_dsn)
-    store.upsert_row("3", "vault:v1:old", "blind:old", "vault:v1:old-ctx", 0, "Old Surrogate", None)
-    store.upsert_row("3", "vault:v1:new", "blind:new", "vault:v1:new-ctx", 1, "New Surrogate", "organization")
+    store.upsert_row(
+        "3", "vault:v1:old", "blind:old", "vault:v1:old-ctx", 0, "Old Surrogate", None, "default"
+    )
+    store.upsert_row(
+        "3", "vault:v1:new", "blind:new", "vault:v1:new-ctx", 1, "New Surrogate", "organization", "acme"
+    )
 
     matching = [row for row in store.list_rows() if row[0] == "3"]
     assert len(matching) == 1
     assert matching[0][1] == "vault:v1:new"
     assert matching[0][4] == "New Surrogate"
     assert matching[0][5] == "organization"
+    assert matching[0][6] == "acme"
 
 
 def test_remove_row_deletes_it(pg_dsn):
     from blindfold.store.review_inbox_store import PostgresReviewInboxStore
 
     store = PostgresReviewInboxStore(pg_dsn)
-    store.upsert_row("4", "vault:v1:x", "blind:x", "vault:v1:ctx", 0, "Surrogate", None)
+    store.upsert_row("4", "vault:v1:x", "blind:x", "vault:v1:ctx", 0, "Surrogate", None, "default")
 
     store.remove_row("4")
 
@@ -149,7 +183,7 @@ def test_rows_survive_a_new_store_instance_process_restart_contract(pg_dsn):
     store1 = PostgresReviewInboxStore(pg_dsn)
     store1.upsert_row(
         "5", "vault:v1:restart", "blind:restart", "vault:v1:restart-ctx", 0,
-        "Restart Surrogate", None,
+        "Restart Surrogate", None, "default",
     )
 
     store2 = PostgresReviewInboxStore(pg_dsn)

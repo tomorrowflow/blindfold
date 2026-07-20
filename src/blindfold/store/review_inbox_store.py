@@ -45,21 +45,28 @@ class PostgresReviewInboxStore:
         context_offset: int,
         provisional_surrogate: str,
         entity_type: str | None,
+        workspace: str,
     ) -> None:
-        """Persist one review-inbox row (upsert by ``item_id``)."""
+        """Persist one review-inbox row (upsert by ``item_id``).
+
+        ``workspace`` (issue #171) is the slug the candidate was detected
+        under -- plaintext, like ``provisional_surrogate``/``entity_type``,
+        since it is not itself a real value.
+        """
         with psycopg.connect(self._dsn) as conn:
             conn.execute(
                 "INSERT INTO review_inbox "
                 "(id, real_ciphertext, real_blind_index, context_ciphertext, "
-                "context_offset, provisional_surrogate, entity_type) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                "context_offset, provisional_surrogate, entity_type, workspace) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
                 "ON CONFLICT (id) DO UPDATE SET "
                 "real_ciphertext = EXCLUDED.real_ciphertext, "
                 "real_blind_index = EXCLUDED.real_blind_index, "
                 "context_ciphertext = EXCLUDED.context_ciphertext, "
                 "context_offset = EXCLUDED.context_offset, "
                 "provisional_surrogate = EXCLUDED.provisional_surrogate, "
-                "entity_type = EXCLUDED.entity_type",
+                "entity_type = EXCLUDED.entity_type, "
+                "workspace = EXCLUDED.workspace",
                 (
                     int(item_id),
                     real_ciphertext,
@@ -68,6 +75,7 @@ class PostgresReviewInboxStore:
                     context_offset,
                     provisional_surrogate,
                     entity_type,
+                    workspace,
                 ),
             )
             conn.commit()
@@ -81,18 +89,24 @@ class PostgresReviewInboxStore:
 
     def list_rows(
         self,
-    ) -> list[tuple[str, str, str, int, str, str | None]]:
+    ) -> list[tuple[str, str, str, int, str, str | None, str]]:
         """Every persisted row as
         ``(id, real_ciphertext, context_ciphertext, context_offset,
-        provisional_surrogate, entity_type)`` -- the shape
+        provisional_surrogate, entity_type, workspace)`` -- the shape
         :meth:`~blindfold.review.ReviewInbox.attach_store` decrypts and
-        reconstructs into a :class:`~blindfold.review.ReviewItem`."""
+        reconstructs into a :class:`~blindfold.review.ReviewItem`. A row
+        persisted before the ``workspace`` column existed reads back as the
+        default workspace slug -- the schema migration supplies that default
+        (issue #171), never a NULL/crash."""
         with psycopg.connect(self._dsn) as conn:
             rows = conn.execute(
                 "SELECT id, real_ciphertext, context_ciphertext, context_offset, "
-                "provisional_surrogate, entity_type FROM review_inbox"
+                "provisional_surrogate, entity_type, workspace FROM review_inbox"
             ).fetchall()
-        return [(str(row[0]), row[1], row[2], row[3], row[4], row[5]) for row in rows]
+        return [
+            (str(row[0]), row[1], row[2], row[3], row[4], row[5], row[6])
+            for row in rows
+        ]
 
     def pool_positions(self) -> dict[str, int]:
         """Every persisted per-pool mint cursor (issue #80/#167), keyed by pool key."""

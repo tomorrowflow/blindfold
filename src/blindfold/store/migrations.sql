@@ -195,6 +195,13 @@ CREATE TABLE IF NOT EXISTS review_inbox (
     entity_type           TEXT
 );
 
+-- The originating workspace slug (issue #171), captured at detection time so
+-- confirm knows which workspace's EntityGraph to grow -- plaintext, like
+-- provisional_surrogate/entity_type, since it is not itself a real value. A
+-- row persisted before this column existed backfills to the default
+-- workspace slug via the DEFAULT, never NULL or a failed migration.
+ALTER TABLE review_inbox ADD COLUMN IF NOT EXISTS workspace TEXT NOT NULL DEFAULT 'default';
+
 -- Per-pool mint cursor (issue #80/#167), persisted explicitly: a
 -- collision-skipped pool position leaves no trace in the surviving items
 -- above, so the cursor cannot be reconstructed from them and must be stored

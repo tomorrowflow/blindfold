@@ -74,3 +74,28 @@ def test_upsert_defaults_entity_type_to_none():
     item = inbox.upsert("Klaus", context="Please brief Klaus tomorrow.")
 
     assert item.entity_type is None
+
+
+def test_upsert_stores_the_workspace_the_candidate_was_detected_under():
+    # Issue #171: the confirm route has no way to know which workspace's
+    # EntityGraph to grow unless the item itself carries the originating
+    # workspace (option b from the issue brief).
+    inbox = ReviewInbox()
+
+    item = inbox.upsert(
+        "Klaus", context="Please brief Klaus tomorrow.", workspace="acme"
+    )
+
+    assert item.workspace == "acme"
+
+
+def test_upsert_defaults_workspace_to_the_default_workspace_slug():
+    # A caller with no workspace in context (or an old test/fixture) falls back
+    # to the default workspace slug rather than dropping the field.
+    from blindfold.policy import DEFAULT_WORKSPACE
+
+    inbox = ReviewInbox()
+
+    item = inbox.upsert("Klaus", context="Please brief Klaus tomorrow.")
+
+    assert item.workspace == DEFAULT_WORKSPACE

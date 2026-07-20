@@ -1235,7 +1235,8 @@ async def messages(
     declared_tools = extract_declared_tools_messages(payload)
     result = await _mint_or_block(
         lambda: blindfold_payload(
-            payload, mapping, effective_l3_detector, inbox, declared_tools
+            payload, mapping, effective_l3_detector, inbox, declared_tools,
+            workspace=workspace,
         ),
         workspace,
         policy.deterministic_only,
@@ -1331,7 +1332,8 @@ async def chat_completions(
     declared_tools = extract_declared_tools_chat_completions(payload)
     result = await _mint_or_block(
         lambda: blindfold_chat_completions_payload(
-            payload, mapping, effective_l3_detector, inbox, declared_tools
+            payload, mapping, effective_l3_detector, inbox, declared_tools,
+            workspace=workspace,
         ),
         workspace,
         policy.deterministic_only,
@@ -1414,22 +1416,45 @@ async def list_review_inbox(
     }
 
 
+def _entity_kind_for(entity_type: str | None) -> str:
+    """Map a review item's ``entity_type`` to an ``EntityGraph`` kind (issue #171).
+
+    ``EntityGraph`` nodes are ``person`` | ``term`` (no ``organization`` kind
+    exists) -- an organization/company candidate (or any other non-person type)
+    is realized as a ``term`` (CONTEXT.md: an organization worth protecting is
+    a Term); person and the untyped default map to ``person``.
+    """
+    return "person" if entity_type in (None, "person") else "term"
+
+
 @app.post("/v1/management/review-inbox/{item_id}/confirm")
 async def confirm_review_item(
     item_id: str,
     inbox: ReviewInbox = Depends(get_review_inbox),
     mapping: SurrogateMapping = Depends(get_mapping),
+    entity_graph: EntityGraph = Depends(get_entity_graph),
 ) -> dict:
     """Confirm a candidate as a real entity → grows the entity graph (ADR-0010).
 
     The provisional surrogate becomes the canonical surrogate for that real value.
     On the next request the same real value is detected deterministically by L2,
     without an L3 call (clause: detection becomes more deterministic over time).
+
+    Also creates an ``EntityRecord`` in the item's own workspace ``EntityGraph``
+    (issue #171) — the workspace comes from the ``ReviewItem`` itself (captured
+    at detection time), not a path parameter, so a confirmed entity surfaces in
+    that workspace's entity list / graph editor. Idempotent: a real value already
+    present as an entity of the mapped kind in that workspace is not duplicated.
     """
     item = inbox.get(item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="review item not found")
     mapping.seed(item.real, item.provisional_surrogate)
+    kind = _entity_kind_for(item.entity_type)
+    if entity_graph.get_by_canonical(item.workspace, kind, item.real) is None:
+        entity_graph.add_entity(
+            kind, item.workspace, item.real, surrogate=item.provisional_surrogate
+        )
     inbox.remove(item_id)
     return {
         "id": item.id,
