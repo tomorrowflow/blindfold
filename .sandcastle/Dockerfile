@@ -42,6 +42,12 @@ RUN curl -fsSL https://astral.sh/uv/install.sh | sh
 # Add Claude + uv (both land in ~/.local/bin) to PATH
 ENV PATH="/home/agent/.local/bin:$PATH"
 
+# Bound uv's per-request HTTP timeout so a stalled read from PyPI's CDN aborts and
+# retries instead of hanging the (synchronous) `uv sync` sandbox-setup hook. This
+# is the socket-layer first line of defence; main.mts also caps each `uv sync`
+# attempt with a hard `timeout` + retry as the guarantee.
+ENV UV_HTTP_TIMEOUT=60
+
 # Pre-provision the interpreter the project requires so the first `uv sync` is fast.
 RUN /home/agent/.local/bin/uv python install 3.12
 

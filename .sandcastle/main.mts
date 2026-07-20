@@ -89,13 +89,27 @@ const TRUSTED_MAINTAINERS = ["tomorrowflow"];
 // Blindfold is a Python/uv project, so `uv sync` (not npm install) installs the
 // dependency groups declared in pyproject.toml into the worktree's .venv.
 //
-// timeoutMs (default 60s is too tight): the hook runs INSIDE the Docker sandbox,
-// which doesn't share the host's ~/.cache/uv, so every run is a cold sync that
-// re-downloads the full dependency tree (the Playwright wheel alone is ~40 MB).
-// 10 minutes gives comfortable headroom on a cold cache / slow network. A future
-// optimisation could mount the uv cache into the sandbox to make this fast again.
+// The hook runs INSIDE the Docker sandbox, which doesn't share the host's
+// ~/.cache/uv, so every run is a cold sync that re-downloads the full dependency
+// tree (the Playwright wheel alone is ~40 MB). A cold sync is merely slow — the
+// real hazard is a *stalled* one: uv can hang on a mid-stream read from PyPI's
+// CDN and sit on an open-but-idle socket indefinitely. Because onSandboxReady is
+// synchronous, that freezes the whole orchestration (observed: a 12-min stall on
+// an ESTABLISHED :443 connection to Fastly). A bare `timeoutMs` only caps the
+// TOTAL wait, so a single hang burns the entire budget before anything recovers.
+//
+// So we don't run bare `uv sync`. Each attempt is capped by a hard in-container
+// `timeout` and retried, so a hung connection fails fast and a fresh attempt
+// almost always gets past it. UV_HTTP_TIMEOUT (set in the Dockerfile) is the
+// first line of defence at uv's own socket layer; the shell `timeout` is the
+// guarantee. The outer timeoutMs stays as a generous backstop. (`timeout` is
+// coreutils, present in the node:22-bookworm base; the string is run via `sh -c`.)
+const UV_SYNC =
+  "for i in 1 2 3; do timeout 180 uv sync && exit 0; " +
+  'echo "uv sync attempt $i timed out/failed; retrying" >&2; done; ' +
+  'echo "uv sync failed after 3 attempts" >&2; exit 1';
 const hooks = {
-  sandbox: { onSandboxReady: [{ command: "uv sync", timeoutMs: 600_000 }] },
+  sandbox: { onSandboxReady: [{ command: UV_SYNC, timeoutMs: 600_000 }] },
 };
 
 // Nothing to pre-copy from the host: the only node_modules in this repo is the
@@ -376,6 +390,68 @@ function worktreePathForBranch(branch: string): string | null {
     /* fall through — treated as "no worktree", branch-only cleanup still runs */
   }
   return null;
+}
+
+// ── Supacode trace panes ─────────────────────────────────────────────────────
+// Open a live `tail -F` pane for each agent's log, pinned to that agent's own
+// worktree — the same worktree ensureSupacodeWorktreeSurface() registered. One
+// "traces" tab per worktree; each role becomes a vertical split within it
+// (implementer/reviewer/web-verify for an issue; planner/merger/merge-reviewer on
+// the target). `tail -F` follows by name, so opening the pane BEFORE the agent
+// creates its log is fine — it attaches the moment the file appears. Because the
+// panes live IN the worktree, reapBranch()'s Supacode teardown removes them too.
+//
+// Best-effort + fail-OPEN: any Supacode hiccup is swallowed — a display glitch
+// must never break a run. The worktree ID is the percent-encoded absolute path
+// (trailing slash), exactly as reapBranch()/Supacode key it.
+const _traceTab = new Map<string, string>(); // branch -> traces tab UUID
+const _tracePrev = new Map<string, string>(); // branch -> last surface UUID in that tab
+const _traceOpened = new Set<string>(); // "branch|role" -> pane already opened
+
+function worktreeIdForBranch(branch: string): string | null {
+  const path = branch === TARGET_BRANCH ? REPO_ROOT : worktreePathForBranch(branch);
+  if (!path) return null;
+  return encodeURIComponent(path.endsWith("/") ? path : path + "/");
+}
+
+function openTracePane(branch: string, role: string): void {
+  if (!supacodeSession()) return;
+  const key = `${branch}|${role}`;
+  if (_traceOpened.has(key)) return;
+
+  const wid = worktreeIdForBranch(branch);
+  if (!wid) return; // worktree not registered (yet) — skip rather than guess
+
+  const slug = branch.replace(/\//g, "-");
+  const logPath = join(REPO_ROOT, ".sandcastle", "logs", `${slug}-${role}.log`);
+  // Single-quote for the surface's shell; the values are safe, but be defensive.
+  const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+  const cmd = `printf '=== %s @ %s ===\\n' ${shq(role)} ${shq(slug)}; tail -F ${shq(logPath)}`;
+
+  try {
+    const tab = _traceTab.get(branch);
+    if (!tab) {
+      // First role for this worktree → a new tab pinned to it (surface id == tab id).
+      const newTab = execFileSync("supacode", ["tab", "new", "-w", wid, "-i", cmd], {
+        encoding: "utf8",
+      }).trim();
+      _traceTab.set(branch, newTab);
+      _tracePrev.set(branch, newTab);
+    } else {
+      // Subsequent roles → split within that worktree's traces tab.
+      const prev = _tracePrev.get(branch)!;
+      const sid = execFileSync(
+        "supacode",
+        ["surface", "split", "-w", wid, "-t", tab, "-s", prev, "-d", "v", "-i", cmd],
+        { encoding: "utf8" },
+      ).trim();
+      _tracePrev.set(branch, sid);
+    }
+    _traceOpened.add(key);
+    console.log(`  🪟 trace pane for ${role} @ ${slug}`);
+  } catch (err) {
+    console.warn(`  (couldn't open Supacode trace pane for ${role} @ ${slug}: ${err})`);
+  }
 }
 
 // Reap a merged issue's per-issue worktree + branch. The merge ran in the sandbox;
@@ -751,6 +827,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   //
   // It outputs a <plan> JSON block — Output.object parses and validates it.
   // -------------------------------------------------------------------------
+  openTracePane(TARGET_BRANCH, "planner");
   const plan = await sandcastle.run({
     hooks,
     sandbox: docker(),
@@ -897,6 +974,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         // Run the implementer. `completionSignal` is the matched promise string
         // (default `<promise>COMPLETE</promise>`) or undefined if it never fired
         // — e.g. the agent hit the iteration limit with the work unfinished.
+        openTracePane(issue.branch, "implementer");
         const implement = await sandbox.run({
           name: "implementer",
           maxIterations: 100,
@@ -961,6 +1039,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         // Independent privacy gate. The reviewer fires COMPLETE only when the
         // change is verified correct AND leak-clean; on a FAIL it comments on the
         // issue and stays silent. We read that signal, not its commits, as the gate.
+        openTracePane(issue.branch, "reviewer");
         const review = await sandbox.run({
           name: "reviewer",
           maxIterations: 1,
@@ -1012,6 +1091,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
             `🌐 **Browser gate** is now operating — scripted Playwright web-verify of \`${issue.branch}\` ` +
               `(driving \`${ASGI_APP}\` at its \`/ui/*\` routes).`,
           );
+          openTracePane(issue.branch, "web-verify");
           const webVerify = await sandbox.run({
             name: "web-verify",
             maxIterations: 30,
@@ -1161,6 +1241,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     }
   })();
 
+  openTracePane(TARGET_BRANCH, "merger");
   const merge = await sandcastle.run({
     hooks,
     sandbox: docker(),
@@ -1199,6 +1280,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
 
   if (mergerComplete && preMergeSha && postMergeSha && postMergeSha !== preMergeSha) {
     console.log("\nBranches merged. Re-auditing the post-merge result (leak-audit gate)…");
+    openTracePane(TARGET_BRANCH, "merge-reviewer");
     const reaudit = await sandcastle.run({
       hooks,
       sandbox: docker(),
