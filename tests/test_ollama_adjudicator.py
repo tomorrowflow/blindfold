@@ -117,6 +117,46 @@ def test_adjudicator_batch_prompt_rejects_common_verbs_and_action_labels_mid_sen
     assert "refactor" in lowered or "build" in lowered or "find" in lowered
 
 
+def test_adjudicator_single_prompt_rejects_common_capitalized_nouns_used_generically():
+    # Issue #165: live false-positive evidence — Code, Index, Design, Transit,
+    # Artifacts, Tool confirmed as entities by inner oMLX when they appear in
+    # blindfold's own system prompt (CLAUDE.md / skill list text). These are common
+    # English nouns used generically/technically, not proper nouns naming a specific
+    # private person, org, or secret project. A fourth rejection category must appear
+    # in the single-candidate prompt (mirrors the #88/#164 test pattern: assert on
+    # real prompt content via _PROMPT_TEMPLATE.format(...), not a fake/inline string).
+    prompt = _PROMPT_TEMPLATE.format(context="Use the Code tool to Index artifacts", text="Code")
+    lowered = prompt.lower()
+
+    # Fourth rejection rule: a common English or German noun used generically/
+    # technically — even when capitalized — must be explicitly rejected.
+    assert "noun" in lowered
+    # Representative live-evidence words from the issue must appear as examples.
+    assert "code" in lowered
+    assert "index" in lowered or "design" in lowered or "transit" in lowered or "artifacts" in lowered or "tool" in lowered
+
+
+def test_adjudicator_batch_prompt_rejects_common_capitalized_nouns_used_generically():
+    # Issue #165: batch counterpart of the single-candidate test above. Both
+    # _PROMPT_TEMPLATE and _BATCH_PROMPT_TEMPLATE must carry the fourth rejection
+    # category (the two templates are maintained together in ollama.py, and
+    # OpenAICompatibleAdjudicator imports _build_batch_prompt unchanged from ollama.py).
+    from blindfold.ollama import _build_batch_prompt
+
+    candidates = [
+        CandidateSpan(text="Code", start=8, end=12, context="Use the Code tool"),
+        CandidateSpan(text="Index", start=4, end=9, context="Build an Index now"),
+    ]
+    prompt = _build_batch_prompt(candidates)
+    lowered = prompt.lower()
+
+    # Fourth rejection rule: a common noun used generically/technically.
+    assert "noun" in lowered
+    # Representative live-evidence words from the issue must appear as examples.
+    assert "code" in lowered
+    assert "index" in lowered or "design" in lowered or "transit" in lowered or "artifacts" in lowered or "tool" in lowered
+
+
 def test_ollama_adjudicator_rejects_a_non_entity_candidate():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
