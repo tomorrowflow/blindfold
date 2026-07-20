@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from .detection import detect_l2, detect_pii
+from .l3 import _SENTENCE_STOPWORDS as _COMPONENT_STOPWORDS
 from .l3 import CandidateSpan, L3Detector, count_capitalized_tokens
 # Reused to re-window context around a *coalesced* multi-token span (issue #162):
 # no single candidate's ``.context`` covers the merged run, so the inbox item's
@@ -703,16 +704,50 @@ def _surrogate_pattern(surrogate: str) -> re.Pattern[str]:
     return re.compile(rf"(?<!\w){re.escape(surrogate)}(?:{suffix_alt})?(?!\w)")
 
 
-def _restore_text(text: str, session: ExchangeSession) -> str:
+def _apply_restore_pass(text: str, restore_map: dict[str, str]) -> str:
+    """Substitute every key of ``restore_map`` for its value, longest key first.
+
+    Shared by both restore passes (ADR-0036): Pass 1 (full surrogates) and Pass 2
+    (surrogate components) are the same matching strategy — exact, word-boundary,
+    closed-world — applied to different key sets, never a new algorithm.
+    """
     result = text
-    # Longest surrogate first for safe exact replacement.
-    for surrogate, real in sorted(
-        session.injected.items(), key=lambda kv: len(kv[0]), reverse=True
-    ):
-        result = _surrogate_pattern(surrogate).sub(
-            lambda m, real=real, surrogate=surrogate: real + m.group(0)[len(surrogate):],
+    for key, real in sorted(restore_map.items(), key=lambda kv: len(kv[0]), reverse=True):
+        result = _surrogate_pattern(key).sub(
+            lambda m, real=real, key=key: real + m.group(0)[len(key):],
             result,
         )
+    return result
+
+
+def _component_restore_map(injected: dict[str, str]) -> dict[str, str]:
+    """Derive Pass 2's (component -> real) map from the per-exchange injected set.
+
+    A multi-word surrogate decomposes into its word components; a component is a
+    restore key only if distinctive (not a shared common-word/legal-form) and
+    unambiguous (maps to exactly one real value across this exchange's injected
+    surrogates) — ADR-0036.
+    """
+    candidates: dict[str, set[str]] = {}
+    for surrogate, real in injected.items():
+        surrogate_words = surrogate.split()
+        if len(surrogate_words) < 2:
+            continue
+        real_words = real.split()
+        aligned = len(surrogate_words) == len(real_words)
+        for index, word in enumerate(surrogate_words):
+            if word in _COMPONENT_STOPWORDS:
+                continue
+            target = real_words[index] if aligned else real
+            candidates.setdefault(word, set()).add(target)
+    return {word: next(iter(targets)) for word, targets in candidates.items() if len(targets) == 1}
+
+
+def _restore_text(text: str, session: ExchangeSession) -> str:
+    result = _apply_restore_pass(text, session.injected)
+    components = _component_restore_map(session.injected)
+    if components:
+        result = _apply_restore_pass(result, components)
     return result
 
 
@@ -794,9 +829,17 @@ class StreamingRestorer:
         candidate starting in the safe prefix correctly resolve its suffix/no-suffix
         boundary decision — the ``_tail`` headroom guarantees enough trailing buffer is
         already present to do so conclusively.
+
+        ADR-0036: a surrogate *component* is also a restore key and, being a
+        substring of its parent surrogate, is already covered by the existing tail
+        sizing — but it must be checked here too, or a component split right at the
+        boundary is truncated out of the buffer before its remainder arrives.
         """
         end = safe_len
-        for surrogate in sorted(self._session.injected, key=len, reverse=True):
+        keys = list(self._session.injected) + list(
+            _component_restore_map(self._session.injected)
+        )
+        for surrogate in sorted(keys, key=len, reverse=True):
             pattern = _surrogate_pattern(surrogate)
             search_start = 0
             while search_start < safe_len:

@@ -172,6 +172,22 @@ def test_resolution_gate_still_raises_when_a_suffixed_surrogate_is_left_unresolv
         resolution_gate(unrestored, session)
 
 
+def test_resolution_gate_does_not_fail_close_on_a_leftover_component():
+    # ADR-0036: a leftover surrogate component (left because it was generic or
+    # ambiguous) is a synthetic token, never a real value, so it must never
+    # fail-close a response — only a real-value leak or an unresolved FULL
+    # injected surrogate does.
+    session = ExchangeSession()
+    session.record("Carla Distel", "Sarah Bergmann")
+    session.record("Carla Weber", "Petra Klein")
+    # "Carla" is ambiguous (shared by two surrogates) and stays unresolved by
+    # design — must not trip the gate.
+    restored = {"content": [{"type": "text", "text": "Carla called earlier."}]}
+
+    # Should not raise.
+    resolution_gate(restored, session)
+
+
 def test_resolution_gate_logs_a_clear_warning_naming_the_unresolved_surrogate(caplog):
     """The gate also surfaces a clear, identifying warning on the resolution failure mode."""
     mapping = _mapping()

@@ -304,3 +304,21 @@ Jetzt
 Bitte
 Danke
 Hallo
+
+# Legal forms / organizational suffixes (ADR-0036): generic across countless
+# unrelated organizations, so never distinctive enough to key a restore (or an
+# L3 candidate) on their own — shared with candidate suppression (#161) and
+# inner-adjudicator precision (#165) so all three stay consistent.
+GmbH
+mbH
+AG
+KG
+OHG
+SE
+Ltd
+Inc
+LLC
+Corp
+Corporation
+Co
+Plc

@@ -85,6 +85,25 @@ def test_streaming_restore_leaves_a_sub_token_containment_untouched_across_chunk
     assert joined == "Die Müllerei war geschlossen."
 
 
+def test_streaming_restore_reassembles_a_surrogate_component_split_across_chunks():
+    # ADR-0036: a surrogate COMPONENT ("Carla" from injected "Carla Distel"),
+    # not just the full surrogate, can itself straddle a chunk boundary. The
+    # straddle-detection logic must also account for derived component keys —
+    # otherwise the split component is truncated and permanently lost from the
+    # buffer (emitted un-restored) before the rest of it arrives.
+    session = _session_with({"Carla Distel": "Sarah Bergmann"})
+    restorer = StreamingRestorer(session)
+
+    emitted: list[str] = []
+    emitted.append(restorer.feed("Well then, Car"))
+    emitted.append(restorer.feed("la is here!!!"))
+    emitted.append(restorer.flush())
+
+    joined = "".join(emitted)
+    assert joined == "Well then, Sarah is here!!!"
+    assert "Carla" not in joined
+
+
 def test_streaming_restore_is_closed_world_for_coincidental_lookalikes():
     # Only "Berta Vogel" was injected this exchange. A surrogate-shaped token the
     # provider emits on its own ("Tobias Lehmann") must NOT be restored.
