@@ -52,3 +52,15 @@ Glob
 Blindfold
 Sandcastle
 Supacode
+#
+# Common English/German words capitalized in agentic prose (ADR-0032 dismissal-log
+# curation). Evidence: BLINDFOLD_L3_DISMISSAL_LOG from live Claude Code traffic
+# through the GLiNER cascade on 2026-07-20 -- generic nouns/verbs the inner LLM
+# dismissed but GLiNER intermittently auto-confirmed into the review inbox. Each is
+# a common dictionary word, implausible as a protected referent when unregistered.
+Code
+Refactor
+Index
+Design
+Transit
+Artifacts
