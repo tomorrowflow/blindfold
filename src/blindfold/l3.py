@@ -150,9 +150,17 @@ class L3Adjudication:
 
     ``is_entity`` is the load-bearing flag: the engine mints a surrogate for
     confirmed entities, ignores rejections.
+
+    ``entity_type`` (issue #167) is the detected entity's coarse kind (e.g.
+    ``"person"``, ``"organization"``), used by the mint pass to pick a
+    type-appropriate surrogate pool (ADR-0005). ``None`` when the adjudicator
+    that produced this verdict doesn't detect a type (the inner LLM
+    adjudicators today) — the mint pass falls back to its default pool
+    without error, exactly as before this field existed.
     """
 
     is_entity: bool
+    entity_type: str | None = None
 
 
 class L3Adjudicator(Protocol):

@@ -61,6 +61,25 @@ class _RecordingClassifier:
         return candidate.text in self._positives
 
 
+class _LabelAwareRecordingClassifier:
+    """Stub for GLiNER's richer type-carrying seam (issue #167): implements
+    ``classify_type`` (returns the tagged label, or ``None``), not just the
+    bool-only ``classify`` the other stub in this file uses.
+    """
+
+    def __init__(self, tagged_hits: dict[str, str]) -> None:
+        self.calls: list[str] = []
+        self._tagged_hits = tagged_hits
+
+    def classify(self, candidate: CandidateSpan) -> bool:
+        self.calls.append(candidate.text)
+        return candidate.text in self._tagged_hits
+
+    def classify_type(self, candidate: CandidateSpan) -> str | None:
+        self.calls.append(candidate.text)
+        return self._tagged_hits.get(candidate.text)
+
+
 class _RecordingInnerAdjudicator:
     """Stub for the inner L3Adjudicator (Ollama/oMLX) -- records every call."""
 
@@ -273,3 +292,70 @@ async def test_gliner_negatives_batch_through_one_inner_call_stay_leak_clean():
     surrogates = {item.provisional_surrogate for item in inbox.list()}
     assert len(surrogates) == 2
     assert all(surrogate in egressed for surrogate in surrogates)
+
+
+@pytest.mark.anyio
+async def test_gliner_organization_candidate_mints_an_org_shaped_surrogate_end_to_end():
+    # Issue #167 live evidence, driven through the real /v1/messages request path:
+    # GLiNER classifying "Nordwind Logistik" as organization must mint an
+    # org-shaped surrogate, not a person name from the default pool -- proven at
+    # the full request-path level, not just the isolated adjudicator-seam tests
+    # (test_l3_gliner_cascade.py, test_review_inbox.py).
+    #
+    # Clause A: the stub upstream sees only the org-shaped surrogate -- zero
+    # real-entity tokens cross egress.
+    from blindfold.review import _PROVISIONAL_POOL
+
+    mapping = _seeded_mapping()
+    inbox = ReviewInbox()
+    classifier = _LabelAwareRecordingClassifier(
+        tagged_hits={"Nordwind": "organization", "Logistik": "organization"}
+    )
+    inner = _RecordingInnerAdjudicator(confirm=frozenset())  # would refuse if asked
+    detector = L3Detector(GlinerCascadeAdjudicator(classifier=classifier, inner=inner))
+
+    scripted_response = {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "Acknowledged."}],
+        "model": "claude-3-5-sonnet",
+        "stop_reason": "end_turn",
+    }
+    recorded: list[httpx.Request] = []
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(
+        scripted_response, recorded
+    )
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_review_inbox] = lambda: inbox
+    app.dependency_overrides[get_l3_detector] = lambda: detector
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            resp = await client.post(
+                "/v1/messages",
+                json={
+                    "model": "m",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "...von Nordwind Logistik heute.",
+                        }
+                    ],
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    egressed = recorded[0].content.decode("utf-8")
+    assert "Nordwind" not in egressed
+    assert "Logistik" not in egressed
+
+    item = inbox.list()[0]
+    assert item.real == "Nordwind Logistik"
+    assert item.provisional_surrogate not in _PROVISIONAL_POOL
+    assert item.provisional_surrogate in egressed
+    assert inner.calls == []

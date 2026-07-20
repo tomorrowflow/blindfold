@@ -37,6 +37,29 @@ _PROVISIONAL_POOL: tuple[str, ...] = (
     "Hugo Imhoff",
 )
 
+# Plausible fake company names for a candidate GLiNER (or another type-aware
+# adjudicator) classifies as "organization" (issue #167) -- kept disjoint from
+# _PROVISIONAL_POOL above and from store._mint's _PERSON_POOL/_ORG_POOL/
+# _REPLACEMENT_POOL/_TERM_POOL for the same collision-avoidance reason those
+# pools are already kept disjoint from each other. Falls back to the same
+# "Provisional Surrogate {N}" scheme past the pool.
+_PROVISIONAL_ORG_POOL: tuple[str, ...] = (
+    "Nordkap Systeme GmbH",
+    "Rheinblick Consulting",
+    "Waldstein Industries",
+    "Kupfertal Solutions",
+    "Birkenhain Logistik",
+    "Moosburg Analytics",
+    "Feldmark Ventures",
+    "Silberklang Media",
+)
+
+_DEFAULT_PROVISIONAL_POOL_KEY = "person"
+_PROVISIONAL_POOLS: dict[str, tuple[str, ...]] = {
+    _DEFAULT_PROVISIONAL_POOL_KEY: _PROVISIONAL_POOL,
+    "organization": _PROVISIONAL_ORG_POOL,
+}
+
 
 @dataclass(frozen=True)
 class ReviewItem:
@@ -78,10 +101,13 @@ class ReviewInbox:
         # Monotonic counter for stable item ids; doesn't reset on remove() so a
         # removed-then-re-added item still gets a fresh id.
         self._minted: int = 0
-        # Raw provisional-pool cursor (issue #80): separate from ``_minted`` because
-        # a collision-skipped pool entry consumes a pool position without ever
-        # becoming an item, and skipped entries are never reused for a later item.
-        self._pool_position: int = 0
+        # Raw provisional-pool cursor (issue #80), one per pool key: separate from
+        # ``_minted`` because a collision-skipped pool entry consumes a pool
+        # position without ever becoming an item, and skipped entries are never
+        # reused for a later item. Kept per-pool (issue #167) so minting an
+        # organization surrogate never advances (or is advanced by) the unrelated
+        # person-pool cursor.
+        self._pool_positions: dict[str, int] = {}
 
     def upsert(
         self,
@@ -89,6 +115,7 @@ class ReviewInbox:
         context: str,
         known_values: Iterable[str] = (),
         context_offset: int | None = None,
+        entity_type: str | None = None,
     ) -> ReviewItem:
         """Add (or reuse) a provisional inbox entry for ``real`` and return it.
 
@@ -106,15 +133,27 @@ class ReviewInbox:
         ``CandidateSpan.context_offset``. When omitted, it falls back to the
         first occurrence of ``real`` in ``context`` — only correct for callers
         (tests, simple fixtures) that don't have a positional span to hand.
+
+        ``entity_type`` (issue #167, ADR-0005) selects the surrogate pool: an
+        ``"organization"`` candidate mints an org-shaped company name, not a
+        person name. Any other value (including ``None`` -- the inner LLM
+        adjudicators don't detect a type) falls back to today's default person
+        pool, unchanged.
         """
         existing_id = self._by_real.get(real)
         if existing_id is not None:
             return self._items[existing_id]
         item_id = str(self._minted + 1)
         self._minted += 1
-        surrogate, self._pool_position = _next_provisional(
-            self._pool_position, known_values
+        pool_key = (
+            entity_type if entity_type in _PROVISIONAL_POOLS
+            else _DEFAULT_PROVISIONAL_POOL_KEY
         )
+        start_position = self._pool_positions.get(pool_key, 0)
+        surrogate, next_position = _next_provisional(
+            pool_key, start_position, known_values
+        )
+        self._pool_positions[pool_key] = next_position
         if context_offset is None:
             context_offset = max(0, context.find(real))
         item = ReviewItem(
@@ -161,21 +200,23 @@ class Allowlist:
         return frozenset(self._tokens)
 
 
-def _provisional_pool_entry(position: int) -> str:
-    if position < len(_PROVISIONAL_POOL):
-        return _PROVISIONAL_POOL[position]
+def _provisional_pool_entry(pool_key: str, position: int) -> str:
+    pool = _PROVISIONAL_POOLS[pool_key]
+    if position < len(pool):
+        return pool[position]
     return f"Provisional Surrogate {position}"
 
 
 def _next_provisional(
-    start_position: int, known_values: Iterable[str]
+    pool_key: str, start_position: int, known_values: Iterable[str]
 ) -> tuple[str, int]:
-    """The first mint-time-disjoint entry at or after ``start_position``, and the
-    cursor position to resume from on the next call (issue #80)."""
+    """The first mint-time-disjoint entry at or after ``start_position`` in the
+    ``pool_key`` pool, and the cursor position to resume from on the next call
+    for that same pool (issue #80, per-pool since issue #167)."""
     known = list(known_values)
     position = start_position
     while True:
-        candidate = _provisional_pool_entry(position)
+        candidate = _provisional_pool_entry(pool_key, position)
         position += 1
         if not collides_with_known_entity(candidate, known):
             return candidate, position

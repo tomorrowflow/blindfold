@@ -107,6 +107,16 @@ class GlinerOnnxClassifier:
         self._model = None
 
     def classify(self, candidate: CandidateSpan) -> bool:
+        return self.classify_type(candidate) is not None
+
+    def classify_type(self, candidate: CandidateSpan) -> str | None:
+        """GLiNER's own label (``"person"``/``"organization"``) for the span
+        covering ``candidate``, or ``None`` when nothing covers it (issue #167).
+
+        The richer counterpart to :meth:`classify`: GLiNER already carries the
+        type in ``predict_entities``' own output, so the mint pass can pick a
+        type-appropriate surrogate pool (ADR-0005) instead of discarding it.
+        """
         if self._model is None:
             self._model = _load_gliner_model(self._model_path)
         entities = self._model.predict_entities(candidate.context, list(_GLINER_LABELS))
@@ -116,10 +126,10 @@ class GlinerOnnxClassifier:
         # ("John Smith") -- an exact-text match never fires for a multi-word entity.
         candidate_start = candidate.context_offset
         candidate_end = candidate_start + len(candidate.text)
-        return any(
-            entity["start"] <= candidate_start and candidate_end <= entity["end"]
-            for entity in entities
-        )
+        for entity in entities:
+            if entity["start"] <= candidate_start and candidate_end <= entity["end"]:
+                return entity["label"]
+        return None
 
 
 # Fixed canned sentence for the post-provision activation smoke test (issue #159).
@@ -166,9 +176,25 @@ class GlinerCascadeAdjudicator:
         self._classifier = classifier
         self._inner = inner
 
+    def _classify(self, candidate: CandidateSpan) -> tuple[bool, str | None]:
+        """Confirm/type a candidate through whichever seam ``self._classifier``
+        implements (issue #167): the richer ``classify_type`` (GLiNER's own
+        label, or ``None`` when unconfirmed) when available, else the original
+        bool-only ``classify`` (ADR-0033) with no type information at all --
+        both are valid ``GlinerClassifier`` implementations, duck-typed like
+        every other optional seam extension in this codebase (mirrors
+        ``BatchL3Adjudicator``).
+        """
+        classify_type = getattr(self._classifier, "classify_type", None)
+        if classify_type is not None:
+            entity_type = classify_type(candidate)
+            return entity_type is not None, entity_type
+        return self._classifier.classify(candidate), None
+
     def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
-        if self._classifier.classify(candidate):
-            return L3Adjudication(is_entity=True)
+        confirmed, entity_type = self._classify(candidate)
+        if confirmed:
+            return L3Adjudication(is_entity=True, entity_type=entity_type)
         return self._inner.adjudicate(candidate)
 
     def adjudicate_batch(
@@ -186,8 +212,9 @@ class GlinerCascadeAdjudicator:
         negative_indices: list[int] = []
         negatives: list[CandidateSpan] = []
         for index, candidate in enumerate(candidates):
-            if self._classifier.classify(candidate):
-                decisions[index] = L3Adjudication(is_entity=True)
+            confirmed, entity_type = self._classify(candidate)
+            if confirmed:
+                decisions[index] = L3Adjudication(is_entity=True, entity_type=entity_type)
             else:
                 negative_indices.append(index)
                 negatives.append(candidate)

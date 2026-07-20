@@ -69,6 +69,7 @@ def mine_transcripts(
                     candidate.context,
                     known_values=mapping.real_values(),
                     context_offset=candidate.context_offset,
+                    entity_type=decision.entity_type,
                 )
             )
     return MiningReport(transcripts_scanned=scanned, proposed=proposed)

@@ -50,6 +50,24 @@ class _RecordingClassifier:
         return candidate.text in self._positives
 
 
+class _LabelAwareStubGliNERClassifier:
+    """Stub GLiNER classifier that also implements ``classify_type`` (issue #167) --
+    exercises the cascade's richer type-carrying path, distinct from
+    ``_RecordingClassifier`` above, which only implements the bool-only ``classify``
+    seam (ADR-0033's original bool-only cascade contract, still supported for a
+    classifier that never detects a type).
+    """
+
+    def __init__(self, tagged_hits: dict[str, str]) -> None:
+        self._tagged_hits = tagged_hits
+
+    def classify(self, candidate: CandidateSpan) -> bool:
+        return candidate.text in self._tagged_hits
+
+    def classify_type(self, candidate: CandidateSpan) -> str | None:
+        return self._tagged_hits.get(candidate.text)
+
+
 class _RecordingAdjudicator:
     """Stub for the inner L3Adjudicator (Ollama/oMLX) -- records every call."""
 
@@ -103,6 +121,25 @@ def test_gliner_positive_confirms_entity_without_calling_the_inner_adjudicator()
     decision = cascade.adjudicate(candidate)
 
     assert decision == L3Adjudication(is_entity=True)
+    assert inner.calls == []
+
+
+def test_gliner_positive_carries_the_matched_label_as_entity_type():
+    # Issue #167: the cascade must surface GLiNER's own label on the verdict it
+    # returns, not just a bare is_entity=True, so the mint pass can pick a
+    # type-appropriate surrogate pool.
+    classifier = _LabelAwareStubGliNERClassifier(
+        tagged_hits={"Nordwind": "organization"}
+    )
+    inner = _RecordingAdjudicator()
+    cascade = GlinerCascadeAdjudicator(classifier=classifier, inner=inner)
+    candidate = CandidateSpan(
+        text="Nordwind", start=0, end=8, context="Nordwind confirmed the contract."
+    )
+
+    decision = cascade.adjudicate(candidate)
+
+    assert decision == L3Adjudication(is_entity=True, entity_type="organization")
     assert inner.calls == []
 
 
@@ -193,6 +230,28 @@ def test_adjudicate_batch_forwards_only_gliner_negatives_to_one_inner_batch_call
     ]
     assert len(inner.batch_calls) == 1
     assert inner.batch_calls[0].texts == ("Yasmin",)
+
+
+def test_adjudicate_batch_carries_the_matched_label_as_entity_type_per_candidate():
+    # Issue #167: the batch path must carry entity_type per-candidate too, not
+    # just the single-candidate adjudicate() path.
+    classifier = _LabelAwareStubGliNERClassifier(
+        tagged_hits={"Sarah": "person", "Nordwind": "organization"}
+    )
+    inner = _RecordingBatchInnerAdjudicator()
+    cascade = GlinerCascadeAdjudicator(classifier=classifier, inner=inner)
+    candidates = [
+        CandidateSpan(text="Sarah", start=0, end=5, context="Sarah met Nordwind"),
+        CandidateSpan(text="Nordwind", start=10, end=18, context="Sarah met Nordwind"),
+    ]
+
+    decisions = cascade.adjudicate_batch(candidates)
+
+    assert decisions == [
+        L3Adjudication(is_entity=True, entity_type="person"),
+        L3Adjudication(is_entity=True, entity_type="organization"),
+    ]
+    assert inner.batch_calls == []
 
 
 def test_adjudicate_batch_all_positive_makes_no_inner_call():
@@ -515,6 +574,45 @@ def test_gliner_still_confirms_genuine_person_and_organization_entities(monkeypa
 
     assert classifier.classify(_candidate_for_token(context, "Sarah")) is True
     assert classifier.classify(_candidate_for_token(context, "Nordwind")) is True
+
+
+def test_gliner_onnx_classifier_classify_type_returns_the_matched_gliner_label(
+    monkeypatch,
+):
+    # Issue #167 root cause: GLiNER already has the label (person/organization) in
+    # predict_entities' own output, but classify() collapsed it to a bool before the
+    # mint pass ever saw it. classify_type() is the new richer seam that surfaces
+    # GLiNER's own label for a confirmed span, so the mint pass can pick a
+    # type-appropriate surrogate pool (ADR-0005) instead of always defaulting to
+    # person-shaped names.
+    context = "Sarah Bergmann called from Nordwind Logistik about the shipment."
+    stub_model = _LabelAwareStubGlinerModel(
+        tagged_hits={"Sarah Bergmann": "person", "Nordwind Logistik": "organization"}
+    )
+    monkeypatch.setattr(l3_gliner, "_load_gliner_model", lambda model_path: stub_model)
+    classifier = GlinerOnnxClassifier(model_path="gliner-pii-base-v1.0")
+
+    assert classifier.classify_type(_candidate_for_token(context, "Sarah")) == "person"
+    assert (
+        classifier.classify_type(_candidate_for_token(context, "Nordwind"))
+        == "organization"
+    )
+
+
+def test_gliner_onnx_classifier_classify_type_returns_none_outside_any_span(
+    monkeypatch,
+):
+    context = "Sarah Bergmann called from Nordwind Logistik about the shipment."
+    stub_model = _LabelAwareStubGlinerModel(
+        tagged_hits={"Sarah Bergmann": "person", "Nordwind Logistik": "organization"}
+    )
+    monkeypatch.setattr(l3_gliner, "_load_gliner_model", lambda model_path: stub_model)
+    classifier = GlinerOnnxClassifier(model_path="gliner-pii-base-v1.0")
+    candidate = CandidateSpan(
+        text="shipment", start=0, end=8, context=context, context_offset=57
+    )
+
+    assert classifier.classify_type(candidate) is None
 
 
 class _FakeGLiNERClass:

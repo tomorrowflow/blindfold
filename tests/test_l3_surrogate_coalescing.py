@@ -46,6 +46,22 @@ class _StubAdjudicator:
         return L3Adjudication(is_entity=candidate.text in self._confirm)
 
 
+class _TypedStubAdjudicator:
+    """Confirms exactly the candidate texts present in ``types``, carrying each
+    one's entity_type (issue #167); dismisses everything else. Distinct from
+    ``_StubAdjudicator`` above, which never carries a type -- exercises the
+    default person-pool fallback that stays covered by the tests above.
+    """
+
+    def __init__(self, types: dict[str, str | None]) -> None:
+        self._types = types
+
+    def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
+        if candidate.text not in self._types:
+            return L3Adjudication(is_entity=False)
+        return L3Adjudication(is_entity=True, entity_type=self._types[candidate.text])
+
+
 def test_adjacent_confirmed_tokens_mint_one_surrogate_for_the_whole_span():
     # "Sarah Bergmann" is two adjacent capitalized tokens, both L3-confirmed --
     # the live repro from the issue. Must land in the review inbox as ONE item
@@ -115,6 +131,37 @@ def test_single_word_entity_still_mints_one_surrogate_for_just_that_word():
     item = inbox.list()[0]
     assert item.real == "Klaus"
     assert "Klaus" not in blinded["messages"][0]["content"]
+
+
+def test_coalesced_organization_span_mints_an_org_shaped_surrogate_not_a_person_name():
+    # Issue #167 live evidence: GLiNER classified "Nordwind Logistik" as
+    # organization but the mint pass had no type to switch on and always drew
+    # from the person-only pool ("Doris Engler"). Both tokens of the coalesced
+    # span carry entity_type="organization" from adjudication -- the mint pass
+    # must select the org-shaped surrogate pool for the whole group.
+    from blindfold.review import _PROVISIONAL_POOL
+
+    mapping = SurrogateMapping.from_pairs([])
+    inbox = ReviewInbox()
+    detector = L3Detector(
+        _TypedStubAdjudicator({"Nordwind": "organization", "Logistik": "organization"})
+    )
+    payload = {
+        "model": "m",
+        "messages": [{"role": "user", "content": "...von Nordwind Logistik heute."}],
+    }
+
+    blinded, _session = blindfold_payload(payload, mapping, detector, inbox)
+
+    assert len(inbox.list()) == 1
+    item = inbox.list()[0]
+    assert item.real == "Nordwind Logistik"
+    assert item.provisional_surrogate not in _PROVISIONAL_POOL
+
+    text = blinded["messages"][0]["content"]
+    assert "Nordwind" not in text
+    assert "Logistik" not in text
+    assert item.provisional_surrogate in text
 
 
 def _make_echo_upstream(recorded: list[httpx.Request]) -> UpstreamClient:

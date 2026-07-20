@@ -19,7 +19,7 @@ import hashlib
 import logging
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -516,15 +516,18 @@ def _blindfold_text(
         # Candidate offsets are already resolved against ``result`` -- L3 detection
         # (above) ran on this exact string, and nothing rewrites ``result`` between
         # that call and here.
-        novel_candidates = [
-            candidate
-            for candidate, decision in adjudications
-            if decision.is_entity
-            and not any(
+        novel_candidates = []
+        entity_type_by_start: dict[int, str | None] = {}
+        for candidate, decision in adjudications:
+            if not decision.is_entity:
+                continue
+            if any(
                 candidate.start >= start and candidate.end <= end
                 for start, end in injected_surrogate_ranges
-            )
-        ]
+            ):
+                continue
+            novel_candidates.append(candidate)
+            entity_type_by_start[candidate.start] = decision.entity_type
         # Coalesce adjacent confirmed candidates into one entity before minting
         # (issue #162): select_candidate_spans emits single capitalized tokens, so
         # a multi-word entity ("Sarah Bergmann") surfaces as separately-confirmed
@@ -539,11 +542,18 @@ def _blindfold_text(
             start, end = group[0].start, group[-1].end
             real = result[start:end]
             context, context_offset = _l3_context_window(result, start, end)
+            # Issue #167: a coalesced multi-word entity ("Nordwind Logistik")
+            # carries ONE type for the whole span, not per-token -- the mint pass
+            # picks the type-appropriate surrogate pool (ADR-0005) from it.
+            entity_type = _resolve_group_entity_type(
+                entity_type_by_start[candidate.start] for candidate in group
+            )
             item = inbox.upsert(
                 real,
                 context,
                 known_values=mapping.real_values(),
                 context_offset=context_offset,
+                entity_type=entity_type,
             )
             spans.append((start, end, item.provisional_surrogate, real))
         for start, end, surrogate, real in sorted(
@@ -578,6 +588,20 @@ def _coalesce_adjacent_spans(
 def _is_whitespace_gap(text: str, prev_end: int, next_start: int) -> bool:
     gap = text[prev_end:next_start]
     return gap != "" and "\n" not in gap and gap.strip() == ""
+
+
+def _resolve_group_entity_type(types: Iterator[str | None]) -> str | None:
+    """Pick a single entity type for a coalesced multi-token span (issue #167,
+    interacting with issue #162's coalescing) -- the first non-``None`` type
+    among the group's own candidates. In practice every token of one coalesced
+    span comes from the same adjudication pass and carries the same label
+    (GLiNER tags the whole covering span once); this is only a tie-break for a
+    group whose tokens somehow carried a mismatched/partial type.
+    """
+    for entity_type in types:
+        if entity_type is not None:
+            return entity_type
+    return None
 
 
 def _injected_surrogate_ranges(

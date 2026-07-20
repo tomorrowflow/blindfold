@@ -58,6 +58,18 @@ class _RecordingAdjudicator:
         )
 
 
+def test_l3_adjudication_carries_an_optional_entity_type_defaulting_to_none():
+    # Issue #167 root cause: L3Adjudication carried only is_entity, discarding
+    # GLiNER's own person/organization label before the mint pass ever saw it.
+    # entity_type must default to None so every existing L3Adjudication(is_entity=...)
+    # call site (Ollama/oMLX, which don't detect a type) keeps working unchanged.
+    assert L3Adjudication(is_entity=True).entity_type is None
+    assert (
+        L3Adjudication(is_entity=True, entity_type="organization").entity_type
+        == "organization"
+    )
+
+
 def test_l3_invoked_only_on_candidate_spans_with_minimal_context():
     # ADR-0003: L3 receives flagged spans + minimal context, never the full payload.
     # In a long prose body, the only candidates (unknown capitalized tokens) are

@@ -26,3 +26,31 @@ def test_upsert_stores_the_explicitly_supplied_context_offset():
 
     assert item.context_offset == 23
     assert item.context[item.context_offset : item.context_offset + len("Klaus")] == "Klaus"
+
+
+def test_upsert_mints_an_org_shaped_surrogate_for_an_organization_entity_type():
+    # Issue #167 live evidence: "Nordwind Logistik" (organization, GLiNER score
+    # 0.72) minted "Doris Engler" -- a person-shaped surrogate, from the
+    # person-only _PROVISIONAL_POOL. entity_type="organization" must select a
+    # distinct, org-shaped pool instead.
+    from blindfold.review import _PROVISIONAL_POOL
+
+    inbox = ReviewInbox()
+
+    item = inbox.upsert(
+        "Nordwind Logistik",
+        context="...von Nordwind Logistik",
+        entity_type="organization",
+    )
+
+    assert item.provisional_surrogate not in _PROVISIONAL_POOL
+
+
+def test_upsert_keeps_the_default_person_pool_when_entity_type_is_unknown():
+    from blindfold.review import _PROVISIONAL_POOL
+
+    inbox = ReviewInbox()
+
+    item = inbox.upsert("Klaus", context="Please brief Klaus tomorrow.")
+
+    assert item.provisional_surrogate in _PROVISIONAL_POOL
