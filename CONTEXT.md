@@ -216,6 +216,11 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   in-world and restores with the suffix transferred to the real value; a string
   that merely *contains* an injected surrogate as a sub-token of an unrelated
   word is out-of-world and is never restored.
+- **Surrogate component** — an individual word token of a multi-word **surrogate**
+  (e.g. `Carla` in `Carla Distel`). **Restore** matches components as additional
+  **closed-world** keys — distinctive and unambiguous ones only — so a provider that
+  abbreviates a full-name surrogate (`Carla` for `Carla Distel`) still restores.
+  Distinct from a coincidental sub-token, which is never restored (ADR-0024/0036).
 - **Egress** — a boundary where data leaves the local machine. Two distinct kinds:
   (1) **Provider egress** — a *blindfolded* payload leaving for the upstream provider
   (`upstream.send_*` / the streaming request); the **pre-egress leak gate** sits here
