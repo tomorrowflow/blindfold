@@ -24,6 +24,16 @@ class ReIdentificationStore(Protocol):
         """Return the ciphertext for ``surrogate`` scoped to ``workspace``, or None."""
         ...
 
+    def seed(self, surrogate: str, workspace: str, ciphertext: str) -> None:
+        """Upsert (surrogate, workspace) -> ciphertext (issue #172).
+
+        Both concrete implementations already expose this as an idempotent
+        upsert (``ON CONFLICT ... DO UPDATE`` on the Postgres side); declaring
+        it on the Protocol makes the write side of the seam honest and lets a
+        recording double stand in for it in unit tests.
+        """
+        ...
+
 
 class InMemoryReIdentificationStore:
     """In-process store backed by a pre-seeded dict of (surrogate, workspace) → ciphertext.

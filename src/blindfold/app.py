@@ -1433,6 +1433,8 @@ async def confirm_review_item(
     inbox: ReviewInbox = Depends(get_review_inbox),
     mapping: SurrogateMapping = Depends(get_mapping),
     entity_graph: EntityGraph = Depends(get_entity_graph),
+    reidentify_store: ReIdentificationStore = Depends(get_reidentify_store),
+    transit: TransitClient | None = Depends(get_transit_client),
 ) -> dict:
     """Confirm a candidate as a real entity → grows the entity graph (ADR-0010).
 
@@ -1445,6 +1447,16 @@ async def confirm_review_item(
     at detection time), not a path parameter, so a confirmed entity surfaces in
     that workspace's entity list / graph editor. Idempotent: a real value already
     present as an entity of the mapped kind in that workspace is not duplicated.
+
+    Also writes a ``ReIdentificationStore`` entry, keyed
+    ``(provisional_surrogate, item.workspace)`` -> Transit-encrypted ``item.real``
+    (issue #172) — without this write a confirmed referent grew the entity graph
+    but Reveal (``GET /v1/management/surrogate/{surrogate}/real``) still 404'd
+    ``not-found``, since that endpoint reads only the ``ReIdentificationStore``,
+    never ``EntityGraph``/``SurrogateMapping``. Skipped when Transit is
+    unconfigured (issue #149 graceful degradation, mirroring ``seed_workspace``'s
+    own transit-gated seed): confirm must still succeed, and only ciphertext is
+    ever written, never a plaintext fallback.
     """
     item = inbox.get(item_id)
     if item is None:
@@ -1455,6 +1467,9 @@ async def confirm_review_item(
         entity_graph.add_entity(
             kind, item.workspace, item.real, surrogate=item.provisional_surrogate
         )
+    if transit is not None:
+        ciphertext = transit.encrypt(item.real)
+        reidentify_store.seed(item.provisional_surrogate, item.workspace, ciphertext)
     inbox.remove(item_id)
     return {
         "id": item.id,
