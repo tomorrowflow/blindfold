@@ -171,7 +171,13 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   `seeded_allowlist.txt`); a management-app roundtrip to promote entries
   directly is deferred (v2).
 - **Review inbox** — the queue of **provisional**ly-blindfolded novel candidates
-  awaiting human confirmation.
+  awaiting human confirmation. A **durable real-value surface** (ADR-0037): it holds
+  each candidate's real value and surrounding **context** as **Transit** ciphertext
+  (+ a **blind index** on the real value for dedup), never plaintext — the same
+  storage class as the **entity graph** and the re-identification **mapping**, and
+  the opposite of the deliberately-ephemeral **Processing trace**. Persists only when
+  a store and Transit are wired; otherwise in-memory and ephemeral, never plaintext
+  on disk.
 - **Provisional surrogate** — the fake auto-minted for a novel entity at request
   time, before review; protection happens immediately and non-blocking.
 - **Learning loop** — review actions feed the system: **confirm** grows the entity
