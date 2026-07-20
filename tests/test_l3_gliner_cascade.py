@@ -68,6 +68,27 @@ class _LabelAwareStubGliNERClassifier:
         return self._tagged_hits.get(candidate.text)
 
 
+class _SpanAwareStubGlinerClassifier:
+    """Stub GLiNER classifier that also implements ``classify_span`` (issue
+    #170) -- the richer seam that also surfaces the absolute span extent, on
+    top of the label ``_LabelAwareStubGliNERClassifier`` already carries.
+    """
+
+    def __init__(self, spans: dict[str, tuple[str, int, int]]) -> None:
+        # candidate text -> (entity_type, span_start, span_end)
+        self._spans = spans
+
+    def classify(self, candidate: CandidateSpan) -> bool:
+        return candidate.text in self._spans
+
+    def classify_type(self, candidate: CandidateSpan) -> str | None:
+        result = self._spans.get(candidate.text)
+        return result[0] if result is not None else None
+
+    def classify_span(self, candidate: CandidateSpan) -> tuple[str, int, int] | None:
+        return self._spans.get(candidate.text)
+
+
 class _RecordingAdjudicator:
     """Stub for the inner L3Adjudicator (Ollama/oMLX) -- records every call."""
 
@@ -143,6 +164,32 @@ def test_gliner_positive_carries_the_matched_label_as_entity_type():
     assert inner.calls == []
 
 
+def test_gliner_positive_carries_the_span_extent_when_the_classifier_supports_it():
+    # Issue #170: a classifier exposing classify_span() (GlinerOnnxClassifier)
+    # carries its own authoritative span extent onto the verdict, so a sibling
+    # candidate inside the same multi-word span that GLiNER doesn't confirm on
+    # its own -- or the inner adjudicator dismisses standalone (#164/#165
+    # common-noun precision) -- doesn't shrink the entity's extent at mint time.
+    classifier = _SpanAwareStubGlinerClassifier(
+        {"Nordwind": ("organization", 31, 49)}
+    )
+    inner = _RecordingAdjudicator()
+    cascade = GlinerCascadeAdjudicator(classifier=classifier, inner=inner)
+    candidate = CandidateSpan(
+        text="Nordwind",
+        start=31,
+        end=39,
+        context="Hi, ich bin Sarah Bergmann von Nordwind Logistik",
+    )
+
+    decision = cascade.adjudicate(candidate)
+
+    assert decision == L3Adjudication(
+        is_entity=True, entity_type="organization", span_start=31, span_end=49
+    )
+    assert inner.calls == []
+
+
 def test_gliner_negative_always_delegates_to_the_inner_adjudicator():
     # GLiNER's ~7-10% miss rate means a negative alone can't clear a candidate --
     # the inner adjudicator remains the sole arbiter of is_entity=False (ADR-0009
@@ -205,6 +252,34 @@ def test_l3_detector_takes_the_batch_path_once_the_cascade_implements_adjudicate
     # the collapse this issue exists for -- not one inner call per negative.
     assert len(inner.batch_calls) == 1
     assert inner.batch_calls[0].texts == ("Yasmin", "Priya", "Boris")
+
+
+def test_adjudicate_batch_carries_the_span_extent_for_a_gliner_confirmed_candidate():
+    # Issue #170's real production path: BLINDFOLD_L3_BATCH_SIZE > 1 (default 5)
+    # takes adjudicate_batch, not adjudicate -- the span extent must thread
+    # through this path too, not just the single-candidate one.
+    classifier = _SpanAwareStubGlinerClassifier(
+        {"Nordwind": ("organization", 31, 49)}
+    )
+    inner = _RecordingBatchInnerAdjudicator()
+    cascade = GlinerCascadeAdjudicator(classifier=classifier, inner=inner)
+    candidates = [
+        CandidateSpan(
+            text="Nordwind",
+            start=31,
+            end=39,
+            context="Hi, ich bin Sarah Bergmann von Nordwind Logistik",
+        ),
+    ]
+
+    decisions = cascade.adjudicate_batch(candidates)
+
+    assert decisions == [
+        L3Adjudication(
+            is_entity=True, entity_type="organization", span_start=31, span_end=49
+        )
+    ]
+    assert inner.batch_calls == []
 
 
 def test_adjudicate_batch_forwards_only_gliner_negatives_to_one_inner_batch_call():
@@ -613,6 +688,62 @@ def test_gliner_onnx_classifier_classify_type_returns_none_outside_any_span(
     )
 
     assert classifier.classify_type(candidate) is None
+
+
+def test_gliner_onnx_classifier_classify_span_returns_the_absolute_span_extent(
+    monkeypatch,
+):
+    # Issue #170: classify_type() only ever surfaced GLiNER's label, discarding
+    # the covering span's own boundaries -- so a sibling token inside the same
+    # multi-word span that GLiNER doesn't independently confirm for its own
+    # candidate call (or that the inner adjudicator dismisses standalone as a
+    # common noun, #164/#165) has no way to inherit the wider extent at mint
+    # time. classify_span() surfaces the absolute [start, end) of GLiNER's own
+    # covering span in the coordinate space of the *full hop text* the
+    # candidate's own ``start``/``context_offset`` are relative to -- not just
+    # the narrower ``context`` window -- so engine.py's mint pass can widen the
+    # entity to the whole span.
+    full_text = "Hi, ich bin Sarah Bergmann von Nordwind Logistik heute."
+    candidate_start = full_text.index("Nordwind")
+    window_left = candidate_start - 5  # context starts a bit before the
+    # candidate -- context_offset is then nonzero, proving the absolute-offset
+    # math doesn't accidentally treat context_offset as if it were absolute.
+    context = full_text[window_left:]
+    stub_model = _LabelAwareStubGlinerModel(
+        tagged_hits={"Nordwind Logistik": "organization"}
+    )
+    monkeypatch.setattr(l3_gliner, "_load_gliner_model", lambda model_path: stub_model)
+    classifier = GlinerOnnxClassifier(model_path="gliner-pii-base-v1.0")
+    candidate = CandidateSpan(
+        text="Nordwind",
+        start=candidate_start,
+        end=candidate_start + len("Nordwind"),
+        context=context,
+        context_offset=candidate_start - window_left,
+    )
+
+    result = classifier.classify_span(candidate)
+
+    assert result is not None
+    label, span_start, span_end = result
+    assert label == "organization"
+    assert full_text[span_start:span_end] == "Nordwind Logistik"
+
+
+def test_gliner_onnx_classifier_classify_span_returns_none_outside_any_span(
+    monkeypatch,
+):
+    context = "Sarah Bergmann called from Nordwind Logistik about the shipment."
+    stub_model = _LabelAwareStubGlinerModel(
+        tagged_hits={"Sarah Bergmann": "person", "Nordwind Logistik": "organization"}
+    )
+    monkeypatch.setattr(l3_gliner, "_load_gliner_model", lambda model_path: stub_model)
+    classifier = GlinerOnnxClassifier(model_path="gliner-pii-base-v1.0")
+    candidate = CandidateSpan(
+        text="shipment", start=57, end=65, context=context, context_offset=57
+    )
+
+    assert classifier.classify_span(candidate) is None
 
 
 class _FakeGLiNERClass:

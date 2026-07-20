@@ -157,10 +157,22 @@ class L3Adjudication:
     that produced this verdict doesn't detect a type (the inner LLM
     adjudicators today) — the mint pass falls back to its default pool
     without error, exactly as before this field existed.
+
+    ``span_start``/``span_end`` (issue #170) are the absolute offsets, in the
+    coordinate space of the ``text`` passed to :meth:`L3Detector.detect`, of
+    the *authoritative* entity extent this verdict confirmed -- e.g. GLiNER's
+    own multi-word span, which may be wider than the confirming candidate's
+    own single-token ``start``/``end``. ``None`` when the adjudicator that
+    produced this verdict has no span concept of its own (the inner LLM
+    adjudicators, which only ever confirm/dismiss the single candidate token
+    they were asked about) -- the mint pass falls back to the candidate's own
+    extent, exactly as before this field existed.
     """
 
     is_entity: bool
     entity_type: str | None = None
+    span_start: int | None = None
+    span_end: int | None = None
 
 
 class L3Adjudicator(Protocol):

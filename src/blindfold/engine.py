@@ -25,7 +25,7 @@ from typing import Any
 
 from .detection import detect_l2, detect_pii
 from .l3 import _SENTENCE_STOPWORDS as _COMPONENT_STOPWORDS
-from .l3 import CandidateSpan, L3Detector, count_capitalized_tokens
+from .l3 import L3Detector, count_capitalized_tokens
 # Reused to re-window context around a *coalesced* multi-token span (issue #162):
 # no single candidate's ``.context`` covers the merged run, so the inbox item's
 # context/offset are recomputed from the group's start/end via the same windowing
@@ -516,8 +516,7 @@ def _blindfold_text(
         # Candidate offsets are already resolved against ``result`` -- L3 detection
         # (above) ran on this exact string, and nothing rewrites ``result`` between
         # that call and here.
-        novel_candidates = []
-        entity_type_by_start: dict[int, str | None] = {}
+        novel_extents: list[_ConfirmedExtent] = []
         for candidate, decision in adjudications:
             if not decision.is_entity:
                 continue
@@ -526,27 +525,41 @@ def _blindfold_text(
                 for start, end in injected_surrogate_ranges
             ):
                 continue
-            novel_candidates.append(candidate)
-            entity_type_by_start[candidate.start] = decision.entity_type
-        # Coalesce adjacent confirmed candidates into one entity before minting
-        # (issue #162): select_candidate_spans emits single capitalized tokens, so
-        # a multi-word entity ("Sarah Bergmann") surfaces as separately-confirmed
-        # candidates -- both the GLiNER cascade (issue #160: each token covered by
-        # the same multi-word span confirms independently) and the inner-LLM path
-        # produce this shape. Minting each token independently scrambles the
-        # entity into unrelated surrogates before it reaches the provider --
-        # privacy-safe (no real value crosses egress) but incoherent, and noisy
-        # for the review inbox (one item per token instead of one per entity).
+            # Issue #170: prefer the adjudicator's own authoritative span extent
+            # (e.g. GLiNER's multi-word org span) over the confirming candidate's
+            # own single-token offsets -- a sibling token inside that span may be
+            # dismissed on its own (a common-noun tail like "Logistik", #164/#165
+            # precision) without narrowing the entity GLiNER already delimited.
+            start = (
+                decision.span_start
+                if decision.span_start is not None
+                else candidate.start
+            )
+            end = decision.span_end if decision.span_end is not None else candidate.end
+            novel_extents.append(_ConfirmedExtent(start, end, decision.entity_type))
+        # Coalesce adjacent/overlapping confirmed extents into one entity before
+        # minting (issue #162, widened by #170): select_candidate_spans emits
+        # single capitalized tokens, so a multi-word entity ("Sarah Bergmann")
+        # surfaces as separately-confirmed candidates -- both the GLiNER cascade
+        # (issue #160: each token covered by the same multi-word span confirms
+        # independently) and the inner-LLM path produce this shape. Minting each
+        # token independently scrambles the entity into unrelated surrogates
+        # before it reaches the provider -- privacy-safe (no real value crosses
+        # egress) but incoherent, and noisy for the review inbox (one item per
+        # token instead of one per entity). A GLiNER-confirmed extent that already
+        # spans a dismissed-in-isolation tail (#170) overlaps that tail's own
+        # position even though the tail itself was never separately confirmed.
         spans = []
-        for group in _coalesce_adjacent_spans(novel_candidates, result):
-            start, end = group[0].start, group[-1].end
+        for group in _coalesce_adjacent_spans(novel_extents, result):
+            start = min(extent.start for extent in group)
+            end = max(extent.end for extent in group)
             real = result[start:end]
             context, context_offset = _l3_context_window(result, start, end)
             # Issue #167: a coalesced multi-word entity ("Nordwind Logistik")
             # carries ONE type for the whole span, not per-token -- the mint pass
             # picks the type-appropriate surrogate pool (ADR-0005) from it.
             entity_type = _resolve_group_entity_type(
-                entity_type_by_start[candidate.start] for candidate in group
+                extent.entity_type for extent in group
             )
             # ADR-0037 hardening: also exclude provisional surrogates already
             # active in the inbox from mint candidacy, not just known real
@@ -574,22 +587,44 @@ def _blindfold_text(
     return result
 
 
+@dataclass(frozen=True)
+class _ConfirmedExtent:
+    """One confirmed entity's extent going into coalescing (issues #162/#170).
+
+    ``start``/``end`` are the *entity's* extent, not necessarily the confirming
+    candidate's own token offsets: when the adjudicator supplied its own
+    authoritative span (``L3Adjudication.span_start``/``span_end`` -- e.g.
+    GLiNER's multi-word org span), that span is used instead, so a sibling
+    token inside it that was dismissed on its own doesn't narrow the entity.
+    """
+
+    start: int
+    end: int
+    entity_type: str | None
+
+
 def _coalesce_adjacent_spans(
-    candidates: list[CandidateSpan], text: str
-) -> list[list[CandidateSpan]]:
-    """Group confirmed candidate spans into runs separated only by whitespace in
-    ``text`` (issue #162) -- e.g. ``"Sarah"`` + ``"Bergmann"`` in "Sarah Bergmann".
-    A non-whitespace gap between two confirmed candidates (however short — another
+    extents: list[_ConfirmedExtent], text: str
+) -> list[list[_ConfirmedExtent]]:
+    """Group confirmed entity extents into runs that overlap (issue #170: a
+    GLiNER-confirmed span already covering a dismissed-in-isolation tail token)
+    or are separated only by whitespace in ``text`` (issue #162) -- e.g.
+    ``"Sarah"`` + ``"Bergmann"`` in "Sarah Bergmann". A non-whitespace,
+    non-overlapping gap between two confirmed extents (however short — another
     word, punctuation) means they're separate entities and must never merge; a
     newline in the gap is also treated as a break, never bridging a coincidental
     same-word run across a line boundary.
     """
-    groups: list[list[CandidateSpan]] = []
-    for candidate in sorted(candidates, key=lambda c: c.start):
-        if groups and _is_whitespace_gap(text, groups[-1][-1].end, candidate.start):
-            groups[-1].append(candidate)
-        else:
-            groups.append([candidate])
+    groups: list[list[_ConfirmedExtent]] = []
+    for extent in sorted(extents, key=lambda e: e.start):
+        if groups:
+            prev_end = max(item.end for item in groups[-1])
+            if extent.start <= prev_end or _is_whitespace_gap(
+                text, prev_end, extent.start
+            ):
+                groups[-1].append(extent)
+                continue
+        groups.append([extent])
     return groups
 
 

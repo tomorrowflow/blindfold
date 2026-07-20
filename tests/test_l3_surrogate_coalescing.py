@@ -31,6 +31,7 @@ from blindfold.app import (
 )
 from blindfold.engine import blindfold_payload
 from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
+from blindfold.l3_gliner import GlinerCascadeAdjudicator
 from blindfold.review import ReviewInbox
 from blindfold.surrogates import SurrogateMapping
 from blindfold.upstream import UpstreamClient
@@ -164,6 +165,59 @@ def test_coalesced_organization_span_mints_an_org_shaped_surrogate_not_a_person_
     assert item.provisional_surrogate in text
 
 
+class _SpanAwareStubAdjudicator:
+    """Confirms a candidate token with a GLiNER-shaped span extent (issue #170)
+    that may be wider than the confirming candidate's own token -- mirroring a
+    GLiNER cascade confirmation whose span already covers a sibling token the
+    inner adjudicator dismisses on its own (#164/#165 common-noun precision).
+    Any candidate text not named in ``spans`` is dismissed outright.
+    """
+
+    def __init__(self, spans: dict[str, tuple[str, int, int]]) -> None:
+        # candidate text -> (entity_type, span_start, span_end), absolute
+        # offsets in the hop text L3Detector.detect() was called with.
+        self._spans = spans
+
+    def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
+        if candidate.text not in self._spans:
+            return L3Adjudication(is_entity=False)
+        entity_type, span_start, span_end = self._spans[candidate.text]
+        return L3Adjudication(
+            is_entity=True,
+            entity_type=entity_type,
+            span_start=span_start,
+            span_end=span_end,
+        )
+
+
+def test_gliner_span_extent_keeps_a_dismissed_common_noun_tail_inside_the_coalesced_org():
+    # Issue #170 live repro: GLiNER returns the full "Nordwind Logistik" org span
+    # (per #162), but the inner adjudicator dismisses the standalone tail token
+    # "Logistik" as a common noun (#164/#165 precision) when it's adjudicated as
+    # its own candidate. The confirming candidate ("Nordwind") carries the
+    # GLiNER span's own offsets, so the whole span -- not just the confirmed
+    # token -- must be minted as one entity.
+    mapping = SurrogateMapping.from_pairs([])
+    inbox = ReviewInbox()
+    text = "Hi, ich bin Sarah Bergmann von Nordwind Logistik"
+    span_start = text.index("Nordwind Logistik")
+    span_end = span_start + len("Nordwind Logistik")
+    detector = L3Detector(
+        _SpanAwareStubAdjudicator({"Nordwind": ("organization", span_start, span_end)})
+    )
+    payload = {"model": "m", "messages": [{"role": "user", "content": text}]}
+
+    blinded, _session = blindfold_payload(payload, mapping, detector, inbox)
+
+    org_items = [item for item in inbox.list() if item.entity_type == "organization"]
+    assert len(org_items) == 1
+    assert org_items[0].real == "Nordwind Logistik"
+
+    blinded_text = blinded["messages"][0]["content"]
+    assert "Logistik" not in blinded_text
+    assert "Nordwind" not in blinded_text
+
+
 def _make_echo_upstream(recorded: list[httpx.Request]) -> UpstreamClient:
     """Stub upstream that echoes the (blindfolded) user text back verbatim, so a
     single exchange can assert both what egressed (clause A) and what restore
@@ -255,4 +309,89 @@ async def test_multi_word_org_and_person_round_trip_through_the_request_path():
     body = resp.json()
     restored_text = body["content"][0]["text"]
     assert "Sarah Bergmann" in restored_text
+    assert "Nordwind Logistik" in restored_text
+
+
+class _SpanAwareGlinerStub:
+    """GLiNER classifier stub carrying only ``classify_span`` (issue #170) -- no
+    ``classify``/``classify_type`` fallback, so a test using it exercises the
+    richest cascade duck-typing branch specifically.
+    """
+
+    def __init__(self, spans: dict[str, tuple[str, int, int]]) -> None:
+        self._spans = spans
+
+    def classify_span(self, candidate: CandidateSpan) -> tuple[str, int, int] | None:
+        return self._spans.get(candidate.text)
+
+
+class _CommonNounDismissingInner:
+    """Mirrors the inner oMLX adjudicator's #164/#165 precision behavior: confirms
+    the person names in ``confirm``, dismisses everything else -- including a
+    standalone common noun like "Logistik" adjudicated on its own.
+    """
+
+    def __init__(self, confirm: set[str]) -> None:
+        self._confirm = confirm
+
+    def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
+        return L3Adjudication(is_entity=candidate.text in self._confirm)
+
+
+@pytest.mark.anyio
+async def test_org_span_common_noun_tail_survives_the_gliner_cascade_through_the_request_path():
+    # Issue #170's own live repro, end-to-end through the actual GLiNER-cascade +
+    # inner-adjudicator shape production wires (not the plain single-adjudicator
+    # stub the test above uses): GLiNER confirms "Nordwind" with a span extent
+    # covering "Nordwind Logistik"; "Logistik" is GLiNER-negative on its own and
+    # the inner adjudicator dismisses it standalone as a common noun (#164/#165
+    # precision) -- exactly the interaction the issue's root-cause hypothesis
+    # names. The whole org span must still mint as ONE entity, not "Nordwind"
+    # alone with "Logistik" left in the clear.
+    text = "Hi, ich bin Sarah Bergmann von Nordwind Logistik"
+    span_start = text.index("Nordwind Logistik")
+    span_end = span_start + len("Nordwind Logistik")
+    classifier = _SpanAwareGlinerStub({"Nordwind": ("organization", span_start, span_end)})
+    inner = _CommonNounDismissingInner(confirm={"Sarah", "Bergmann"})
+    detector = L3Detector(GlinerCascadeAdjudicator(classifier=classifier, inner=inner))
+
+    mapping = SurrogateMapping.from_pairs([])
+    inbox = ReviewInbox()
+
+    recorded: list[httpx.Request] = []
+    audit_log = get_audit_log()
+    audit_log.records.clear()
+    app.dependency_overrides[get_upstream_client] = lambda: _make_echo_upstream(recorded)
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_review_inbox] = lambda: inbox
+    app.dependency_overrides[get_l3_detector] = lambda: detector
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            resp = await client.post(
+                "/v1/messages",
+                json={"model": "m", "messages": [{"role": "user", "content": text}]},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+
+    # Clause A: zero real-entity tokens egressed, including the common-noun tail.
+    assert len(recorded) == 1
+    egressed = recorded[0].content.decode("utf-8")
+    for real_token in ("Sarah", "Bergmann", "Nordwind", "Logistik"):
+        assert real_token not in egressed
+
+    # One review item per entity -- the org item's real value is the whole span.
+    reals = {item.real for item in inbox.list()}
+    assert reals == {"Sarah Bergmann", "Nordwind Logistik"}
+    org_item = next(item for item in inbox.list() if item.entity_type == "organization")
+    assert org_item.real == "Nordwind Logistik"
+
+    # Clause B: closed-world restore hands back the full multi-word org name.
+    body = resp.json()
+    restored_text = body["content"][0]["text"]
     assert "Nordwind Logistik" in restored_text
