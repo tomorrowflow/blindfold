@@ -119,6 +119,25 @@ async def test_status_reflects_unprotected_mode_state():
 
 
 @pytest.mark.anyio
+async def test_status_reflects_the_capability_flag():
+    # The Settings SPA toggle (issue #188) reads its initial on/off state from
+    # here -- /v1/status is the only read surface for the capability, since the
+    # capability endpoint itself is write-only (POST).
+    mode = UnprotectedMode()
+    app.dependency_overrides[get_unprotected_mode] = lambda: mode
+    try:
+        async with await _client() as client:
+            off_resp = await client.get("/v1/status")
+            mode.enable_capability()
+            on_resp = await client.get("/v1/status")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert off_resp.json()["unprotected_mode"]["capability_enabled"] is False
+    assert on_resp.json()["unprotected_mode"]["capability_enabled"] is True
+
+
+@pytest.mark.anyio
 async def test_enable_and_disable_never_mutate_the_configured_global_posture():
     # ADR-0038: Unprotected mode is an override ON TOP OF the configured global
     # protection posture, never a change to it -- disable/auto-revert must return

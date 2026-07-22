@@ -41,12 +41,14 @@ class UnprotectedModeStatus:
     active: bool
     bound: str | None
     remaining_seconds: float | None
+    capability_enabled: bool
 
     def to_dict(self) -> dict:
         return {
             "active": self.active,
             "bound": self.bound,
             "remaining_seconds": self.remaining_seconds,
+            "capability_enabled": self.capability_enabled,
         }
 
 
@@ -127,4 +129,5 @@ class UnprotectedMode:
             active=active,
             bound=self._bound if active else None,
             remaining_seconds=remaining,
+            capability_enabled=self._capability_enabled,
         )
