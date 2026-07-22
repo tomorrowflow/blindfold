@@ -156,16 +156,20 @@ const SANDCASTLE_WORKTREES_DIR = join(REPO_ROOT, ".sandcastle", "worktrees");
 // .sandcastle/ but left these prompt paths cwd-relative.
 const promptPath = (name: string) => join(REPO_ROOT, ".sandcastle", name);
 
-// The management SPA (ADR-0011). It is NOT a separate `frontend/` build — it's
-// served straight out of FastAPI as a self-contained HTML string in
-// `src/blindfold/spa.py` (review inbox #14 + org-graph #29), mounted by
-// `blindfold.app:app` at the `/ui/*` routes. The browser gate is active whenever
-// that module exists. If SPA-observable code spreads to other files the page
-// consumes (e.g. new `/ui/*`-backing endpoints in app.py), add them to SPA_PATHS.
-const SPA_MODULE = "src/blindfold/spa.py";
+// The management SPA (ADR-0011, rebuilt as a real bundle per ADR-0026). It is a
+// Vite app under `frontend/` that compiles into the committed bundle
+// `src/blindfold/ui_dist/`, served by `blindfold.ui`'s shell router (mounted on
+// `blindfold.app:app`) at the `/ui/*` routes. The old embedded `spa.py` pages are
+// all retired (#98 org-graph, #99 review-inbox, #128 entity-list), so the gate now
+// keys on the built shell, not that deleted module. If SPA-observable code spreads
+// to other files the page consumes (e.g. new `/ui/*`-backing endpoints in app.py),
+// add them to SPA_PATHS.
+const SPA_SHELL = "src/blindfold/ui_dist/index.html";
 const ASGI_APP = "blindfold.app:app";
-const SPA_PATHS = [SPA_MODULE];
-const SPA_EXISTS = existsSync(SPA_MODULE);
+// Diff paths that mean "this branch changed the SPA": the frontend source, its
+// committed build output (what the server actually serves), and the shell router.
+const SPA_PATHS = ["frontend/", "src/blindfold/ui_dist/", "src/blindfold/ui.py"];
+const SPA_EXISTS = existsSync(SPA_SHELL);
 
 // A branch needs the browser gate only if the SPA exists AND this branch's diff
 // touches SPA-observable code. Deterministic + host-side (the branch commits are
@@ -187,8 +191,8 @@ function branchTouchesSpa(branch: string): boolean {
 
 console.log(
   SPA_EXISTS
-    ? `Browser gate ACTIVE: SPA-touching branches must also pass web-verify (${SPA_MODULE}).`
-    : `Browser gate inert: no SPA module at ${SPA_MODULE} yet (ADR-0011) — web-verify is skipped.`,
+    ? `Browser gate ACTIVE: SPA-touching branches must also pass web-verify (${SPA_PATHS.join(", ")}).`
+    : `Browser gate inert: no built SPA shell at ${SPA_SHELL} (ADR-0011/0026) — web-verify is skipped.`,
 );
 
 // ---------------------------------------------------------------------------
@@ -423,10 +427,19 @@ function openTracePane(branch: string, role: string): void {
   if (!wid) return; // worktree not registered (yet) — skip rather than guess
 
   const slug = branch.replace(/\//g, "-");
+  const title = `${role} @ ${slug}`;
   const logPath = join(REPO_ROOT, ".sandcastle", "logs", `${slug}-${role}.log`);
   // Single-quote for the surface's shell; the values are safe, but be defensive.
   const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
-  const cmd = `printf '=== %s @ %s ===\\n' ${shq(role)} ${shq(slug)}; tail -F ${shq(logPath)}`;
+  // Set the tab title via an OSC-2 escape (Supacode/ghostty honor it). The escapes
+  // are LITERAL `\033`/`\007` in the command string — printf expands them at runtime
+  // inside the surface's shell, so no raw control bytes pass through `-i` injection
+  // (raw bytes get mangled). `exec tail` replaces the shell so the pane process is
+  // clean and the OSC title persists (tail never rewrites it).
+  const cmd =
+    `printf '\\033]2;%s\\007' ${shq(title)}; ` + // tab title
+    `printf '=== %s ===\\n' ${shq(title)}; ` + // in-pane header
+    `exec tail -F ${shq(logPath)}`;
 
   try {
     const tab = _traceTab.get(branch);
@@ -1101,7 +1114,9 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
             // passing it in promptArgs is rejected. {{TARGET_BRANCH}} still resolves.
             promptArgs: {
               BRANCH: issue.branch,
-              SPA_MODULE,
+              FRONTEND_DIR: "frontend",
+              SPA_PATHS: SPA_PATHS.join(" "),
+              SPEC_DIR: "tests/web",
               ASGI_APP,
             },
           });

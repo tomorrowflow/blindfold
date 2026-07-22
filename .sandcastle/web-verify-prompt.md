@@ -1,10 +1,11 @@
 # TASK
 
 You are the **browser-side privacy gate** for changes on branch `{{BRANCH}}`. The change
-touches Blindfold's **management SPA** (ADR-0011), which the JSON-API tests cannot exercise —
-they cover the server seam, not what a human sees and does in the browser. Your job is to
-**prove the observable web behavior AND the SPA-side privacy properties** with **scripted
-`@playwright/test`**, then attest. You did not write this code — stay adversarial.
+touches Blindfold's **management SPA** (ADR-0011, rebuilt as a real bundle per ADR-0026), which
+the JSON-API tests cannot exercise — they cover the server seam, not what a human sees and does
+in the browser. Your job is to **prove the observable web behavior AND the SPA-side privacy
+properties** with **scripted `@playwright/test`**, then attest. You did not write this code —
+stay adversarial.
 
 Blindfold is **fail-closed and privacy-critical**. A real **entity** value made visible to an
 unauthorized viewer, or leaked to a third-party origin from the browser, is a **privacy bug**,
@@ -12,42 +13,51 @@ not a UI nit. Use `CONTEXT.md` vocabulary throughout.
 
 # CONTEXT
 
-The SPA is **not** a separate `frontend/` build. It is a self-contained HTML page rendered
-straight out of FastAPI as a Python string in **`{{SPA_MODULE}}`** and mounted by the ASGI app
-**`{{ASGI_APP}}`** at its `/ui/*` routes (e.g. `/ui/review-inbox`, `/ui/org-graph`). It calls
-first-party `/v1/management/*` endpoints on the same origin. Branch diff vs the merge base:
+The SPA is a **Vite app** under **`{{FRONTEND_DIR}}/`** that compiles into the committed bundle
+**`src/blindfold/ui_dist/`**. It is served — as that built bundle, not a Python HTML string —
+by `blindfold.ui`'s shell router (mounted on the ASGI app **`{{ASGI_APP}}`**) at its `/ui/*`
+routes (e.g. `/ui/`, `/ui/graph`, `/ui/entities`, `/ui/inbox`; unknown `/ui/*` paths fall
+through to the shell's `index.html`). The legacy embedded `spa.py` pages are all retired
+(#98/#99/#128). The page calls first-party `/v1/management/*` endpoints on the same origin.
+Branch diff vs the merge base, across the SPA surface:
 
-!`git diff {{TARGET_BRANCH}}...{{BRANCH}} -- {{SPA_MODULE}}`
+!`git diff {{TARGET_BRANCH}}...{{BRANCH}} -- {{SPA_PATHS}}`
 
 # SETUP — discover, don't assume
 
-1. Read **`{{SPA_MODULE}}`** to learn which `/ui/*` route(s) this branch touches, which
-   `/v1/management/*` endpoints the page calls, and what the user can do on it.
-2. Read the FastAPI routes in **`src/blindfold/app.py`** that serve those `/ui/*` pages and
-   back them (the management endpoints), so you know the request/response contract and which
-   actions require a **role** / **workspace** header (re-identify needs the `re-identifier`
-   role — ADR-0015).
-3. Read the matching pytest SPA tests (**`tests/test_review_inbox_spa.py`**,
-   **`tests/test_org_graph_spa.py`**) to learn **how the in-memory backend stores are seeded**
-   (they use `app.dependency_overrides` with fixture `EntityGraph` / `RelationshipStore` /
-   `AuditLog`, etc.) and **which headers authorize** each action. Reuse that exact wiring —
-   do not invent a different data shape.
-4. Stand up the app as a **real server** for the browser to hit. Write a small launcher (e.g.
-   `tests/web/serve_fixture.py`) that imports `{{ASGI_APP}}`, seeds the same in-memory stores
-   the pytest fixtures do (including at least one authorized viewer/workspace and one entity
-   whose real value is hidden behind a surrogate so you can test reveal AND denial), installs
-   the matching `dependency_overrides`, and then serves with `uvicorn` on a **fixed localhost
-   port**. Launch it with `uv run python tests/web/serve_fixture.py`, wait until it answers,
-   and tear it down when you are done.
-5. Ensure `@playwright/test` is available at the repo root (add it as a dev dependency if
-   absent). **Chromium and its system libraries are already installed in this container**
-   (`npx playwright install` is a no-op) — do not re-download or `install-deps`.
+The browser-verify harness **already exists and is maintained** — you extend it, you do not
+rebuild it.
+
+1. Read the branch diff above to learn which `/ui/*` view(s) this branch touches. Read the Vue
+   components under **`{{FRONTEND_DIR}}/src/`** for those views to learn which
+   `/v1/management/*` endpoints the page calls and what the user can do on it. **Do not edit any
+   file under `{{FRONTEND_DIR}}/` or `src/blindfold/ui_dist/`** — you verify the branch's SPA,
+   you never change it.
+2. Read the FastAPI routes in **`src/blindfold/app.py`** that back those views (the management
+   endpoints), so you know the request/response contract and which actions require a **role** /
+   **workspace** header (re-identify needs the `re-identifier` role — ADR-0015).
+3. Read **`{{SPEC_DIR}}/serve_fixture.py`** — the committed fixture launcher. It imports
+   `{{ASGI_APP}}`, seeds the same in-memory store shapes the pytest SPA fixtures use (a
+   workspace with an entity whose real value is hidden behind a **surrogate**, an authorized
+   `re-identifier` identity, and an unauthorized one), installs the matching
+   `dependency_overrides`, and serves on a fixed loopback port. It is parameterized by
+   `BLINDFOLD_FIXTURE_PORT` and `BLINDFOLD_FIXTURE_STATE` (`protected` / `degraded` / `empty`).
+   **Reuse it** — if this branch needs a store shape it does not yet seed, extend the fixture
+   minimally rather than writing a new launcher.
+4. Read the existing specs under **`{{SPEC_DIR}}/specs/`** and **`{{SPEC_DIR}}/playwright.config.ts`**
+   to see the established patterns and how each spec's fixture server is launched (the config's
+   `webServer` list starts `serve_fixture.py` instances — you do **not** start the server by
+   hand). Match those patterns.
+5. `@playwright/test` lives in **`{{SPEC_DIR}}/package.json`** (NOT repo root — a root
+   `package.json` is forbidden by `tests/test_repo_hygiene.py`, UX-9). **Chromium and its system
+   libraries are already installed in this container** (`npx playwright install` is a no-op) —
+   do not re-download or `install-deps`.
 
 # WHAT TO ASSERT — scripted Playwright specs
 
-Write specs under **`tests/web/`** with a `playwright.config.ts` pointed at your fixture
-server's `baseURL`. Each spec asserts **observable behavior through the rendered UI**, never
-internal component state. Cover, for the `/ui/*` surface this branch touched:
+Add or extend specs under **`{{SPEC_DIR}}/specs/`** (reusing `fixtures.ts` and the existing
+`playwright.config.ts`). Each spec asserts **observable behavior through the rendered UI**,
+never internal component state. Cover, for the `/ui/*` view this branch touched:
 
 ## Behavior
 - The acceptance criteria of the issue, as a user performs them (e.g. a review-inbox
@@ -79,17 +89,21 @@ assertion to make a spec pass** — if one cannot be satisfied, STOP and report 
 
 # FEEDBACK LOOP
 
-Run the specs headless until green (from the repo root):
+Run the whole committed suite headless until green — from **`{{SPEC_DIR}}/`** (the config's
+`webServer` launches the fixture instances for you; `npm ci` first if `node_modules` is absent):
 
 ```
-npx playwright test
+cd {{SPEC_DIR}} && npx playwright test
 ```
+
+Your new specs must pass **and** every pre-existing spec must stay green — a regression in an
+untouched view is a FAIL.
 
 # OUTCOME
 
-- **PASS** — behavior verified and every applicable privacy property holds: commit the specs
-  and the fixture launcher (they become committed regression tests) and output
-  <promise>COMPLETE</promise>.
+- **PASS** — behavior verified and every applicable privacy property holds: commit the new/updated
+  specs (and any minimal `serve_fixture.py` extension) — they become committed regression tests —
+  and output <promise>COMPLETE</promise>.
 - **FAIL** — any behavior or privacy assertion fails, or you could not satisfy a privacy
   property: **do NOT** output the completion signal. Leave a comment on branch `{{BRANCH}}`'s
   tracking issue stating the failing property + the smallest concrete fix, so the next cycle
@@ -102,5 +116,7 @@ npx playwright test
 - Re-identification is **authorized-only**; egress is **first-party-only**; reveals are
   **always audited**. Never relax these to go green.
 - Drive the app as served by `{{ASGI_APP}}` — do not stub the page's own management endpoints
-  in the browser; seed the real in-memory backend instead, the way the pytest fixtures do.
-- Stay within this branch's scope.
+  in the browser; seed the real in-memory backend via `serve_fixture.py`, the way the pytest
+  fixtures do.
+- Verify the branch's SPA; never edit `{{FRONTEND_DIR}}/` or `src/blindfold/ui_dist/`. Stay
+  within this branch's scope.
