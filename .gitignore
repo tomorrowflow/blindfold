@@ -35,6 +35,5 @@ graphify-out/
 # SwiftPM build artifacts (macos/BlindfoldCore — ADR-0040)
 .build/
 
-
-# test and other files
+# Local scratch input dir (dev-only test fixtures)
 input/
