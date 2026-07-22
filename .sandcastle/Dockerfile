@@ -15,6 +15,40 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
   && apt-get update && apt-get install -y gh \
   && rm -rf /var/lib/apt/lists/*
 
+# Install the swift.org Linux toolchain (ADR-0040) alongside uv. Only the pure-Swift
+# BlindfoldCore SwiftPM library (macos/BlindfoldCore) builds and unit-tests here; the
+# AppKit .app / signing / notarization are macOS-only and gated on the self-hosted mac
+# runner — never built in this Linux sandbox. Additive: the base image stays node:22-bookworm.
+# Runs while still root (needs apt + /opt); pinned + GPG-verified for a reproducible image.
+ARG SWIFT_VERSION=6.3.3
+RUN set -eux; \
+  apt-get update; \
+  apt-get install -y --no-install-recommends \
+    binutils-gold gcc git gnupg2 libcurl4-openssl-dev libedit-dev libicu-dev \
+    libncurses-dev libpython3-dev libsqlite3-dev libxml2-dev pkg-config \
+    tzdata uuid-dev; \
+  arch="$(dpkg --print-architecture)"; \
+  case "$arch" in \
+    amd64) swift_platform=debian12 ;; \
+    arm64) swift_platform=debian12-aarch64 ;; \
+    *) echo "unsupported arch for Swift toolchain: $arch" >&2; exit 1 ;; \
+  esac; \
+  base="https://download.swift.org/swift-${SWIFT_VERSION}-release/${swift_platform}/swift-${SWIFT_VERSION}-RELEASE"; \
+  tarball="swift-${SWIFT_VERSION}-RELEASE-${swift_platform}.tar.gz"; \
+  curl -fsSL --compressed -o /tmp/swift.tar.gz "${base}/${tarball}"; \
+  curl -fsSL --compressed -o /tmp/swift.tar.gz.sig "${base}/${tarball}.sig"; \
+  # --compressed is required: the swift.org CDN serves all-keys.asc with
+  # Content-Encoding: gzip, so without it curl writes gzipped bytes and gpg rejects
+  # them ("no valid OpenPGP data found"). Fetch to a file so a failed download aborts
+  # here rather than piping empty stdin into gpg.
+  curl -fsSL --compressed -o /tmp/swift-keys.asc https://swift.org/keys/all-keys.asc; \
+  gpg --import /tmp/swift-keys.asc; \
+  gpg --batch --verify /tmp/swift.tar.gz.sig /tmp/swift.tar.gz; \
+  mkdir -p /opt/swift; \
+  tar -xzf /tmp/swift.tar.gz -C /opt/swift --strip-components=1; \
+  rm -rf /tmp/swift.tar.gz /tmp/swift.tar.gz.sig /tmp/swift-keys.asc /var/lib/apt/lists/*
+ENV PATH="/opt/swift/usr/bin:$PATH"
+
 # Build-args for UID/GID alignment: sandcastle docker build-image
 # defaults these to the host user's UID/GID so image-built files
 # and bind-mounted files share an owner without runtime chown.
