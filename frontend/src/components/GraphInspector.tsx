@@ -104,14 +104,13 @@ export function GraphInspector({
         </button>
       </div>
 
-      <div className="bf-graph-inspector-row">
+      <div className="bf-graph-inspector-row" data-testid="inspector-kind">
         <span className="bf-graph-inspector-label">Kind:</span>
         <span
           className={`bf-kind-mark bf-kind-mark--${row.kind}`}
-          data-testid="inspector-kind"
-        >
-          {row.kind}
-        </span>
+          aria-hidden="true"
+        />
+        <span className="bf-kind-label">{row.kind}</span>
       </div>
 
       <div className="bf-graph-inspector-row">

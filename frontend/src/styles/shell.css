@@ -2422,11 +2422,16 @@ body {
   position: relative;
 }
 
-/* Cytoscape canvas container — fills the flex area */
+/* Cytoscape canvas container — card framing per comp (issue #174) */
 #cy {
   flex: 1;
   background: var(--bf-card);
-  min-height: 400px;
+  border: 1px solid var(--bf-border);
+  border-radius: 14px;
+  height: 520px;
+  background-image: radial-gradient(circle, #dfe4ec 1px, transparent 1px);
+  background-size: 22px 22px;
+  overflow: hidden;
 }
 
 /* Inspector side panel */
