@@ -66,10 +66,14 @@ const CYTOSCAPE_STYLE: cytoscape.StylesheetStyle[] = [
       "text-valign": "center",
       "text-halign": "center",
       shape: "ellipse",
-      width: "90px",
-      height: "45px",
-      "text-wrap": "wrap",
-      "text-max-width": "80px",
+      // Label-sized chips: node bounding box auto-fits the rendered label text
+      // (issue #174: prevents clipping/overlap on long surrogates)
+      width: "label" as unknown as string,
+      height: "label" as unknown as string,
+      "padding-top": "10px" as unknown as undefined,
+      "padding-bottom": "10px" as unknown as undefined,
+      "padding-left": "16px" as unknown as undefined,
+      "padding-right": "16px" as unknown as undefined,
     },
   },
   {
@@ -85,10 +89,14 @@ const CYTOSCAPE_STYLE: cytoscape.StylesheetStyle[] = [
       "text-valign": "center",
       "text-halign": "center",
       shape: "roundrectangle",
-      width: "100px",
-      height: "45px",
-      "text-wrap": "wrap",
-      "text-max-width": "90px",
+      // Label-sized chips: node bounding box auto-fits the rendered label text
+      // (issue #174: prevents clipping/overlap on long surrogates)
+      width: "label" as unknown as string,
+      height: "label" as unknown as string,
+      "padding-top": "10px" as unknown as undefined,
+      "padding-bottom": "10px" as unknown as undefined,
+      "padding-left": "16px" as unknown as undefined,
+      "padding-right": "16px" as unknown as undefined,
     },
   },
   {
@@ -146,7 +154,24 @@ export function GraphCanvas({
     const cy = cytoscape({
       container: containerRef.current,
       style: CYTOSCAPE_STYLE,
-      layout: { name: "cose", animate: false } as cytoscape.LayoutOptions,
+      layout: {
+        name: "cose",
+        animate: false,
+        // `nodeDimensionsIncludeLabels: true` tells cose to size each node's
+        // bounding box from its full visual extent (label + padding), so the
+        // repulsion simulation uses the actual rendered chip width rather than
+        // just the node body — this is what prevents overlap for `width:'label'`
+        // nodes (issue #174: fixed-size nodes didn't need this; label-sized ones do).
+        nodeDimensionsIncludeLabels: true,
+        randomize: true,
+        nodeRepulsion: () => 400000,
+        idealEdgeLength: () => 150,
+        nodeOverlap: 20,
+        gravity: 80,
+        numIter: 1000,
+        fit: true,
+        padding: 30,
+      } as cytoscape.LayoutOptions,
       elements: [
         ...nodes.map((n) => ({
           group: "nodes" as const,
@@ -164,6 +189,48 @@ export function GraphCanvas({
         })),
       ],
     });
+
+    // Post-layout deoverlap pass: cose with `width:'label'` nodes can leave
+    // minor residual overlap because the force simulation converges to near-zero
+    // but not exact zero. Iterate a simple axis-aligned separation pass to push
+    // any still-overlapping pairs apart (issue #174).
+    const GAP = 12; // minimum gap in model-space pixels between node bounding boxes
+    const MAX_PASSES = 8;
+    for (let pass = 0; pass < MAX_PASSES; pass++) {
+      let anyOverlap = false;
+      const nodeArr = cy.nodes().toArray();
+      for (let i = 0; i < nodeArr.length; i++) {
+        for (let j = i + 1; j < nodeArr.length; j++) {
+          const a = nodeArr[i];
+          const b = nodeArr[j];
+          const abb = a.boundingBox();
+          const bbb = b.boundingBox();
+          const xOverlap = Math.min(abb.x2, bbb.x2) - Math.max(abb.x1, bbb.x1);
+          const yOverlap = Math.min(abb.y2, bbb.y2) - Math.max(abb.y1, bbb.y1);
+          if (xOverlap > 0 && yOverlap > 0) {
+            anyOverlap = true;
+            // Move along the axis with smaller overlap first (minimal displacement)
+            const ax = a.position();
+            const bx = b.position();
+            const dx = bx.x - ax.x;
+            const dy = bx.y - ax.y;
+            const halfX = (xOverlap + GAP) / 2;
+            const halfY = (yOverlap + GAP) / 2;
+            if (Math.abs(dx) >= Math.abs(dy)) {
+              // Separate along X
+              a.position("x", ax.x - halfX * Math.sign(dx || 1));
+              b.position("x", bx.x + halfX * Math.sign(dx || 1));
+            } else {
+              // Separate along Y
+              a.position("y", ax.y - halfY * Math.sign(dy || 1));
+              b.position("y", bx.y + halfY * Math.sign(dy || 1));
+            }
+          }
+        }
+      }
+      if (!anyOverlap) break;
+    }
+    cy.fit(undefined, 30);
 
     // Test-only hook — Playwright reads node renderedPosition() via this
     (window as unknown as Record<string, unknown>)["__blindfoldGraph"] = cy;
@@ -272,7 +339,7 @@ export function GraphCanvas({
       ref={containerRef}
       id="cy"
       data-testid="graph-canvas"
-      style={{ width: "100%", height: "100%" }}
+      style={{ width: "100%" }}
     />
   );
 }
