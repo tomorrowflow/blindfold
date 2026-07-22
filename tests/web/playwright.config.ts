@@ -20,6 +20,13 @@ const EMPTY_PORT = 8953;
 // other and from EMPTY_PORT (setup-shell.spec.ts).
 const SAMPLE_DATA_EMPTY_PORT = 8954;
 const IMPORT_BUNDLE_EMPTY_PORT = 8955;
+// Sixth fixture instance (issue #177): another independent genuinely-empty store,
+// for access-empty-identity.spec.ts's phantom-identity-row repro. Creating a
+// workspace on an empty store self-grants the anonymous ("") caller every
+// canonical role (issue #156/#107) -- that spec needs a store of its own so the
+// resulting single "" identity isn't polluted by (or doesn't pollute) any other
+// spec's fixture state.
+const ACCESS_EMPTY_PORT = 8956;
 
 export default defineConfig({
   testDir: "./specs",
@@ -79,6 +86,17 @@ export default defineConfig({
       timeout: 20_000,
       env: {
         BLINDFOLD_FIXTURE_PORT: String(IMPORT_BUNDLE_EMPTY_PORT),
+        BLINDFOLD_FIXTURE_STATE: "empty",
+      },
+    },
+    {
+      command: "uv run python serve_fixture.py",
+      cwd: __dirname,
+      url: `http://127.0.0.1:${ACCESS_EMPTY_PORT}/ui/`,
+      reuseExistingServer: false,
+      timeout: 20_000,
+      env: {
+        BLINDFOLD_FIXTURE_PORT: String(ACCESS_EMPTY_PORT),
         BLINDFOLD_FIXTURE_STATE: "empty",
       },
     },

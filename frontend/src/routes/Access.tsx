@@ -24,6 +24,11 @@ type IdentityRoles = { identity: string; roles: string[] };
 function groupByIdentity(assignments: RoleAssignment[]): IdentityRoles[] {
   const byIdentity = new Map<string, string[]>();
   for (const a of assignments) {
+    // The SPA never sends x-blindfold-identity (ADR-0019's v1 no-auth model), so
+    // the anonymous "" caller can hold real role grants (e.g. the founding grant
+    // on workspace creation, issue #107/#156) -- a real assignment, but not a
+    // human-readable identity this table can render as a row.
+    if (!a.identity.trim()) continue;
     const roles = byIdentity.get(a.identity) ?? [];
     roles.push(a.role);
     byIdentity.set(a.identity, roles);
