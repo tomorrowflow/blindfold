@@ -1988,30 +1988,62 @@ body {
   font-size: 0.8125rem;
 }
 
+/* Bounded ochre chip (issue #178) — the revealed value used to render as bare
+   inline text with no width constraint, which forced `.bf-actions-cell`'s
+   `white-space:nowrap` column wider and misaligned the row grid. max-width +
+   ellipsis keeps it a fixed-size chip regardless of how long the real value is;
+   the full value is still in the DOM (textContent) and in the `title` tooltip. */
 .bf-reveal-value {
-  color: var(--bf-ink);
+  display: inline-block;
+  max-width: 220px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  vertical-align: middle;
+  background: var(--bf-ochre-bg);
+  color: var(--bf-ochre);
+  border: 1px solid var(--bf-ochre-border);
+  border-radius: 4px;
+  padding: 3px 8px;
   font-weight: 600;
   font-size: 0.875rem;
 }
 
+/* Same containment as .bf-reveal-value (issue #178) — the miss/error copy is
+   longer prose, so it wraps within its own bounded box instead of forcing the
+   nowrap Actions column wider. */
 .bf-reveal-error {
   display: block;
+  max-width: 220px;
+  white-space: normal;
+  overflow-wrap: break-word;
   color: var(--bf-red);
   font-size: 0.75rem;
 }
 
+/* Fixed-position centered modal (issue #178) — collision-proof by construction:
+   `position:fixed; inset:0` centers the dialog regardless of the trigger's
+   position on the page, so it can never clip off-viewport or overlap the
+   trigger the way the old anchored `top:100%` popover did. Mirrors
+   `.bf-merge-overlay`/`.bf-merge-dialog`'s existing centered-modal pattern. */
+.bf-reveal-confirm-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .bf-reveal-confirm {
-  position: absolute;
-  top: 100%;
-  left: 0;
-  z-index: 10;
   background: var(--bf-card);
   border: 1px solid var(--bf-border);
   border-radius: 6px;
   padding: 10px;
-  margin-top: 4px;
   min-width: 240px;
-  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
+  max-width: min(320px, 90vw);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
 }
 
 /* The shared reveal-&-log confirm dialog (§6.1 hard rule) — ochre top border +
