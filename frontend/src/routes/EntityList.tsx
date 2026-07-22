@@ -122,7 +122,7 @@ export function EntityList() {
 
   if (!workspace) {
     return (
-      <div className="bf-card">
+      <div className="bf-status-view">
         <h1>Entity list</h1>
         <p className="bf-empty">No workspace selected.</p>
       </div>
@@ -133,15 +133,17 @@ export function EntityList() {
 
   if (isEmptyWorkspace) {
     return (
-      <div className="bf-card bf-entity-list" data-density={density}>
+      <div className="bf-status-view">
         <h1>Entity list</h1>
-        <EntityListEmptyState workspace={workspace} onPopulated={setAllRows} />
+        <div className="bf-card">
+          <EntityListEmptyState workspace={workspace} onPopulated={setAllRows} />
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="bf-card bf-entity-list" data-density={density}>
+    <div className="bf-status-view">
       <h1>Entity list</h1>
       <p className="bf-entity-list-subtitle" data-testid="entity-list-subtitle">
         {allRows.length} entities in {workspace}. Variations stay hidden — reachable
@@ -224,43 +226,45 @@ export function EntityList() {
         </div>
       )}
 
-      {loading && <p className="bf-empty">Loading…</p>}
+      <div className="bf-card bf-entity-list" data-density={density}>
+        {loading && <p className="bf-empty">Loading…</p>}
 
-      {!loading && !overCeiling && !error && (
-        <table className="bf-entity-table" data-testid="entity-table">
-          <thead>
-            <tr>
-              <th>Kind</th>
-              <th>Surrogate</th>
-              <th>Relationships</th>
-              <th>Dependents</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {visibleRows.map((row) => (
-              <EntityListRow
-                key={row.entity_id}
-                workspace={workspace}
-                row={row}
-                allRows={allRows}
-                canReveal={canReveal}
-                highlighted={highlighted.has(row.entity_id)}
-                onRenamed={handleRenamed}
-                onEdgesChanged={handleEdgesChanged}
-                onStartMerge={(winner, loser) => setMergePair({ winner, loser })}
-              />
-            ))}
-            {visibleRows.length === 0 && (
+        {!loading && !overCeiling && !error && (
+          <table className="bf-entity-table" data-testid="entity-table">
+            <thead>
               <tr>
-                <td colSpan={5} className="bf-empty">
-                  No entities match the current filters.
-                </td>
+                <th>Kind</th>
+                <th>Surrogate</th>
+                <th>Relationships</th>
+                <th>Dependents</th>
+                <th>Actions</th>
               </tr>
-            )}
-          </tbody>
-        </table>
-      )}
+            </thead>
+            <tbody>
+              {visibleRows.map((row) => (
+                <EntityListRow
+                  key={row.entity_id}
+                  workspace={workspace}
+                  row={row}
+                  allRows={allRows}
+                  canReveal={canReveal}
+                  highlighted={highlighted.has(row.entity_id)}
+                  onRenamed={handleRenamed}
+                  onEdgesChanged={handleEdgesChanged}
+                  onStartMerge={(winner, loser) => setMergePair({ winner, loser })}
+                />
+              ))}
+              {visibleRows.length === 0 && (
+                <tr>
+                  <td colSpan={5} className="bf-empty">
+                    No entities match the current filters.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        )}
+      </div>
 
       {mergePair && (
         <MergeDialog

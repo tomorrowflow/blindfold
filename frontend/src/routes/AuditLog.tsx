@@ -112,7 +112,7 @@ export function AuditLog() {
 
   if (!workspace) {
     return (
-      <div className="bf-card">
+      <div className="bf-status-view">
         <h1>Audit log</h1>
         <p className="bf-empty">No workspace selected.</p>
       </div>
@@ -120,7 +120,7 @@ export function AuditLog() {
   }
 
   return (
-    <div className="bf-card bf-audit-log" data-testid="audit-log-page">
+    <div className="bf-status-view bf-audit-log" data-testid="audit-log-page">
       <h1>Audit log</h1>
       <p className="bf-card-subtitle">
         Every real-space crossing and refusal — reveals, real-name lookups (including
@@ -194,7 +194,7 @@ export function AuditLog() {
             </div>
           </div>
 
-          <div className="bf-audit-log-table-wrap">
+          <div className="bf-card bf-audit-log-table-wrap">
             <table className="bf-audit-log-table" data-testid="audit-log-table">
               <thead>
                 <tr>

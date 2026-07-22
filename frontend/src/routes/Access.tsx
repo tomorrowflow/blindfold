@@ -119,7 +119,7 @@ export function Access() {
 
   if (!activeWorkspace) {
     return (
-      <div className="bf-card">
+      <div className="bf-status-view">
         <h1>Access</h1>
         <p className="bf-empty">No workspace selected.</p>
       </div>
@@ -128,7 +128,7 @@ export function Access() {
 
   if (!isAdmin) {
     return (
-      <div className="bf-card">
+      <div className="bf-status-view">
         <h1>Access</h1>
         <div className="bf-access-locked" data-testid="access-locked">
           <Lock size={20} />
@@ -139,7 +139,7 @@ export function Access() {
   }
 
   return (
-    <div className="bf-card">
+    <div className="bf-status-view">
       <div className="bf-access-header">
         <div>
           <h1>Access</h1>
@@ -197,7 +197,7 @@ export function Access() {
         </div>
       )}
 
-      <div className="bf-access-table-wrap">
+      <div className="bf-card bf-access-table-wrap">
         <table className="bf-access-table">
           <thead>
             <tr>

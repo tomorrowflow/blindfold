@@ -17,11 +17,11 @@ export function Settings() {
   const { density, setDensity } = usePreferences();
 
   return (
-    <div className="bf-card">
+    <div className="bf-status-view">
       <h1>Settings</h1>
       <section className="bf-settings-section" aria-labelledby="bf-preferences-heading">
         <h2 id="bf-preferences-heading">Preferences</h2>
-        <div className="bf-settings-field">
+        <div className="bf-card bf-settings-field">
           <span className="bf-settings-field-label">Row density</span>
           <div
             className="bf-density-toggle"

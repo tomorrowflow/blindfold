@@ -95,7 +95,7 @@ export function ReviewInbox() {
   }
 
   return (
-    <div className="bf-card bf-review-inbox" data-testid="review-inbox-page">
+    <div className="bf-review-inbox" data-testid="review-inbox-page">
       <h1>Review inbox</h1>
       <p className="bf-card-subtitle">
         Provisional surrogates detected in traffic. Confirm to keep, or reject to

@@ -242,7 +242,7 @@ export function ProcessingTrace() {
 
   if (!workspace) {
     return (
-      <div className="bf-card">
+      <div className="bf-status-view">
         <h1>Processing trace</h1>
         <p className="bf-empty">No workspace selected.</p>
       </div>
@@ -255,7 +255,7 @@ export function ProcessingTrace() {
   const rows = [...records].reverse();
 
   return (
-    <div className="bf-card bf-processing-trace" data-testid="processing-trace-page">
+    <div className="bf-status-view bf-processing-trace" data-testid="processing-trace-page">
       <div className="bf-status-header">
         <div>
           <h1>Processing trace</h1>
@@ -322,7 +322,7 @@ export function ProcessingTrace() {
       )}
 
       {!loading && !locked && (
-        <div className="bf-audit-log-table-wrap">
+        <div className="bf-card bf-audit-log-table-wrap">
           <table className="bf-audit-log-table" data-testid="processing-trace-table">
             <thead>
               <tr>
