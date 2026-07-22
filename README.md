@@ -168,6 +168,20 @@ Commit the resulting `src/blindfold/ui_dist/` changes alongside your `frontend/`
 change — packaging (`uv build` / CI) does not rebuild the frontend itself, it just picks
 up whatever is already committed there.
 
+**Freezing the proxy** (ADR-0039, macOS menu bar `.app`): a PyInstaller onefile spec at
+[`packaging/blindfold-proxy.spec`](packaging/blindfold-proxy.spec) bundles `blindfold
+serve` plus the vendored `ui_dist` into one self-contained binary — no Python/`uv`/Node
+needed on the target machine. This is a release-time step only, so PyInstaller lives in
+its own `freeze` dependency group, not `dev`:
+
+```bash
+uv sync --group freeze
+uv run pyinstaller packaging/blindfold-proxy.spec   # writes dist/blindfold-proxy
+```
+
+The signed macOS binary is produced on the self-hosted runner (issue #182); this same
+spec built on Linux is what `tests/test_frozen_proxy_packaging.py` exercises in-sandbox.
+
 ---
 
 ## Usability

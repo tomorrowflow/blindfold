@@ -23,5 +23,11 @@ frontend/test-results/
 # graphify output
 graphify-out/
 
+# PyInstaller freeze output (ADR-0039, issue #184) -- `pyinstaller
+# packaging/blindfold-proxy.spec` writes here; the frozen binary is a
+# release/CI artifact, never committed.
+/build/
+/dist/
+
 # macOS
 .DS_Store
