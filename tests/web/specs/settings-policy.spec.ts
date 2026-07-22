@@ -17,7 +17,13 @@ test.describe("settings workspace policy — section renders", () => {
     await alicePage.goto("/ui/settings");
 
     const headings = alicePage.locator("main h2");
-    await expect(headings).toContainText(["Preferences", "Workspace policy", "Detection", "Import"]);
+    await expect(headings).toContainText([
+      "Preferences",
+      "Workspace policy",
+      "Unprotected mode",
+      "Detection",
+      "Import",
+    ]);
 
     await expect(alicePage.getByTestId("policy-lock-icon")).toBeVisible();
     const toggle = alicePage.getByTestId("policy-fail-closed-toggle");

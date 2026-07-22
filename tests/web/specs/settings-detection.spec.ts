@@ -18,7 +18,13 @@ test.describe("settings detection — section renders", () => {
     await alicePage.goto("/ui/settings");
 
     const headings = alicePage.locator("main h2");
-    await expect(headings).toContainText(["Preferences", "Workspace policy", "Detection", "Import"]);
+    await expect(headings).toContainText([
+      "Preferences",
+      "Workspace policy",
+      "Unprotected mode",
+      "Detection",
+      "Import",
+    ]);
 
     await expect(alicePage.getByTestId("detection-gliner-card")).toBeVisible();
     await expect(alicePage.getByTestId("detection-gliner-status-badge")).toHaveText(
