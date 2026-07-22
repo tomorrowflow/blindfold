@@ -119,6 +119,14 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   (ADR-0017). The management app's top-bar chips surface only `curator` and
   `re-identifier` (the two day-to-day capability roles); that's a display
   subset, not a different role set.
+- **Menu bar app** (short form **tray app**) — the macOS **supervisor**: a GUI
+  process that *launches, monitors, and stops* the **proxy** (spawned via `blindfold
+  serve`) and is the Mac user's front door to Blindfold. It is **not** in the request
+  path and holds **no entity data** — a supervisor and shortcut surface, never a second
+  place a real value can live. Distinct from the **proxy** (the loopback interceptor it
+  runs as a child): "proxy is stopped/degraded" always refers to that child, never the
+  app. Everything privacy-critical stays in the proxy. _Avoid_: "the server" (that
+  blurs app and proxy), agent, daemon (as the canonical word).
 - **Bootstrap** — the *automatic, headless* step that makes a fresh install
   non-empty and self-consistent without human interaction: it seeds the entity
   graph from the vendored seed and grants the bootstrap-admin identity so the
@@ -255,6 +263,26 @@ to add it via `/grill-with-docs`, not to invent a synonym.
 - **Fail-closed** — when the full detection pipeline can't run, block by default;
   deterministic L1+L2 still protect known entities. A per-workspace opt-in allows
   degrading to deterministic-only.
+- **Unprotected mode** — a temporary, **local**, operator-invoked override that
+  **suspends all blindfolding**: the detection pipeline does not run, nothing is
+  surrogate-replaced, and real **entities** egress to the provider as a pure relay.
+  The **only** mode that deliberately crosses **egress** with real values — the exact
+  inverse of the every-hop-blindfolded invariant — and thus categorically distinct from
+  **fail-closed** and **deterministic-only**, both of which still protect. It is an
+  **override on top of** the configured global protection posture, never a change to it:
+  resuming returns to whatever posture was set. **Bounded** (next-request / timed /
+  infinite) but never silent — while active the **menu bar app**'s icon shows a distinct
+  alarm state, enabling it is an **audit event**, and auto-revert raises a notification.
+  Enforced **proxy-level** (flag + expiry timer live in the **proxy**, so the guarantee
+  and the auto-revert survive a menu-bar-app crash); scoped to this machine's proxy only,
+  never carried across the shared **store**. The **capability is off by default** and
+  must be explicitly enabled in Settings before it can be invoked — a fresh install
+  cannot have protection disabled by a rogue local process one loopback `POST` away
+  (fail-closed instinct applied to the control surface, ADR-0009/0019). Distinct from a
+  benign *0-detection
+  pass-through* (the pipeline ran and found nothing): there the pipeline runs, here it is
+  skipped. _Avoid_: pass-through (use only as a parenthetical gloss), bypass, disable
+  protection.
 - **Audit event** — a recorded **real-space crossing or refusal**: every **Re-identify**
   attempt (success, denied, failed — SEC-8), every real-name lookup (hit or miss —
   ADR-0018), every block (fail-closed, leak gate). Surrogate-space structural work
