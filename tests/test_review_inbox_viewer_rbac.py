@@ -57,7 +57,7 @@ async def test_review_inbox_denied_without_viewer_role():
 @pytest.mark.anyio
 async def test_review_inbox_lists_items_for_caller_with_viewer_role():
     # AC #1's "unchanged payload with it": the response shape is untouched by
-    # the gate — same id/real/provisional_surrogate/context/context_offset
+    # the gate — same id/real/provisional_surrogate/context/context_offset/kind
     # fields the SPA and test_review_inbox_learning_loop.py already assert on.
     rbac = RbacRegistry()
     rbac.grant("alice", "ws-a", "viewer")
@@ -82,6 +82,7 @@ async def test_review_inbox_lists_items_for_caller_with_viewer_role():
         {
             "id": item.id,
             "real": "Klaus",
+            "kind": "person",
             "provisional_surrogate": item.provisional_surrogate,
             "context": "Please brief Klaus tomorrow.",
             "context_offset": item.context_offset,

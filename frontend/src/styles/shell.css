@@ -2252,10 +2252,22 @@ body {
 }
 
 .bf-review-inbox-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   background: var(--bf-card);
   border: 1px solid var(--bf-border-soft);
   border-radius: 13px;
   padding: 14px 16px;
+}
+
+.bf-review-inbox-item .bf-kind-mark {
+  margin-right: 0;
+}
+
+.bf-review-inbox-item-content {
+  flex: 1;
+  min-width: 0;
 }
 
 .bf-review-inbox-item-header {
@@ -2263,11 +2275,6 @@ body {
   align-items: baseline;
   gap: 8px;
   flex-wrap: wrap;
-}
-
-.bf-review-inbox-item-real {
-  font-weight: 600;
-  color: var(--bf-ink);
 }
 
 .bf-review-inbox-item-surrogate {
@@ -2293,7 +2300,7 @@ body {
 .bf-review-inbox-item-actions {
   display: flex;
   gap: 8px;
-  margin-top: 12px;
+  flex-shrink: 0;
 }
 
 .bf-review-inbox-error {

@@ -1410,6 +1410,7 @@ async def list_review_inbox(
                 "provisional_surrogate": item.provisional_surrogate,
                 "context": item.context,
                 "context_offset": item.context_offset,
+                "kind": _entity_kind_for(item.entity_type),
             }
             for item in inbox.list()
         ]

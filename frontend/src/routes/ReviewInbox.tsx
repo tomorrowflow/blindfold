@@ -6,20 +6,23 @@
 // already happened at request time, this view is only the human side of the loop.
 //
 // Restyled to the comp (issue #113): subtitle + 820px centered column, a rich
-// empty state, 13px candidate cards, and a check icon on Confirm. ReviewItem
-// (blindfold.review) still carries only id/real/provisional_surrogate/context —
-// no entity kind or detection-confidence signal exists anywhere in the pipeline
-// (mining.py / engine.py never attach one) — so the comp's dual-encoded kind
-// swatch + kind label on each candidate row is NOT rendered here; inventing a
-// kind would misrepresent data the pipeline never produced. Attaching a real
-// kind signal to ReviewItem is a backend slice, out of this issue's CSS/JSX scope.
+// empty state, 13px candidate cards, and a check icon on Confirm.
+//
+// Kind shape + right-aligned inline actions (issue #176): the list seam now
+// derives `kind` from ReviewItem.entity_type (issue #171 attached it to the
+// item; the endpoint maps it via the same person/term rule confirm's
+// _entity_kind_for uses), so the card can render a real dual-encoded kind
+// shape (hard rule §6.2: shape + colour, never colour-only) — reuses the
+// entity list's own `.bf-kind-mark`/`.bf-kind-mark--{kind}` classes, no new
+// token/hex. The row is horizontal: kind shape · content (kind label +
+// mono surrogate + highlighted context) · Reject/Confirm right-aligned inline.
 //
 // Candidate-span highlight (ADR-0035 decision 11, issue #155): context_offset
 // is backend-derived from the candidate span's own position, so the context
 // window is sliced (not searched) into before/span/after. The highlight tint
 // is neutral (--bf-border / --bf-border-soft) — not --bf-ochre-* (reserved for
-// audited reveal), not a kind color (kind is unknown for a pending candidate),
-// not red (not a block), not curator-green (would pre-suggest Confirm).
+// audited reveal), not a kind color, not red (not a block), not curator-green
+// (would pre-suggest Confirm).
 
 import { useEffect, useState } from "react";
 import { useReviewInboxPending } from "../components/ReviewInboxContext";
@@ -122,13 +125,19 @@ export function ReviewInbox() {
         <ul className="bf-review-inbox-list">
           {items.map((item) => (
             <li key={item.id} className="bf-review-inbox-item" data-testid="review-inbox-item">
-              <div className="bf-review-inbox-item-header">
-                <span className="bf-review-inbox-item-real">{item.real}</span>
-                <span className="bf-review-inbox-item-surrogate">
-                  → {item.provisional_surrogate}
-                </span>
+              <span
+                className={`bf-kind-mark bf-kind-mark--${item.kind}`}
+                aria-hidden="true"
+              />
+              <div className="bf-review-inbox-item-content">
+                <div className="bf-review-inbox-item-header">
+                  <span className="bf-review-inbox-item-surrogate">
+                    {item.provisional_surrogate}
+                  </span>
+                  <span className="bf-kind-label">{item.kind}</span>
+                </div>
+                <ContextWithHighlight item={item} />
               </div>
-              <ContextWithHighlight item={item} />
               <div className="bf-review-inbox-item-actions">
                 <button
                   type="button"

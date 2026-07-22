@@ -384,7 +384,9 @@ def build_app():
 
     review_inbox = ReviewInbox()
     review_item_one = review_inbox.upsert(REVIEW_ITEM_REAL_ONE, context=REVIEW_ITEM_CONTEXT_ONE)
-    review_inbox.upsert(REVIEW_ITEM_REAL_TWO, context=REVIEW_ITEM_CONTEXT_TWO)
+    review_inbox.upsert(
+        REVIEW_ITEM_REAL_TWO, context=REVIEW_ITEM_CONTEXT_TWO, entity_type="organization"
+    )
     allowlist = Allowlist()
 
     # Processing trace's own surrogate-mapping (issue #154, ADR-0035): the exact
