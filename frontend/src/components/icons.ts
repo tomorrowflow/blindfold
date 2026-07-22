@@ -37,4 +37,7 @@ export {
   // Processing trace view (ADR-0035, issue #151)
   Activity,
   CloudOff,
+  // Entity list actions polish (issue #175)
+  Pencil,
+  Merge,
 } from "lucide-react";

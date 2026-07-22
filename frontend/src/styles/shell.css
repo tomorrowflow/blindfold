@@ -1747,11 +1747,8 @@ body {
 
 .bf-surrogate-text {
   cursor: pointer;
-  border-bottom: 1px dashed #aaa;
-}
-
-.bf-surrogate-text:hover {
-  color: var(--bf-person);
+  color: var(--bf-ink);
+  font-weight: 500;
 }
 
 .bf-rename-form {
@@ -2087,27 +2084,24 @@ body {
   margin-left: 8px;
 }
 
-.bf-rename-trigger {
+.bf-rename-trigger,
+.bf-merge-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
   background: var(--bf-card);
   border: 1px solid var(--bf-border);
-  border-radius: 4px;
-  padding: 3px 8px;
-  font-size: 0.8125rem;
+  border-radius: 6px;
+  color: var(--bf-ink);
+  padding: 0;
   cursor: pointer;
 }
 
 .bf-merge-trigger-wrap {
   position: relative;
   display: inline-block;
-}
-
-.bf-merge-trigger {
-  background: var(--bf-card);
-  border: 1px solid var(--bf-border);
-  border-radius: 4px;
-  padding: 3px 10px;
-  font-size: 0.8125rem;
-  cursor: pointer;
 }
 
 .bf-merge-picker {

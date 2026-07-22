@@ -353,6 +353,40 @@ test.describe("entity list shell — polish (issue #111)", () => {
   });
 });
 
+test.describe("entity list shell — actions polish (issue #175)", () => {
+  test("surrogate cell is plain mono ink, not link-styled (no underline)", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto(`/ui/entities`);
+    const text = alicePage.locator('[data-testid^="surrogate-text-"]').first();
+    await expect(text).toHaveCSS("border-bottom-style", "none");
+    await expect(text).toHaveCSS("color", "rgb(27, 35, 48)");
+    await expect(text).toHaveCSS("font-weight", "500");
+  });
+
+  test("Merge is a 32x32 bordered icon button, not a text button", async ({ alicePage }) => {
+    await alicePage.goto(`/ui/entities`);
+    const row = alicePage.locator("tr", { hasText: PERSON3_SURROGATE });
+    const mergeBtn = row.locator('[data-testid^="merge-trigger-"]');
+    await expect(mergeBtn).not.toContainText("Merge");
+    await expect(mergeBtn.locator("svg")).toBeVisible();
+    await expect(mergeBtn).toHaveCSS("width", "32px");
+    await expect(mergeBtn).toHaveCSS("height", "32px");
+  });
+
+  test("rename control is a pen icon button, paired the same size as Merge", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto(`/ui/entities`);
+    const row = alicePage.locator("tr", { hasText: PERSON3_SURROGATE });
+    const renameBtn = row.locator('[data-testid^="rename-trigger-"]');
+    await expect(renameBtn).not.toContainText("✎");
+    await expect(renameBtn.locator("svg")).toBeVisible();
+    await expect(renameBtn).toHaveCSS("width", "32px");
+    await expect(renameBtn).toHaveCSS("height", "32px");
+  });
+});
+
 test.describe("entity list shell — density preference", () => {
   test("Settings -> Preferences density persists on the device and drives row padding", async ({
     alicePage,
