@@ -25,7 +25,7 @@ from typing import Any
 
 from .detection import detect_l2, detect_pii
 from .l3 import _SENTENCE_STOPWORDS as _COMPONENT_STOPWORDS
-from .l3 import L3Detector, count_capitalized_tokens
+from .l3 import L3Detector, L3Unavailable, count_capitalized_tokens
 # Reused to re-window context around a *coalesced* multi-token span (issue #162):
 # no single candidate's ``.context`` covers the merged run, so the inbox item's
 # context/offset are recomputed from the group's start/end via the same windowing
@@ -553,12 +553,34 @@ def _blindfold_text(
             # own single-token offsets -- a sibling token inside that span may be
             # dismissed on its own (a common-noun tail like "Logistik", #164/#165
             # precision) without narrowing the entity GLiNER already delimited.
-            start = (
-                decision.span_start
-                if decision.span_start is not None
-                else candidate.start
-            )
-            end = decision.span_end if decision.span_end is not None else candidate.end
+            if decision.span_start is not None or decision.span_end is not None:
+                start = (
+                    decision.span_start
+                    if decision.span_start is not None
+                    else candidate.start
+                )
+                end = (
+                    decision.span_end if decision.span_end is not None else candidate.end
+                )
+                # Issue #179 fail-closed backstop (ADR-0009): the candidate's own
+                # start/end are always correct Python-``str`` offsets into
+                # ``result`` (computed directly by select_candidate_spans), so an
+                # authoritative span that doesn't actually contain them is
+                # untrustworthy -- e.g. an offset-space drift a re-anchoring
+                # adjudicator failed to catch. Minting with it verbatim is this
+                # issue's own live repro: a real-value fragment mis-slices into
+                # the clear. Block the whole request rather than slice on an
+                # unanchored span.
+                if not (
+                    0 <= start <= candidate.start
+                    and candidate.end <= end <= len(result)
+                ):
+                    raise L3Unavailable(
+                        "L3 adjudicator span for a confirmed candidate could not "
+                        "be re-anchored against the hop text"
+                    )
+            else:
+                start, end = candidate.start, candidate.end
             novel_extents.append(_ConfirmedExtent(start, end, decision.entity_type))
         # Coalesce adjacent/overlapping confirmed extents into one entity before
         # minting (issue #162, widened by #170): select_candidate_spans emits

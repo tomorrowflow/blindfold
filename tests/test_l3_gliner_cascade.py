@@ -23,13 +23,17 @@ from __future__ import annotations
 
 import sys
 import types
+import unicodedata
 from dataclasses import dataclass
 
 import pytest
 
 from blindfold import l3_gliner
+from blindfold.engine import blindfold_payload, resolution_gate, restore_response
 from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
 from blindfold.l3_gliner import GlinerCascadeAdjudicator, GlinerOnnxClassifier
+from blindfold.review import ReviewInbox
+from blindfold.surrogates import SurrogateMapping
 
 
 @dataclass
@@ -744,6 +748,143 @@ def test_gliner_onnx_classifier_classify_span_returns_none_outside_any_span(
     )
 
     assert classifier.classify_span(candidate) is None
+
+
+class _OffsetDriftStubGlinerModel:
+    """Stand-in for a loaded GLiNER model whose reported offsets live in a
+    *different* Unicode coordinate space than ``candidate.context``'s own
+    Python ``str`` indices -- issue #179's root cause. A real tokenizer that
+    normalizes/decomposes text before tagging spans (each precomposed umlaut
+    becomes two codepoints under NFD) reports ``start``/``end`` in ITS OWN
+    coordinate space; every position after such a character drifts from the
+    caller's Python ``str`` index by one unit per precomposed character. This
+    is deliberately NOT ``_StubGlinerModel``'s ``text.find`` (which computes
+    offsets over the exact string ``predict_entities`` was called with --
+    always the same coordinate space by construction, hiding this bug): here
+    offsets are computed over the NFD-decomposed form, then handed back
+    unconverted, exactly like the real drift the issue describes.
+    """
+
+    def __init__(self, hits: frozenset[str] = frozenset()) -> None:
+        self.calls: list[tuple[str, list[str]]] = []
+        self._hits = hits
+
+    def predict_entities(self, text: str, labels: list[str]) -> list[dict]:
+        self.calls.append((text, labels))
+        decomposed = unicodedata.normalize("NFD", text)
+        entities = []
+        for token in self._hits:
+            decomposed_token = unicodedata.normalize("NFD", token)
+            start = decomposed.find(decomposed_token)
+            if start != -1:
+                entities.append(
+                    {
+                        "text": token,
+                        "label": "organization",
+                        "start": start,
+                        "end": start + len(decomposed_token),
+                    }
+                )
+        return entities
+
+
+def test_gliner_onnx_classifier_classify_span_reanchors_when_umlauts_precede_the_entity(
+    monkeypatch,
+):
+    # Issue #179 live repro: two precomposed umlauts ("Vörösmarty") precede the
+    # novel org candidate inside GLiNER's context window. A tokenizer whose own
+    # offsets are computed over an NFD-decomposed form of the text drifts +1
+    # Python `str` position per such umlaut ahead of the true start/end.
+    # classify_span must not trust entity["start"]/["end"] verbatim -- it must
+    # re-anchor against candidate.context's own (Python str) coordinate space
+    # using the adjudicator's own reported entity text, or a real-value
+    # fragment mis-slices into the clear (the privacy bug this issue is about).
+    context = "Sabine Vörösmarty proposed a deal with Ostwind Datentechnik today."
+    true_start = context.index("Ostwind Datentechnik")
+    true_end = true_start + len("Ostwind Datentechnik")
+    stub_model = _OffsetDriftStubGlinerModel(hits=frozenset({"Ostwind Datentechnik"}))
+    monkeypatch.setattr(l3_gliner, "_load_gliner_model", lambda model_path: stub_model)
+    classifier = GlinerOnnxClassifier(model_path="gliner-pii-base-v1.0")
+    candidate = CandidateSpan(
+        text="Ostwind",
+        start=true_start,
+        end=true_start + len("Ostwind"),
+        context=context,
+        context_offset=true_start,
+    )
+
+    result = classifier.classify_span(candidate)
+
+    assert result is not None
+    label, span_start, span_end = result
+    assert label == "organization"
+    assert (span_start, span_end) == (true_start, true_end)
+    assert context[span_start:span_end] == "Ostwind Datentechnik"
+
+
+class _DismissAllInner:
+    """Inner adjudicator that dismisses every candidate GLiNER doesn't confirm --
+    keeps a request-path test focused on the GLiNER-confirmed org entity alone,
+    mirroring ``_CommonNounDismissingInner`` in test_l3_surrogate_coalescing.py.
+    """
+
+    def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
+        return L3Adjudication(is_entity=False)
+
+
+def test_umlaut_preceding_novel_org_mints_one_intact_surrogate_no_fragment_leak(
+    monkeypatch,
+):
+    # Issue #179 end-to-end live repro, driven through the actual mint pass
+    # (engine.blindfold_payload) with the real GlinerOnnxClassifier -- not a
+    # hand-fabricated span_start/span_end stub (test_l3_surrogate_coalescing.py's
+    # _SpanAwareGlinerStub) -- so this proves the fix holds at the seam where the
+    # leak actually happened: two precomposed umlauts ("Vörösmarty") precede the
+    # novel org entity inside GLiNER's own context window, and the underlying
+    # model's offsets drift out of Python `str` coordinate space.
+    #
+    # Leak-audit clause A: the outbound (blindfolded) text carries neither the
+    # real org name nor any fragment of it -- no partial "Ostwind Da" glued to a
+    # placeholder.
+    # Leak-audit clause B: closed-world restore hands the client back the full
+    # real value, with no raw/glued placeholder left over.
+    # Leak-audit clause D: the post-restore resolution gate stays clean.
+    text = "Hi, ich bin Sabine Vörösmarty von Ostwind Datentechnik heute."
+    stub_model = _OffsetDriftStubGlinerModel(hits=frozenset({"Ostwind Datentechnik"}))
+    monkeypatch.setattr(l3_gliner, "_load_gliner_model", lambda model_path: stub_model)
+    classifier = GlinerOnnxClassifier(model_path="gliner-pii-base-v1.0")
+    detector = L3Detector(
+        GlinerCascadeAdjudicator(classifier=classifier, inner=_DismissAllInner())
+    )
+
+    mapping = SurrogateMapping.from_pairs([])
+    inbox = ReviewInbox()
+    payload = {"model": "m", "messages": [{"role": "user", "content": text}]}
+
+    blinded, session = blindfold_payload(payload, mapping, detector, inbox)
+
+    blinded_text = blinded["messages"][0]["content"]
+    assert "Ostwind" not in blinded_text
+    assert "Datentechnik" not in blinded_text
+    assert "Da" not in blinded_text  # no leftover fragment glued to the placeholder
+
+    org_items = [item for item in inbox.list() if item.entity_type == "organization"]
+    assert len(org_items) == 1
+    assert org_items[0].real == "Ostwind Datentechnik"
+    assert org_items[0].provisional_surrogate in blinded_text
+
+    response = {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": blinded_text}],
+    }
+    restored = restore_response(response, session)
+    restored_text = restored["content"][0]["text"]
+    assert "Ostwind Datentechnik" in restored_text
+    assert org_items[0].provisional_surrogate not in restored_text
+
+    resolution_gate(restored, session)  # must not raise: nothing left unresolved
 
 
 class _FakeGLiNERClass:

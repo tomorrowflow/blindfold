@@ -93,6 +93,37 @@ def _load_gliner_model(model_path: str):
     )
 
 
+def _reanchor_entity_span(
+    context: str, entity: dict, candidate_start: int, candidate_end: int
+) -> tuple[int, int] | None:
+    """Locate ``entity``'s true ``[start, end)`` extent in ``context``'s own
+    Python ``str`` coordinate space (issue #179), instead of trusting
+    ``entity["start"]``/``entity["end"]`` -- which may live in a different
+    coordinate space (e.g. a tokenizer's own NFD-decomposed offsets) that
+    silently drifts from ``context``'s actual indices once non-ASCII
+    characters precede the span.
+
+    Re-anchors on ``entity["text"]`` (GLiNER's own reported span text, always
+    present in its output) via ``str.find`` over ``context`` itself -- the
+    same string ``candidate.start``/``.end`` are already correct offsets
+    into -- picking the occurrence that actually covers ``[candidate_start,
+    candidate_end)`` (the candidate token's own always-correct position) to
+    disambiguate a repeated ``entity["text"]`` elsewhere in the window.
+    Returns ``None`` (fail closed on this entity, ADR-0009) when no occurrence
+    covers the candidate -- never a raw, unverified offset.
+    """
+    text = entity.get("text")
+    if not text:
+        return None
+    start = context.find(text)
+    while start != -1:
+        end = start + len(text)
+        if start <= candidate_start and candidate_end <= end:
+            return start, end
+        start = context.find(text, start + 1)
+    return None
+
+
 class GlinerOnnxClassifier:
     """Real ``GlinerClassifier`` behind a local, CPU-only ONNX GLiNER model.
 
@@ -130,24 +161,37 @@ class GlinerOnnxClassifier:
         sees -- so it can widen a multi-word entity (e.g. an ORG span whose
         trailing common-noun token, "Logistik", is dismissed on its own by the
         inner adjudicator) past the single token this candidate names.
+
+        Issue #179: ``entity["start"]``/``entity["end"]`` are NOT trusted as
+        Python ``str`` indices verbatim -- a tokenizer that normalizes/
+        decomposes text before tagging (precomposed umlauts, e.g. "Vörösmarty",
+        becoming multiple codepoints) reports offsets in its own coordinate
+        space, which silently drifts from ``candidate.context``'s actual
+        indices once non-ASCII characters precede the span. Trusting the raw
+        offset mis-slices the entity at mint time, egressing a real-value
+        fragment and gluing a placeholder onto it. Instead, the span is
+        re-anchored against ``candidate.context`` itself using GLiNER's own
+        reported ``entity["text"]``, located and validated to actually cover
+        the candidate -- never derived from ``entity["start"]``/``["end"]``.
         """
         if self._model is None:
             self._model = _load_gliner_model(self._model_path)
         entities = self._model.predict_entities(candidate.context, list(_GLINER_LABELS))
-        # Confirm when a GLiNER span *covers* the candidate's character offsets, not
-        # only when the strings are equal (issue #160): select_candidate_spans emits
-        # single capitalized tokens ("John"), but GLiNER returns multi-word spans
-        # ("John Smith") -- an exact-text match never fires for a multi-word entity.
         candidate_start = candidate.context_offset
         candidate_end = candidate_start + len(candidate.text)
         window_left = candidate.start - candidate.context_offset
         for entity in entities:
-            if entity["start"] <= candidate_start and candidate_end <= entity["end"]:
-                return (
-                    entity["label"],
-                    window_left + entity["start"],
-                    window_left + entity["end"],
-                )
+            span = _reanchor_entity_span(
+                candidate.context, entity, candidate_start, candidate_end
+            )
+            if span is None:
+                continue
+            local_start, local_end = span
+            return (
+                entity["label"],
+                window_left + local_start,
+                window_left + local_end,
+            )
         return None
 
 

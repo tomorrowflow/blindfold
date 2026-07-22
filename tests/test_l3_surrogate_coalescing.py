@@ -30,7 +30,7 @@ from blindfold.app import (
     get_upstream_client,
 )
 from blindfold.engine import blindfold_payload
-from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
+from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector, L3Unavailable
 from blindfold.l3_gliner import GlinerCascadeAdjudicator
 from blindfold.review import ReviewInbox
 from blindfold.surrogates import SurrogateMapping
@@ -216,6 +216,32 @@ def test_gliner_span_extent_keeps_a_dismissed_common_noun_tail_inside_the_coales
     blinded_text = blinded["messages"][0]["content"]
     assert "Logistik" not in blinded_text
     assert "Nordwind" not in blinded_text
+
+
+def test_span_that_does_not_cover_the_confirming_candidate_fails_closed_instead_of_mis_slicing():
+    # Issue #179 acceptance criterion: an adjudicator-reported span extent that does
+    # NOT actually contain the confirming candidate's own token position (its
+    # ``start``/``end`` are always correct Python-str offsets into the hop text,
+    # computed directly by select_candidate_spans) is untrustworthy -- e.g. an
+    # offset drift a re-anchoring adjudicator (GLiNER, l3_gliner.py) failed to
+    # catch, or any other L3Adjudication.span_start/span_end producer that
+    # reports a corrupted extent. Minting with it verbatim is exactly the live
+    # repro: a real-value fragment mis-slices into the clear. The engine must
+    # fail closed (ADR-0009) instead of slicing on an unanchored span.
+    mapping = SurrogateMapping.from_pairs([])
+    inbox = ReviewInbox()
+    text = "Hi, ich bin Sarah Bergmann von Nordwind Logistik heute."
+    candidate_start = text.index("Nordwind")
+    # Shifted 2 characters past the candidate's own token -- never contains it.
+    bad_start = candidate_start + 2
+    bad_end = bad_start + len("Nordwind Logistik")
+    detector = L3Detector(
+        _SpanAwareStubAdjudicator({"Nordwind": ("organization", bad_start, bad_end)})
+    )
+    payload = {"model": "m", "messages": [{"role": "user", "content": text}]}
+
+    with pytest.raises(L3Unavailable):
+        blindfold_payload(payload, mapping, detector, inbox)
 
 
 def _make_echo_upstream(recorded: list[httpx.Request]) -> UpstreamClient:
