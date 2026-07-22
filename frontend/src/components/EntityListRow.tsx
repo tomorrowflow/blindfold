@@ -8,6 +8,7 @@ import type { EdgeSummary, EntityListRow as Row } from "../lib/entityListApi";
 import { RenameCell } from "./RenameCell";
 import { EdgeChips } from "./EdgeChips";
 import { RevealButton } from "./RevealButton";
+import { Pencil, Merge } from "./icons";
 
 type EntityListRowProps = {
   workspace: string;
@@ -77,17 +78,19 @@ export function EntityListRow({
           onClick={() => setRenameSignal((v) => v + 1)}
           data-testid={`rename-trigger-${row.entity_id}`}
         >
-          ✎
+          <Pencil size={14} />
         </button>
         {sameKindCandidates.length > 0 && (
           <div className="bf-merge-trigger-wrap">
             <button
               type="button"
               className="bf-merge-trigger"
+              title="Merge with a same-kind entity"
+              aria-label="Merge with a same-kind entity"
               onClick={() => setPickingMerge((v) => !v)}
               data-testid={`merge-trigger-${row.entity_id}`}
             >
-              Merge…
+              <Merge size={14} />
             </button>
             {pickingMerge && (
               <div className="bf-merge-picker" data-testid={`merge-picker-${row.entity_id}`}>
