@@ -131,3 +131,90 @@ test.describe("settings unprotected mode — off state refuses activation end-to
     expect(resp.status()).toBe(403);
   });
 });
+
+// Browser-side privacy gate (issue #188 verification): egress hygiene for the
+// actual toggle interaction, not just the static page load already covered by
+// shell-egress-hygiene.spec.ts's route sweep. Matches the established per-flow
+// pattern in access-shell.spec.ts's "grant/revoke round trip" and
+// entity-list-populate.spec.ts -- this section carries no entity/surrogate data
+// at all (fetchUnprotectedModeCapability/setUnprotectedModeCapability touch only
+// GET /v1/status and POST /v1/unprotected-mode/capability), so the only property
+// that applies here is "nothing egresses to a third-party origin."
+test.describe("settings unprotected mode — egress hygiene", () => {
+  test("flipping the toggle on and back off issues zero non-loopback requests", async ({
+    alicePage,
+    baseURL,
+  }) => {
+    const hosts = new Set<string>();
+    alicePage.on("request", (req) => hosts.add(new URL(req.url()).host));
+
+    await alicePage.goto("/ui/settings");
+    const toggle = alicePage.getByTestId("unprotected-mode-capability-toggle");
+    await expect(toggle).toHaveAttribute("aria-checked", "false");
+
+    await Promise.all([
+      alicePage.waitForRequest(
+        (req) =>
+          req.url().includes("/v1/unprotected-mode/capability") && req.method() === "POST"
+      ),
+      toggle.click(),
+    ]);
+    await expect(toggle).toHaveAttribute("aria-checked", "true");
+
+    // Restore the off default so this fixture instance's process-global
+    // UnprotectedMode singleton doesn't leak state into later specs.
+    await Promise.all([
+      alicePage.waitForRequest(
+        (req) =>
+          req.url().includes("/v1/unprotected-mode/capability") && req.method() === "POST"
+      ),
+      toggle.click(),
+    ]);
+    await expect(toggle).toHaveAttribute("aria-checked", "false");
+
+    const firstPartyHost = new URL(baseURL!).host;
+    const thirdParty = [...hosts].filter((host) => host !== firstPartyHost);
+    expect(thirdParty, `unexpected non-loopback requests: ${thirdParty.join(", ")}`).toEqual([]);
+  });
+});
+
+// Deliberately the *inverse* of settings-policy.spec.ts's admin-gated check:
+// ADR-0038 states the capability is "the same unauthenticated loopback surface as
+// /v1/status" with "no per-workspace identity to gate on" -- unlike Workspace
+// policy (admin-gated) this must remain visible and functional for an identity
+// holding no role anywhere. Locking this in as a behavioral test, not just prose,
+// catches a future regression that accidentally role-gates the toggle (which would
+// itself become a fail-closed-instinct violation: an operator without any granted
+// role could no longer disable a capability they never should have had reason to
+// enable in the first place, defeating ADR-0038's "no per-workspace identity to
+// hide it behind" design).
+test.describe("settings unprotected mode — not gated by workspace role", () => {
+  test("bob (no role on any workspace) still sees and can flip the capability toggle", async ({
+    bobPage,
+  }) => {
+    await bobPage.goto("/ui/settings");
+    const toggle = bobPage.getByTestId("unprotected-mode-capability-toggle");
+    await expect(toggle).toBeVisible();
+    await expect(toggle).toHaveAttribute("aria-checked", "false");
+
+    await Promise.all([
+      bobPage.waitForRequest(
+        (req) =>
+          req.url().includes("/v1/unprotected-mode/capability") && req.method() === "POST"
+      ),
+      toggle.click(),
+    ]);
+    await expect(toggle).toHaveAttribute("aria-checked", "true");
+
+    // Restore the off default so this fixture instance's process-global
+    // UnprotectedMode singleton doesn't leak state into later specs.
+    await Promise.all([
+      bobPage.waitForRequest(
+        (req) =>
+          req.url().includes("/v1/unprotected-mode/capability") && req.method() === "POST"
+      ),
+      toggle.click(),
+    ]);
+    await expect(toggle).toHaveAttribute("aria-checked", "false");
+  });
+});
