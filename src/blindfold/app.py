@@ -169,6 +169,11 @@ from .status import (
 from .store import VendoredSeedRepository, vendored_seed_repository
 from .surrogates import SurrogateMapping
 from .ui import shell_router, ui_assets_app
+from .unprotected_mode import (
+    CapabilityDisabledError,
+    InvalidBoundError,
+    UnprotectedMode,
+)
 from .upstream import UpstreamClient, UpstreamError
 
 app = FastAPI(title="Blindfold")
@@ -297,6 +302,15 @@ _l3_detector = _build_l3_detector(get_settings(), _allowlist)
 # RBAC-scoped audit access are out of scope this slice — see policy.py.
 _workspace_policies = WorkspacePolicies()
 _audit_log = AuditLog()
+
+# Process-wide Unprotected-mode state (ADR-0038, issue #180): capability flag +
+# active/bound/expiry timer. Deliberately a singleton scoped to this proxy process
+# only -- never persisted to the shared store, never per-workspace (unlike
+# `_workspace_policies` above) -- so the flag/timer, and the auto-revert, survive
+# only as long as this proxy does (surviving a menu-bar-app crash is the point;
+# surviving a proxy restart is explicitly not required). Tests substitute their own
+# via dependency_overrides[get_unprotected_mode].
+_unprotected_mode = UnprotectedMode()
 
 # Process-wide rolling window of fail-closed/leak-gate blocks (issue #92), fed by the
 # single `_blocked_response` funnel (#91) so `/v1/status`'s `blocks.recent` carries the
@@ -470,6 +484,10 @@ def get_workspace_policies() -> WorkspacePolicies:
 
 def get_audit_log() -> AuditLog:
     return _audit_log
+
+
+def get_unprotected_mode() -> UnprotectedMode:
+    return _unprotected_mode
 
 
 def get_block_history() -> BlockHistory:
@@ -1167,6 +1185,7 @@ async def status(
     settings: Settings = Depends(get_settings),
     entity_graph: EntityGraph = Depends(get_entity_graph),
     policies: WorkspacePolicies = Depends(get_workspace_policies),
+    unprotected_mode: UnprotectedMode = Depends(get_unprotected_mode),
 ) -> dict:
     """The single status contract for the Home view + menu bar (issue #92).
 
@@ -1198,6 +1217,7 @@ async def status(
             "recent": [record.to_dict() for record in recent_blocks],
         },
         "review_inbox": {"pending": len(inbox.list())},
+        "unprotected_mode": unprotected_mode.status().to_dict(),
         "empty_store": entity_graph.is_empty(),
         "config": {
             "upstream_base_url": settings.upstream_base_url,
@@ -1212,6 +1232,73 @@ async def status(
     }
 
 
+@app.post("/v1/unprotected-mode/capability")
+async def set_unprotected_mode_capability(
+    body: dict,
+    unprotected_mode: UnprotectedMode = Depends(get_unprotected_mode),
+) -> dict:
+    """Enable/disable the Unprotected-mode *capability* (ADR-0038, issue #180).
+
+    Body: ``{"enabled": bool}``. Off by default; a fresh install cannot activate
+    Unprotected mode via ``POST /v1/unprotected-mode`` until the operator opts the
+    capability in here first (fail-closed instinct applied to the control surface,
+    ADR-0009/0019). Deliberately unauthenticated, like `/v1/status` (ADR-0011) --
+    the security boundary is the existing loopback-only bind (ADR-0021).
+    """
+    if bool(body.get("enabled", False)):
+        unprotected_mode.enable_capability()
+    else:
+        unprotected_mode.disable_capability()
+    return {"capability_enabled": unprotected_mode.capability_enabled}
+
+
+@app.post("/v1/unprotected-mode")
+async def enable_unprotected_mode(
+    request: Request,
+    body: dict,
+    unprotected_mode: UnprotectedMode = Depends(get_unprotected_mode),
+    audit_log: AuditLog = Depends(get_audit_log),
+) -> dict:
+    """Activate Unprotected mode (ADR-0038, issue #180): suspends blindfolding.
+
+    Body: ``{"bound": "next-request" | "timed" | "infinite", "minutes"?: 5|15|30}``
+    (``minutes`` required, and only meaningful, for ``"timed"``). Refuses with 403
+    until the capability is enabled (:func:`set_unprotected_mode_capability`); 422
+    for an unrecognized bound or an unsupported ``minutes`` value. Never mutates the
+    configured global protection posture -- this is an override on top of it.
+
+    Enabling is an audit event (CONTEXT.md: a real-space exposure decision) --
+    written only on a successful activation, never on a refusal (nothing was armed).
+    """
+    bound = body.get("bound")
+    minutes = body.get("minutes")
+    try:
+        unprotected_mode.enable(bound, minutes=minutes)
+    except CapabilityDisabledError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except InvalidBoundError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    audit_log.append(
+        AuditRecord(
+            workspace=_workspace_slug(request),
+            event="unprotected-mode-enabled",
+            reason=f"Unprotected mode enabled (bound={bound})",
+            identity=_caller_identity(request),
+        )
+    )
+    return unprotected_mode.status().to_dict()
+
+
+@app.delete("/v1/unprotected-mode")
+async def disable_unprotected_mode(
+    unprotected_mode: UnprotectedMode = Depends(get_unprotected_mode),
+) -> dict:
+    """Resume protection (ADR-0038, issue #180): returns to the configured global
+    protection posture, unchanged -- the override never mutated that posture."""
+    unprotected_mode.disable()
+    return unprotected_mode.status().to_dict()
+
+
 @app.post("/v1/messages")
 async def messages(
     request: Request,
@@ -1224,41 +1311,50 @@ async def messages(
     block_history: BlockHistory = Depends(get_block_history),
     upstream_health: RecentFailureHealth = Depends(get_upstream_health),
     trace: ProcessingTraceBuffer = Depends(get_processing_trace),
+    unprotected_mode: UnprotectedMode = Depends(get_unprotected_mode),
 ):
     start = time.monotonic()
     payload = await request.json()
     workspace = _workspace_slug(request)
     policy = policies.for_workspace(workspace)
     streamed = bool(payload.get("stream"))
-
-    effective_l3_detector = None if policy.deterministic_only else l3_detector
-    declared_tools = extract_declared_tools_messages(payload)
-    result = await _mint_or_block(
-        lambda: blindfold_payload(
-            payload, mapping, effective_l3_detector, inbox, declared_tools,
-            workspace=workspace,
-        ),
-        workspace,
-        policy.deterministic_only,
-        audit_log,
-        block_history,
-    )
-    if isinstance(result, JSONResponse):
-        _record_trace(
-            trace, workspace, "messages", streamed, OUTCOME_BLOCKED, 0, start,
-            reason=_block_reason(result),
-        )
-        return result
-    blinded, session = result
     forwarded = _forwarded_headers(request)
 
-    block = _leak_gate_or_block(blinded, mapping, workspace, audit_log, block_history)
-    if block is not None:
-        _record_trace(
-            trace, workspace, "messages", streamed, OUTCOME_BLOCKED,
-            len(session.injected), start, reason=_block_reason(block), session=session,
+    if unprotected_mode.is_active():
+        # ADR-0038: the detection pipeline is skipped entirely and the pre-egress
+        # leak gate is deliberately bypassed -- egress of real values is expected
+        # for the duration of this override. `note_exchange_complete` consumes a
+        # `next-request` grant right here so exactly one exchange gets it.
+        unprotected_mode.note_exchange_complete()
+        blinded, session = payload, ExchangeSession()
+    else:
+        effective_l3_detector = None if policy.deterministic_only else l3_detector
+        declared_tools = extract_declared_tools_messages(payload)
+        result = await _mint_or_block(
+            lambda: blindfold_payload(
+                payload, mapping, effective_l3_detector, inbox, declared_tools,
+                workspace=workspace,
+            ),
+            workspace,
+            policy.deterministic_only,
+            audit_log,
+            block_history,
         )
-        return block
+        if isinstance(result, JSONResponse):
+            _record_trace(
+                trace, workspace, "messages", streamed, OUTCOME_BLOCKED, 0, start,
+                reason=_block_reason(result),
+            )
+            return result
+        blinded, session = result
+
+        block = _leak_gate_or_block(blinded, mapping, workspace, audit_log, block_history)
+        if block is not None:
+            _record_trace(
+                trace, workspace, "messages", streamed, OUTCOME_BLOCKED,
+                len(session.injected), start, reason=_block_reason(block), session=session,
+            )
+            return block
 
     if streamed:
         upstream_start = time.monotonic()
@@ -1320,6 +1416,7 @@ async def chat_completions(
     block_history: BlockHistory = Depends(get_block_history),
     upstream_health: RecentFailureHealth = Depends(get_upstream_health),
     trace: ProcessingTraceBuffer = Depends(get_processing_trace),
+    unprotected_mode: UnprotectedMode = Depends(get_unprotected_mode),
 ):
     start = time.monotonic()
     payload = await request.json()
@@ -1328,33 +1425,38 @@ async def chat_completions(
     workspace = _workspace_slug(request)
     policy = policies.for_workspace(workspace)
 
-    effective_l3_detector = None if policy.deterministic_only else l3_detector
-    declared_tools = extract_declared_tools_chat_completions(payload)
-    result = await _mint_or_block(
-        lambda: blindfold_chat_completions_payload(
-            payload, mapping, effective_l3_detector, inbox, declared_tools,
-            workspace=workspace,
-        ),
-        workspace,
-        policy.deterministic_only,
-        audit_log,
-        block_history,
-    )
-    if isinstance(result, JSONResponse):
-        _record_trace(
-            trace, workspace, "chat_completions", False, OUTCOME_BLOCKED, 0, start,
-            reason=_block_reason(result),
+    if unprotected_mode.is_active():
+        # ADR-0038: same bypass as `/v1/messages` -- see that handler's comment.
+        unprotected_mode.note_exchange_complete()
+        blinded, session = payload, ExchangeSession()
+    else:
+        effective_l3_detector = None if policy.deterministic_only else l3_detector
+        declared_tools = extract_declared_tools_chat_completions(payload)
+        result = await _mint_or_block(
+            lambda: blindfold_chat_completions_payload(
+                payload, mapping, effective_l3_detector, inbox, declared_tools,
+                workspace=workspace,
+            ),
+            workspace,
+            policy.deterministic_only,
+            audit_log,
+            block_history,
         )
-        return result
-    blinded, session = result
+        if isinstance(result, JSONResponse):
+            _record_trace(
+                trace, workspace, "chat_completions", False, OUTCOME_BLOCKED, 0, start,
+                reason=_block_reason(result),
+            )
+            return result
+        blinded, session = result
 
-    block = _leak_gate_or_block(blinded, mapping, workspace, audit_log, block_history)
-    if block is not None:
-        _record_trace(
-            trace, workspace, "chat_completions", False, OUTCOME_BLOCKED,
-            len(session.injected), start, reason=_block_reason(block), session=session,
-        )
-        return block
+        block = _leak_gate_or_block(blinded, mapping, workspace, audit_log, block_history)
+        if block is not None:
+            _record_trace(
+                trace, workspace, "chat_completions", False, OUTCOME_BLOCKED,
+                len(session.injected), start, reason=_block_reason(block), session=session,
+            )
+            return block
 
     upstream_start = time.monotonic()
     try:
