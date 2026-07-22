@@ -66,6 +66,47 @@ test.describe("review inbox — alice (holds viewer)", () => {
     );
   });
 
+  test("each candidate shows a dual-encoded kind shape (round person / square term)", async ({
+    alicePage,
+  }) => {
+    // Issue #176, hard rule §6.2: shape + colour, never colour-only. Fixture
+    // seeds "Klaus Bergmann" untyped (-> person, round) and "Nordwind Systems"
+    // as an organization (-> term, square).
+    await alicePage.goto("/ui/inbox");
+
+    const klaus = alicePage.getByTestId("review-inbox-item").filter({ hasText: "Klaus Bergmann" });
+    const klausMark = klaus.locator(".bf-kind-mark");
+    await expect(klausMark).toHaveClass(/bf-kind-mark--person/);
+    await expect(klausMark).toHaveCSS("border-radius", "50%");
+    await expect(klausMark).toHaveCSS("background-color", "rgb(47, 95, 176)"); // --bf-person
+
+    const nordwind = alicePage.getByTestId("review-inbox-item").filter({ hasText: "Nordwind Systems" });
+    const nordwindMark = nordwind.locator(".bf-kind-mark");
+    await expect(nordwindMark).toHaveClass(/bf-kind-mark--term/);
+    await expect(nordwindMark).toHaveCSS("border-radius", "2px");
+    await expect(nordwindMark).toHaveCSS("background-color", "rgb(91, 68, 148)"); // --bf-term
+  });
+
+  test("actions are right-aligned inline, not stacked below the card content", async ({
+    alicePage,
+  }) => {
+    // Issue #176: the comp lays the card out as a horizontal row — kind shape ·
+    // content · Reject/Confirm right-aligned inline — rather than stacking
+    // actions below the text.
+    await alicePage.goto("/ui/inbox");
+
+    const klaus = alicePage.getByTestId("review-inbox-item").filter({ hasText: "Klaus Bergmann" });
+    const actions = klaus.locator(".bf-review-inbox-item-actions");
+    const cardBox = await klaus.boundingBox();
+    const actionsBox = await actions.boundingBox();
+    const contextBox = await klaus.getByTestId("review-inbox-item-context").boundingBox();
+    if (!cardBox || !actionsBox || !contextBox) throw new Error("missing bounding box");
+
+    const rightGap = cardBox.x + cardBox.width - (actionsBox.x + actionsBox.width);
+    expect(rightGap).toBeLessThanOrEqual(20);
+    expect(actionsBox.y).toBeLessThan(contextBox.y + contextBox.height);
+  });
+
   test("candidate span is highlighted in place within the context, with a neutral tint", async ({
     alicePage,
   }) => {

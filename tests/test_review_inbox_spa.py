@@ -158,3 +158,43 @@ async def test_confirm_reject_calls_grow_entity_graph_and_allowlist_at_api_seam(
     # Both items are gone from the inbox (already covered above, but reasserted
     # so this seam test stands alone as the parity guard).
     assert inbox.list() == []
+
+
+@pytest.mark.anyio
+async def test_list_reports_the_dual_encoded_kind_for_each_candidate():
+    # Issue #176: the candidate card needs a kind to drive its dual-encoded
+    # shape (round person / square term, hard rule §6.2). The list seam derives
+    # it from ReviewItem.entity_type with the same mapping confirm already uses
+    # (_entity_kind_for) -- an "organization" candidate is a term, everything
+    # else (including no detected type) is a person.
+    inbox = ReviewInbox()
+    mapping = _seeded_mapping()
+    allowlist = Allowlist()
+    inbox.upsert("Klaus Bergmann", context="Please brief Klaus Bergmann tomorrow.")
+    inbox.upsert(
+        "Nordwind Systems",
+        context="Nordwind Systems signed the contract.",
+        entity_type="organization",
+    )
+
+    app.dependency_overrides[get_review_inbox] = lambda: inbox
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_allowlist] = lambda: allowlist
+    app.dependency_overrides[get_rbac] = _viewer_rbac
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            listed = (
+                await client.get(
+                    "/v1/management/review-inbox",
+                    params=_VIEWER_PARAMS,
+                    headers=_VIEWER_HEADERS,
+                )
+            ).json()["items"]
+    finally:
+        app.dependency_overrides.clear()
+
+    by_real = {item["real"]: item["kind"] for item in listed}
+    assert by_real == {"Klaus Bergmann": "person", "Nordwind Systems": "term"}

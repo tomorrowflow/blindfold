@@ -2,12 +2,15 @@
 // issue #152) — mirrors auditApi.ts's `locked` result shape so ReviewInbox.tsx can
 // render the same locked/denied treatment the audit log view uses.
 
+import type { EntityKind } from "./entityListApi";
+
 export type ReviewItem = {
   id: string;
   real: string;
   provisional_surrogate: string;
   context: string;
   context_offset: number;
+  kind: EntityKind;
 };
 
 export type ReviewInboxFetchResult = { locked: true } | { locked: false; items: ReviewItem[] };
