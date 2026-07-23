@@ -96,6 +96,18 @@ Before committing, run the suite and make sure it passes:
 uv run pytest
 ```
 
+If your slice touches a **native core**, also run that core's tests and make sure they pass
+— these cross-platform logic cores build and test in this Linux sandbox (ADR-0040/0042);
+the OS-only shells (AppKit `.app`, WinForms tray) are gated separately on the hosted
+platform-verify runner, not here:
+
+```
+# macos/ (Swift BlindfoldCore)
+swift test --package-path macos/BlindfoldCore
+# windows/ (C# Blindfold.Core)
+dotnet test windows/Blindfold.Core.Tests/Blindfold.Core.Tests.csproj
+```
+
 # COMMIT
 
 Make a git commit. The message must:

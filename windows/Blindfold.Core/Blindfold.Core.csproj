@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Blindfold.Core — the cross-platform, WinForms-free logic core of the Blindfold
+    Windows tray app (ADR-0041/0042), the Windows analog of macos/BlindfoldCore.
+
+    TargetFramework is net10.0 (NOT net10.0-windows) on purpose: the risk-bearing logic
+    must build and unit-test in Sandcastle's Linux sandbox via `dotnet test`. The WinForms
+    tray shell (issue #196) is the only Windows-only, net10.0-windows layer, and it is
+    gated separately on the hosted platform-verify runner (ADR-0042) — never built here.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Blindfold.Core</RootNamespace>
+    <AssemblyName>Blindfold.Core</AssemblyName>
+  </PropertyGroup>
+
+</Project>

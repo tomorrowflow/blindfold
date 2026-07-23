@@ -17,8 +17,9 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
 
 # Install the swift.org Linux toolchain (ADR-0040) alongside uv. Only the pure-Swift
 # BlindfoldCore SwiftPM library (macos/BlindfoldCore) builds and unit-tests here; the
-# AppKit .app / signing / notarization are macOS-only and gated on the self-hosted mac
-# runner — never built in this Linux sandbox. Additive: the base image stays node:22-bookworm.
+# AppKit .app / signing / notarization are macOS-only and gated on the hosted
+# platform-verify runner (ADR-0042) — never built in this Linux sandbox. Additive: the
+# base image stays node:22-bookworm.
 # Runs while still root (needs apt + /opt); pinned + GPG-verified for a reproducible image.
 ARG SWIFT_VERSION=6.3.3
 RUN set -eux; \
@@ -48,6 +49,28 @@ RUN set -eux; \
   tar -xzf /tmp/swift.tar.gz -C /opt/swift --strip-components=1; \
   rm -rf /tmp/swift.tar.gz /tmp/swift.tar.gz.sig /tmp/swift-keys.asc /var/lib/apt/lists/*
 ENV PATH="/opt/swift/usr/bin:$PATH"
+
+# Install the .NET SDK (LTS, ADR-0041/0042) alongside the Swift toolchain and uv. The
+# cross-platform C# core windows/Blindfold.Core — pure logic, zero WinForms — builds and
+# unit-tests here via `dotnet test`, the Windows analog of the Swift core; both are held
+# to the shared golden-vector contract (ADR-0041). The WinForms tray shell (net10.0-windows,
+# issue #196) and the PyInstaller-Windows freeze are Windows-only and gated on the hosted
+# platform-verify runner (ADR-0042) — never built in this Linux sandbox. Additive: the base
+# image stays node:22-bookworm. Installed via the official dotnet-install.sh (same curl-script
+# shape as uv/Swift) and pinned for a reproducible image; ICU + other native deps are already
+# present from the Swift block above. Runs while still root (needs /opt).
+ARG DOTNET_VERSION=10.0.301
+RUN set -eux; \
+  curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/dotnet-install.sh; \
+  chmod +x /tmp/dotnet-install.sh; \
+  /tmp/dotnet-install.sh --version "${DOTNET_VERSION}" --install-dir /opt/dotnet --no-path; \
+  rm -f /tmp/dotnet-install.sh
+ENV DOTNET_ROOT=/opt/dotnet
+ENV PATH="/opt/dotnet:$PATH"
+# Quiet, non-interactive .NET in CI: no telemetry, no first-run logo/experience.
+ENV DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+    DOTNET_NOLOGO=1 \
+    DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
 
 # Build-args for UID/GID alignment: sandcastle docker build-image
 # defaults these to the host user's UID/GID so image-built files

@@ -1,0 +1,3 @@
+# .NET build output — restored/built by `dotnet test` in the sandbox, never committed.
+bin/
+obj/

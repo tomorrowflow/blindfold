@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Tracer test project for Blindfold.Core. `dotnet test` here restores + builds the
+    referenced core and runs xUnit green inside the Sandcastle Linux sandbox (ADR-0042),
+    the C# analog of `swift test` for macos/BlindfoldCore. Grows into the golden-vector
+    behavior tests (ADR-0041) as issue #194 lands.
+
+    net10.0 (not net10.0-windows) so it runs on Linux. Package versions are the main
+    thing to confirm on the first `dotnet test` in the rebuilt image — a restore complaint
+    is a one-line version bump, not a design issue.
+  -->
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Blindfold.Core/Blindfold.Core.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -70,6 +70,17 @@ green suite with a missing or weakened leak-audit assertion is a **FAIL**, not a
   uv run pytest
   ```
 
+  If the slice touches a **native core**, also run that core's tests (they build and test
+  in this Linux sandbox — ADR-0040/0042; the OS-only shells are gated on the hosted
+  platform-verify runner, not here):
+
+  ```
+  # macos/ (Swift BlindfoldCore)
+  swift test --package-path macos/BlindfoldCore
+  # windows/ (C# Blindfold.Core)
+  dotnet test windows/Blindfold.Core.Tests/Blindfold.Core.Tests.csproj
+  ```
+
   Commit describing the refinements. If the code is already clean, do nothing.
 
 Once the change is verified correct, leak-clean, and tidy, output <promise>COMPLETE</promise>.
