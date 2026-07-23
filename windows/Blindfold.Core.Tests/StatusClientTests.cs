@@ -174,4 +174,75 @@ public class StatusClientPollTests
         Assert.Null(payload.UnprotectedMode.Bound);
         Assert.Null(payload.UnprotectedMode.RemainingSeconds);
     }
+
+    /// <summary>
+    /// Issue #197's tray menu needs three more scalar counts/flags off the same full payload
+    /// as the test above: <c>review_inbox.pending</c> (the review deep-link count),
+    /// <c>blocks.count</c> (the blocks deep-link count), and <c>empty_store</c> ("Finish
+    /// setup" visibility) -- widening the narrow contract issue #194 started, mirroring the
+    /// Swift <c>StatusPayload</c>'s <c>reviewInboxPending</c>/<c>blocksCount</c>/<c>emptyStore</c>.
+    /// Still never the inbox contents or the <c>recent</c> block records themselves.
+    /// </summary>
+    [Fact]
+    public async Task StatusClientDecodesReviewInboxBlocksAndEmptyStoreFromTheFullPayload()
+    {
+        var fetcher = new RecordingFetcher(
+            """
+            {
+                "state": "degraded",
+                "blocks": {"window_minutes": 5, "count": 4, "recent": [{"ts": "2026-07-22T00:00:00Z"}]},
+                "review_inbox": {"pending": 3},
+                "empty_store": true
+            }
+            """);
+        var client = new StatusClient("http://127.0.0.1:8000/v1/status", fetcher);
+
+        var payload = await client.PollAsync();
+
+        Assert.Equal(3, payload.ReviewInboxPending);
+        Assert.Equal(4, payload.BlocksCount);
+        Assert.True(payload.EmptyStore);
+    }
+
+    [Fact]
+    public async Task StatusClientDecodesReviewInboxBlocksAndEmptyStoreAsZeroFalseWhenAbsent()
+    {
+        var fetcher = new RecordingFetcher("""{"state": "protected"}""");
+        var client = new StatusClient("http://127.0.0.1:8000/v1/status", fetcher);
+
+        var payload = await client.PollAsync();
+
+        Assert.Equal(0, payload.ReviewInboxPending);
+        Assert.Equal(0, payload.BlocksCount);
+        Assert.False(payload.EmptyStore);
+    }
+
+    /// <summary>
+    /// Issue #187/#188's capability gate ported to C# (issue #197): the Unprotected-mode
+    /// submenu's visibility hinges on this flag, read verbatim regardless of whether the mode
+    /// is currently active. Fail-closed: an absent field decodes as capability-disabled.
+    /// </summary>
+    [Fact]
+    public async Task StatusClientDecodesUnprotectedModeCapabilityEnabledFlag()
+    {
+        var fetcher = new RecordingFetcher(
+            """{"state": "protected", "unprotected_mode": {"active": false, "bound": null, "remaining_seconds": null, "capability_enabled": true}}""");
+        var client = new StatusClient("http://127.0.0.1:8000/v1/status", fetcher);
+
+        var payload = await client.PollAsync();
+
+        Assert.True(payload.UnprotectedMode!.CapabilityEnabled);
+    }
+
+    [Fact]
+    public async Task StatusClientDecodesUnprotectedModeCapabilityEnabledAsFalseWhenAbsent()
+    {
+        var fetcher = new RecordingFetcher(
+            """{"state": "protected", "unprotected_mode": {"active": false, "bound": null, "remaining_seconds": null}}""");
+        var client = new StatusClient("http://127.0.0.1:8000/v1/status", fetcher);
+
+        var payload = await client.PollAsync();
+
+        Assert.False(payload.UnprotectedMode!.CapabilityEnabled);
+    }
 }

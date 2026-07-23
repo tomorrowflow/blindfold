@@ -20,12 +20,20 @@ public sealed class StatusPayload
         public bool Active { get; init; }
         public string? Bound { get; init; }
         public double? RemainingSeconds { get; init; }
+        /// <summary>
+        /// Issue #197's submenu visibility gate (mirrors #187/#188's Swift
+        /// <c>capabilityEnabled</c>): whether the operator has opted the capability into
+        /// existence, read verbatim regardless of whether the mode is currently active.
+        /// Fail-closed: an absent field reads as capability-disabled, never enabled.
+        /// </summary>
+        public bool CapabilityEnabled { get; init; }
 
-        public UnprotectedModeFields(bool active, string? bound, double? remainingSeconds)
+        public UnprotectedModeFields(bool active, string? bound, double? remainingSeconds, bool capabilityEnabled = false)
         {
             Active = active;
             Bound = bound;
             RemainingSeconds = remainingSeconds;
+            CapabilityEnabled = capabilityEnabled;
         }
     }
 
@@ -37,12 +45,35 @@ public sealed class StatusPayload
     /// transiently in <see cref="Decode"/> and discarded, never stored.
     /// </summary>
     public int DependenciesDown { get; }
+    /// <summary>
+    /// Issue #197's review-inbox deep-link count, read straight from
+    /// <c>review_inbox.pending</c> -- never inbox contents.
+    /// </summary>
+    public int ReviewInboxPending { get; }
+    /// <summary>
+    /// Issue #197's blocks deep-link count, read straight from <c>blocks.count</c> --
+    /// never the <c>recent</c> block records themselves.
+    /// </summary>
+    public int BlocksCount { get; }
+    /// <summary>
+    /// Issue #197's "Finish setup →" visibility, read straight from <c>empty_store</c>.
+    /// </summary>
+    public bool EmptyStore { get; }
 
-    public StatusPayload(string state, UnprotectedModeFields? unprotectedMode = null, int dependenciesDown = 0)
+    public StatusPayload(
+        string state,
+        UnprotectedModeFields? unprotectedMode = null,
+        int dependenciesDown = 0,
+        int reviewInboxPending = 0,
+        int blocksCount = 0,
+        bool emptyStore = false)
     {
         State = state;
         UnprotectedMode = unprotectedMode;
         DependenciesDown = dependenciesDown;
+        ReviewInboxPending = reviewInboxPending;
+        BlocksCount = blocksCount;
+        EmptyStore = emptyStore;
     }
 
     private sealed class UnprotectedModeWire
@@ -55,12 +86,27 @@ public sealed class StatusPayload
 
         [JsonPropertyName("remaining_seconds")]
         public double? RemainingSeconds { get; set; }
+
+        [JsonPropertyName("capability_enabled")]
+        public bool CapabilityEnabled { get; set; }
     }
 
     private sealed class DependencyHealthEntry
     {
         [JsonPropertyName("healthy")]
         public bool Healthy { get; set; }
+    }
+
+    private sealed class ReviewInboxWire
+    {
+        [JsonPropertyName("pending")]
+        public int Pending { get; set; }
+    }
+
+    private sealed class BlocksWire
+    {
+        [JsonPropertyName("count")]
+        public int Count { get; set; }
     }
 
     private sealed class Wire
@@ -73,6 +119,15 @@ public sealed class StatusPayload
 
         [JsonPropertyName("dependencies")]
         public Dictionary<string, DependencyHealthEntry>? Dependencies { get; set; }
+
+        [JsonPropertyName("review_inbox")]
+        public ReviewInboxWire? ReviewInbox { get; set; }
+
+        [JsonPropertyName("blocks")]
+        public BlocksWire? Blocks { get; set; }
+
+        [JsonPropertyName("empty_store")]
+        public bool EmptyStore { get; set; }
     }
 
     internal static StatusPayload Decode(string json)
@@ -80,10 +135,16 @@ public sealed class StatusPayload
         var wire = JsonSerializer.Deserialize<Wire>(json)
             ?? throw new StatusClientException("empty /v1/status body");
         var unprotectedMode = wire.UnprotectedMode is { } m
-            ? new UnprotectedModeFields(m.Active, m.Bound, m.RemainingSeconds)
+            ? new UnprotectedModeFields(m.Active, m.Bound, m.RemainingSeconds, m.CapabilityEnabled)
             : null;
         var dependenciesDown = wire.Dependencies?.Values.Count(d => !d.Healthy) ?? 0;
-        return new StatusPayload(wire.State, unprotectedMode, dependenciesDown);
+        return new StatusPayload(
+            wire.State,
+            unprotectedMode,
+            dependenciesDown,
+            wire.ReviewInbox?.Pending ?? 0,
+            wire.Blocks?.Count ?? 0,
+            wire.EmptyStore);
     }
 }
 

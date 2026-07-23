@@ -1,4 +1,5 @@
 using System.Windows.Forms;
+using Blindfold.Core;
 
 namespace Blindfold.Tray;
 
@@ -54,6 +55,16 @@ internal static class Program
             }
         }
 
+        if (args.Contains("--smoke-launch-full"))
+        {
+            // Issue #197's portable-folder AC: prove that launching the tray next to the frozen
+            // proxy in the same folder actually spawns it and reaches Protected -- headless-safe
+            // (no Application.Run/message loop, no interactive dialog), same discipline as
+            // --smoke-test, but this one drives the real supervisor + status poll loop instead
+            // of just constructing the wiring.
+            return RunSmokeLaunchFull(proxyExePath);
+        }
+
         using var mutex = new Mutex(initiallyOwned: true, SingleInstanceMutexName, out var createdNew);
         if (!createdNew)
         {
@@ -67,5 +78,56 @@ internal static class Program
 
         Application.Run(new TrayApplicationContext(proxyExePath));
         return 0;
+    }
+
+    /// <summary>
+    /// Drives the real supervisor + status poll loop headlessly (issue #197): starts
+    /// <paramref name="proxyExePath"/>, polls <c>/v1/status</c> until <c>AppStateMachine</c>
+    /// reduces to Protected or a bounded timeout elapses, then stops the child. Exit 0 only on
+    /// reaching Protected -- a Refused startup or a timeout both exit 1 with a scrubbed/
+    /// generic diagnostic on stderr, never raw process output.
+    /// </summary>
+    private static int RunSmokeLaunchFull(string proxyExePath)
+    {
+        var supervisor = new ProxySupervisor(
+            new RealProxyProcessLauncher(),
+            proxyExePath,
+            new[] { "serve", "--host", "127.0.0.1", "--port", "25463" });
+        var statusClient = new StatusClient("http://127.0.0.1:25463/v1/status", new RealStatusFetching());
+
+        supervisor.Start();
+
+        var deadline = DateTime.UtcNow.AddSeconds(30);
+        while (DateTime.UtcNow < deadline)
+        {
+            var liveness = supervisor.CurrentLiveness();
+            if (liveness.Kind == ProxyLivenessKind.Refused)
+            {
+                Console.Error.WriteLine("--smoke-launch-full: proxy refused to start: " + liveness.Reason);
+                return 1;
+            }
+
+            try
+            {
+                var status = statusClient.PollAsync().GetAwaiter().GetResult();
+                supervisor.NotifyHealthy();
+                var state = AppStateMachine.Reduce(supervisor.CurrentLiveness(), status);
+                if (state.Kind == AppStateKind.Protected)
+                {
+                    supervisor.Stop();
+                    return 0;
+                }
+            }
+            catch
+            {
+                // Not up yet -- keep polling until the deadline.
+            }
+
+            Thread.Sleep(500);
+        }
+
+        Console.Error.WriteLine("--smoke-launch-full: proxy never reached Protected within the timeout");
+        supervisor.Stop();
+        return 1;
     }
 }

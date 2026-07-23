@@ -174,3 +174,41 @@ jobs:
           } finally {
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
           }
+
+      # Windows: assemble issue #197's portable side-by-side folder (ADR-0041's first-cut
+      # distribution) -- blindfold.exe and blindfold-proxy.exe in one directory, the tray
+      # discovering the proxy by relative path (Program.cs's AppContext.BaseDirectory lookup).
+      # Runs after the standalone freeze smoke-launch above has already stopped its own child,
+      # so nothing is still holding port 25463.
+      - name: Assemble portable folder (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          Copy-Item "dist\blindfold-proxy.exe" "tray-app\publish\blindfold-proxy.exe" -Force
+
+      # Windows: issue #197's portable-folder AC -- launching the tray from that folder must
+      # start the proxy and reach Protected. --smoke-launch-full drives the real supervisor +
+      # status poll loop headlessly (no message loop, no interactive dialog) and exits 0 only
+      # once AppStateMachine reduces to Protected.
+      - name: Smoke-launch portable folder (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $stdout = "tray-app/publish/smoke-launch-full-stdout.log"
+          $stderr = "tray-app/publish/smoke-launch-full-stderr.log"
+          $proc = Start-Process -FilePath "tray-app/publish/blindfold.exe" -ArgumentList "--smoke-launch-full" `
+            -Wait -PassThru -NoNewWindow `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          $exitCode = $proc.ExitCode
+
+          foreach ($log in @($stdout, $stderr)) {
+            if ((Test-Path $log) -and (Get-Item $log).Length -gt 0) {
+              Write-Host "---- $log ----"
+              Get-Content $log
+              Write-Host "-------------------------------"
+            }
+          }
+
+          if ($exitCode -ne 0) { throw "blindfold.exe --smoke-launch-full exited $exitCode" }

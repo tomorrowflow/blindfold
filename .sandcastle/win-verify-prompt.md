@@ -75,6 +75,30 @@ supervisor spawns, untouched by this contract):
   `platform-verify.yml`'s `on.push.paths` (both key off a `windows/`-touching diff); the
   freeze logic itself stays in the shared `packaging/` spec, never forked under `windows/`.
 
+## Contract — portable folder + full launch (issue #197, ADR-0041)
+
+Additive to both builds above, runs last:
+
+- **Assemble the portable side-by-side folder.** `Copy-Item dist\blindfold-proxy.exe
+  tray-app\publish\blindfold-proxy.exe` -- ADR-0041's first-cut distribution is `blindfold.exe`
+  and `blindfold-proxy.exe` in one directory, the tray discovering the proxy by relative path
+  (`Program.cs`'s `AppContext.BaseDirectory` lookup already assumes this layout).
+- **Smoke-launch = `blindfold.exe --smoke-launch-full` exits 0, proving Protected is reached.**
+  Unlike `--smoke-test` (constructs the wiring only), `--smoke-launch-full` drives the real
+  `ProxySupervisor` + `StatusClient` poll loop headlessly: starts the frozen proxy from the
+  portable folder, polls `/v1/status` until `AppStateMachine` reduces to Protected or a 30s
+  timeout elapses, then stops the child. Exit 0 only on reaching Protected; a `Refused` startup
+  or a timeout both exit 1 with a diagnostic on stderr (captured via the same
+  `Start-Process -RedirectStandardOutput/-RedirectStandardError` pattern as `--smoke-test`).
+  This is the AC's "launching the tray starts the proxy and reaches Protected" — the one
+  assertion that proves the portable folder actually works end to end, not just that each half
+  builds in isolation.
+- **Leak-audit: N/A.** Same rationale as the two contracts above -- this proves process
+  spawn/poll plumbing (a supervisor, CONTEXT.md), never entity/surrogate/mapping data. The real
+  `/v1/status` payload the poll loop reads is the proxy's own already-scrubbed narrow contract.
+- Runs after the standalone freeze smoke-launch (above) has stopped its own child, so nothing
+  is still bound to `127.0.0.1:25463` when `--smoke-launch-full` starts its own.
+
 ## When deeper UI assertions are needed
 
 `--smoke-test` proves the SDK/publish/assembly-construction mechanics, not actual
