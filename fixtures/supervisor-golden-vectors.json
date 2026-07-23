@@ -1,0 +1,102 @@
+{
+  "$schema_note": "Language-neutral golden vectors for the menu-bar supervisor's risk-bearing logic (ADR-0039/0040/0041, issue #193). Swift BlindfoldCore and C# Blindfold.Core (#194) both load this file and assert against it so the two cores can't silently drift. Enum-shaped fields are plain strings/objects both languages map by hand -- no language-specific Codable/JSON-schema magic implied.",
+
+  "reducer_truth_table": [
+    {
+      "name": "stoppedWhenSupervisorReportsProxyNotStarted",
+      "liveness": { "type": "notStarted" },
+      "status": null,
+      "expected_state": { "type": "stopped" }
+    },
+    {
+      "name": "startingWhenSupervisorReportsProxyStartingUpBeforeFirstStatusPoll",
+      "liveness": { "type": "starting" },
+      "status": null,
+      "expected_state": { "type": "starting" }
+    },
+    {
+      "name": "protectedWhenRunningAndStatusReportsProtected",
+      "liveness": { "type": "running" },
+      "status": { "state": "protected", "unprotected_mode": null },
+      "expected_state": { "type": "protected" }
+    },
+    {
+      "name": "degradedWhenRunningAndStatusReportsDegraded",
+      "liveness": { "type": "running" },
+      "status": { "state": "degraded", "unprotected_mode": null },
+      "expected_state": { "type": "degraded" }
+    },
+    {
+      "name": "startingWhenRunningButNoStatusPolledYet",
+      "liveness": { "type": "running" },
+      "status": null,
+      "expected_state": { "type": "starting" }
+    },
+    {
+      "name": "degradedWhenRunningAndStatusStateIsUnrecognized",
+      "liveness": { "type": "running" },
+      "status": { "state": "unknown-future-value", "unprotected_mode": null },
+      "expected_state": { "type": "degraded" }
+    },
+    {
+      "name": "refusedWhenSupervisorReportsStartupGuardTripped",
+      "liveness": { "type": "refused", "reason": "root token missing" },
+      "status": null,
+      "expected_state": { "type": "refused", "reason": "root token missing" }
+    }
+  ],
+
+  "unprotected_alarm_cases": [
+    {
+      "name": "noUnprotectedAlarmWhenModeInactive",
+      "status": {
+        "state": "protected",
+        "unprotected_mode": { "active": false, "bound": null, "remaining_seconds": null }
+      },
+      "expected_alarm": null
+    },
+    {
+      "name": "unprotectedAlarmSurfacesBoundAndRemainingSecondsWhenActive",
+      "status": {
+        "state": "protected",
+        "unprotected_mode": { "active": true, "bound": "timed", "remaining_seconds": 42.5 }
+      },
+      "expected_alarm": { "bound": "timed", "remaining_seconds": 42.5 }
+    }
+  ],
+
+  "icon_state_cases": [
+    { "name": "iconStateIsProtectedWhenAppStateIsProtected", "app_state": { "type": "protected" }, "expected_icon": "protected" },
+    { "name": "iconStateIsDegradedWhenAppStateIsDegraded", "app_state": { "type": "degraded" }, "expected_icon": "degraded" },
+    { "name": "iconStateIsDegradedWhenAppStateIsStarting", "app_state": { "type": "starting" }, "expected_icon": "degraded" },
+    { "name": "iconStateIsStoppedOrRefusedWhenAppStateIsStopped", "app_state": { "type": "stopped" }, "expected_icon": "stoppedOrRefused" },
+    { "name": "iconStateIsStoppedOrRefusedWhenAppStateIsRefused", "app_state": { "type": "refused", "reason": "root token missing" }, "expected_icon": "stoppedOrRefused" }
+  ],
+
+  "header_text_cases": [
+    { "name": "headerTextIsProxyStoppedWhenAppStateIsStopped", "app_state": { "type": "stopped" }, "proxy_port": 0, "dependencies_down": 0, "alarm": null, "expected_header": "Proxy: stopped" },
+    { "name": "headerTextIsStartingEllipsisWhenAppStateIsStarting", "app_state": { "type": "starting" }, "proxy_port": 0, "dependencies_down": 0, "alarm": null, "expected_header": "Starting…" },
+    { "name": "headerTextIsActionNeededWhenAppStateIsRefused", "app_state": { "type": "refused", "reason": "root token missing" }, "proxy_port": 0, "dependencies_down": 0, "alarm": null, "expected_header": "Won't start — action needed" },
+    { "name": "headerTextIncludesProxyPortWhenAppStateIsProtected", "app_state": { "type": "protected" }, "proxy_port": 25463, "dependencies_down": 0, "alarm": null, "expected_header": "Protected — proxy on :25463" },
+    { "name": "headerTextIncludesDependenciesDownCountWhenAppStateIsDegraded", "app_state": { "type": "degraded" }, "proxy_port": 0, "dependencies_down": 2, "alarm": null, "expected_header": "Degraded — 2 deps down" },
+    { "name": "headerTextUsesSingularDepWhenExactlyOneDependencyIsDown", "app_state": { "type": "degraded" }, "proxy_port": 0, "dependencies_down": 1, "alarm": null, "expected_header": "Degraded — 1 dep down" },
+    { "name": "headerTextAppendsUnprotectedAlarmWithNoExpiryWhenBoundIsInfinite", "app_state": { "type": "protected" }, "proxy_port": 25463, "dependencies_down": 0, "alarm": { "bound": "infinite", "remaining_seconds": null }, "expected_header": "Protected — proxy on :25463 · Unprotected — no expiry" },
+    { "name": "headerTextAppendsUnprotectedAlarmRevertNoticeWhenBoundIsNextRequest", "app_state": { "type": "protected" }, "proxy_port": 25463, "dependencies_down": 0, "alarm": { "bound": "next-request", "remaining_seconds": null }, "expected_header": "Protected — proxy on :25463 · Unprotected — reverts after this request" },
+    { "name": "headerTextAppendsUnprotectedAlarmCountdownWhenBoundIsTimed", "app_state": { "type": "protected" }, "proxy_port": 25463, "dependencies_down": 0, "alarm": { "bound": "timed", "remaining_seconds": 125 }, "expected_header": "Protected — proxy on :25463 · Unprotected — 2:05 remaining" },
+    { "name": "headerTextFallsBackToPlainUnprotectedWhenTimedBoundHasNoRemainingSeconds", "app_state": { "type": "protected" }, "proxy_port": 25463, "dependencies_down": 0, "alarm": { "bound": "timed", "remaining_seconds": null }, "expected_header": "Protected — proxy on :25463 · Unprotected" }
+  ],
+
+  "alarm_badge_cases": [
+    { "name": "iconDoesNotShowUnprotectedAlarmBadgeWhenAlarmIsAbsent", "alarm": null, "expected_badge": false },
+    { "name": "iconShowsUnprotectedAlarmBadgeWhenAlarmIsPresent", "alarm": { "bound": "infinite", "remaining_seconds": null }, "expected_badge": true }
+  ],
+
+  "loopback_guard_cases": [
+    { "name": "acceptsIPv4Loopback", "url": "http://127.0.0.1:8000/v1/status", "expected_accept": true },
+    { "name": "acceptsLocalhostHostname", "url": "http://localhost:8000/v1/status", "expected_accept": true },
+    { "name": "acceptsIPv6Loopback", "url": "http://[::1]:8000/v1/status", "expected_accept": true },
+    { "name": "rejectsPublicHostname", "url": "https://example.com/v1/status", "expected_accept": false },
+    { "name": "rejectsPublicIP", "url": "http://93.184.216.34:8000/v1/status", "expected_accept": false },
+    { "name": "rejectsMissingHost", "url": "/v1/status", "expected_accept": false }
+  ]
+}

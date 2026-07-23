@@ -21,10 +21,20 @@ private final class RecordingFetcher: StatusFetching, @unchecked Sendable {
 /// Egress discipline (ADR-0040's Swift-core leak-audit clause): the status client only
 /// ever calls loopback. Constructing it against a non-loopback host must fail closed
 /// rather than silently accept a base URL that could send polls off-machine.
-@Test func statusClientRejectsNonLoopbackBaseURL() {
-    let url = URL(string: "https://example.com/v1/status")!
-    #expect(throws: StatusClientError.self) {
-        _ = try StatusClient(baseURL: url, fetcher: RecordingFetcher(responseData: Data()))
+///
+/// Cases are the shared golden-vector fixture (issue #193 / ADR-0041) — the same
+/// accept/reject host list the future C# `Blindfold.Core` (#194) guards against.
+@Test(arguments: GoldenVectorFixture.load().loopback_guard_cases)
+func loopbackGuardMatchesGoldenVector(_ vector: GoldenVectorFixture.LoopbackGuardCase) {
+    let url = URL(string: vector.url)!
+    if vector.expected_accept {
+        #expect(throws: Never.self, "\(vector.name)") {
+            _ = try StatusClient(baseURL: url, fetcher: RecordingFetcher(responseData: Data()))
+        }
+    } else {
+        #expect(throws: StatusClientError.self, "\(vector.name)") {
+            _ = try StatusClient(baseURL: url, fetcher: RecordingFetcher(responseData: Data()))
+        }
     }
 }
 
