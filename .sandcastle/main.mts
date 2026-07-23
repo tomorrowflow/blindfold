@@ -441,24 +441,41 @@ function openTracePane(branch: string, role: string): void {
     `printf '=== %s ===\\n' ${shq(title)}; ` + // in-pane header
     `exec tail -F ${shq(logPath)}`;
 
+  // Open a fresh traces tab pinned to this worktree (surface id == tab id) and
+  // record it as the branch's tab + latest surface.
+  const openFreshTab = (): void => {
+    const newTab = execFileSync("supacode", ["tab", "new", "-w", wid, "-i", cmd], {
+      encoding: "utf8",
+    }).trim();
+    _traceTab.set(branch, newTab);
+    _tracePrev.set(branch, newTab);
+  };
+
   try {
     const tab = _traceTab.get(branch);
     if (!tab) {
-      // First role for this worktree → a new tab pinned to it (surface id == tab id).
-      const newTab = execFileSync("supacode", ["tab", "new", "-w", wid, "-i", cmd], {
-        encoding: "utf8",
-      }).trim();
-      _traceTab.set(branch, newTab);
-      _tracePrev.set(branch, newTab);
+      // First role for this worktree → a new tab pinned to it.
+      openFreshTab();
     } else {
-      // Subsequent roles → split within that worktree's traces tab.
+      // Subsequent roles → split within that worktree's traces tab. If the tab
+      // was closed mid-run (`surface split` throws "No tab matching the
+      // deeplink"), drop the stale cache and reopen a fresh tab rather than
+      // losing the pane: roles on `main` (planner/merger/merge-reviewer) share
+      // one tab across a whole run, so a single manual close would otherwise
+      // kill every later split into it.
       const prev = _tracePrev.get(branch)!;
-      const sid = execFileSync(
-        "supacode",
-        ["surface", "split", "-w", wid, "-t", tab, "-s", prev, "-d", "v", "-i", cmd],
-        { encoding: "utf8" },
-      ).trim();
-      _tracePrev.set(branch, sid);
+      try {
+        const sid = execFileSync(
+          "supacode",
+          ["surface", "split", "-w", wid, "-t", tab, "-s", prev, "-d", "v", "-i", cmd],
+          { encoding: "utf8" },
+        ).trim();
+        _tracePrev.set(branch, sid);
+      } catch {
+        _traceTab.delete(branch);
+        _tracePrev.delete(branch);
+        openFreshTab();
+      }
     }
     _traceOpened.add(key);
     console.log(`  🪟 trace pane for ${role} @ ${slug}`);
