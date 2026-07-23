@@ -20,10 +20,14 @@ public protocol Sleeping: Sendable {
     func sleep(seconds: Double) async throws
 }
 
-/// `/v1/status`'s payload, decoded to only the fields the state machine needs
-/// (`state`, plus #180's `unprotected_mode` alarm fields) — never the full
-/// scrubbed-but-broader contract (`dependencies`, `blocks`, ...), so this core
-/// never even holds a field it doesn't reduce over.
+/// `/v1/status`'s payload, decoded to only the narrow contract the menu bar
+/// reduces over — `state`, #180's `unprotected_mode` alarm fields, and the
+/// scalar counts/flag issues #185/#186 render (`dependenciesDown`,
+/// `reviewInboxPending`, `blocksCount`, `emptyStore`). The broader,
+/// scrubbed-but-richer payload (dependency names/details, `blocks.recent`
+/// records, `window_minutes`, `config`) is decoded transiently in `init(from:)`
+/// where a count is needed and otherwise ignored, never stored — this core still
+/// never holds a field it doesn't reduce over.
 public struct StatusPayload: Decodable, Equatable, Sendable {
     /// ADR-0038's bounded override: overlays the Unprotected alarm on top of the
     /// five-state machine, read verbatim from #180's `/v1/status` addition.
