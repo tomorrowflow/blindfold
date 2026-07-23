@@ -4,7 +4,7 @@ Here are the open issues in the repo:
 
 <issues-json>
 
-!`gh issue list --state open --label Sandcastle --limit 100 --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[] | select(.author.login=="tomorrowflow") | .body]}]'`
+!`perl -e 'alarm 25; exec @ARGV' gh issue list --state open --label Sandcastle --limit 100 --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[] | select(.author.login=="tomorrowflow") | .body]}]' || echo '[]'`
 
 </issues-json>
 
