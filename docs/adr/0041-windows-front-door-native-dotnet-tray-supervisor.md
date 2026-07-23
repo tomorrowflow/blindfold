@@ -71,9 +71,11 @@ logic is machine-verifiable — the Windows sibling of ADR-0039/0040.
 
 ## Consequences
 
-- **A Windows CI runner is required** (the sibling of ADR-0040's self-hosted macOS
-  runner). PyInstaller cannot cross-compile, so the frozen `blindfold-proxy.exe` must be
-  built on Windows; the C# core's golden-vector tests run there too. The .NET SDK is a
+- **Windows verification runs on a GitHub-hosted `windows-latest` runner** via the
+  platform-verify gate (ADR-0042) — not a self-hosted sibling of the macOS runner.
+  PyInstaller cannot cross-compile, so the frozen `blindfold-proxy.exe`, the WinForms
+  build, and the smoke-launch happen there. The **C# core's golden-vector tests run in the
+  Linux sandbox** (.NET is cross-platform), not on the runner. The .NET SDK is a
   **dev-and-CI-only toolchain**, exactly as Swift and Node are — never on the end user's
   machine.
 - **Menu elements** match the macOS reference (ADR-0039): state header; Start/Stop Proxy;
