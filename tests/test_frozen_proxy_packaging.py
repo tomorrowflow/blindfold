@@ -3,11 +3,12 @@
 Builds the proxy via ``packaging/blindfold-proxy.spec`` into a real,
 self-contained binary and smoke-tests it directly -- with no venv/``uv``/
 ``PYTHONPATH`` on its ``PATH`` -- proving the ``.app ⊃ frozen-proxy ⊃
-ui_dist`` layering ADR-0039 calls for. The signed macOS binary itself is
-produced on the self-hosted runner (issue #182, not yet online); this
-in-sandbox Linux build of the *same* spec is how this slice proves the spec
-+ wiring, per the issue's own scope carve-out ("the mac binary is produced
-on the runner; the spec + wiring are what this slice owns").
+ui_dist`` layering ADR-0039 calls for. The macOS and Windows binaries
+themselves are produced on the hosted ``platform-verify`` gate (issue
+#192/#195, ADR-0042); this in-sandbox Linux build of the *same* spec is how
+this slice proves the spec + wiring, per the issue's own scope carve-out
+("the platform binary is produced on the runner; the spec + wiring are
+what this slice owns").
 
 Skip-guarded on PyInstaller being installed (the ``freeze`` dependency
 group, ``pyproject.toml``) -- mirrors the Docker-skip pattern in

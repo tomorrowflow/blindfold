@@ -14,8 +14,11 @@
 #
 # First cut: BlindfoldCore (Swift) and the future WinForms/C# core are cross-platform
 # and already tested in-sandbox on Linux (#190/#193/#194) — this workflow does NOT
-# re-run swift test/dotnet test. It only proves the pipeline: build + smoke-launch a
+# re-run swift test/dotnet test. It proves the pipeline: build + smoke-launch a
 # trivial STUB app per platform, ahead of the real shells (#196 WinForms, #129 AppKit).
+# The Windows job additionally freezes the real `blindfold-proxy.exe` (issue #195,
+# ADR-0039/0041) — the tray-app-facing artifact the WinForms stub above is a
+# precursor to, not a stub itself.
 # The workflow is fully declarative (plain shell steps, no LLM agent on the runner) —
 # see .sandcastle/mac-verify-prompt.md / win-verify-prompt.md for why, and for the
 # written build+smoke-launch contract each job below satisfies.
@@ -100,3 +103,56 @@ jobs:
           $ErrorActionPreference = "Stop"
           & "stub-app/publish/BlindfoldStub.exe"
           if ($LASTEXITCODE -ne 0) { throw "stub app exited $LASTEXITCODE" }
+
+      # Windows: freeze `blindfold serve` into blindfold-proxy.exe via the shared,
+      # cross-platform PyInstaller spec (packaging/blindfold-proxy.spec, ADR-0039),
+      # driven through windows/packaging/freeze.ps1 (issue #195). This proves the
+      # Windows freeze path ahead of the real WinForms tray supervisor (#196,
+      # ADR-0041) -- additive to the .NET stub above, a different build target this
+      # step doesn't touch.
+      - name: Set up Python (Windows freeze)
+        if: runner.os == 'Windows'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv (Windows freeze)
+        if: runner.os == 'Windows'
+        uses: astral-sh/setup-uv@v5
+
+      - name: Freeze blindfold-proxy.exe (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./windows/packaging/freeze.ps1
+
+      - name: Smoke-launch blindfold-proxy.exe (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $proc = Start-Process -FilePath "dist\blindfold-proxy.exe" -ArgumentList "serve" `
+            -PassThru -RedirectStandardOutput "proxy-stdout.log" -RedirectStandardError "proxy-stderr.log"
+          try {
+            $deadline = (Get-Date).AddSeconds(20)
+            $up = $false
+            while ((Get-Date) -lt $deadline) {
+              try {
+                $conn = New-Object System.Net.Sockets.TcpClient
+                $conn.Connect("127.0.0.1", 25463)
+                $conn.Close()
+                $up = $true
+                break
+              } catch {
+                Start-Sleep -Milliseconds 200
+              }
+            }
+            if (-not $up) { throw "blindfold-proxy.exe never bound 127.0.0.1:25463" }
+
+            $ui = Invoke-WebRequest -Uri "http://127.0.0.1:25463/ui/" -UseBasicParsing
+            if ($ui.StatusCode -ne 200) { throw "GET /ui/ returned $($ui.StatusCode)" }
+
+            $status = Invoke-WebRequest -Uri "http://127.0.0.1:25463/v1/status" -UseBasicParsing
+            if ($status.StatusCode -ne 200) { throw "GET /v1/status returned $($status.StatusCode)" }
+          } finally {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          }

@@ -35,6 +35,27 @@ must satisfy, kept in one place so:
   the risk-bearing logic is deliberately WinForms-free, mirroring `BlindfoldCore`'s AppKit-free
   design on macOS.
 
+## Contract — `blindfold-proxy.exe` freeze (issue #195, ADR-0039/0041)
+
+Additive to the `.NET` stub above (a separate build target -- #196's WinForms precursor,
+untouched by this contract):
+
+- **Freeze via the shared, cross-platform spec.** `windows/packaging/freeze.ps1` runs
+  `uv sync --group freeze` then `uv run pyinstaller packaging/blindfold-proxy.spec`. No
+  Windows-specific spec fork -- PyInstaller emits `blindfold-proxy.exe` from the same
+  `packaging/blindfold-proxy.spec` the Linux in-sandbox test
+  (`tests/test_frozen_proxy_packaging.py`) already exercises.
+- **Smoke-launch = the real proxy contract, not just exit 0.** Unlike the stub app above,
+  this step starts `dist\blindfold-proxy.exe serve`, waits for it to bind
+  `127.0.0.1:25463`, then asserts `GET /ui/` and `GET /v1/status` both return `200` --
+  mirroring the Linux frozen-proxy test's own smoke assertions.
+- **Leak-audit: N/A.** Same rationale as `tests/test_frozen_proxy_packaging.py`'s own
+  docstring -- freezing/launching the proxy binary touches no **entity**/**surrogate**/
+  **mapping**, off the request path entirely.
+- `windows/` exists solely so this freeze routes through `branchTouchesPlatform` /
+  `platform-verify.yml`'s `on.push.paths` (both key off a `windows/`-touching diff); the
+  freeze logic itself stays in the shared `packaging/` spec, never forked under `windows/`.
+
 ## When the real shell lands (#196)
 
 Two options, both legitimate, neither is this issue's call:

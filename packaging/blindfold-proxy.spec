@@ -12,9 +12,11 @@ here).
 Run from the repo root: ``pyinstaller packaging/blindfold-proxy.spec``.
 This is a dev/CI/release-time step, never part of ``blindfold serve``'s own
 runtime dependencies (see the ``freeze`` dependency group in
-``pyproject.toml``). The actual signed macOS binary is produced on the
-self-hosted runner (issue #182); this spec is the shared contract — an
-in-sandbox Linux build of it is how this slice proves the layering itself.
+``pyproject.toml``). The macOS and Windows binaries are produced on the
+hosted ``platform-verify`` gate (issue #192/#195, ADR-0042); this spec is
+the shared, cross-platform contract both platforms freeze from unchanged —
+an in-sandbox Linux build of it is how this slice proves the layering
+itself.
 """
 
 import pathlib
