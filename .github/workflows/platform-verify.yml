@@ -206,12 +206,35 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           $stubPort = 25464
+          $stubStdout = "tray-app/publish/ollama-stub-stdout.log"
+          $stubStderr = "tray-app/publish/ollama-stub-stderr.log"
           $stub = Start-Process -FilePath "python" `
             -ArgumentList "windows/packaging/ollama-stub.py", "$stubPort" `
-            -PassThru -NoNewWindow
-          Start-Sleep -Seconds 1
+            -PassThru -NoNewWindow `
+            -RedirectStandardOutput $stubStdout -RedirectStandardError $stubStderr
 
           try {
+            # Same TCP-connect readiness loop the real-proxy smoke-launch step above uses
+            # (never a bare sleep-and-hope) -- a 1s sleep here previously raced the stub's own
+            # startup, so an unlucky slow start silently left BLINDFOLD_L3_BASE_URL pointed at
+            # nothing and the l3 probe unhealthy for the tray's entire poll window, indistinguishable
+            # from this fix never having landed.
+            $stubDeadline = (Get-Date).AddSeconds(10)
+            $stubUp = $false
+            while ((Get-Date) -lt $stubDeadline) {
+              if ($stub.HasExited) { throw "ollama-stub.py exited early with code $($stub.ExitCode)" }
+              try {
+                $conn = New-Object System.Net.Sockets.TcpClient
+                $conn.Connect("127.0.0.1", $stubPort)
+                $conn.Close()
+                $stubUp = $true
+                break
+              } catch {
+                Start-Sleep -Milliseconds 200
+              }
+            }
+            if (-not $stubUp) { throw "ollama-stub.py never bound 127.0.0.1:$stubPort" }
+
             $env:BLINDFOLD_L3_MODEL = "smoke-test-stub"
             $env:BLINDFOLD_L3_BASE_URL = "http://127.0.0.1:$stubPort"
 
@@ -222,7 +245,7 @@ jobs:
               -RedirectStandardOutput $stdout -RedirectStandardError $stderr
             $exitCode = $proc.ExitCode
 
-            foreach ($log in @($stdout, $stderr)) {
+            foreach ($log in @($stdout, $stderr, $stubStdout, $stubStderr)) {
               if ((Test-Path $log) -and (Get-Item $log).Length -gt 0) {
                 Write-Host "---- $log ----"
                 Get-Content $log

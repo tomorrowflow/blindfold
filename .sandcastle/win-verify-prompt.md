@@ -105,6 +105,17 @@ Additive to both builds above, runs last:
   `BLINDFOLD_L3_BASE_URL` at it — the same seam-stub discipline the leak-audit tests use for
   L3/Transit/upstream, applied here to a CI shell step instead of a pytest fixture. `openbao`
   (unset token → healthy by default) and `store` (always healthy this slice) need no stub.
+- **The stub's own readiness is verified, never assumed.** A second hosted run of this step,
+  with the stub already wired, *still* timed out identically -- a bare `Start-Sleep -Seconds 1`
+  after starting `ollama-stub.py` raced its actual startup with no proof it had bound the port
+  yet, and its output went uncaptured (no `-RedirectStandardOutput/-Error`), so a slow or failed
+  stub start looked identical to the tray/proxy wiring itself being broken. Reproduced the
+  Python-side health-probe logic directly (`blindfold serve` + the stub, both on Linux) and
+  confirmed `/v1/status` reaches `"protected"` correctly once the stub is actually up --
+  the gap was CI-timing, not `status.compute_state`/`ping_ollama`. The step now waits on the
+  same TCP-connect readiness loop the real-proxy smoke-launch step above already uses (never a
+  bare sleep), and redirects the stub's stdout/stderr into the diagnostic dump alongside
+  `blindfold.exe`'s own logs.
 - **Leak-audit: N/A.** Same rationale as the two contracts above -- this proves process
   spawn/poll plumbing (a supervisor, CONTEXT.md), never entity/surrogate/mapping data. The real
   `/v1/status` payload the poll loop reads is the proxy's own already-scrubbed narrow contract;
