@@ -62,7 +62,6 @@ Code
 Refactor
 Index
 Design
-Transit
 Artifacts
 #
 # Full dismissal-log curation pass (ADR-0032). Evidence: BLINDFOLD_L3_DISMISSAL_LOG
@@ -91,7 +90,6 @@ Contents
 Control
 Create
 Cuts
-Darwin
 Debug
 Deep
 Define
@@ -134,7 +132,6 @@ Messages
 Mobile
 Note
 Omit
-Platform
 Prefer
 Primary
 Processing
@@ -156,7 +153,6 @@ Scan
 See
 Seed
 Sending
-Server
 Serves
 Setup
 Software
@@ -170,7 +166,6 @@ Test
 Title
 Today
 Tool
-Tools
 Treat
 Triage
 Trigger
