@@ -120,6 +120,14 @@ Additive to both builds above, runs last:
   spawn/poll plumbing (a supervisor, CONTEXT.md), never entity/surrogate/mapping data. The real
   `/v1/status` payload the poll loop reads is the proxy's own already-scrubbed narrow contract;
   `ollama-stub.py` answers with a static, content-free `200`, never entity data.
+- **A workflow-only fix never verifies itself unless the workflow's own path is in the
+  trigger.** The readiness-loop fix above landed and pushed to origin, but `on.push.paths`
+  only matched `macos/**`/`windows/**` -- a commit touching only
+  `.github/workflows/platform-verify.yml` and this doc produced no new hosted run at all, so
+  the fix sat unverified indefinitely. `on.push.paths` now also lists
+  `.github/workflows/platform-verify.yml` itself, so any future edit to this job re-triggers
+  it directly instead of depending on a coincidental `macos/`/`windows/` diff in the same
+  commit.
 - Runs after the standalone freeze smoke-launch (above) has stopped its own child, so nothing
   is still bound to `127.0.0.1:25463` when `--smoke-launch-full` starts its own.
 

@@ -29,6 +29,7 @@ name: platform-verify
     paths:
       - "macos/**"
       - "windows/**"
+      - ".github/workflows/platform-verify.yml"
   workflow_dispatch: {}
 
 jobs:
