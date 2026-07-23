@@ -1,0 +1,102 @@
+# platform-verify — the repo's first GitHub Actions workflow (ADR-0042).
+#
+# Sandcastle (.sandcastle/main.mts) is the merge authority for every other gate in the
+# AFK loop, but the OS-irreducible half of a native-shell change — does it actually
+# build and launch on real macOS / real Windows — can't be answered by the Linux
+# sandbox. This workflow answers it, and main.mts's platformVerifyNeeded gate pushes a
+# macos/- or windows/-touching branch here and awaits the run's conclusion before
+# merging (fail-closed: failure/timeout/missing-run withholds the merge).
+#
+# Both jobs run on GitHub-hosted standard runners — free/unlimited on this public repo
+# (ADR-0042 revises ADR-0040's self-hosted-macOS plan now that the repo is public).
+# No secrets: signing (Authenticode/notarization) is deferred to a v2 issue, which is
+# exactly what lets this run hosted with nothing to leak.
+#
+# First cut: BlindfoldCore (Swift) and the future WinForms/C# core are cross-platform
+# and already tested in-sandbox on Linux (#190/#193/#194) — this workflow does NOT
+# re-run swift test/dotnet test. It only proves the pipeline: build + smoke-launch a
+# trivial STUB app per platform, ahead of the real shells (#196 WinForms, #129 AppKit).
+# The workflow is fully declarative (plain shell steps, no LLM agent on the runner) —
+# see .sandcastle/mac-verify-prompt.md / win-verify-prompt.md for why, and for the
+# written build+smoke-launch contract each job below satisfies.
+
+name: platform-verify
+
+"on":
+  push:
+    paths:
+      - "macos/**"
+      - "windows/**"
+  workflow_dispatch: {}
+
+jobs:
+  platform-verify:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # macOS: compile a trivial unsigned stub, wrap it in a minimal .app bundle (the
+      # shape the real AppKit menu-bar app will fill in — #129), and smoke-launch it by
+      # running the bundle's executable directly and checking it exits 0. No Xcode
+      # project exists yet (that's #129's scope), so this proves the toolchain +
+      # bundle-launch mechanics ahead of the real shell landing on it.
+      - name: Build stub macOS app
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP=stub-app/BlindfoldStub.app
+          mkdir -p "$APP/Contents/MacOS"
+          cat > /tmp/BlindfoldStub.swift <<'SWIFT'
+          print("Blindfold stub app (macOS): smoke-launch OK")
+          SWIFT
+          swiftc /tmp/BlindfoldStub.swift -o "$APP/Contents/MacOS/BlindfoldStub"
+          cat > "$APP/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key>
+            <string>BlindfoldStub</string>
+            <key>CFBundleIdentifier</key>
+            <string>dev.tomorrowflow.blindfold.stub</string>
+            <key>CFBundleName</key>
+            <string>BlindfoldStub</string>
+            <key>CFBundlePackageType</key>
+            <string>APPL</string>
+            <key>CFBundleShortVersionString</key>
+            <string>0.0.0-stub</string>
+          </dict>
+          </plist>
+          PLIST
+
+      - name: Smoke-launch stub macOS app
+        if: runner.os == 'macOS'
+        shell: bash
+        run: ./stub-app/BlindfoldStub.app/Contents/MacOS/BlindfoldStub
+
+      # Windows: build a trivial unsigned .NET console stub (the shape the real
+      # WinForms tray supervisor will fill in — #196) and smoke-launch it by running
+      # the published exe directly and checking it exits 0. No .csproj exists in this
+      # repo yet (that's #196's scope), so this proves the SDK + publish/launch
+      # mechanics ahead of the real shell landing on it.
+      - name: Build stub Windows app
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          dotnet new console --name BlindfoldStub --output stub-app
+          Set-Content -Path stub-app/Program.cs -Value 'System.Console.WriteLine("Blindfold stub app (Windows): smoke-launch OK");'
+          dotnet publish stub-app -c Release -o stub-app/publish
+
+      - name: Smoke-launch stub Windows app
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          & "stub-app/publish/BlindfoldStub.exe"
+          if ($LASTEXITCODE -ne 0) { throw "stub app exited $LASTEXITCODE" }

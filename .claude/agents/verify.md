@@ -63,7 +63,7 @@ block so `phase` can route the repair without guessing. No prose after it.
 ```
 STATUS: pass | fail
 FAIL CLASS: mechanical | substantive          (omit when STATUS: pass)
-SUSPECTED OWNER: backend | frontend | macos | schema | environment |
+SUSPECTED OWNER: backend | frontend | macos | windows | schema | environment |
   leak-policy | research | unknown
 EVIDENCE:
   - <command that was run> -> <observed result>
@@ -88,7 +88,11 @@ addresses it; otherwise it falls back to the generic `implement` focused on that
 - **backend** — the Python/FastAPI server: proxy, blindfold/restore engine, detection,
   surrogate engine, store/crypto, management JSON API. (Most Blindfold work lands here.)
 - **frontend** — the React/Vue management SPA.
-- **macos** — a macOS client/integration (future; addressable if/when added).
+- **macos** — the macOS **supervisor** (menu-bar app): `macos/BlindfoldCore`'s Swift logic
+  core (tested in-sandbox on Linux) plus the hosted `macos-latest` platform-verify job that
+  builds + smoke-launches it (ADR-0039/0040/0042). Wired now that both exist.
+- **windows** — the Windows **supervisor** (tray app): the future C# core plus the hosted
+  `windows-latest` platform-verify job that builds + smoke-launches it (ADR-0041/0042).
 - **schema** — a DB migration/shape problem, not logic.
 - **environment** — infra/deps/stubs (Postgres, stubbed Ollama/OpenBao, version pin). Not a code bug.
 - **leak-policy** — a LEAK-AUDIT clause fails for a **design** reason, not a code bug

@@ -195,6 +195,40 @@ console.log(
     : `Browser gate inert: no built SPA shell at ${SPA_SHELL} (ADR-0011/0026) — web-verify is skipped.`,
 );
 
+// The native platform shells (ADR-0039/0040 macOS, ADR-0041 Windows). Unlike the SPA
+// gate, there is no "does the shell exist yet" precondition: the workflow this gates
+// on (.github/workflows/platform-verify.yml, ADR-0042) always exists once this issue
+// lands, and a branch can be the ONE THAT ADDS `windows/` for the first time — so the
+// gate keys purely on the diff, mirroring branchTouchesSpa's git-diff mechanics without
+// an EXISTS precondition.
+const MACOS_PATHS = ["macos/"];
+const WINDOWS_PATHS = ["windows/"];
+
+// A branch's platform touch, per platform independently — a branch can touch one, the
+// other, both, or neither (gate N/A). Deterministic + host-side, same rationale as
+// branchTouchesSpa: the branch's commits are already in the shared .git by the time
+// this runs, so it never depends on agent behavior.
+function branchTouchesPlatform(branch: string): { mac: boolean; win: boolean } {
+  const touches = (paths: string[]): boolean => {
+    try {
+      const out = execFileSync(
+        "git",
+        ["diff", "--name-only", `${TARGET_BRANCH}...${branch}`, "--", ...paths],
+        { encoding: "utf8" },
+      );
+      return out.trim().length > 0;
+    } catch {
+      return false; // branch ref missing / diff failed → treat as not-touching
+    }
+  };
+  return { mac: touches(MACOS_PATHS), win: touches(WINDOWS_PATHS) };
+}
+
+console.log(
+  `Platform gate ACTIVE: macos/-/windows/-touching branches must also pass the hosted ` +
+    `GitHub Actions platform-verify run before merge (ADR-0042).`,
+);
+
 // ---------------------------------------------------------------------------
 // GitHub issue progress reporting (host-side, best-effort, fail-OPEN)
 //
@@ -230,6 +264,7 @@ const SANDCASTLE_LABELS = [
   ["running-implementer", "FBCA04", "Sandcastle implementer is working this issue now"],
   ["running-reviewer", "FBCA04", "Sandcastle reviewer is auditing this issue now"],
   ["running-web-verify", "FBCA04", "Sandcastle browser gate is verifying this issue now"],
+  ["running-platform-verify", "FBCA04", "Sandcastle is awaiting the hosted platform-verify run for this issue"],
   ["blocked", "B60205", "Sandcastle merge gate withheld — needs a human"],
   ["merged", "0E8A16", "Sandcastle merged this branch into the target"],
 ] as const;
@@ -325,6 +360,89 @@ function commitsAhead(branch: string): number {
   } catch {
     return 0;
   }
+}
+
+// Bounded wait for the external platform-verify GitHub Actions run (ADR-0042). This
+// is the FIRST time main.mts touches origin for a feature branch — every other gate
+// in this loop is a synchronous in-sandbox agent run. Generous but bounded: hosted
+// macos-latest/windows-latest build + smoke-launch jobs are the slowest external
+// dependency here, but an unbounded wait would hang the whole outer loop on a stuck
+// or missing run — fail-closed means a timeout resolves to "failure", never "pending
+// forever clears the gate".
+const PLATFORM_VERIFY_TIMEOUT_MS = 30 * 60_000; // 30 min
+const PLATFORM_VERIFY_POLL_MS = 20_000; // 20 sec
+const PLATFORM_VERIFY_WORKFLOW = "platform-verify.yml";
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((res) => setTimeout(res, ms));
+}
+
+// Push `branch`'s head to origin so platform-verify.yml's `on: push` trigger fires.
+// Sandcastle branches otherwise live only in the local shared .git (main.mts never
+// touches origin for any other gate) — this is the one exception, and only for
+// branches that already cleared every in-sandbox gate. Fail-closed: any push error
+// (auth, network, non-fast-forward) returns false rather than guessing the run exists.
+function pushBranchToOrigin(branch: string): boolean {
+  if (!REPO) return false;
+  try {
+    execFileSync("git", ["push", "origin", `${branch}:${branch}`], { stdio: "ignore" });
+    return true;
+  } catch (err) {
+    console.warn(`  (push of ${branch} to origin failed — platform-verify gate fails closed: ${err})`);
+    return false;
+  }
+}
+
+// Await platform-verify.yml's conclusion for `branch`'s current head SHA, polling
+// `gh run list` until it completes or PLATFORM_VERIFY_TIMEOUT_MS elapses. Fail-closed
+// throughout: a `gh` error, a timeout, or a run that never appears all resolve to
+// "failure" rather than silently clearing the gate on ambiguity.
+async function awaitPlatformVerify(branch: string): Promise<"success" | "failure"> {
+  if (!REPO) return "failure";
+  let headSha: string;
+  try {
+    headSha = execFileSync("git", ["rev-parse", branch], { encoding: "utf8" }).trim();
+  } catch {
+    return "failure"; // can't resolve the SHA we just pushed → fail closed
+  }
+
+  const deadline = Date.now() + PLATFORM_VERIFY_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    try {
+      const out = execFileSync(
+        "gh",
+        [
+          "run",
+          "list",
+          "--repo",
+          REPO,
+          "--workflow",
+          PLATFORM_VERIFY_WORKFLOW,
+          "--json",
+          "headSha,status,conclusion",
+          "--limit",
+          "20",
+        ],
+        { encoding: "utf8" },
+      );
+      const runs = JSON.parse(out) as {
+        headSha: string;
+        status: string;
+        conclusion: string | null;
+      }[];
+      const run = runs.find((r) => r.headSha === headSha);
+      if (run && run.status === "completed") {
+        return run.conclusion === "success" ? "success" : "failure";
+      }
+    } catch (err) {
+      console.warn(`  (gh run list failed while awaiting platform-verify for ${branch}, retrying: ${err})`);
+    }
+    await sleep(PLATFORM_VERIFY_POLL_MS);
+  }
+  console.warn(
+    `  (platform-verify timed out for ${branch} after ${PLATFORM_VERIFY_TIMEOUT_MS}ms — fail-closed)`,
+  );
+  return "failure";
 }
 
 // A compact, agent-authored overview of what a branch actually produced, for the
@@ -1039,6 +1157,8 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
             reviewerComplete: false,
             webVerifyNeeded: false,
             webVerifyComplete: true, // N/A → clears the web gate trivially
+            platformVerifyNeeded: false,
+            platformVerifyComplete: true, // N/A → clears the platform gate trivially
           };
         }
 
@@ -1153,6 +1273,52 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           }
         }
 
+        // Platform-verification gate (ADR-0042). Unlike every other gate in this
+        // loop, this one waits on an EXTERNAL GitHub Actions run, not an in-sandbox
+        // agent: a branch touching macos/ or windows/ needs an OS-specific
+        // build/smoke-launch that only a real macOS/Windows machine can do. We only
+        // spend it on branches that already cleared the reviewer AND the browser
+        // gate — a branch either of those already blocked won't merge regardless.
+        let platformVerifyNeeded = false;
+        let platformVerifyComplete = true; // N/A defaults to clear
+        if (reviewerComplete && webVerifyComplete) {
+          const { mac, win } = branchTouchesPlatform(issue.branch);
+          if (mac || win) {
+            platformVerifyNeeded = true;
+            const jobs = [mac && "macos-latest", win && "windows-latest"]
+              .filter(Boolean)
+              .join(" + ");
+            // Lifecycle → GitHub: handing off to the platform gate.
+            setStateLabel(issue.id, "running-platform-verify");
+            postOnce(
+              issue.id,
+              "sandcastle:platform-verify-started",
+              `🖥️ **Platform gate** is now operating — pushing \`${issue.branch}\` to origin and ` +
+                `awaiting the hosted GitHub Actions platform-verify run (${jobs}).`,
+            );
+            openTracePane(issue.branch, "platform-verify");
+
+            if (!pushBranchToOrigin(issue.branch)) {
+              platformVerifyComplete = false;
+            } else {
+              const conclusion = await awaitPlatformVerify(issue.branch);
+              platformVerifyComplete = conclusion === "success";
+            }
+
+            // Lifecycle → GitHub: the hosted run attested the OS-specific build +
+            // smoke-launch clean. (A FAIL/timeout/push-failure stays silent here and
+            // surfaces as the blocked comment in the gate loop below.)
+            if (platformVerifyComplete) {
+              postOnce(
+                issue.id,
+                "sandcastle:platform-verify-clean",
+                `🖥️ Platform gate: hosted GitHub Actions run succeeded for \`${issue.branch}\` ` +
+                  `(${jobs}) — OS build + smoke-launch clean.`,
+              );
+            }
+          }
+        }
+
         return {
           hasWork: true,
           implementerComplete,
@@ -1160,6 +1326,8 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           reviewerComplete,
           webVerifyNeeded,
           webVerifyComplete,
+          platformVerifyNeeded,
+          platformVerifyComplete,
         };
       } finally {
         await sandbox.close();
@@ -1179,20 +1347,23 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
 
   // The fail-closed merge gate: a branch is mergeable ONLY if it carries work
   // (commits ahead of the target, this run's or a prior run's), the implementer
-  // signaled done, the independent reviewer attested clean, and — when it
-  // touches the SPA — the browser gate attested clean too.
+  // signaled done, the independent reviewer attested clean, and — when it touches
+  // the SPA or a native platform — the browser gate and/or the external hosted
+  // platform-verify run attested clean too.
   const mergeable = (r: {
     hasWork: boolean;
     implementerComplete: boolean;
     reviewed: boolean;
     reviewerComplete: boolean;
     webVerifyComplete: boolean;
+    platformVerifyComplete: boolean;
   }) =>
     r.hasWork &&
     r.implementerComplete &&
     r.reviewed &&
     r.reviewerComplete &&
-    r.webVerifyComplete;
+    r.webVerifyComplete &&
+    r.platformVerifyComplete;
 
   const completedIssues = evaluated
     .filter(
@@ -1214,7 +1385,9 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         ? "reviewer withheld attestation (leak-audit / correctness FAIL)"
         : !r.webVerifyComplete
           ? "browser gate withheld attestation (web behavior / SPA-privacy FAIL)"
-          : "change was not reviewed";
+          : !r.platformVerifyComplete
+            ? "platform gate withheld attestation (hosted macOS/Windows build+smoke FAIL, timeout, or push failure)"
+            : "change was not reviewed";
     console.warn(
       `  ⊘ ${issue.id} (${issue.branch}) BLOCKED from merge: ${why} — commits kept on branch for the next cycle / a human`,
     );
@@ -1227,7 +1400,9 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         ? "reviewer"
         : !r.webVerifyComplete
           ? "web-verify"
-          : "unreviewed";
+          : !r.platformVerifyComplete
+            ? "platform-verify"
+            : "unreviewed";
     setStateLabel(issue.id, "blocked");
     postOnce(
       issue.id,
