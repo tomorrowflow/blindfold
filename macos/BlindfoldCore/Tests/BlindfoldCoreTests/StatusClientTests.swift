@@ -53,6 +53,22 @@ private final class RecordingFetcher: StatusFetching, @unchecked Sendable {
     #expect(payload.unprotectedMode == StatusPayload.UnprotectedMode(active: true, bound: "timed", remainingSeconds: 42.5))
 }
 
+/// Issue #187's submenu visibility gate (#188): the capability flag travels
+/// alongside `active`/`bound` in #180's `unprotected_mode` status shape --
+/// decoded regardless of whether the mode is currently active, since the gate
+/// applies to whether the submenu exists at all.
+@Test func statusClientDecodesUnprotectedModeCapabilityEnabledField() async throws {
+    let json = Data(#"""
+    {"state": "protected", "unprotected_mode": {"active": false, "bound": null, "remaining_seconds": null, "capability_enabled": true}}
+    """#.utf8)
+    let fetcher = RecordingFetcher(responseData: json)
+    let client = try StatusClient(baseURL: URL(string: "http://127.0.0.1:8000/v1/status")!, fetcher: fetcher)
+
+    let payload = try await client.poll()
+
+    #expect(payload.unprotectedMode?.capabilityEnabled == true)
+}
+
 @Test func statusClientDecodesAbsentUnprotectedModeAsNil() async throws {
     let json = Data(#"{"state": "protected"}"#.utf8)
     let fetcher = RecordingFetcher(responseData: json)

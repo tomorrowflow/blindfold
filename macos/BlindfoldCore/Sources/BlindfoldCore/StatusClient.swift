@@ -35,16 +35,31 @@ public struct StatusPayload: Decodable, Equatable, Sendable {
         public let active: Bool
         public let bound: String?
         public let remainingSeconds: Double?
+        /// Issue #187's submenu visibility gate (#188/ADR-0038): whether the
+        /// operator has opted the capability into existence in Settings, read
+        /// verbatim regardless of whether the mode is currently active.
+        public let capabilityEnabled: Bool
 
-        public init(active: Bool, bound: String?, remainingSeconds: Double?) {
+        public init(active: Bool, bound: String?, remainingSeconds: Double?, capabilityEnabled: Bool = false) {
             self.active = active
             self.bound = bound
             self.remainingSeconds = remainingSeconds
+            self.capabilityEnabled = capabilityEnabled
         }
 
         enum CodingKeys: String, CodingKey {
             case active, bound
             case remainingSeconds = "remaining_seconds"
+            case capabilityEnabled = "capability_enabled"
+        }
+
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            active = try container.decode(Bool.self, forKey: .active)
+            bound = try container.decodeIfPresent(String.self, forKey: .bound)
+            remainingSeconds = try container.decodeIfPresent(Double.self, forKey: .remainingSeconds)
+            // Fail-closed: an absent field reads as capability-disabled, never enabled.
+            capabilityEnabled = try container.decodeIfPresent(Bool.self, forKey: .capabilityEnabled) ?? false
         }
     }
 
