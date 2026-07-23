@@ -117,7 +117,7 @@ import functools
 import os
 import sys
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 from .gliner_provisioning import resolve_gliner_model_path
 
@@ -202,15 +202,21 @@ def resolve_data_dir() -> str:
 
     ``BLINDFOLD_DATA_DIR`` overrides when set. Otherwise defaults to the OS
     app-data convention: ``~/Library/Application Support/blindfold/`` on macOS,
-    ``$XDG_DATA_HOME/blindfold/`` on Linux. Distinct from the **store** (entities,
-    mapping, RBAC) -- this holds large local *assets* (e.g. the GLiNER cascade
-    model), never per-workspace data.
+    ``$XDG_DATA_HOME/blindfold/`` on Linux, ``%LOCALAPPDATA%\\Blindfold`` on
+    Windows (Local, never Roaming -- ADR-0041). Distinct from the **store**
+    (entities, mapping, RBAC) -- this holds large local *assets* (e.g. the
+    GLiNER cascade model), never per-workspace data.
     """
     override = os.environ.get("BLINDFOLD_DATA_DIR", "")
     if override:
         return override
     if sys.platform == "darwin":
         return str(Path.home() / "Library" / "Application Support" / "blindfold")
+    if sys.platform == "win32":
+        local_appdata = os.environ.get("LOCALAPPDATA", "") or str(
+            PureWindowsPath(str(Path.home())) / "AppData" / "Local"
+        )
+        return str(PureWindowsPath(local_appdata) / "Blindfold")
     xdg_data_home = os.environ.get("XDG_DATA_HOME", "") or str(
         Path.home() / ".local" / "share"
     )

@@ -82,6 +82,29 @@ def test_resolve_data_dir_falls_back_to_dot_local_share_when_xdg_data_home_unset
     assert resolve_data_dir() == "/home/flo/.local/share/blindfold"
 
 
+def test_resolve_data_dir_defaults_to_local_appdata_on_windows(monkeypatch):
+    # ADR-0041: Windows data dir is %LOCALAPPDATA%\Blindfold -- Local, never
+    # Roaming, so the ~197 MB GLiNER model and the store never sync to a
+    # roaming profile.
+    monkeypatch.delenv("BLINDFOLD_DATA_DIR", raising=False)
+    monkeypatch.setattr("sys.platform", "win32")
+    monkeypatch.setenv("LOCALAPPDATA", r"C:\Users\flo\AppData\Local")
+
+    assert resolve_data_dir() == r"C:\Users\flo\AppData\Local\Blindfold"
+
+
+def test_resolve_data_dir_falls_back_to_appdata_local_when_localappdata_unset(
+    monkeypatch,
+):
+    # If %LOCALAPPDATA% itself is unset, fall back to ~\AppData\Local\Blindfold.
+    monkeypatch.delenv("BLINDFOLD_DATA_DIR", raising=False)
+    monkeypatch.setattr("sys.platform", "win32")
+    monkeypatch.delenv("LOCALAPPDATA", raising=False)
+    monkeypatch.setattr("pathlib.Path.home", lambda: Path(r"C:\Users\flo"))
+
+    assert resolve_data_dir() == r"C:\Users\flo\AppData\Local\Blindfold"
+
+
 def test_resolve_data_dir_honors_env_override(monkeypatch):
     # BLINDFOLD_DATA_DIR overrides the platform default outright.
     monkeypatch.setattr("sys.platform", "darwin")
