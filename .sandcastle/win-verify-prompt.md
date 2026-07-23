@@ -31,13 +31,18 @@ must satisfy, kept in one place so:
   spawn — proving the SDK + publish/launch + assembly-loads-and-constructs-cleanly mechanics
   without anything that could block the runner. No tray-icon-pixel or NotifyIcon-click
   assertion in this first cut (see "when deeper UI assertions are needed" below).
-- **Construction-time failures are never silent.** A `WinExe`-subsystem process invoked from
-  a CI shell can lose an unhandled exception's console text entirely (unlike a console-
-  subsystem app, it isn't guaranteed the same stderr visibility), so `--smoke-test` catches
-  any exception from the wiring, prints it to stderr, and additionally writes it to
-  `smoke-test-crash.log` beside the published exe as a second channel. The workflow step
-  cats that file on any nonzero exit, so a real construction bug shows up in the run's log
-  instead of a bare "exited 1" with no evidence to diagnose from.
+- **Construction-time failures are never silent.** A `WinExe`-subsystem process launched via
+  the plain call operator does not reliably inherit the caller's console output handles — a
+  hosted run confirmed this empirically: `--smoke-test` returned exit code 1 (its own explicit
+  failure path, proving the wiring's construction did throw and was caught) with zero stdout/
+  stderr captured in the job log. `--smoke-test` still catches any exception from the wiring,
+  prints it to stderr, and writes it to `smoke-test-crash.log` beside the published exe as a
+  second channel — but the workflow step no longer trusts inherited console handles at all:
+  it launches `blindfold.exe` via `Start-Process -RedirectStandardOutput/-RedirectStandardError`
+  (explicit pipe handles a GUI-subsystem child can always write to, regardless of subsystem),
+  then cats stdout, stderr, and `smoke-test-crash.log` (whichever are non-empty) on any nonzero
+  exit, so a real construction bug shows up in the run's log instead of a bare "exited 1" with
+  no evidence to diagnose from.
 - **Leak-audit: N/A.** The tray app touches no **entity**/**surrogate**/**mapping** — it is a
   **supervisor** (CONTEXT.md): not in the request path, holds no entity data. `--smoke-test`
   additionally never spawns the child or talks to a real proxy, so there is nothing on the

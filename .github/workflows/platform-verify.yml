@@ -99,14 +99,28 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          & "tray-app/publish/blindfold.exe" --smoke-test
-          $exitCode = $LASTEXITCODE
-          $crashLog = "tray-app/publish/smoke-test-crash.log"
-          if (Test-Path $crashLog) {
-            Write-Host "---- smoke-test-crash.log ----"
-            Get-Content $crashLog
-            Write-Host "-------------------------------"
+          # blindfold.exe is a WinExe-subsystem (GUI) binary: launched via the plain call
+          # operator, a GUI-subsystem child does not reliably inherit the caller's console
+          # output handles, so its Console.Error text can vanish even when the process runs
+          # (and exits) exactly as coded -- a prior run confirmed exit code 1 (our own
+          # explicit failure path) with zero captured stdout/stderr. Start-Process with
+          # explicit -RedirectStandardOutput/-Error forces real pipe handles the child's
+          # Console.Out/Error can always write to, regardless of subsystem.
+          $stdout = "tray-app/publish/smoke-test-stdout.log"
+          $stderr = "tray-app/publish/smoke-test-stderr.log"
+          $proc = Start-Process -FilePath "tray-app/publish/blindfold.exe" -ArgumentList "--smoke-test" `
+            -Wait -PassThru -NoNewWindow `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+          $exitCode = $proc.ExitCode
+
+          foreach ($log in @($stdout, $stderr, "tray-app/publish/smoke-test-crash.log")) {
+            if ((Test-Path $log) -and (Get-Item $log).Length -gt 0) {
+              Write-Host "---- $log ----"
+              Get-Content $log
+              Write-Host "-------------------------------"
+            }
           }
+
           if ($exitCode -ne 0) { throw "blindfold.exe --smoke-test exited $exitCode" }
 
       # Windows: freeze `blindfold serve` into blindfold-proxy.exe via the shared,
