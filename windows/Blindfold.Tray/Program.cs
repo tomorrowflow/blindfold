@@ -21,8 +21,33 @@ internal static class Program
             // Headless-safe (win-verify-prompt.md): proves the assembly loads and the Core
             // wiring constructs cleanly without a message loop or a real child process -- no
             // interactive dialog may block the hosted platform-verify runner.
-            using var smokeContext = new TrayApplicationContext(proxyExePath);
-            return 0;
+            //
+            // A WinExe subsystem process invoked from a CI shell can lose an unhandled
+            // exception's text (no console is guaranteed attached the same way a console
+            // subsystem app gets one) -- so this catches and prints explicitly, to both
+            // stderr and a sentinel file beside the exe, rather than letting the process
+            // exit non-zero with no diagnostic the hosted run's log can show.
+            try
+            {
+                using var smokeContext = new TrayApplicationContext(proxyExePath);
+                return 0;
+            }
+            catch (Exception ex)
+            {
+                Console.Error.WriteLine("--smoke-test failed: " + ex);
+                try
+                {
+                    File.WriteAllText(
+                        Path.Combine(AppContext.BaseDirectory, "smoke-test-crash.log"),
+                        ex.ToString());
+                }
+                catch
+                {
+                    // Best-effort only -- the stderr line above is the primary channel.
+                }
+
+                return 1;
+            }
         }
 
         using var mutex = new Mutex(initiallyOwned: true, SingleInstanceMutexName, out var createdNew);

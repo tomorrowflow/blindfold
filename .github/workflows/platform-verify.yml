@@ -100,7 +100,14 @@ jobs:
         run: |
           $ErrorActionPreference = "Stop"
           & "tray-app/publish/blindfold.exe" --smoke-test
-          if ($LASTEXITCODE -ne 0) { throw "blindfold.exe --smoke-test exited $LASTEXITCODE" }
+          $exitCode = $LASTEXITCODE
+          $crashLog = "tray-app/publish/smoke-test-crash.log"
+          if (Test-Path $crashLog) {
+            Write-Host "---- smoke-test-crash.log ----"
+            Get-Content $crashLog
+            Write-Host "-------------------------------"
+          }
+          if ($exitCode -ne 0) { throw "blindfold.exe --smoke-test exited $exitCode" }
 
       # Windows: freeze `blindfold serve` into blindfold-proxy.exe via the shared,
       # cross-platform PyInstaller spec (packaging/blindfold-proxy.spec, ADR-0039),
