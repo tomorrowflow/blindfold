@@ -1,4 +1,4 @@
-# ADR-0042: Platform-verification gate — GitHub Actions with per-platform runner backends
+# ADR-0042: Platform-verification gate — GitHub Actions, all hosted runners
 
 **Status:** Accepted
 **Date:** 2026-07-23
@@ -18,6 +18,14 @@ Windows front door that needs its own build + PyInstaller freeze on real Windows
 So the entire platform-verification *mechanism* is greenfield for both platforms. Rather
 than build a mac-specific runner and retrofit Windows, we design it once, generically.
 
+The runner-backend choice hinges on cost, and the deciding fact is that **`tomorrowflow/blindfold`
+is a public repo** — GitHub Actions standard runners (including `macos-latest` and
+`windows-latest`) are **free with unlimited minutes** for public repos. ADR-0040's
+self-hosted choice was justified by a *private*-repo cost model (hosted macOS billed at
+10×) plus a local signing identity; the cost premise does not hold here, and signing is
+deferred in the first cut (ADR-0041). This ADR therefore **revises ADR-0040's self-hosted
+macOS decision to a hosted runner.**
+
 ## Decision
 
 - **One GitHub Actions "platform-verify" workflow — the repo's first GH Actions — that
@@ -27,24 +35,24 @@ than build a mac-specific runner and retrofit Windows, we design it once, generi
   **N/A**. Sandcastle stays the merge authority but waits on this external check for
   platform-touching branches.
 
-- **The runner backend is a per-platform config detail, chosen asymmetrically on purpose:**
-  - **macOS → self-hosted** on the developer's Mac (keeps ADR-0040's choice): free/unlimited
-    minutes on what is a private repo, where GitHub-hosted `macos-latest` is billed at 10×.
-  - **Windows → GitHub-hosted `windows-latest`**: there is no local Windows hardware to
-    self-host on, there is **no signing in the first cut** (ADR-0041 deferred Authenticode →
-    zero secrets), Windows minutes are only 2×, and a hosted runner is **always online** for
-    the AFK loop (a self-hosted box must be up whenever the loop wants to merge).
+- **Both runner backends are GitHub-hosted** — `macos-latest` and `windows-latest` in one
+  matrix. Free and unlimited on a public repo, no hardware to register or keep online for
+  the AFK loop, and always available when the loop wants to merge. The backend is still a
+  per-platform config detail, so a later move to a self-hosted runner (e.g. if the repo
+  goes private, or to hold a signing identity locally) is a config change, not a
+  mechanism change.
 
 - **Cross-platform logic is tested in-sandbox on Linux, not on the runners.** Swift
   `BlindfoldCore` and the C# `Blindfold.Core` class library both build and test in the Linux
   Docker sandbox — .NET is cross-platform, so the `.sandcastle/Dockerfile` gains the .NET SDK
   next to the Swift toolchain. Both are gated by the shared golden-vector fixture (ADR-0041).
-  Only the **irreducibly-OS** parts hit the runners: AppKit `.app` build/sign/smoke on mac;
+  Only the **irreducibly-OS** parts hit the runners: AppKit `.app` build/smoke on mac;
   WinForms binding + PyInstaller-Windows freeze + smoke-launch on Windows.
 
-- **Signing is deferred on both platforms in the first cut** (matches ADR-0041). This
-  removes the local-signing-identity argument ADR-0040 gave for self-hosting; macOS stays
-  self-hosted purely for the free-minutes cost reason.
+- **Signing is deferred to a v2 issue** (Authenticode on Windows, notarization on macOS),
+  out of the first cut on both platforms (ADR-0041). Deferring it is what lets both jobs
+  run hosted with no secrets; when signing lands, it may reopen the self-hosted question
+  for whichever platform needs a locally-held identity.
 
 ## Consequences
 
@@ -57,19 +65,22 @@ than build a mac-specific runner and retrofit Windows, we design it once, generi
 - The Dockerfile gains the .NET SDK; and the implement/review prompts must actually run
   `swift test` + `dotnet test` — today neither runs, a pre-existing gap that left even the
   Swift core unexercised by the loop.
-- The self-hosted mac runner must be online when the loop merges a `macos/`-touching branch;
-  hosted Windows carries no such constraint.
-- If macOS minute cost ever stops mattering (repo goes public, or a paid plan), mac can flip
-  to `macos-latest` with **no mechanism change** — the backend is config.
+- No self-hosted infrastructure to provision or keep online — a simplification over
+  ADR-0040's plan.
+- Standard hosted runners are unsigned; distribution-quality signing is a separate v2
+  concern (see the deferred signing issue).
 
 ## Alternatives considered
 
+- **Self-hosted macOS (ADR-0040's choice) / hybrid self-hosted-mac + hosted-Windows** —
+  rejected now that the repo is public (hosted is free) and signing is deferred. The only
+  surviving argument was a locally-held signing identity, which the v2 signing issue may
+  revive for one platform.
 - **All self-hosted** (mac + a dedicated Windows box) — rejected: no Windows hardware, added
-  ops burden, and an always-online requirement on two machines.
-- **All GitHub-hosted** — rejected *for now*: hosted macOS is 10× minutes on a private repo.
-  Deferred, not foreclosed — the gate mechanism supports flipping mac to hosted later.
+  ops burden, and an always-online requirement on two machines, for zero cost benefit on a
+  public repo.
 - **Bake the runner choice into the gate per platform** — rejected: keeping the backend a
-  swappable config is what makes the eventual mac flip a no-op.
+  swappable config is what keeps any future flip a no-op.
 - **A bespoke Sandcastle-native remote-exec to a mac/Windows instance** instead of GH Actions
   — rejected: GH Actions is the standard with far less to maintain, and ADR-0040 already
   pointed at `macos-latest` as the runner substrate.
