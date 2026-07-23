@@ -46,15 +46,35 @@ public struct StatusPayload: Decodable, Equatable, Sendable {
 
     public let state: String
     public let unprotectedMode: UnprotectedMode?
+    /// Issue #185's header line ("Degraded — <n> deps down") -- only the count
+    /// crosses the boundary. `dependencies` itself (name -> healthy/detail/latency_ms,
+    /// issue #92) is decoded transiently in `init(from:)` below and discarded, never
+    /// stored, so this core still never holds a dependency name or scrubbed detail
+    /// string, matching the narrow-contract clause on the other fields.
+    public let dependenciesDown: Int
 
-    public init(state: String, unprotectedMode: UnprotectedMode? = nil) {
+    public init(state: String, unprotectedMode: UnprotectedMode? = nil, dependenciesDown: Int = 0) {
         self.state = state
         self.unprotectedMode = unprotectedMode
+        self.dependenciesDown = dependenciesDown
     }
 
     enum CodingKeys: String, CodingKey {
         case state
         case unprotectedMode = "unprotected_mode"
+        case dependencies
+    }
+
+    private struct DependencyHealthEntry: Decodable {
+        let healthy: Bool
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        state = try container.decode(String.self, forKey: .state)
+        unprotectedMode = try container.decodeIfPresent(UnprotectedMode.self, forKey: .unprotectedMode)
+        let dependencies = try container.decodeIfPresent([String: DependencyHealthEntry].self, forKey: .dependencies)
+        dependenciesDown = dependencies?.values.filter { !$0.healthy }.count ?? 0
     }
 }
 

@@ -78,6 +78,9 @@ private final class RecordingSleeper: Sleeping, @unchecked Sendable {
 /// block history, review-inbox counts, config) — none of it entity-shaped, but this
 /// core must still only ever decode the narrow field set the state machine reduces
 /// over, never capture the rest into a value this app could go on to log or persist.
+/// `dependencies` is the one exception, and only as a computed count (issue #185) —
+/// the name ("upstream") and scrubbed detail ("ollama unreachable") in this fixture
+/// still never survive into `StatusPayload`.
 @Test func statusClientIgnoresFieldsOutsideItsNarrowContractOnAFullPayload() async throws {
     let json = Data(#"""
     {
@@ -95,7 +98,42 @@ private final class RecordingSleeper: Sleeping, @unchecked Sendable {
 
     let payload = try await client.poll()
 
-    #expect(payload == StatusPayload(state: "degraded", unprotectedMode: .init(active: false, bound: nil, remainingSeconds: nil)))
+    #expect(payload == StatusPayload(state: "degraded", unprotectedMode: .init(active: false, bound: nil, remainingSeconds: nil), dependenciesDown: 1))
+}
+
+/// Issue #185's header line renders "Degraded — <n> deps down" (ADR-0039) — that
+/// count has to come from somewhere real. `dependencies` is a `{name: {healthy,
+/// detail, latency_ms}}` map (issue #92); only the down-count crosses into
+/// `StatusPayload`, never a dependency name or scrubbed detail string, keeping the
+/// narrow-contract clause above intact.
+@Test func statusClientDecodesDependenciesDownCountFromTheHealthMap() async throws {
+    let json = Data(#"""
+    {
+        "state": "degraded",
+        "dependencies": {
+            "upstream": {"healthy": false, "detail": "ollama unreachable"},
+            "l3": {"healthy": true},
+            "transit": {"healthy": false},
+            "store": {"healthy": true}
+        }
+    }
+    """#.utf8)
+    let fetcher = RecordingFetcher(responseData: json)
+    let client = try StatusClient(baseURL: URL(string: "http://127.0.0.1:8000/v1/status")!, fetcher: fetcher)
+
+    let payload = try await client.poll()
+
+    #expect(payload.dependenciesDown == 2)
+}
+
+@Test func statusClientDecodesDependenciesDownAsZeroWhenDependenciesFieldIsAbsent() async throws {
+    let json = Data(#"{"state": "protected"}"#.utf8)
+    let fetcher = RecordingFetcher(responseData: json)
+    let client = try StatusClient(baseURL: URL(string: "http://127.0.0.1:8000/v1/status")!, fetcher: fetcher)
+
+    let payload = try await client.poll()
+
+    #expect(payload.dependenciesDown == 0)
 }
 
 @Test func statusClientPollLoopPollsOnCadenceForBoundedIterations() async throws {
