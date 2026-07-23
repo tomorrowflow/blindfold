@@ -93,9 +93,22 @@ Additive to both builds above, runs last:
   This is the AC's "launching the tray starts the proxy and reaches Protected" — the one
   assertion that proves the portable folder actually works end to end, not just that each half
   builds in isolation.
+- **Reaching Protected requires a healthy l3 dependency, which requires a stub.**
+  `/v1/status`'s `state` is only `"protected"` once every dependency probe in
+  `status.compute_state` is healthy; the l3 probe (`ping_ollama`, `GET {base_url}/api/tags`) is
+  unhealthy by construction with no `BLINDFOLD_L3_MODEL` configured ("no L3 adjudicator
+  configured", `src/blindfold/app.py`'s `_default_l3_probe`) -- true by default on a runner with
+  no Ollama installed. The first hosted run of this step timed out for exactly this reason
+  (`--smoke-launch-full: proxy never reached Protected within the timeout`). The step now starts
+  `windows/packaging/ollama-stub.py` (a bare `GET /api/tags` → `200` responder, no other
+  behavior) before launching `blindfold.exe`, and points `BLINDFOLD_L3_MODEL`/
+  `BLINDFOLD_L3_BASE_URL` at it — the same seam-stub discipline the leak-audit tests use for
+  L3/Transit/upstream, applied here to a CI shell step instead of a pytest fixture. `openbao`
+  (unset token → healthy by default) and `store` (always healthy this slice) need no stub.
 - **Leak-audit: N/A.** Same rationale as the two contracts above -- this proves process
   spawn/poll plumbing (a supervisor, CONTEXT.md), never entity/surrogate/mapping data. The real
-  `/v1/status` payload the poll loop reads is the proxy's own already-scrubbed narrow contract.
+  `/v1/status` payload the poll loop reads is the proxy's own already-scrubbed narrow contract;
+  `ollama-stub.py` answers with a static, content-free `200`, never entity data.
 - Runs after the standalone freeze smoke-launch (above) has stopped its own child, so nothing
   is still bound to `127.0.0.1:25463` when `--smoke-launch-full` starts its own.
 

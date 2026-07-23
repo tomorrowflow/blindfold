@@ -191,24 +191,46 @@ jobs:
       # start the proxy and reach Protected. --smoke-launch-full drives the real supervisor +
       # status poll loop headlessly (no message loop, no interactive dialog) and exits 0 only
       # once AppStateMachine reduces to Protected.
+      #
+      # /v1/status only reports "protected" once every dependency probe is healthy
+      # (status.py's compute_state) -- with no BLINDFOLD_L3_MODEL configured, the l3 probe
+      # (ping_ollama) is unhealthy by construction ("no L3 adjudicator configured"), so a
+      # bare `blindfold serve` never leaves Degraded and this step's first hosted run timed
+      # out waiting for Protected. windows/packaging/ollama-stub.py stands in for the real
+      # Ollama dependency at its network boundary -- answers GET /api/tags with a bare 200,
+      # same seam-stub discipline the leak-audit tests use -- so BLINDFOLD_L3_MODEL/
+      # BLINDFOLD_L3_BASE_URL can point at it and the l3 probe reports healthy.
       - name: Smoke-launch portable folder (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $stdout = "tray-app/publish/smoke-launch-full-stdout.log"
-          $stderr = "tray-app/publish/smoke-launch-full-stderr.log"
-          $proc = Start-Process -FilePath "tray-app/publish/blindfold.exe" -ArgumentList "--smoke-launch-full" `
-            -Wait -PassThru -NoNewWindow `
-            -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-          $exitCode = $proc.ExitCode
+          $stubPort = 25464
+          $stub = Start-Process -FilePath "python" `
+            -ArgumentList "windows/packaging/ollama-stub.py", "$stubPort" `
+            -PassThru -NoNewWindow
+          Start-Sleep -Seconds 1
 
-          foreach ($log in @($stdout, $stderr)) {
-            if ((Test-Path $log) -and (Get-Item $log).Length -gt 0) {
-              Write-Host "---- $log ----"
-              Get-Content $log
-              Write-Host "-------------------------------"
+          try {
+            $env:BLINDFOLD_L3_MODEL = "smoke-test-stub"
+            $env:BLINDFOLD_L3_BASE_URL = "http://127.0.0.1:$stubPort"
+
+            $stdout = "tray-app/publish/smoke-launch-full-stdout.log"
+            $stderr = "tray-app/publish/smoke-launch-full-stderr.log"
+            $proc = Start-Process -FilePath "tray-app/publish/blindfold.exe" -ArgumentList "--smoke-launch-full" `
+              -Wait -PassThru -NoNewWindow `
+              -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+            $exitCode = $proc.ExitCode
+
+            foreach ($log in @($stdout, $stderr)) {
+              if ((Test-Path $log) -and (Get-Item $log).Length -gt 0) {
+                Write-Host "---- $log ----"
+                Get-Content $log
+                Write-Host "-------------------------------"
+              }
             }
-          }
 
-          if ($exitCode -ne 0) { throw "blindfold.exe --smoke-launch-full exited $exitCode" }
+            if ($exitCode -ne 0) { throw "blindfold.exe --smoke-launch-full exited $exitCode" }
+          } finally {
+            Stop-Process -Id $stub.Id -Force -ErrorAction SilentlyContinue
+          }
