@@ -78,9 +78,12 @@ private final class RecordingSleeper: Sleeping, @unchecked Sendable {
 /// block history, review-inbox counts, config) — none of it entity-shaped, but this
 /// core must still only ever decode the narrow field set the state machine reduces
 /// over, never capture the rest into a value this app could go on to log or persist.
-/// `dependencies` is the one exception, and only as a computed count (issue #185) —
+/// `dependencies` is one exception, and only as a computed count (issue #185) —
 /// the name ("upstream") and scrubbed detail ("ollama unreachable") in this fixture
-/// still never survive into `StatusPayload`.
+/// still never survive into `StatusPayload`. `blocks`/`review_inbox`/`empty_store`
+/// are issue #186's own counts/flag (never `blocks.recent`'s block records, never
+/// `window_minutes`, never `config`) -- captured, not ignored, but only as the
+/// narrow menu-actions contract needs.
 @Test func statusClientIgnoresFieldsOutsideItsNarrowContractOnAFullPayload() async throws {
     let json = Data(#"""
     {
@@ -98,7 +101,14 @@ private final class RecordingSleeper: Sleeping, @unchecked Sendable {
 
     let payload = try await client.poll()
 
-    #expect(payload == StatusPayload(state: "degraded", unprotectedMode: .init(active: false, bound: nil, remainingSeconds: nil), dependenciesDown: 1))
+    #expect(payload == StatusPayload(
+        state: "degraded",
+        unprotectedMode: .init(active: false, bound: nil, remainingSeconds: nil),
+        dependenciesDown: 1,
+        reviewInboxPending: 3,
+        blocksCount: 1,
+        emptyStore: false
+    ))
 }
 
 /// Issue #185's header line renders "Degraded — <n> deps down" (ADR-0039) — that
@@ -134,6 +144,72 @@ private final class RecordingSleeper: Sleeping, @unchecked Sendable {
     let payload = try await client.poll()
 
     #expect(payload.dependenciesDown == 0)
+}
+
+/// Issue #186's review-inbox deep-link count comes from `/v1/status`'s
+/// `review_inbox.pending` (issue #92) -- only the count crosses into
+/// `StatusPayload`, same narrow-contract treatment as `dependenciesDown`.
+@Test func statusClientDecodesReviewInboxPendingCount() async throws {
+    let json = Data(#"{"state": "protected", "review_inbox": {"pending": 3}}"#.utf8)
+    let fetcher = RecordingFetcher(responseData: json)
+    let client = try StatusClient(baseURL: URL(string: "http://127.0.0.1:8000/v1/status")!, fetcher: fetcher)
+
+    let payload = try await client.poll()
+
+    #expect(payload.reviewInboxPending == 3)
+}
+
+@Test func statusClientDecodesReviewInboxPendingAsZeroWhenFieldIsAbsent() async throws {
+    let json = Data(#"{"state": "protected"}"#.utf8)
+    let fetcher = RecordingFetcher(responseData: json)
+    let client = try StatusClient(baseURL: URL(string: "http://127.0.0.1:8000/v1/status")!, fetcher: fetcher)
+
+    let payload = try await client.poll()
+
+    #expect(payload.reviewInboxPending == 0)
+}
+
+/// Issue #186's blocks deep-link count comes from `/v1/status`'s `blocks.count`
+/// (issue #92) -- never `blocks.recent`'s individual block records.
+@Test func statusClientDecodesBlocksCount() async throws {
+    let json = Data(#"{"state": "protected", "blocks": {"count": 2, "recent": []}}"#.utf8)
+    let fetcher = RecordingFetcher(responseData: json)
+    let client = try StatusClient(baseURL: URL(string: "http://127.0.0.1:8000/v1/status")!, fetcher: fetcher)
+
+    let payload = try await client.poll()
+
+    #expect(payload.blocksCount == 2)
+}
+
+@Test func statusClientDecodesBlocksCountAsZeroWhenFieldIsAbsent() async throws {
+    let json = Data(#"{"state": "protected"}"#.utf8)
+    let fetcher = RecordingFetcher(responseData: json)
+    let client = try StatusClient(baseURL: URL(string: "http://127.0.0.1:8000/v1/status")!, fetcher: fetcher)
+
+    let payload = try await client.poll()
+
+    #expect(payload.blocksCount == 0)
+}
+
+/// Issue #186's "Finish setup →" visibility comes straight from `empty_store`.
+@Test func statusClientDecodesEmptyStore() async throws {
+    let json = Data(#"{"state": "protected", "empty_store": true}"#.utf8)
+    let fetcher = RecordingFetcher(responseData: json)
+    let client = try StatusClient(baseURL: URL(string: "http://127.0.0.1:8000/v1/status")!, fetcher: fetcher)
+
+    let payload = try await client.poll()
+
+    #expect(payload.emptyStore == true)
+}
+
+@Test func statusClientDecodesEmptyStoreAsFalseWhenFieldIsAbsent() async throws {
+    let json = Data(#"{"state": "protected"}"#.utf8)
+    let fetcher = RecordingFetcher(responseData: json)
+    let client = try StatusClient(baseURL: URL(string: "http://127.0.0.1:8000/v1/status")!, fetcher: fetcher)
+
+    let payload = try await client.poll()
+
+    #expect(payload.emptyStore == false)
 }
 
 @Test func statusClientPollLoopPollsOnCadenceForBoundedIterations() async throws {

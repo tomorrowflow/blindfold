@@ -52,21 +52,51 @@ public struct StatusPayload: Decodable, Equatable, Sendable {
     /// stored, so this core still never holds a dependency name or scrubbed detail
     /// string, matching the narrow-contract clause on the other fields.
     public let dependenciesDown: Int
+    /// Issue #186's review-inbox deep-link count, read straight from
+    /// `review_inbox.pending` (issue #92) -- never inbox contents.
+    public let reviewInboxPending: Int
+    /// Issue #186's blocks deep-link count, read straight from `blocks.count`
+    /// (issue #92) -- never the `recent` block records themselves.
+    public let blocksCount: Int
+    /// Issue #186's "Finish setup →" visibility, read straight from
+    /// `empty_store` (issue #92).
+    public let emptyStore: Bool
 
-    public init(state: String, unprotectedMode: UnprotectedMode? = nil, dependenciesDown: Int = 0) {
+    public init(
+        state: String,
+        unprotectedMode: UnprotectedMode? = nil,
+        dependenciesDown: Int = 0,
+        reviewInboxPending: Int = 0,
+        blocksCount: Int = 0,
+        emptyStore: Bool = false
+    ) {
         self.state = state
         self.unprotectedMode = unprotectedMode
         self.dependenciesDown = dependenciesDown
+        self.reviewInboxPending = reviewInboxPending
+        self.blocksCount = blocksCount
+        self.emptyStore = emptyStore
     }
 
     enum CodingKeys: String, CodingKey {
         case state
         case unprotectedMode = "unprotected_mode"
         case dependencies
+        case reviewInbox = "review_inbox"
+        case blocks
+        case emptyStore = "empty_store"
     }
 
     private struct DependencyHealthEntry: Decodable {
         let healthy: Bool
+    }
+
+    private struct ReviewInboxEntry: Decodable {
+        let pending: Int
+    }
+
+    private struct BlocksEntry: Decodable {
+        let count: Int
     }
 
     public init(from decoder: Decoder) throws {
@@ -75,6 +105,9 @@ public struct StatusPayload: Decodable, Equatable, Sendable {
         unprotectedMode = try container.decodeIfPresent(UnprotectedMode.self, forKey: .unprotectedMode)
         let dependencies = try container.decodeIfPresent([String: DependencyHealthEntry].self, forKey: .dependencies)
         dependenciesDown = dependencies?.values.filter { !$0.healthy }.count ?? 0
+        reviewInboxPending = try container.decodeIfPresent(ReviewInboxEntry.self, forKey: .reviewInbox)?.pending ?? 0
+        blocksCount = try container.decodeIfPresent(BlocksEntry.self, forKey: .blocks)?.count ?? 0
+        emptyStore = try container.decodeIfPresent(Bool.self, forKey: .emptyStore) ?? false
     }
 }
 
