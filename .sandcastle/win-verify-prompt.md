@@ -16,37 +16,44 @@ must satisfy, kept in one place so:
 - the `verify` agent's `windows` SUSPECTED-OWNER route (`.claude/agents/verify.md`) has a
   documented bar to diagnose a platform-verify FAIL against.
 
-## Contract — what "clean" means for the Windows job (first cut, stub app)
+## Contract — what "clean" means for the Windows job (real shell, issue #196)
 
 - **Unsigned.** No Authenticode signing identity is invoked — deferred to a v2 issue
   (ADR-0041/ADR-0042), and that deferral is what lets this job run on a free hosted runner
   with zero secrets.
-- **Publishes a console executable** via `dotnet publish` — the shape the real WinForms tray
-  **supervisor** (#196, ADR-0041) will fill in. No `.csproj` exists in this repo yet, so the
-  workflow scaffolds a trivial `dotnet new console` stub inline rather than building a
-  committed app target.
-- **Smoke-launch = the published `.exe` exits 0.** Running it directly (no tray icon to open,
-  no NotifyIcon to drive) proves the SDK + publish/launch mechanics ahead of the real shell
-  landing on it. No UI assertion in this first cut.
-- **Leak-audit: N/A.** The stub touches no **entity**/**surrogate**/**mapping** — it is pure
-  build + process-launch mechanics, off the request path entirely.
-- `dotnet test` for the future `Blindfold.Core` class library is **not** this job's concern —
-  that runs in-sandbox on Linux (#190/#193/#194, ADR-0042), since .NET is cross-platform and
-  the risk-bearing logic is deliberately WinForms-free, mirroring `BlindfoldCore`'s AppKit-free
-  design on macOS.
+- **Publishes the real WinForms tray supervisor** (`windows/Blindfold.Tray`, ADR-0041) via
+  `dotnet publish` — self-contained single-file per the ADR's first-cut distribution
+  (`RuntimeIdentifier`/`SelfContained`/`PublishSingleFile` are project defaults, no extra
+  publish flags needed).
+- **Smoke-launch = `blindfold.exe --smoke-test` exits 0.** `--smoke-test` constructs the
+  `NotifyIcon`/`ProxySupervisor`/`StatusClient` wiring and returns immediately — no
+  `Application.Run` message loop, no interactive dialog, and no real child `blindfold-proxy.exe`
+  spawn — proving the SDK + publish/launch + assembly-loads-and-constructs-cleanly mechanics
+  without anything that could block the runner. No tray-icon-pixel or NotifyIcon-click
+  assertion in this first cut (see "when deeper UI assertions are needed" below).
+- **Leak-audit: N/A.** The tray app touches no **entity**/**surrogate**/**mapping** — it is a
+  **supervisor** (CONTEXT.md): not in the request path, holds no entity data. `--smoke-test`
+  additionally never spawns the child or talks to a real proxy, so there is nothing on the
+  request path to even approach.
+- `dotnet test` for `Blindfold.Core` (the tray app's risk-bearing logic: the five-state
+  reducer, icon/header presentation, the supervisor's liveness reduction) is **not** this
+  job's concern — that runs in-sandbox on Linux (#190/#193/#194/#196, ADR-0042), since .NET is
+  cross-platform and that logic is deliberately WinForms-free, mirroring `BlindfoldCore`'s
+  AppKit-free design on macOS. This job only proves the WinForms-specific binding layer
+  (`windows/Blindfold.Tray`) that Core logic can't exercise on Linux.
 
 ## Contract — `blindfold-proxy.exe` freeze (issue #195, ADR-0039/0041)
 
-Additive to the `.NET` stub above (a separate build target -- #196's WinForms precursor,
-untouched by this contract):
+Additive to the Blindfold.Tray build above (a separate build target -- the child the tray
+supervisor spawns, untouched by this contract):
 
 - **Freeze via the shared, cross-platform spec.** `windows/packaging/freeze.ps1` runs
   `uv sync --group freeze` then `uv run pyinstaller packaging/blindfold-proxy.spec`. No
   Windows-specific spec fork -- PyInstaller emits `blindfold-proxy.exe` from the same
   `packaging/blindfold-proxy.spec` the Linux in-sandbox test
   (`tests/test_frozen_proxy_packaging.py`) already exercises.
-- **Smoke-launch = the real proxy contract, not just exit 0.** Unlike the stub app above,
-  this step starts `dist\blindfold-proxy.exe serve`, waits for it to bind
+- **Smoke-launch = the real proxy contract, not just exit 0.** Unlike Blindfold.Tray's
+  `--smoke-test` above, this step starts `dist\blindfold-proxy.exe serve`, waits for it to bind
   `127.0.0.1:25463`, then asserts `GET /ui/` and `GET /v1/status` both return `200` --
   mirroring the Linux frozen-proxy test's own smoke assertions.
 - **Leak-audit: N/A.** Same rationale as `tests/test_frozen_proxy_packaging.py`'s own
@@ -56,13 +63,13 @@ untouched by this contract):
   `platform-verify.yml`'s `on.push.paths` (both key off a `windows/`-touching diff); the
   freeze logic itself stays in the shared `packaging/` spec, never forked under `windows/`.
 
-## When the real shell lands (#196)
+## When deeper UI assertions are needed
 
-Two options, both legitimate, neither is this issue's call:
-1. Extend the declarative job to publish the actual WinForms target and smoke-launch it
-   (still headless-safe — no interactive dialog may block CI).
-2. Promote this file to a genuine `sandbox.run()`-driven step if judging the real shell needs
-   more than "exit 0" (e.g. actual tray/NotifyIcon behavior) — at the cost of needing a secret
-   on the runner, reopening the question ADR-0042 deferred.
+`--smoke-test` proves the SDK/publish/assembly-construction mechanics, not actual
+tray-icon/NotifyIcon-click behavior (there is no interactive session driving it). If a future
+issue needs to assert real UI behavior (e.g. the icon actually changes color, the context menu
+actually opens), promoting this file to a genuine `sandbox.run()`-driven step is the option —
+at the cost of needing a secret (`ANTHROPIC_API_KEY`) on the runner, reopening the
+no-secrets question ADR-0042 deferred. That is a future issue's call, not this one's.
 
 Whichever is chosen, keep this file in sync with the job it documents.

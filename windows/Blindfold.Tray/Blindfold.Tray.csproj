@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    Blindfold.Tray: the Windows tray app (WinForms NotifyIcon, ADR-0041), the supervisor's
+    Windows rendering (CONTEXT.md). net10.0-windows, WinForms-only: this is the one
+    genuinely Windows-only layer (unlike Blindfold.Core) and does NOT build in Sandcastle's
+    Linux sandbox; it is built and smoke-launched on the hosted platform-verify windows-latest
+    runner (ADR-0042). All risk-bearing logic (the five-state reducer, icon/header
+    presentation, the supervisor's liveness reduction) lives in Blindfold.Core and is
+    tested there (issue #194/#196); this project only binds that logic to real
+    WinForms/Process/HttpClient seams (ADR-0040's thin-shell discipline).
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Blindfold.Tray</RootNamespace>
+    <AssemblyName>blindfold</AssemblyName>
+    <!-- Portable side-by-side distribution, first cut (ADR-0041): self-contained single-file
+         next to blindfold-proxy.exe, no installer, no Authenticode signing (deferred). -->
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="../Blindfold.Core/Blindfold.Core.csproj" />
+  </ItemGroup>
+
+</Project>

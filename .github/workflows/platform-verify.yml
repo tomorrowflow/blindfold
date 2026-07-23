@@ -12,13 +12,12 @@
 # No secrets: signing (Authenticode/notarization) is deferred to a v2 issue, which is
 # exactly what lets this run hosted with nothing to leak.
 #
-# First cut: BlindfoldCore (Swift) and the future WinForms/C# core are cross-platform
-# and already tested in-sandbox on Linux (#190/#193/#194) — this workflow does NOT
-# re-run swift test/dotnet test. It proves the pipeline: build + smoke-launch a
-# trivial STUB app per platform, ahead of the real shells (#196 WinForms, #129 AppKit).
-# The Windows job additionally freezes the real `blindfold-proxy.exe` (issue #195,
-# ADR-0039/0041) — the tray-app-facing artifact the WinForms stub above is a
-# precursor to, not a stub itself.
+# BlindfoldCore (Swift) and Blindfold.Core (C#) are cross-platform and already tested
+# in-sandbox on Linux (#190/#193/#194) — this workflow does NOT re-run swift test/dotnet
+# test. It proves the OS-irreducible half: the macOS job still builds + smoke-launches a
+# trivial STUB app (#129 AppKit menu bar app is not yet built); the Windows job builds +
+# smoke-launches the real WinForms tray supervisor (issue #196, ADR-0041) and freezes the
+# real `blindfold-proxy.exe` (issue #195, ADR-0039/0041) it spawns as a child.
 # The workflow is fully declarative (plain shell steps, no LLM agent on the runner) —
 # see .sandcastle/mac-verify-prompt.md / win-verify-prompt.md for why, and for the
 # written build+smoke-launch contract each job below satisfies.
@@ -82,34 +81,32 @@ jobs:
         shell: bash
         run: ./stub-app/BlindfoldStub.app/Contents/MacOS/BlindfoldStub
 
-      # Windows: build a trivial unsigned .NET console stub (the shape the real
-      # WinForms tray supervisor will fill in — #196) and smoke-launch it by running
-      # the published exe directly and checking it exits 0. No .csproj exists in this
-      # repo yet (that's #196's scope), so this proves the SDK + publish/launch
-      # mechanics ahead of the real shell landing on it.
-      - name: Build stub Windows app
+      # Windows: build the real WinForms tray supervisor (issue #196, ADR-0041) --
+      # unsigned, self-contained single-file per the ADR's first-cut distribution -- and
+      # smoke-launch it headlessly via --smoke-test: constructs the NotifyIcon/supervisor/
+      # status-client wiring and returns without an Application.Run message loop or any
+      # interactive dialog, so it can't block the runner (win-verify-prompt.md's
+      # headless-safe contract).
+      - name: Build Blindfold.Tray (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          dotnet new console --name BlindfoldStub --output stub-app
-          Set-Content -Path stub-app/Program.cs -Value 'System.Console.WriteLine("Blindfold stub app (Windows): smoke-launch OK");'
-          dotnet publish stub-app -c Release -o stub-app/publish
+          dotnet publish windows/Blindfold.Tray/Blindfold.Tray.csproj -c Release -o tray-app/publish
 
-      - name: Smoke-launch stub Windows app
+      - name: Smoke-launch Blindfold.Tray (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          & "stub-app/publish/BlindfoldStub.exe"
-          if ($LASTEXITCODE -ne 0) { throw "stub app exited $LASTEXITCODE" }
+          & "tray-app/publish/blindfold.exe" --smoke-test
+          if ($LASTEXITCODE -ne 0) { throw "blindfold.exe --smoke-test exited $LASTEXITCODE" }
 
       # Windows: freeze `blindfold serve` into blindfold-proxy.exe via the shared,
       # cross-platform PyInstaller spec (packaging/blindfold-proxy.spec, ADR-0039),
-      # driven through windows/packaging/freeze.ps1 (issue #195). This proves the
-      # Windows freeze path ahead of the real WinForms tray supervisor (#196,
-      # ADR-0041) -- additive to the .NET stub above, a different build target this
-      # step doesn't touch.
+      # driven through windows/packaging/freeze.ps1 (issue #195) -- the child
+      # Blindfold.Tray spawns, additive to the build above, a different build target
+      # this step doesn't touch.
       - name: Set up Python (Windows freeze)
         if: runner.os == 'Windows'
         uses: actions/setup-python@v5

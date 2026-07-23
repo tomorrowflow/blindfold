@@ -91,8 +91,10 @@ addresses it; otherwise it falls back to the generic `implement` focused on that
 - **macos** — the macOS **supervisor** (menu-bar app): `macos/BlindfoldCore`'s Swift logic
   core (tested in-sandbox on Linux) plus the hosted `macos-latest` platform-verify job that
   builds + smoke-launches it (ADR-0039/0040/0042). Wired now that both exist.
-- **windows** — the Windows **supervisor** (tray app): the future C# core plus the hosted
-  `windows-latest` platform-verify job that builds + smoke-launches it (ADR-0041/0042).
+- **windows** — the Windows **supervisor** (tray app): `windows/Blindfold.Core`'s C# logic
+  core (tested in-sandbox on Linux) plus `windows/Blindfold.Tray`'s WinForms shell and the
+  hosted `windows-latest` platform-verify job that builds + smoke-launches it
+  (ADR-0041/0042). Wired now that both exist.
 - **schema** — a DB migration/shape problem, not logic.
 - **environment** — infra/deps/stubs (Postgres, stubbed Ollama/OpenBao, version pin). Not a code bug.
 - **leak-policy** — a LEAK-AUDIT clause fails for a **design** reason, not a code bug
