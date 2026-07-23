@@ -42,8 +42,9 @@ public enum UnprotectedModeMenu {
         capabilityEnabled
     }
 
-    /// The submenu's activation rows (ADR-0038's four bounds), always present
-    /// regardless of whether the mode is currently active.
+    /// The submenu's activation rows (ADR-0038's five bounds: next-request,
+    /// timed 5/15/30, infinite), always present regardless of whether the mode
+    /// is currently active.
     public static let activationItems: [UnprotectedModeMenuItem] = [
         UnprotectedModeMenuItem(label: "Next request only", action: .activate(bound: "next-request", minutes: nil), keyboardShortcut: nil),
         UnprotectedModeMenuItem(label: "For 5 minutes", action: .activate(bound: "timed", minutes: 5), keyboardShortcut: nil),
