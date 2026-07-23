@@ -41,9 +41,13 @@ internal static class Program
                         Path.Combine(AppContext.BaseDirectory, "smoke-test-crash.log"),
                         ex.ToString());
                 }
-                catch
+                catch (Exception writeEx)
                 {
-                    // Best-effort only -- the stderr line above is the primary channel.
+                    // A prior hosted run's smoke-test-crash.log never appeared at all (Test-Path
+                    // false), which the primary exception text alone can't explain -- surface
+                    // *this* failure too instead of swallowing it, since stderr is now reliably
+                    // captured via Start-Process's redirected pipes regardless of subsystem.
+                    Console.Error.WriteLine("smoke-test-crash.log write also failed: " + writeEx);
                 }
 
                 return 1;
