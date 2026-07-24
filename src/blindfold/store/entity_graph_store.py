@@ -1,14 +1,21 @@
-"""Postgres-backed live store for the entity graph + workspaces (issue #104, Setup 1/5).
+"""Live store for the entity graph + workspaces (issue #104, Setup 1/5).
+
+Backend-dispatched via the thin dialect seam (``dialect.connect()``, ADR-0043 §3,
+issue #200): a ``postgres(ql)://`` DSN opens a synchronous psycopg connection
+exactly as before; a ``sqlite:///`` DSN opens stdlib ``sqlite3`` through the same
+seam (paramstyle-adapted, WAL/busy_timeout/foreign_keys=ON). One copy of this
+store's logic serves either backend — no subclassing, no branching in the method
+bodies below.
 
 Architecture: hydrate-delegate-persist.
 
   For every call, this store:
-  1. Opens a synchronous psycopg connection.
+  1. Opens a connection via the dialect seam (Postgres or SQLite).
   2. Applies migrations (idempotent) so a fresh database is always ready.
-  3. Hydrates a fresh in-memory EntityGraph from current Postgres rows.
+  3. Hydrates a fresh in-memory EntityGraph from current database rows.
   4. Delegates the requested operation to that EntityGraph (reusing its merge /
      edit_surrogate / search / coreference logic verbatim).
-  5. Persists the resulting state back to Postgres.
+  5. Persists the resulting state back to the database.
   6. Closes the connection.
 
 Calling convention: **synchronous** throughout — same as EntityGraph and all 14
@@ -29,16 +36,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import psycopg
-
 from ..entity_graph import (
     EntityGraph,
     EntityRecord,
     RelationshipRecord,
     RoleAssignmentRecord,
 )
+from .dialect import DBConnection, apply_sqlite_migrations, connect, is_sqlite
 
 _MIGRATIONS_SQL = Path(__file__).with_name("migrations.sql").read_text(encoding="utf-8")
+_MIGRATIONS_SQL_SQLITE = Path(__file__).with_name("migrations_sqlite.sql").read_text(
+    encoding="utf-8"
+)
 
 
 def _entity_id(kind: str, row_id: int) -> str:
@@ -72,8 +81,11 @@ class PostgresEntityGraphStore:
 
     def _ensure_schema(self) -> None:
         """Apply migrations (idempotent) to guarantee the schema exists."""
-        with psycopg.connect(self._dsn) as conn:
-            conn.execute(_MIGRATIONS_SQL)
+        with connect(self._dsn) as conn:
+            if is_sqlite(self._dsn):
+                apply_sqlite_migrations(conn, _MIGRATIONS_SQL_SQLITE)
+            else:
+                conn.execute(_MIGRATIONS_SQL)
             conn.commit()
 
     # ------------------------------------------------------------------
@@ -82,13 +94,13 @@ class PostgresEntityGraphStore:
 
     def is_empty(self) -> bool:
         """True iff the workspaces table has zero rows."""
-        with psycopg.connect(self._dsn) as conn:
+        with connect(self._dsn) as conn:
             row = conn.execute("SELECT count(*) FROM workspaces").fetchone()
             return row[0] == 0
 
     def create_workspace(self, slug: str, name: str) -> None:
         """Create a workspace row (idempotent — no error if it already exists)."""
-        with psycopg.connect(self._dsn) as conn:
+        with connect(self._dsn) as conn:
             conn.execute(
                 "INSERT INTO workspaces (slug, name) VALUES (%s, %s) "
                 "ON CONFLICT (slug) DO NOTHING",
@@ -102,19 +114,19 @@ class PostgresEntityGraphStore:
         Falls back to the slug itself for a workspace row with no name (mirrors
         the in-memory ``EntityGraph.workspace_name()`` fallback).
         """
-        with psycopg.connect(self._dsn) as conn:
+        with connect(self._dsn) as conn:
             row = conn.execute(
                 "SELECT name FROM workspaces WHERE slug = %s", (slug,)
             ).fetchone()
             return row[0] if row and row[0] else slug
 
-    def _workspace_id(self, conn: psycopg.Connection, workspace: str) -> int | None:
+    def _workspace_id(self, conn: DBConnection, workspace: str) -> int | None:
         row = conn.execute(
             "SELECT id FROM workspaces WHERE slug = %s", (workspace,)
         ).fetchone()
         return row[0] if row else None
 
-    def _require_workspace_id(self, conn: psycopg.Connection, workspace: str) -> int:
+    def _require_workspace_id(self, conn: DBConnection, workspace: str) -> int:
         ws_id = self._workspace_id(conn, workspace)
         if ws_id is None:
             raise KeyError(f"workspace not found: {workspace!r}")
@@ -124,7 +136,7 @@ class PostgresEntityGraphStore:
     # Hydration: load Postgres → EntityGraph
     # ------------------------------------------------------------------
 
-    def _hydrate(self, conn: psycopg.Connection, workspace: str) -> tuple[EntityGraph, int | None]:
+    def _hydrate(self, conn: DBConnection, workspace: str) -> tuple[EntityGraph, int | None]:
         """Build a fresh EntityGraph from current Postgres rows for ``workspace``.
 
         Returns (graph, ws_id) where ws_id is None when the workspace doesn't exist yet.
@@ -280,7 +292,7 @@ class PostgresEntityGraphStore:
     # ------------------------------------------------------------------
 
     def _persist_entity(
-        self, conn: psycopg.Connection, ws_id: int, entity: EntityRecord
+        self, conn: DBConnection, ws_id: int, entity: EntityRecord
     ) -> int:
         """Upsert an entity record to Postgres; return the Postgres row id.
 
@@ -354,7 +366,7 @@ class PostgresEntityGraphStore:
         return row_id
 
     def _delete_entity_row(
-        self, conn: psycopg.Connection, ws_id: int, kind: str, pg_row_id: int
+        self, conn: DBConnection, ws_id: int, kind: str, pg_row_id: int
     ) -> None:
         """Delete a person or term row (cascade deletes variations, surrogates, etc.)."""
         if kind == "person":
@@ -364,7 +376,7 @@ class PostgresEntityGraphStore:
 
     def _persist_relationships(
         self,
-        conn: psycopg.Connection,
+        conn: DBConnection,
         ws_id: int,
         relationships: set[RelationshipRecord],
         eid_to_pg: dict[str, tuple[str, int]],
@@ -403,7 +415,7 @@ class PostgresEntityGraphStore:
         surrogate: str = "",
     ) -> EntityRecord:
         """Add an entity to the workspace; persist to Postgres immediately."""
-        with psycopg.connect(self._dsn) as conn:
+        with connect(self._dsn) as conn:
             ws_id = self._workspace_id(conn, workspace)
             if ws_id is None:
                 # Auto-create the workspace row so the entity can be persisted.
@@ -443,22 +455,22 @@ class PostgresEntityGraphStore:
     def get_by_canonical(
         self, workspace: str, kind: str, canonical_name: str
     ) -> EntityRecord | None:
-        with psycopg.connect(self._dsn) as conn:
+        with connect(self._dsn) as conn:
             graph, _ = self._hydrate(conn, workspace)
         return graph.get_by_canonical(workspace, kind, canonical_name)
 
     def get_by_id(self, entity_id: str, workspace: str) -> EntityRecord | None:
-        with psycopg.connect(self._dsn) as conn:
+        with connect(self._dsn) as conn:
             graph, _ = self._hydrate(conn, workspace)
         return graph.get_by_id(entity_id, workspace)
 
     def list_entities(self, workspace: str) -> list[EntityRecord]:
-        with psycopg.connect(self._dsn) as conn:
+        with connect(self._dsn) as conn:
             graph, _ = self._hydrate(conn, workspace)
         return graph.list_entities(workspace)
 
     def search_by_real_name(self, workspace: str, query: str) -> list[EntityRecord]:
-        with psycopg.connect(self._dsn) as conn:
+        with connect(self._dsn) as conn:
             graph, _ = self._hydrate(conn, workspace)
         return graph.search_by_real_name(workspace, query)
 
@@ -471,7 +483,7 @@ class PostgresEntityGraphStore:
         target_id: str,
         target_kind: str,
     ) -> None:
-        with psycopg.connect(self._dsn) as conn:
+        with connect(self._dsn) as conn:
             ws_id = self._require_workspace_id(conn, workspace)
             graph, _ = self._hydrate(conn, workspace)
             graph.add_relationship(workspace, source_id, source_kind, relation, target_id, target_kind)
@@ -486,7 +498,7 @@ class PostgresEntityGraphStore:
     def list_relationships(
         self, entity_id: str, workspace: str
     ) -> list[RelationshipRecord]:
-        with psycopg.connect(self._dsn) as conn:
+        with connect(self._dsn) as conn:
             graph, _ = self._hydrate(conn, workspace)
         return graph.list_relationships(entity_id, workspace)
 
@@ -498,7 +510,7 @@ class PostgresEntityGraphStore:
         role: str,
     ) -> None:
         """Add a role assignment.  The org_unit is looked up by name; auto-created if absent."""
-        with psycopg.connect(self._dsn) as conn:
+        with connect(self._dsn) as conn:
             ws_id = self._require_workspace_id(conn, workspace)
 
             # Resolve or create the org_unit row.
@@ -531,7 +543,7 @@ class PostgresEntityGraphStore:
     def list_role_assignments(
         self, person_id: str, workspace: str
     ) -> list[RoleAssignmentRecord]:
-        with psycopg.connect(self._dsn) as conn:
+        with connect(self._dsn) as conn:
             graph, _ = self._hydrate(conn, workspace)
         return graph.list_role_assignments(person_id, workspace)
 
@@ -542,7 +554,7 @@ class PostgresEntityGraphStore:
         new_surrogate: str,
     ) -> tuple[EntityRecord, list[EntityRecord]]:
         """Edit the active surrogate; retire the previous.  Persists to Postgres."""
-        with psycopg.connect(self._dsn) as conn:
+        with connect(self._dsn) as conn:
             ws_id = self._require_workspace_id(conn, workspace)
             graph, _ = self._hydrate(conn, workspace)
 
@@ -561,7 +573,7 @@ class PostgresEntityGraphStore:
         loser_id: str,
     ) -> EntityRecord:
         """Merge loser into winner by entity_id; persist result to Postgres."""
-        with psycopg.connect(self._dsn) as conn:
+        with connect(self._dsn) as conn:
             ws_id = self._require_workspace_id(conn, workspace)
             graph, _ = self._hydrate(conn, workspace)
 
@@ -596,7 +608,7 @@ class PostgresEntityGraphStore:
         loser_canonical: str,
     ) -> EntityRecord:
         """Merge loser into winner by canonical name; persist result to Postgres."""
-        with psycopg.connect(self._dsn) as conn:
+        with connect(self._dsn) as conn:
             ws_id = self._require_workspace_id(conn, workspace)
             graph, _ = self._hydrate(conn, workspace)
 
