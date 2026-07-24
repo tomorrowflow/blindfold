@@ -13,6 +13,18 @@ and foreign_keys=ON (SQLite defaults foreign keys *off*), and the schema's
 from __future__ import annotations
 
 
+def test_sqlite_connect_creates_missing_parent_directory(tmp_path):
+    # Issue #204: a fresh install has no Store directory yet -- connect() against
+    # the computed default DSN must not require the caller to mkdir first.
+    from blindfold.store.dialect import connect
+
+    db_path = tmp_path / "not-yet-created" / "store.sqlite3"
+    with connect(f"sqlite:///{db_path}") as conn:
+        conn.execute("CREATE TABLE t (id INTEGER PRIMARY KEY)")
+
+    assert db_path.exists()
+
+
 def test_sqlite_connection_enables_wal_busy_timeout_and_foreign_keys(tmp_path):
     from blindfold.store.dialect import connect
 

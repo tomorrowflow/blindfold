@@ -304,10 +304,12 @@ async def test_confirm_after_restart_deletes_the_persisted_row():
     assert store.rows == {}
 
 
-def test_get_review_inbox_store_returns_none_when_database_url_unset(monkeypatch):
+def test_get_review_inbox_store_returns_none_when_database_url_is_memory_sentinel(monkeypatch):
+    # ADR-0043 §1, issue #204: unset no longer means "no persistent store" -- the
+    # explicit memory:// sentinel is what disables persistence now.
     from blindfold.app import get_review_inbox_store
 
-    monkeypatch.delenv("BLINDFOLD_DATABASE_URL", raising=False)
+    monkeypatch.setenv("BLINDFOLD_DATABASE_URL", "memory://")
 
     assert get_review_inbox_store() is None
 

@@ -390,13 +390,17 @@ _transit_health_probe = CachedHealthProbe(
 )
 _store_health_probe = CachedHealthProbe(_default_store_probe, ttl_seconds=_HEALTH_PROBE_TTL_SECONDS)
 
-# In-memory RBAC fallback singleton for the unset-BLINDFOLD_DATABASE_URL path (issue
-# #105): built once on the first get_rbac() call with no DSN configured — in practice
-# the import-time bootstrap call below — then reused for the process lifetime so a grant
-# from one request is visible to the next. Unlike _entity_graph_fallback (issue #104),
-# whose getter the bootstrap does not invoke, this one is realized at import; that is
-# harmless for test hermeticity because with no DSN it is a plain in-memory object (no
-# DB/network side effect). Tests override via dependency_overrides[get_rbac].
+# In-memory RBAC fallback singleton for the no-persistent-store path (issue #105;
+# since issue #204 that means BLINDFOLD_DATABASE_URL=memory://, not unset — unset
+# now resolves to a durable SQLite DSN, ADR-0043 §1): built once on the first
+# get_rbac() call with a falsy database_url — in practice the import-time bootstrap
+# call below — then reused for the process lifetime so a grant from one request is
+# visible to the next. Unlike _entity_graph_fallback (issue #104), whose getter the
+# bootstrap does not invoke, this one is realized at import; that is harmless for
+# test hermeticity only because database_url is falsy at that point (a plain
+# in-memory object, no DB/network side effect) — tests/conftest.py pins
+# BLINDFOLD_DATABASE_URL=memory:// before any test module imports this one, so
+# that always holds in the suite. Tests override via dependency_overrides[get_rbac].
 _rbac_fallback: RbacRegistry | None = None
 
 # In-memory re-identify-store fallback singleton, same rationale as _rbac_fallback.
@@ -407,13 +411,16 @@ _reidentify_store_fallback: InMemoryReIdentificationStore | None = None
 # lands in a future slice. Tests substitute via dependency_overrides[get_relationship_store].
 _relationship_store = RelationshipStore()
 
-# Lazily-created in-memory entity-graph singleton for the unset-BLINDFOLD_DATABASE_URL
-# fallback path (issue #104). Not built at import time (preserves test hermeticity);
-# built once on first get_entity_graph() call when no DSN is configured and reused
+# Lazily-created in-memory entity-graph singleton for the no-persistent-store
+# fallback path (issue #104; since issue #204, database_url=="" means
+# BLINDFOLD_DATABASE_URL=memory://, not unset — unset now resolves to a durable
+# SQLite DSN, ADR-0043 §1). Not built at import time (preserves test hermeticity);
+# built once on first get_entity_graph() call when database_url is falsy and reused
 # within the process lifetime — matching the pre-slice _entity_graph = EntityGraph()
 # singleton behavior so mutations are stable across HTTP requests in one process.
-# The Postgres-backed path (DSN configured) is stateless per-call; only the in-memory
-# fallback needs this sentinel. Tests override via dependency_overrides[get_entity_graph].
+# The Postgres/SQLite-backed path (a truthy database_url) is stateless per-call;
+# only the in-memory fallback needs this sentinel. Tests override via
+# dependency_overrides[get_entity_graph].
 _entity_graph_fallback: EntityGraph | None = None
 
 # No module-level Transit client singleton — get_transit_client() reads settings on each
@@ -510,12 +517,13 @@ def get_gliner_activation_store():
     """The persisted L3 GLiNER activation-flag store (ADR-0034 §1/§2, issue #145),
     or ``None`` when no persistent store is configured.
 
-    Store-gated (ADR-0034 §2): the ephemeral in-memory default has no activation-flag
-    counterpart, so an unset ``BLINDFOLD_DATABASE_URL`` means the detection/settings
-    view always reads ``activated=False`` from this seam. Lazy import mirrors
-    get_rbac()'s rationale -- importing this module never pulls in psycopg for the
-    common case where no persistent store is configured. Tests override via
-    dependency_overrides[get_gliner_activation_store].
+    Store-gated (ADR-0034 §2): the ephemeral ``memory://`` sentinel (issue #204;
+    unset now defaults to a durable SQLite store, ADR-0043 §1) has no
+    activation-flag counterpart, so a falsy ``database_url`` means the
+    detection/settings view always reads ``activated=False`` from this seam. Lazy
+    import mirrors get_rbac()'s rationale -- importing this module never pulls in
+    psycopg for the common case where no persistent store is configured. Tests
+    override via dependency_overrides[get_gliner_activation_store].
     """
     database_url = get_settings().database_url
     if not database_url:
@@ -547,11 +555,14 @@ def get_rbac() -> RbacRegistry:
 
     Same lazy hydrate-or-fallback pattern as get_entity_graph() (issue #104):
 
-    - BLINDFOLD_DATABASE_URL configured -> PostgresRbacStore (stateless per-call; a
-      grant issued through one process is visible to another after a restart).
-    - BLINDFOLD_DATABASE_URL unset -> lazily-created module-level in-memory singleton
-      (_rbac_fallback), reused for the process lifetime so a grant from one request is
-      visible to the next. Tests override via dependency_overrides.
+    - database_url configured (Postgres or SQLite -- unset now defaults to a
+      durable SQLite DSN, ADR-0043 §1/issue #204) -> PostgresRbacStore (stateless
+      per-call; a grant issued through one process is visible to another after a
+      restart).
+    - BLINDFOLD_DATABASE_URL=memory:// (falsy database_url) -> lazily-created
+      module-level in-memory singleton (_rbac_fallback), reused for the process
+      lifetime so a grant from one request is visible to the next. Tests override
+      via dependency_overrides.
     """
     global _rbac_fallback
 
@@ -599,9 +610,10 @@ def get_activation_settings_store() -> "PostgresActivationSettingsStore | None":
 
     Store-gated: constructed lazily per-call (mirrors ``get_rbac()``'s pattern) so
     importing this module never pulls in ``psycopg`` for the common case where
-    ``BLINDFOLD_DATABASE_URL`` is unset. ``None`` is the store-gate signal the
-    gliner-provision endpoint refuses on -- restart-to-activate is incoherent on
-    the ephemeral in-memory default (ADR-0034 §2).
+    ``database_url`` is falsy (``BLINDFOLD_DATABASE_URL=memory://``; unset now
+    defaults to a durable SQLite store, ADR-0043 §1/issue #204). ``None`` is the
+    store-gate signal the gliner-provision endpoint refuses on -- restart-to-activate
+    is incoherent on the ephemeral in-memory default (ADR-0034 §2).
     """
     database_url = get_settings().database_url
     if not database_url:
@@ -619,7 +631,8 @@ def get_allowlist_store() -> "PostgresAllowlistStore | None":
     Store-gated, mirroring ``get_activation_settings_store()``'s pattern: constructed
     lazily per-call (never a module-level singleton, no live DB connection at import
     time) so importing this module never pulls in ``psycopg`` for the common case
-    where ``BLINDFOLD_DATABASE_URL`` is unset. ``None`` is the signal
+    where ``database_url`` is falsy (the ``memory://`` sentinel; unset now defaults
+    to a durable SQLite store, ADR-0043 §1/issue #204). ``None`` is the signal
     ``reject_review_item`` uses to skip persistence -- the in-memory ``Allowlist``
     (``_allowlist``) already carries the learned reject for the rest of this
     process's lifetime either way, so behavior with no store configured stays
@@ -660,7 +673,8 @@ def get_review_inbox_store() -> "PostgresReviewInboxStore | None":
     Store-gated, mirroring ``get_allowlist_store()``'s pattern: constructed lazily
     per-call (never a module-level singleton, no live DB connection at import
     time) so importing this module never pulls in ``psycopg`` for the common case
-    where ``BLINDFOLD_DATABASE_URL`` is unset. ``None`` is the signal
+    where ``database_url`` is falsy (the ``memory://`` sentinel; unset now defaults
+    to a durable SQLite store, ADR-0043 §1/issue #204). ``None`` is the signal
     ``hydrate_review_inbox_from_store`` uses to skip persistence entirely --
     persisting the review inbox also requires Transit (``get_transit_client()``),
     so this getter alone is not the full gate (issue #149 graceful degradation).
@@ -697,10 +711,13 @@ def get_reidentify_store() -> ReIdentificationStore:
 
     Same lazy hydrate-or-fallback pattern as get_rbac()/get_entity_graph():
 
-    - BLINDFOLD_DATABASE_URL configured -> PostgresReIdentificationStore (a surrogate
-      minted/seeded before a restart still resolves to its real value afterward).
-    - BLINDFOLD_DATABASE_URL unset -> lazily-created in-memory singleton
-      (_reidentify_store_fallback), reused for the process lifetime.
+    - database_url configured (Postgres or SQLite -- unset now defaults to a
+      durable SQLite DSN, ADR-0043 §1/issue #204) -> PostgresReIdentificationStore
+      (a surrogate minted/seeded before a restart still resolves to its real value
+      afterward).
+    - BLINDFOLD_DATABASE_URL=memory:// (falsy database_url) -> lazily-created
+      in-memory singleton (_reidentify_store_fallback), reused for the process
+      lifetime.
     """
     global _reidentify_store_fallback
 
@@ -722,14 +739,16 @@ def get_entity_graph() -> EntityGraph:
     ~85% of the test suite that imports blindfold.app but never hits an entity-graph
     endpoint (breaking hermeticity if eager). Tests override via dependency_overrides.
 
-    - BLINDFOLD_DATABASE_URL configured → PostgresEntityGraphStore (stateless per-call;
-      hydrates fresh from DB on every invocation so a process restart always reads live
-      Postgres state).
-    - BLINDFOLD_DATABASE_URL unset → lazily-created module-level in-memory singleton
-      (_entity_graph_fallback), so mutations are stable across HTTP requests within one
-      process (mirrors the pre-slice _entity_graph = EntityGraph() singleton behavior).
-      Any entity-graph endpoint hit without a configured DSN operates on this in-memory
-      graph — an acceptable, documented gap per the issue #104 brief.
+    - database_url configured (Postgres or SQLite -- unset now defaults to a
+      durable SQLite DSN, ADR-0043 §1/issue #204) → PostgresEntityGraphStore
+      (stateless per-call; hydrates fresh from the store on every invocation so a
+      process restart always reads live state).
+    - BLINDFOLD_DATABASE_URL=memory:// (falsy database_url) → lazily-created
+      module-level in-memory singleton (_entity_graph_fallback), so mutations are
+      stable across HTTP requests within one process (mirrors the pre-slice
+      _entity_graph = EntityGraph() singleton behavior). Any entity-graph endpoint
+      hit under the memory:// sentinel operates on this in-memory graph — an
+      acceptable, documented gap per the issue #104 brief.
     """
     global _entity_graph_fallback
 
@@ -783,7 +802,8 @@ bootstrap_from_vendored_seed(
 # reject persisted before this restart, via the same lazy Postgres-or-None seam
 # every request's reject_review_item uses (get_allowlist_store) -- so a token
 # rejected in a prior process is never re-proposed to the review inbox after a
-# restart. A no-op when BLINDFOLD_DATABASE_URL is unset (acceptance criterion 4).
+# restart. A no-op when database_url is falsy (BLINDFOLD_DATABASE_URL=memory://;
+# acceptance criterion 4).
 hydrate_allowlist_from_store(_allowlist, get_allowlist_store())
 
 # Persisted review-inbox hydration (ADR-0037, issue #169, acceptance criteria

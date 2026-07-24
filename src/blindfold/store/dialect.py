@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from pathlib import Path
 from typing import Any
 
 import psycopg
@@ -78,6 +79,10 @@ def connect(database_url: str) -> Any:
     """Return a DB-API 2.0 connection for `database_url` (Postgres or SQLite)."""
     if is_sqlite(database_url):
         path = database_url[len(_SQLITE_PREFIX) :]
+        # A fresh install has no Store directory yet (ADR-0043 §2, issue #204) --
+        # the computed default DSN must connect on the very first run, not require
+        # some other code path to have created the directory first.
+        Path(path).parent.mkdir(parents=True, exist_ok=True)
         raw = sqlite3.connect(path)
         raw.execute("PRAGMA journal_mode=WAL")
         raw.execute(f"PRAGMA busy_timeout={_SQLITE_BUSY_TIMEOUT_MS}")

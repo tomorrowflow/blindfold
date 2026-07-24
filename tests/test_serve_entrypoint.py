@@ -511,3 +511,44 @@ def test_run_server_does_not_log_the_ephemeral_store_warning_when_database_url_i
         )
 
     assert "ephemeral" not in caplog.text
+
+
+def test_run_server_logs_the_ephemeral_store_warning_for_the_memory_sentinel_end_to_end(
+    caplog, monkeypatch
+):
+    # ADR-0043 §1, issue #204, acceptance criterion 3: BLINDFOLD_DATABASE_URL=memory://
+    # is what triggers the ephemeral-store banner now -- driven through the real
+    # env-resolution seam (get_settings()), not a hand-built Settings().
+    from blindfold.config import get_settings
+
+    monkeypatch.setenv("BLINDFOLD_DATABASE_URL", "memory://")
+
+    with caplog.at_level("INFO"):
+        run_server(
+            settings=get_settings(),
+            entity_graph=EntityGraph(),
+            runner=lambda app, **kwargs: None,
+        )
+
+    assert "ephemeral" in caplog.text
+
+
+def test_run_server_does_not_log_the_ephemeral_store_warning_for_the_unset_default_end_to_end(
+    caplog, monkeypatch, tmp_path
+):
+    # ADR-0043 §1, issue #204: unset now resolves to a durable SQLite store, so the
+    # banner must NOT fire on the default (unset) install -- driven through the real
+    # env-resolution seam.
+    from blindfold.config import get_settings
+
+    monkeypatch.delenv("BLINDFOLD_DATABASE_URL", raising=False)
+    monkeypatch.setenv("BLINDFOLD_STORE_DIR", str(tmp_path))
+
+    with caplog.at_level("INFO"):
+        run_server(
+            settings=get_settings(),
+            entity_graph=EntityGraph(),
+            runner=lambda app, **kwargs: None,
+        )
+
+    assert "ephemeral" not in caplog.text

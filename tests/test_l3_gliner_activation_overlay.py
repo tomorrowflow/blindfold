@@ -64,16 +64,18 @@ def test_read_persisted_l3_gliner_activation_is_cached_for_the_process_lifetime(
         config._read_persisted_l3_gliner_activation.cache_clear()
 
 
-def test_persisted_gliner_flag_is_not_honored_on_the_ephemeral_in_memory_default(monkeypatch):
-    """Store-gated (ADR-0034 §2): with no persistent store configured, the persisted
-    flag is never even consulted -- GLiNER stays env-only on the in-memory default.
+def test_persisted_gliner_flag_is_not_honored_on_the_explicit_in_memory_sentinel(monkeypatch):
+    """Store-gated (ADR-0034 §2), updated for issue #204: with the explicit
+    memory:// sentinel configured (unset now means a durable SQLite store instead,
+    ADR-0043 §1), the persisted flag is never even consulted -- GLiNER stays
+    env-only on the in-memory opt-out.
     """
 
     def _fail_if_called(database_url: str) -> bool:
         raise AssertionError("persisted flag must not be read without a persistent store")
 
     monkeypatch.delenv("BLINDFOLD_L3_PROVIDER", raising=False)
-    monkeypatch.delenv("BLINDFOLD_DATABASE_URL", raising=False)
+    monkeypatch.setenv("BLINDFOLD_DATABASE_URL", "memory://")
     monkeypatch.setattr(config, "_read_persisted_l3_gliner_activation", _fail_if_called)
 
     assert get_settings().l3_provider == DEFAULT_L3_PROVIDER

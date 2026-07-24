@@ -278,11 +278,13 @@ def run_server(
         url = _console_management_url("/ui/status", settings)
         logger.info("blindfold: management UI at %s", url)
     # Ephemeral-store honesty banner (issue #199, ADR-0043's interim honesty
-    # slice): an unset BLINDFOLD_DATABASE_URL runs on in-memory module-level
+    # slice): a falsy settings.database_url runs on in-memory module-level
     # singletons -- every workspace/entity is lost on restart. Say so on the
-    # console line an operator actually reads at startup, framed as a permanent
-    # "opted out of persistence" indicator so it survives ADR-0043's later
-    # unset-default -> SQLite flip rather than being deleted then.
+    # console line an operator actually reads at startup. Framed as a permanent
+    # "opted out of persistence" indicator, this survived ADR-0043's later
+    # unset-default -> SQLite flip (issue #204) with no code change here: the
+    # trigger for this branch moved from an unset BLINDFOLD_DATABASE_URL to the
+    # explicit memory:// sentinel, but the falsy-database_url check itself didn't.
     if not settings.database_url:
         logger.info(
             "blindfold: store is ephemeral (in-memory) -- entities and workspaces "

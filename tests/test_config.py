@@ -187,9 +187,31 @@ def test_settings_host_and_port_are_overridable_via_env(monkeypatch):
     assert settings.port == 9000
 
 
-def test_settings_database_url_defaults_to_empty_string(monkeypatch):
+def test_settings_database_url_unset_defaults_to_sqlite_under_store_dir(monkeypatch, tmp_path):
+    # ADR-0043 §1, issue #204: unset stops meaning ephemeral in-memory and becomes
+    # a durable SQLite store at a computed default path under the Store directory.
     monkeypatch.delenv("BLINDFOLD_DATABASE_URL", raising=False)
+    monkeypatch.setenv("BLINDFOLD_STORE_DIR", str(tmp_path))
+
+    assert get_settings().database_url == f"sqlite:///{tmp_path / 'blindfold.sqlite3'}"
+
+
+def test_settings_database_url_memory_sentinel_disables_persistent_backends(monkeypatch):
+    # ADR-0043 §1, issue #204: memory:// is the explicit in-memory dev/demo opt-out
+    # -- it resolves to the same empty-string signal every store getter already
+    # gates on, so no code at the call sites needs to change.
+    monkeypatch.setenv("BLINDFOLD_DATABASE_URL", "memory://")
+
     assert get_settings().database_url == ""
+
+
+def test_settings_database_url_explicit_sqlite_dsn_passes_through_unchanged(monkeypatch, tmp_path):
+    # ADR-0043 §1, issue #204: an explicit sqlite:///path is a deliberate choice --
+    # never overridden by the Store-directory-derived default.
+    dsn = f"sqlite:///{tmp_path / 'custom.sqlite3'}"
+    monkeypatch.setenv("BLINDFOLD_DATABASE_URL", dsn)
+
+    assert get_settings().database_url == dsn
 
 
 def test_settings_database_url_is_read_from_env(monkeypatch):

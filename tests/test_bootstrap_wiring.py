@@ -194,17 +194,19 @@ async def test_seeding_the_real_reidentify_store_lets_reveal_resolve_without_pos
     assert resp.json()["real"] == "Martin Bach"
 
 
-def test_get_entity_graph_returns_same_instance_across_calls_when_database_url_unset(
+def test_get_entity_graph_returns_same_instance_across_calls_when_database_url_is_memory_sentinel(
     monkeypatch,
 ):
-    """Issue #104 regression: with BLINDFOLD_DATABASE_URL unset, get_entity_graph()
-    must return the same in-memory singleton across calls so mutations are visible
-    across requests within one process (mirrors the pre-slice _entity_graph singleton).
+    """Issue #104 regression, updated for issue #204: with BLINDFOLD_DATABASE_URL
+    set to the explicit memory:// sentinel (ADR-0043 §1 -- unset now means a
+    durable SQLite store instead), get_entity_graph() must return the same
+    in-memory singleton across calls so mutations are visible across requests
+    within one process (mirrors the pre-slice _entity_graph singleton).
 
     A fresh EntityGraph() per call would silently discard every mutation between
     consecutive HTTP requests — not a documented acceptable gap, but a silent data loss.
     """
-    monkeypatch.delenv("BLINDFOLD_DATABASE_URL", raising=False)
+    monkeypatch.setenv("BLINDFOLD_DATABASE_URL", "memory://")
 
     from blindfold.app import get_entity_graph
 
@@ -219,15 +221,16 @@ def test_get_entity_graph_returns_same_instance_across_calls_when_database_url_u
     assert g2.list_entities("default") != []
 
 
-def test_get_rbac_returns_same_instance_across_calls_when_database_url_unset(
+def test_get_rbac_returns_same_instance_across_calls_when_database_url_is_memory_sentinel(
     monkeypatch,
 ):
-    """Issue #105: get_rbac() mirrors get_entity_graph()'s singleton contract (#104) --
-    with BLINDFOLD_DATABASE_URL unset, it must return the same in-memory fallback
-    across calls so a grant issued in one request is visible to the next within one
-    process (a fresh RbacRegistry() per call would silently discard every grant).
+    """Issue #105, updated for issue #204: get_rbac() mirrors get_entity_graph()'s
+    singleton contract (#104) -- with BLINDFOLD_DATABASE_URL set to the explicit
+    memory:// sentinel, it must return the same in-memory fallback across calls so
+    a grant issued in one request is visible to the next within one process (a
+    fresh RbacRegistry() per call would silently discard every grant).
     """
-    monkeypatch.delenv("BLINDFOLD_DATABASE_URL", raising=False)
+    monkeypatch.setenv("BLINDFOLD_DATABASE_URL", "memory://")
 
     from blindfold.app import get_rbac
 
@@ -245,15 +248,16 @@ def test_get_rbac_returns_same_instance_across_calls_when_database_url_unset(
 
 
 @pytest.mark.anyio
-async def test_get_reidentify_store_returns_same_instance_across_calls_when_database_url_unset(
+async def test_get_reidentify_store_returns_same_instance_across_calls_when_database_url_is_memory_sentinel(
     monkeypatch,
 ):
-    """Issue #105: get_reidentify_store() mirrors get_entity_graph()'s/get_rbac()'s
-    singleton contract -- with BLINDFOLD_DATABASE_URL unset, it must return the same
-    in-memory fallback across calls so a seeded mapping entry is visible to the next
-    request within one process.
+    """Issue #105, updated for issue #204: get_reidentify_store() mirrors
+    get_entity_graph()'s/get_rbac()'s singleton contract -- with
+    BLINDFOLD_DATABASE_URL set to the explicit memory:// sentinel, it must return
+    the same in-memory fallback across calls so a seeded mapping entry is visible
+    to the next request within one process.
     """
-    monkeypatch.delenv("BLINDFOLD_DATABASE_URL", raising=False)
+    monkeypatch.setenv("BLINDFOLD_DATABASE_URL", "memory://")
 
     from blindfold.app import get_reidentify_store
 

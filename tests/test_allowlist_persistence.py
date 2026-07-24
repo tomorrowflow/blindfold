@@ -34,8 +34,10 @@ from blindfold.l3 import select_candidate_spans
 from blindfold.review import Allowlist, ReviewInbox
 
 
-def test_get_allowlist_store_returns_none_when_database_url_unset(monkeypatch):
-    monkeypatch.delenv("BLINDFOLD_DATABASE_URL", raising=False)
+def test_get_allowlist_store_returns_none_when_database_url_is_memory_sentinel(monkeypatch):
+    # ADR-0043 §1, issue #204: unset no longer means "no persistent store" -- the
+    # explicit memory:// sentinel is what disables persistence now.
+    monkeypatch.setenv("BLINDFOLD_DATABASE_URL", "memory://")
 
     assert get_allowlist_store() is None
 

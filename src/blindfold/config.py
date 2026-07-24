@@ -109,6 +109,26 @@ Data directory (ADR-0034 §3, issue #143):
                              value, so a Setup-provisioned model (issue #146)
                              activates on restart without hand-setting
                              `BLINDFOLD_L3_GLINER_MODEL_PATH`.
+
+Store selection (ADR-0043 §1/§2, issue #204):
+  BLINDFOLD_DATABASE_URL   — the one-knob store backend selector, dispatched on
+                             scheme by `resolve_database_url` / `get_settings()`:
+                             `postgres(ql)://…` selects Postgres (the opt-in
+                             shared store); an explicit `sqlite:///…` path selects
+                             SQLite at that path; unset selects a durable SQLite
+                             store at a computed default path under the Store
+                             directory; `memory://` is the explicit in-memory
+                             dev/demo opt-out, resolving to `""` -- the same
+                             signal every store getter already gates on
+                             (`if not database_url: ...`), so it disables both
+                             persistent backends with no call-site change.
+  BLINDFOLD_STORE_DIR      — the Store directory: on-disk home of the default
+                             embedded SQLite file (entity data, mapping, RBAC).
+                             Default: the OS app-data convention (see
+                             `resolve_store_dir`), distinct from the Data
+                             directory above (that holds capability assets, never
+                             entity data). Postgres keeps its location in its DSN
+                             and has no Store directory.
 """
 
 from __future__ import annotations
@@ -128,6 +148,8 @@ DEFAULT_L3_PROVIDER = "ollama"
 DEFAULT_L3_BATCH_SIZE = 5
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 25463
+MEMORY_DATABASE_URL = "memory://"
+DEFAULT_SQLITE_STORE_FILENAME = "blindfold.sqlite3"
 
 
 @dataclass(frozen=True)
@@ -223,6 +245,55 @@ def resolve_data_dir() -> str:
     return str(Path(xdg_data_home) / "blindfold")
 
 
+def resolve_store_dir() -> str:
+    """Resolve Blindfold's **Store directory** (ADR-0043 §2), the on-disk home of
+    the default embedded-SQLite store.
+
+    ``BLINDFOLD_STORE_DIR`` overrides when set. Otherwise defaults to the same OS
+    app-data convention as :func:`resolve_data_dir`, but under its own ``store``
+    leaf so the two locations never collide -- the Data directory holds
+    capability *assets* (models, caches), the Store directory holds entity data /
+    mapping / RBAC (CONTEXT.md's "Store directory" term).
+    """
+    override = os.environ.get("BLINDFOLD_STORE_DIR", "")
+    if override:
+        return override
+    if sys.platform == "darwin":
+        return str(Path.home() / "Library" / "Application Support" / "blindfold" / "store")
+    if sys.platform == "win32":
+        local_appdata = os.environ.get("LOCALAPPDATA", "") or str(
+            PureWindowsPath(str(Path.home())) / "AppData" / "Local"
+        )
+        return str(PureWindowsPath(local_appdata) / "Blindfold" / "Store")
+    xdg_data_home = os.environ.get("XDG_DATA_HOME", "") or str(
+        Path.home() / ".local" / "share"
+    )
+    return str(Path(xdg_data_home) / "blindfold" / "store")
+
+
+def resolve_database_url() -> str:
+    """Resolve the effective store backend from ``BLINDFOLD_DATABASE_URL`` per the
+    one-knob selection contract (ADR-0043 §1, issue #204):
+
+    - ``postgres(ql)://…`` or an explicit ``sqlite:///…`` path -> passed through
+      unchanged.
+    - unset -> a durable SQLite store at a computed default path under the
+      **Store directory** (:func:`resolve_store_dir`), not the ephemeral
+      in-memory default this used to mean.
+    - ``memory://`` -> the explicit in-memory dev/demo opt-out. Resolves to
+      ``""``, the same falsy signal every store getter already gates on
+      (``if not database_url: ...``), so disabling both persistent backends
+      needs no call-site change.
+    """
+    raw = os.environ.get("BLINDFOLD_DATABASE_URL", "")
+    if raw == MEMORY_DATABASE_URL:
+        return ""
+    if raw == "":
+        db_path = Path(resolve_store_dir()) / DEFAULT_SQLITE_STORE_FILENAME
+        return f"sqlite:///{db_path}"
+    return raw
+
+
 def raw_l3_gliner_model_path_override() -> str:
     """The raw ``BLINDFOLD_L3_GLINER_MODEL_PATH`` override, unresolved against the
     Data directory (ADR-0034 §3, issue #150).
@@ -239,7 +310,7 @@ def raw_l3_gliner_model_path_override() -> str:
 
 
 def get_settings() -> Settings:
-    database_url = os.environ.get("BLINDFOLD_DATABASE_URL", "")
+    database_url = resolve_database_url()
     l3_provider_env = os.environ.get("BLINDFOLD_L3_PROVIDER")
     if l3_provider_env is not None:
         # Explicit env wins over the persisted flag -- operator/deploy intent
