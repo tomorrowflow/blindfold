@@ -277,4 +277,16 @@ def run_server(
     else:
         url = _console_management_url("/ui/status", settings)
         logger.info("blindfold: management UI at %s", url)
+    # Ephemeral-store honesty banner (issue #199, ADR-0043's interim honesty
+    # slice): an unset BLINDFOLD_DATABASE_URL runs on in-memory module-level
+    # singletons -- every workspace/entity is lost on restart. Say so on the
+    # console line an operator actually reads at startup, framed as a permanent
+    # "opted out of persistence" indicator so it survives ADR-0043's later
+    # unset-default -> SQLite flip rather than being deleted then.
+    if not settings.database_url:
+        logger.info(
+            "blindfold: store is ephemeral (in-memory) -- entities and workspaces "
+            "are lost on restart. Set BLINDFOLD_DATABASE_URL to configure a "
+            "durable store."
+        )
     runner(APP_TARGET, host=host, port=port)

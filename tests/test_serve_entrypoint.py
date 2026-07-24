@@ -472,3 +472,42 @@ def test_startup_console_line_carries_only_a_url_never_an_entity_value(caplog):
         )
 
     assert "Martin Bach" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# 5. Ephemeral-store honesty banner on the startup console line (issue #199,
+#    ADR-0043's interim honesty slice)
+# ---------------------------------------------------------------------------
+
+
+def test_run_server_logs_the_ephemeral_store_warning_when_database_url_is_unset(caplog):
+    settings = Settings(upstream_base_url="http://shared.test")
+
+    with caplog.at_level("INFO"):
+        run_server(
+            settings=settings,
+            entity_graph=EntityGraph(),
+            runner=lambda app, **kwargs: None,
+        )
+
+    assert "ephemeral" in caplog.text
+    assert "BLINDFOLD_DATABASE_URL" in caplog.text
+
+
+def test_run_server_does_not_log_the_ephemeral_store_warning_when_database_url_is_configured(
+    caplog,
+):
+    settings = Settings(
+        upstream_base_url="http://shared.test", database_url="postgresql://db.test/blindfold"
+    )
+    graph = EntityGraph()
+    graph.add_entity("person", "acme", "Martin Bach")
+
+    with caplog.at_level("INFO"):
+        run_server(
+            settings=settings,
+            entity_graph=graph,
+            runner=lambda app, **kwargs: None,
+        )
+
+    assert "ephemeral" not in caplog.text

@@ -2822,6 +2822,16 @@ body {
   color: var(--bf-muted);
 }
 
+.bf-setup-ephemeral-banner {
+  margin: 12px 0 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #fdecec;
+  border: 1px solid var(--bf-red);
+  color: var(--bf-red);
+  font-size: 0.8125rem;
+}
+
 /* -----------------------------------------------------------------------
    Entity list empty state (issue #109) -- persistent Seed bundle import +
    one-click Sample data, reachable any time a workspace has zero entities

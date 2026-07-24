@@ -50,6 +50,19 @@ test.describe("Setup — empty-store forced redirect", () => {
     await expect(operatorPage.getByTestId("setup-workspace-name")).toBeVisible();
     await expect(operatorPage.getByTestId("setup-gliner-checkbox")).toHaveCount(0);
   });
+
+  test("the ephemeral-store honesty banner shows on the in-memory default store (issue #199, ADR-0043)", async ({
+    operatorPage,
+  }) => {
+    // Same has_persistent_store=false signal as the toggle-hidden case above --
+    // an unset BLINDFOLD_DATABASE_URL means every workspace/entity is lost on
+    // restart, so Setup must say so rather than stay silent.
+    await operatorPage.goto("/ui/setup");
+    const banner = operatorPage.getByTestId("setup-ephemeral-store-banner");
+    await expect(banner).toBeVisible();
+    await expect(banner).toContainText("opted out of persistence");
+    await expect(banner).toContainText("BLINDFOLD_DATABASE_URL");
+  });
 });
 
 test.describe("Setup — create first workspace", () => {

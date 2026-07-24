@@ -144,6 +144,13 @@ export function Setup() {
       <p className="bf-card-subtitle">
         Name your first workspace to get started. You'll be granted admin on it.
       </p>
+      {!hasPersistentStore && (
+        <p className="bf-setup-ephemeral-banner" role="status" data-testid="setup-ephemeral-store-banner">
+          You've opted out of persistence — this store is in-memory. Every workspace
+          and entity is lost when Blindfold restarts. Set <code>BLINDFOLD_DATABASE_URL</code>{" "}
+          to configure a durable store.
+        </p>
+      )}
       <form className="bf-setup-form" onSubmit={handleSubmit}>
         <label className="bf-setup-field-label" htmlFor="setup-workspace-name">
           Workspace name
