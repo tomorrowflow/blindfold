@@ -1,8 +1,11 @@
 -- Blindfold entity-graph schema — SQLite dialect (ADR-0043 §3). Hand-mirrors
 -- migrations.sql 1:1, table for table, statement for statement; the only dialect
 -- delta is `SERIAL PRIMARY KEY` -> `INTEGER PRIMARY KEY` (SQLite's rowid-alias
--- autoincrement). Applied via stdlib sqlite3's executescript() through the
--- connect() seam (dialect.py) -- never asyncpg/psycopg.
+-- autoincrement). Applied statement-by-statement via apply_sqlite_migrations()
+-- (dialect.py) over a stdlib sqlite3 connection from the connect() seam -- never
+-- asyncpg/psycopg. Not executescript(): the ADD COLUMN IF NOT EXISTS statements
+-- below are rewritten into a PRAGMA table_info existence check + plain ADD COLUMN,
+-- which a single executescript() pass could not do.
 --
 -- Idempotent: every statement is CREATE ... IF NOT EXISTS / ADD COLUMN IF NOT
 -- EXISTS, so applying migrations onto an already-migrated database is a no-op.
