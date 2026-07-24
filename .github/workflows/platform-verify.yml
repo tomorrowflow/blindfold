@@ -238,6 +238,13 @@ jobs:
 
             $env:BLINDFOLD_L3_MODEL = "smoke-test-stub"
             $env:BLINDFOLD_L3_BASE_URL = "http://127.0.0.1:$stubPort"
+            # The transit probe (GET {openbao_addr}/v1/sys/health) is the THIRD dependency
+            # compute_state requires healthy for "protected" (alongside upstream + l3). With no
+            # OpenBao on the hosted runner it was permanently unhealthy ("openbao unreachable"),
+            # so the proxy never left "degraded" and --smoke-launch-full always timed out. The
+            # ollama-stub answers ANY GET with 200 (transit only checks the status code), so
+            # point the transit probe at the same seam stub -- same discipline as the l3 stub.
+            $env:BLINDFOLD_OPENBAO_ADDR = "http://127.0.0.1:$stubPort"
 
             $stdout = "tray-app/publish/smoke-launch-full-stdout.log"
             $stderr = "tray-app/publish/smoke-launch-full-stderr.log"

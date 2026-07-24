@@ -98,6 +98,19 @@ internal static class Program
         supervisor.Start();
 
         var deadline = DateTime.UtcNow.AddSeconds(30);
+
+        // A timeout used to say only "never reached Protected" -- indistinguishable between
+        // "/v1/status was never once reachable" (process/port/env-propagation problem) and
+        // "it answered every poll but a dependency stayed unhealthy" (a real Degraded stuck
+        // state). Tracking the last decoded payload and the last poll exception's message
+        // (never raw process output, and /v1/status's own contract is scrubbed-by-construction
+        // -- state string + counts only, no entity/dependency-name content) lets a timeout's
+        // stderr line tell the two apart on the next hosted run.
+        StatusPayload? lastStatus = null;
+        string? lastPollError = null;
+        var pollAttempts = 0;
+        var pollSuccesses = 0;
+
         while (DateTime.UtcNow < deadline)
         {
             var liveness = supervisor.CurrentLiveness();
@@ -107,9 +120,12 @@ internal static class Program
                 return 1;
             }
 
+            pollAttempts++;
             try
             {
                 var status = statusClient.PollAsync().GetAwaiter().GetResult();
+                pollSuccesses++;
+                lastStatus = status;
                 supervisor.NotifyHealthy();
                 var state = AppStateMachine.Reduce(supervisor.CurrentLiveness(), status);
                 if (state.Kind == AppStateKind.Protected)
@@ -118,15 +134,21 @@ internal static class Program
                     return 0;
                 }
             }
-            catch
+            catch (Exception ex)
             {
                 // Not up yet -- keep polling until the deadline.
+                lastPollError = ex.Message;
             }
 
             Thread.Sleep(500);
         }
 
-        Console.Error.WriteLine("--smoke-launch-full: proxy never reached Protected within the timeout");
+        Console.Error.WriteLine(lastStatus is not null
+            ? "--smoke-launch-full: proxy never reached Protected within the timeout -- "
+              + $"last /v1/status: state=\"{lastStatus.State}\", dependencies_down={lastStatus.DependenciesDown} "
+              + $"({pollSuccesses}/{pollAttempts} polls succeeded)"
+            : "--smoke-launch-full: proxy never reached Protected within the timeout -- "
+              + $"/v1/status was never reachable in {pollAttempts} attempts; last error: {lastPollError}");
         supervisor.Stop();
         return 1;
     }
