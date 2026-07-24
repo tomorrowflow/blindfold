@@ -58,9 +58,17 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   surrogates. The authoritative dictionary the deterministic passes match against.
 - **Data directory** — Blindfold's install-global on-disk location for large local
   *assets* (detection models, caches), rooted at `BLINDFOLD_DATA_DIR` and defaulting
-  to the OS app-data convention. Distinct from the **store** (entities, **mapping**,
-  RBAC) and never per-**workspace**: it holds capability assets like the **GLiNER
-  cascade** model, not entity data. _Avoid_: cache dir, app dir, home dir.
+  to the OS app-data convention. Distinct from the **store**: it holds capability
+  assets like the **GLiNER cascade** model, never entity data, **mapping**, or RBAC —
+  those live in the **store**, which has its own on-disk home (the **Store
+  directory**). Never per-**workspace**. _Avoid_: cache dir, app dir, home dir.
+- **Store directory** — the on-disk home of the default local **store** (the embedded
+  SQLite database file), rooted at `BLINDFOLD_STORE_DIR` and defaulting to the OS
+  app-data convention (distinct from the **Data directory**). Exists only for the
+  embedded-SQLite backend; the opt-in **shared** Postgres backend keeps its location in
+  its `BLINDFOLD_DATABASE_URL` DSN and has no Store directory. Holds entity data,
+  **mapping**, and RBAC — the crown-jewel surfaces — so it is the store's durable seat,
+  never a cache. _Avoid_: db dir, data dir (that is the assets location).
 - **Variation** — a surface form of an entity (full name, first name, initials,
   nickname, misspelling). Resolving variations to one entity is **coreference**.
 - **Merge** — the curator action that collapses two separate canonical **entities**

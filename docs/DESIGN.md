@@ -61,7 +61,8 @@ key and is treated as the primary secret.
    prototyped but never wired into the request path and are deferred past v1
    (ADR-0005); today's surrogates mint from flat pools. Surrogates are
    **stable once minted**. **Closed-world restore + post-restore verify pass.**
-4. **Entity graph** (Postgres) — **global registry + workspace tags**
+4. **Entity graph** (embedded SQLite by default; Postgres for the opt-in shared
+   store — ADR-0043) — **global registry + workspace tags**
    (one canonical entity per real person/org; workspaces = unit of team access +
    disambiguation + audit). Tables: persons + variations (coreference), org_units
    (self-ref hierarchy), entity_relationships (generic graph), role_assignments,
@@ -144,7 +145,7 @@ opt-in** to degrade to deterministic-only and keep working.
 | 14 | Surrogate generation | Plausible names + reserved-namespace PII; coherent; date-shift; stable |
 | 15 | Store security | OpenBao Transit + Postgres ciphertext columns + blind index |
 | 16 | Management app | Full SPA (React/Vue) + FastAPI JSON API |
-| 17 | Backend stack (derived) | Python/FastAPI + Postgres + Ollama + OpenBao |
+| 17 | Backend stack (derived) | Python/FastAPI + SQLite (default local store) / Postgres (opt-in shared) + Ollama + OpenBao (ADR-0043) |
 | 18 | Seeding | Import voice-diary data + optional history mining |
 
 ## Top risks
