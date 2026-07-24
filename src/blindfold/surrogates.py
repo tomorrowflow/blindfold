@@ -19,7 +19,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 
 from .detection import Entity
-from .store._mint import next_replacement_surrogate
+from .store._mint import collides_with_known_entity, next_replacement_surrogate
 
 
 def _mint_pii_surrogate(kind: str, index: int) -> str:
@@ -113,11 +113,24 @@ class SurrogateMapping:
         mapping (idempotent). The surrogate is drawn from a reserved namespace per
         :func:`_mint_pii_surrogate` so Blindfold never generates a routable lookalike
         of a real third party's contact value (leak-audit clause E reserved-namespace).
+
+        Mint-time disjointness (issue #206, generalizing #80's entity-pool guard to
+        the L1 PII seam): a reserved-namespace candidate (e.g. NANPA's ``555-01xx``
+        fictional phone range) can coincide with a genuine real-world value -- that
+        exact range is also a common convention for real test/fixture phone numbers.
+        A candidate that collides with ``value`` itself or any other already-known
+        real value is skipped (never reused for a later value), so the surrogate
+        this mints can never itself trip ``engine.leak_gate`` once injected.
         """
         if value not in self._by_real:
             index = self._pii_counters.get(kind, 0)
-            self._pii_counters[kind] = index + 1
-            surrogate = _mint_pii_surrogate(kind, index)
+            known_values = self.real_values() + [value]
+            while True:
+                surrogate = _mint_pii_surrogate(kind, index)
+                index += 1
+                if not collides_with_known_entity(surrogate, known_values):
+                    break
+            self._pii_counters[kind] = index
             self._by_real[value] = surrogate
             self._known_surrogates.add(surrogate)
         return self._by_real[value]
