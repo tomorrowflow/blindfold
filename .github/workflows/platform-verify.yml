@@ -238,13 +238,33 @@ jobs:
 
             $env:BLINDFOLD_L3_MODEL = "smoke-test-stub"
             $env:BLINDFOLD_L3_BASE_URL = "http://127.0.0.1:$stubPort"
-            # The transit probe (GET {openbao_addr}/v1/sys/health) is the THIRD dependency
-            # compute_state requires healthy for "protected" (alongside upstream + l3). With no
-            # OpenBao on the hosted runner it was permanently unhealthy ("openbao unreachable"),
-            # so the proxy never left "degraded" and --smoke-launch-full always timed out. The
-            # ollama-stub answers ANY GET with 200 (transit only checks the status code), so
-            # point the transit probe at the same seam stub -- same discipline as the l3 stub.
-            $env:BLINDFOLD_OPENBAO_ADDR = "http://127.0.0.1:$stubPort"
+
+            # DIAGNOSTIC (issue #197, TEMPORARY): --smoke-launch-full reports exactly one
+            # unhealthy dependency but only surfaces the count. Launch the SAME
+            # blindfold-proxy.exe one hop directly (not via the tray) with this stub env and dump
+            # its raw /v1/status: config.l3_model shows whether the env reached the proxy at all,
+            # and the dependencies map names the unhealthy probe with its detail. Comparing this
+            # one-hop result against the tray-spawned (two-hop) smoke result isolates whether the
+            # env is lost in the PowerShell->proxy hop or the tray's PowerShell->tray->proxy spawn.
+            $diagStdout = "tray-app/publish/diag-proxy-stdout.log"
+            $diagStderr = "tray-app/publish/diag-proxy-stderr.log"
+            $diag = Start-Process -FilePath "tray-app/publish/blindfold-proxy.exe" `
+              -ArgumentList "serve", "--host", "127.0.0.1", "--port", "25465" `
+              -PassThru -NoNewWindow -RedirectStandardOutput $diagStdout -RedirectStandardError $diagStderr
+            try {
+              $diagDeadline = (Get-Date).AddSeconds(25)
+              while ((Get-Date) -lt $diagDeadline) {
+                try {
+                  $resp = Invoke-WebRequest -Uri "http://127.0.0.1:25465/v1/status" -UseBasicParsing
+                  Write-Host "---- DIAG one-hop proxy /v1/status (stub env) ----"
+                  Write-Host $resp.Content
+                  Write-Host "-------------------------------"
+                  break
+                } catch { Start-Sleep -Milliseconds 500 }
+              }
+            } finally {
+              Stop-Process -Id $diag.Id -Force -ErrorAction SilentlyContinue
+            }
 
             $stdout = "tray-app/publish/smoke-launch-full-stdout.log"
             $stderr = "tray-app/publish/smoke-launch-full-stderr.log"
