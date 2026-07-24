@@ -1,24 +1,31 @@
-"""Postgres-backed live store for the re-identify mapping (issue #105, Setup slice 2/5).
+"""Live store for the re-identify mapping (issue #105, Setup slice 2/5).
 
 Backs the :class:`~blindfold.reidentify.ReIdentificationStore` seam: a surrogate minted
 (seeded) before a process restart still resolves to its real value afterward. Same
-synchronous psycopg calling convention, per-call connection, and idempotent-migration-
+synchronous calling convention, per-call connection, and idempotent-migration-
 in-constructor pattern as
 :class:`~blindfold.store.entity_graph_store.PostgresEntityGraphStore` (issue #104).
+Backend-dispatched via the thin dialect seam (``dialect.connect()``, ADR-0043 §3,
+issue #200): a ``postgres(ql)://`` DSN opens synchronous psycopg exactly as before; a
+``sqlite:///`` DSN opens stdlib ``sqlite3`` through the same seam.
 
 Only the Transit ciphertext side of the mapping is ever stored here -- the real value
 itself never touches this store or the database (ADR-0008 / CONTEXT.md's mapping-
 secrecy invariant, leak-audit clause G). ``surrogate_to_ciphertext`` stays ``async`` to
-match the ``ReIdentificationStore`` Protocol that app.py's reidentify endpoint awaits.
+match the ``ReIdentificationStore`` Protocol that app.py's reidentify endpoint awaits
+-- the dialect connection underneath (either driver) is synchronous either way.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
-import psycopg
+from .dialect import apply_sqlite_migrations, connect, is_sqlite
 
 _MIGRATIONS_SQL = Path(__file__).with_name("migrations.sql").read_text(encoding="utf-8")
+_MIGRATIONS_SQL_SQLITE = Path(__file__).with_name("migrations_sqlite.sql").read_text(
+    encoding="utf-8"
+)
 
 
 class PostgresReIdentificationStore:
@@ -30,13 +37,16 @@ class PostgresReIdentificationStore:
 
     def _ensure_schema(self) -> None:
         """Apply migrations (idempotent) to guarantee the schema exists."""
-        with psycopg.connect(self._dsn) as conn:
-            conn.execute(_MIGRATIONS_SQL)
+        with connect(self._dsn) as conn:
+            if is_sqlite(self._dsn):
+                apply_sqlite_migrations(conn, _MIGRATIONS_SQL_SQLITE)
+            else:
+                conn.execute(_MIGRATIONS_SQL)
             conn.commit()
 
     def seed(self, surrogate: str, workspace: str, ciphertext: str) -> None:
         """Persist a (surrogate, workspace) -> ciphertext entry (upsert)."""
-        with psycopg.connect(self._dsn) as conn:
+        with connect(self._dsn) as conn:
             conn.execute(
                 "INSERT INTO reidentify_mappings (surrogate, workspace, ciphertext) "
                 "VALUES (%s, %s, %s) "
@@ -46,7 +56,7 @@ class PostgresReIdentificationStore:
             conn.commit()
 
     async def surrogate_to_ciphertext(self, surrogate: str, workspace: str) -> str | None:
-        with psycopg.connect(self._dsn) as conn:
+        with connect(self._dsn) as conn:
             row = conn.execute(
                 "SELECT ciphertext FROM reidentify_mappings WHERE surrogate = %s AND workspace = %s",
                 (surrogate, workspace),

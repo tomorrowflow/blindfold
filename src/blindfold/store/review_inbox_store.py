@@ -1,11 +1,17 @@
-"""Postgres-backed live store for the review inbox (ADR-0037, issue #169).
+"""Live store for the review inbox (ADR-0037, issue #169).
 
 Backs :class:`~blindfold.review.ReviewInbox`'s persistence seam: a provisional
 candidate minted before a process restart -- and the per-pool mint cursor
 (``_pool_positions``, issue #80) that guards against reissuing its surrogate --
-both survive the restart. Same synchronous psycopg calling convention,
+both survive the restart. Same synchronous calling convention,
 per-call connection, and idempotent-migration-in-constructor pattern as
 :class:`~blindfold.store.allowlist_store.PostgresAllowlistStore` (issue #168).
+Backend-dispatched via the thin dialect seam (``dialect.connect()``, ADR-0043 §3,
+issue #200): a ``postgres(ql)://`` DSN opens synchronous psycopg exactly as before; a
+``sqlite:///`` DSN opens stdlib ``sqlite3`` through the same seam. ``review_inbox.id``
+is caller-assigned (``ReviewInbox``'s own monotonic counter) under either dialect --
+SQLite's rowid-aliasing ``INTEGER PRIMARY KEY`` accepts an explicit id exactly like
+Postgres's non-``SERIAL`` ``INTEGER PRIMARY KEY``, no autoincrement involved.
 
 Only Transit ciphertext (+ a blind index for ``real``) is ever written for the
 two real-value columns -- this store performs no encryption of its own
@@ -18,9 +24,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import psycopg
+from .dialect import apply_sqlite_migrations, connect, is_sqlite
 
 _MIGRATIONS_SQL = Path(__file__).with_name("migrations.sql").read_text(encoding="utf-8")
+_MIGRATIONS_SQL_SQLITE = Path(__file__).with_name("migrations_sqlite.sql").read_text(
+    encoding="utf-8"
+)
 
 
 class PostgresReviewInboxStore:
@@ -32,8 +41,11 @@ class PostgresReviewInboxStore:
 
     def _ensure_schema(self) -> None:
         """Apply migrations (idempotent) to guarantee the schema exists."""
-        with psycopg.connect(self._dsn) as conn:
-            conn.execute(_MIGRATIONS_SQL)
+        with connect(self._dsn) as conn:
+            if is_sqlite(self._dsn):
+                apply_sqlite_migrations(conn, _MIGRATIONS_SQL_SQLITE)
+            else:
+                conn.execute(_MIGRATIONS_SQL)
             conn.commit()
 
     def upsert_row(
@@ -53,7 +65,7 @@ class PostgresReviewInboxStore:
         under -- plaintext, like ``provisional_surrogate``/``entity_type``,
         since it is not itself a real value.
         """
-        with psycopg.connect(self._dsn) as conn:
+        with connect(self._dsn) as conn:
             conn.execute(
                 "INSERT INTO review_inbox "
                 "(id, real_ciphertext, real_blind_index, context_ciphertext, "
@@ -83,7 +95,7 @@ class PostgresReviewInboxStore:
     def remove_row(self, item_id: str) -> None:
         """Delete the row (and its ciphertext) for ``item_id`` -- confirm/reject
         lifecycle (ADR-0037): a triaged item never lingers on disk."""
-        with psycopg.connect(self._dsn) as conn:
+        with connect(self._dsn) as conn:
             conn.execute("DELETE FROM review_inbox WHERE id = %s", (int(item_id),))
             conn.commit()
 
@@ -98,7 +110,7 @@ class PostgresReviewInboxStore:
         persisted before the ``workspace`` column existed reads back as the
         default workspace slug -- the schema migration supplies that default
         (issue #171), never a NULL/crash."""
-        with psycopg.connect(self._dsn) as conn:
+        with connect(self._dsn) as conn:
             rows = conn.execute(
                 "SELECT id, real_ciphertext, context_ciphertext, context_offset, "
                 "provisional_surrogate, entity_type, workspace FROM review_inbox"
@@ -110,7 +122,7 @@ class PostgresReviewInboxStore:
 
     def pool_positions(self) -> dict[str, int]:
         """Every persisted per-pool mint cursor (issue #80/#167), keyed by pool key."""
-        with psycopg.connect(self._dsn) as conn:
+        with connect(self._dsn) as conn:
             rows = conn.execute(
                 "SELECT pool_key, position FROM review_inbox_pool_positions"
             ).fetchall()
@@ -118,7 +130,7 @@ class PostgresReviewInboxStore:
 
     def set_pool_position(self, pool_key: str, position: int) -> None:
         """Persist the mint cursor for ``pool_key`` (upsert)."""
-        with psycopg.connect(self._dsn) as conn:
+        with connect(self._dsn) as conn:
             conn.execute(
                 "INSERT INTO review_inbox_pool_positions (pool_key, position) "
                 "VALUES (%s, %s) "

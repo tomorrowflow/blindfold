@@ -1,10 +1,13 @@
-"""Postgres-backed live store for RBAC role grants (issue #105, Setup slice 2/5).
+"""Live store for RBAC role grants (issue #105, Setup slice 2/5).
 
 Backs :class:`~blindfold.rbac.RbacRegistry`'s persistence: role grants issued through
 ``grant()`` (including ADR-0030's creator-becomes-admin bootstrap grant) survive a
-process restart. Same synchronous psycopg calling convention, per-call connection, and
+process restart. Same synchronous calling convention, per-call connection, and
 idempotent-migration-in-constructor pattern as
 :class:`~blindfold.store.entity_graph_store.PostgresEntityGraphStore` (issue #104).
+Backend-dispatched via the thin dialect seam (``dialect.connect()``, ADR-0043 §3,
+issue #200): a ``postgres(ql)://`` DSN opens synchronous psycopg exactly as before; a
+``sqlite:///`` DSN opens stdlib ``sqlite3`` through the same seam.
 
 ``_require_role`` (app.py) stays the single RBAC gate -- this store only changes where
 grants live, never how they are checked.
@@ -17,11 +20,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import psycopg
-
 from ..rbac import VALID_ROLES, RoleAssignment
+from .dialect import apply_sqlite_migrations, connect, is_sqlite
 
 _MIGRATIONS_SQL = Path(__file__).with_name("migrations.sql").read_text(encoding="utf-8")
+_MIGRATIONS_SQL_SQLITE = Path(__file__).with_name("migrations_sqlite.sql").read_text(
+    encoding="utf-8"
+)
 
 
 class PostgresRbacStore:
@@ -33,14 +38,17 @@ class PostgresRbacStore:
 
     def _ensure_schema(self) -> None:
         """Apply migrations (idempotent) to guarantee the schema exists."""
-        with psycopg.connect(self._dsn) as conn:
-            conn.execute(_MIGRATIONS_SQL)
+        with connect(self._dsn) as conn:
+            if is_sqlite(self._dsn):
+                apply_sqlite_migrations(conn, _MIGRATIONS_SQL_SQLITE)
+            else:
+                conn.execute(_MIGRATIONS_SQL)
             conn.commit()
 
     def grant(self, identity: str, workspace: str, role: str) -> None:
         if role not in VALID_ROLES:
             raise ValueError(f"unknown role {role!r}; valid roles: {sorted(VALID_ROLES)}")
-        with psycopg.connect(self._dsn) as conn:
+        with connect(self._dsn) as conn:
             conn.execute(
                 "INSERT INTO rbac_grants (identity, workspace, role) VALUES (%s, %s, %s) "
                 "ON CONFLICT (identity, workspace, role) DO NOTHING",
@@ -49,7 +57,7 @@ class PostgresRbacStore:
             conn.commit()
 
     def revoke(self, identity: str, workspace: str, role: str) -> None:
-        with psycopg.connect(self._dsn) as conn:
+        with connect(self._dsn) as conn:
             conn.execute(
                 "DELETE FROM rbac_grants WHERE identity = %s AND workspace = %s AND role = %s",
                 (identity, workspace, role),
@@ -57,7 +65,7 @@ class PostgresRbacStore:
             conn.commit()
 
     def has_role(self, identity: str, workspace: str, role: str) -> bool:
-        with psycopg.connect(self._dsn) as conn:
+        with connect(self._dsn) as conn:
             row = conn.execute(
                 "SELECT 1 FROM rbac_grants WHERE identity = %s AND workspace = %s AND role = %s",
                 (identity, workspace, role),
@@ -65,7 +73,7 @@ class PostgresRbacStore:
         return row is not None
 
     def list_workspace(self, workspace: str) -> list[RoleAssignment]:
-        with psycopg.connect(self._dsn) as conn:
+        with connect(self._dsn) as conn:
             rows = conn.execute(
                 "SELECT identity, workspace, role FROM rbac_grants WHERE workspace = %s",
                 (workspace,),
@@ -73,7 +81,7 @@ class PostgresRbacStore:
         return [RoleAssignment(identity=r[0], workspace=r[1], role=r[2]) for r in rows]
 
     def list_identity(self, identity: str) -> list[RoleAssignment]:
-        with psycopg.connect(self._dsn) as conn:
+        with connect(self._dsn) as conn:
             rows = conn.execute(
                 "SELECT identity, workspace, role FROM rbac_grants WHERE identity = %s",
                 (identity,),
