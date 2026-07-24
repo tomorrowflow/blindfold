@@ -269,8 +269,27 @@ jobs:
             $stdout = "tray-app/publish/smoke-launch-full-stdout.log"
             $stderr = "tray-app/publish/smoke-launch-full-stderr.log"
             $proc = Start-Process -FilePath "tray-app/publish/blindfold.exe" -ArgumentList "--smoke-launch-full" `
-              -Wait -PassThru -NoNewWindow `
+              -PassThru -NoNewWindow `
               -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+
+            # DIAGNOSTIC (issue #197, TEMPORARY): the smoke test drives its own proxy on :25463 for
+            # ~30s. Curl that (two-hop, tray-spawned) proxy's /v1/status mid-run and compare its
+            # config.l3_model + dependency detail against the one-hop dump above -- distinguishes
+            # env-loss ("no L3 adjudicator configured", l3_model null) from a data-dir provider flip
+            # ("gliner model not provisioned", l3_model set).
+            $twoHopDeadline = (Get-Date).AddSeconds(20)
+            while ((Get-Date) -lt $twoHopDeadline) {
+              if ($proc.HasExited) { break }
+              try {
+                $r2 = Invoke-WebRequest -Uri "http://127.0.0.1:25463/v1/status" -UseBasicParsing
+                Write-Host "---- DIAG two-hop (tray-spawned) proxy /v1/status ----"
+                Write-Host $r2.Content
+                Write-Host "-------------------------------"
+                break
+              } catch { Start-Sleep -Milliseconds 500 }
+            }
+
+            $proc.WaitForExit()
             $exitCode = $proc.ExitCode
 
             foreach ($log in @($stdout, $stderr, $stubStdout, $stubStderr)) {
