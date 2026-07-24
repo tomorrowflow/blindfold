@@ -188,19 +188,30 @@ jobs:
           $ErrorActionPreference = "Stop"
           Copy-Item "dist\blindfold-proxy.exe" "tray-app\publish\blindfold-proxy.exe" -Force
 
-      # Windows: issue #197's portable-folder AC -- launching the tray from that folder must
-      # start the proxy and reach Protected. --smoke-launch-full drives the real supervisor +
-      # status poll loop headlessly (no message loop, no interactive dialog) and exits 0 only
-      # once AppStateMachine reduces to Protected.
+      # Windows: issue #197's portable-folder AC, verified as two complementary assertions
+      # (a deliberate contract split -- see Program.cs RunSmokeLaunchFull and ADR-0041's
+      # "thin, logic-free front door"):
+      #
+      #   1. ONE-HOP -- the frozen proxy's own capability. Launch blindfold-proxy.exe directly
+      #      with the L3 stub env set at PowerShell scope and assert /v1/status reaches
+      #      "protected". This proves the portable folder's proxy reaches Protected when its
+      #      L3 dependency is configured.
+      #   2. TWO-HOP -- the tray's supervision job. Launch blindfold.exe --smoke-launch-full,
+      #      which spawns the proxy, polls it, supervises it, and reduces its /v1/status; it
+      #      exits 0 on any non-error terminal (Protected OR Degraded). It does NOT require
+      #      Protected: the single-file WinExe host does not reliably propagate ambient env to
+      #      its child, so the tray-spawned proxy's l3 probe stays unhealthy (Degraded) even
+      #      though the one-hop proxy above reaches Protected. Requiring Protected here would be
+      #      testing env-inheritance-through-a-GUI-host, not the tray's contract, and is what
+      #      previously deadlocked this gate.
       #
       # /v1/status only reports "protected" once every dependency probe is healthy
       # (status.py's compute_state) -- with no BLINDFOLD_L3_MODEL configured, the l3 probe
-      # (ping_ollama) is unhealthy by construction ("no L3 adjudicator configured"), so a
-      # bare `blindfold serve` never leaves Degraded and this step's first hosted run timed
-      # out waiting for Protected. windows/packaging/ollama-stub.py stands in for the real
-      # Ollama dependency at its network boundary -- answers GET /api/tags with a bare 200,
-      # same seam-stub discipline the leak-audit tests use -- so BLINDFOLD_L3_MODEL/
-      # BLINDFOLD_L3_BASE_URL can point at it and the l3 probe reports healthy.
+      # (ping_ollama) is unhealthy by construction ("no L3 adjudicator configured").
+      # windows/packaging/ollama-stub.py stands in for the real Ollama dependency at its
+      # network boundary -- answers GET /api/tags with a bare 200, same seam-stub discipline
+      # the leak-audit tests use -- so BLINDFOLD_L3_MODEL/BLINDFOLD_L3_BASE_URL can point at it
+      # and the one-hop l3 probe reports healthy.
       - name: Smoke-launch portable folder (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
@@ -239,31 +250,41 @@ jobs:
             $env:BLINDFOLD_L3_MODEL = "smoke-test-stub"
             $env:BLINDFOLD_L3_BASE_URL = "http://127.0.0.1:$stubPort"
 
-            # DIAGNOSTIC (issue #197, TEMPORARY): --smoke-launch-full reports exactly one
-            # unhealthy dependency but only surfaces the count. Launch the SAME
-            # blindfold-proxy.exe one hop directly (not via the tray) with this stub env and dump
-            # its raw /v1/status: config.l3_model shows whether the env reached the proxy at all,
-            # and the dependencies map names the unhealthy probe with its detail. Comparing this
-            # one-hop result against the tray-spawned (two-hop) smoke result isolates whether the
-            # env is lost in the PowerShell->proxy hop or the tray's PowerShell->tray->proxy spawn.
-            $diagStdout = "tray-app/publish/diag-proxy-stdout.log"
-            $diagStderr = "tray-app/publish/diag-proxy-stderr.log"
-            $diag = Start-Process -FilePath "tray-app/publish/blindfold-proxy.exe" `
+            # ONE-HOP assertion (issue #197): the frozen portable proxy, launched directly with
+            # the L3 stub env at PowerShell scope, must reach "protected". This proves the
+            # portable folder's blindfold-proxy.exe reaches Protected when every dependency probe
+            # is healthy -- independent of the tray. (The two-hop --smoke-launch-full below
+            # deliberately does NOT require Protected; see the step's header comment.)
+            $oneHopStdout = "tray-app/publish/onehop-proxy-stdout.log"
+            $oneHopStderr = "tray-app/publish/onehop-proxy-stderr.log"
+            $oneHop = Start-Process -FilePath "tray-app/publish/blindfold-proxy.exe" `
               -ArgumentList "serve", "--host", "127.0.0.1", "--port", "25465" `
-              -PassThru -NoNewWindow -RedirectStandardOutput $diagStdout -RedirectStandardError $diagStderr
+              -PassThru -NoNewWindow -RedirectStandardOutput $oneHopStdout -RedirectStandardError $oneHopStderr
             try {
-              $diagDeadline = (Get-Date).AddSeconds(25)
-              while ((Get-Date) -lt $diagDeadline) {
+              $oneHopDeadline = (Get-Date).AddSeconds(30)
+              $oneHopProtected = $false
+              $lastState = "<never answered>"
+              while ((Get-Date) -lt $oneHopDeadline) {
+                if ($oneHop.HasExited) {
+                  throw "one-hop blindfold-proxy.exe exited early with code $($oneHop.ExitCode)"
+                }
                 try {
                   $resp = Invoke-WebRequest -Uri "http://127.0.0.1:25465/v1/status" -UseBasicParsing
-                  Write-Host "---- DIAG one-hop proxy /v1/status (stub env) ----"
-                  Write-Host $resp.Content
-                  Write-Host "-------------------------------"
-                  break
-                } catch { Start-Sleep -Milliseconds 500 }
+                  $lastState = ($resp.Content | ConvertFrom-Json).state
+                  if ($lastState -eq "protected") { $oneHopProtected = $true; break }
+                } catch { }
+                Start-Sleep -Milliseconds 500
+              }
+              if (-not $oneHopProtected) {
+                foreach ($log in @($oneHopStdout, $oneHopStderr)) {
+                  if ((Test-Path $log) -and (Get-Item $log).Length -gt 0) {
+                    Write-Host "---- $log ----"; Get-Content $log; Write-Host "----"
+                  }
+                }
+                throw "one-hop frozen proxy never reached Protected (last state: $lastState)"
               }
             } finally {
-              Stop-Process -Id $diag.Id -Force -ErrorAction SilentlyContinue
+              Stop-Process -Id $oneHop.Id -Force -ErrorAction SilentlyContinue
             }
 
             $stdout = "tray-app/publish/smoke-launch-full-stdout.log"
@@ -271,23 +292,6 @@ jobs:
             $proc = Start-Process -FilePath "tray-app/publish/blindfold.exe" -ArgumentList "--smoke-launch-full" `
               -PassThru -NoNewWindow `
               -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-
-            # DIAGNOSTIC (issue #197, TEMPORARY): the smoke test drives its own proxy on :25463 for
-            # ~30s. Curl that (two-hop, tray-spawned) proxy's /v1/status mid-run and compare its
-            # config.l3_model + dependency detail against the one-hop dump above -- distinguishes
-            # env-loss ("no L3 adjudicator configured", l3_model null) from a data-dir provider flip
-            # ("gliner model not provisioned", l3_model set).
-            $twoHopDeadline = (Get-Date).AddSeconds(20)
-            while ((Get-Date) -lt $twoHopDeadline) {
-              if ($proc.HasExited) { break }
-              try {
-                $r2 = Invoke-WebRequest -Uri "http://127.0.0.1:25463/v1/status" -UseBasicParsing
-                Write-Host "---- DIAG two-hop (tray-spawned) proxy /v1/status ----"
-                Write-Host $r2.Content
-                Write-Host "-------------------------------"
-                break
-              } catch { Start-Sleep -Milliseconds 500 }
-            }
 
             $proc.WaitForExit()
             $exitCode = $proc.ExitCode

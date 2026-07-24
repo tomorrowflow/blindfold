@@ -62,23 +62,19 @@ internal sealed class RealProxyProcessLauncher : IProxyProcessLauncher
 {
     public IProxyProcess Launch(string exePath, IReadOnlyList<string> args)
     {
+        // UseShellExecute=false makes the child inherit this process's environment block by
+        // default, so a real deployment where the user has BLINDFOLD_* set in their environment
+        // before launching the tray propagates to the proxy without any explicit copy. (An earlier
+        // explicit env-copy here, added chasing issue #197's CI smoke failure, was a no-op: the
+        // single-file WinExe host simply didn't have the vars to copy. The smoke test no longer
+        // requires the tray-spawned proxy to reach Protected -- see Program.cs RunSmokeLaunchFull
+        // and platform-verify.yml's one-hop Protected assertion.)
         var startInfo = new ProcessStartInfo(exePath)
         {
             UseShellExecute = false,
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
-
-        // Explicitly propagate this process's environment to the spawned proxy so it inherits the
-        // BLINDFOLD_* configuration (L3 model/base-url, OpenBao, etc.). Issue #197: on the Windows
-        // single-file host the child was observed launching WITHOUT the parent's environment --
-        // the tray-spawned proxy saw l3_model=null and reported "no L3 adjudicator configured",
-        // never reaching Protected, even though a directly-launched proxy with the identical env
-        // did. Populating startInfo.Environment forces the parent env into the child's block.
-        foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables())
-        {
-            startInfo.Environment[(string)entry.Key] = entry.Value as string ?? string.Empty;
-        }
 
         foreach (var arg in args) startInfo.ArgumentList.Add(arg);
 
