@@ -68,6 +68,18 @@ internal sealed class RealProxyProcessLauncher : IProxyProcessLauncher
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
+
+        // Explicitly propagate this process's environment to the spawned proxy so it inherits the
+        // BLINDFOLD_* configuration (L3 model/base-url, OpenBao, etc.). Issue #197: on the Windows
+        // single-file host the child was observed launching WITHOUT the parent's environment --
+        // the tray-spawned proxy saw l3_model=null and reported "no L3 adjudicator configured",
+        // never reaching Protected, even though a directly-launched proxy with the identical env
+        // did. Populating startInfo.Environment forces the parent env into the child's block.
+        foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables())
+        {
+            startInfo.Environment[(string)entry.Key] = entry.Value as string ?? string.Empty;
+        }
+
         foreach (var arg in args) startInfo.ArgumentList.Add(arg);
 
         try
