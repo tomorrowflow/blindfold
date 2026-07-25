@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import BlindfoldCore
+import ProxyProcessKit
 
 /// The menu bar app's root scene (ADR-0039/0040/0041, issues #211/#213/#214/#216): icon +
 /// header, the count deep-links, Open Blindfold, Settings, and About (issue #211), the

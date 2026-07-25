@@ -9,6 +9,7 @@ private final class FakeProxyProcess: ProxyProcess, @unchecked Sendable {
     var hasExited = false
     var exitCode: Int32 = 0
     var standardErrorText = ""
+    var terminationSignal: Int32?
     var killed = false
 
     func kill() { killed = true }
@@ -50,6 +51,37 @@ private final class FakeProxyProcessLauncher: ProxyProcessLaunching, @unchecked 
     #expect(launcher.launches[0].args == ["serve"])
 }
 
+/// Issue #219's regression: a slow-starting child (the GLiNER cascade's ~2-minute model
+/// load, stood in for here by many repeated liveness checks against a still-running,
+/// not-yet-healthy, increasingly chatty fake) must stay `starting` for the *whole* start
+/// window, however long that takes — never silently flip to `refused`/`notStarted` on
+/// its own just because time passed and `notifyHealthy` hasn't been called yet. Nothing
+/// in `ProxySupervisor` may derive liveness from elapsed time, only from
+/// `hasExited`/`everHealthy` — this test would catch a regression that introduced a
+/// wall-clock timeout.
+@Test func slowStartingChildStaysStartingForTheWholeWindowNoMatterHowManyTicksElapse() {
+    let launcher = FakeProxyProcessLauncher()
+    let supervisor = ProxySupervisor(launcher: launcher, exePath: "blindfold-proxy", args: ["serve"])
+
+    supervisor.start()
+
+    // Stands in for the poll loop's cadence over a long, still-loading window: the
+    // child hasn't exited and hasn't been told it's healthy yet, but keeps writing
+    // chatty startup progress to stderr the whole time (the issue's "large volume of
+    // stderr during startup" concern) -- none of that may destabilize the supervisor's
+    // own reduction.
+    for tick in 0..<1000 {
+        launcher.process.standardErrorText += "loading model shard progress \(tick) ...\n"
+        #expect(supervisor.currentLiveness() == .starting)
+    }
+
+    supervisor.notifyHealthy()
+    #expect(supervisor.currentLiveness() == .running)
+
+    // The child is still the same one instance -- no auto-restart, no re-launch, ever.
+    #expect(launcher.launches.count == 1)
+}
+
 /// Once a `/v1/status` poll has succeeded, a still-running child is `running`
 /// (ADR-0041) — the caller (the menu bar's poll loop) is the one who calls
 /// `ProxySupervisor.notifyHealthy`; the supervisor never polls status itself.
@@ -82,6 +114,57 @@ private final class FakeProxyProcessLauncher: ProxyProcessLaunching, @unchecked 
     }
     #expect(!reason.contains("RuntimeError"))
     #expect(!reason.contains("root OpenBao Transit token"))
+}
+
+/// Issue #219: a child killed by a signal before ever answering `/v1/status` (e.g. an
+/// OS-level kill mid-slow-start) typically leaves nothing recognizable in
+/// `standardErrorText` -- the OS gives it no chance to write a scrubbed message -- so
+/// `StartupRefusalReason.scrub` always fell back to the generic "startup failed", the
+/// exact "three of five startup guards collapse to the same string" complaint the issue
+/// raised. Reading `terminationSignal` (which `RealProxyProcess` derives from
+/// `Process.terminationReason`/`terminationStatus`, independent of stderr) lets the
+/// supervisor name the signal instead, so a repeat of this failure is diagnosable from
+/// the Refused reason alone -- no raw stderr, no entity data, just a POSIX signal number.
+@Test func childKilledBySignalBeforeFirstHealthyPollNamesTheSignalNotTheGenericFallback() {
+    let launcher = FakeProxyProcessLauncher()
+    let supervisor = ProxySupervisor(launcher: launcher, exePath: "blindfold-proxy", args: ["serve"])
+    supervisor.start()
+    launcher.process.hasExited = true
+    launcher.process.terminationSignal = 9
+    launcher.process.standardErrorText = ""
+
+    let liveness = supervisor.currentLiveness()
+
+    guard case let .refused(reason) = liveness else {
+        Issue.record("expected .refused, got \(liveness)")
+        return
+    }
+    #expect(reason == "startup failed: proxy process terminated by signal 9 before completing startup")
+}
+
+/// Issue #219: a child that exits (not signal-killed) before ever answering `/v1/status`,
+/// with stderr that doesn't match any of `StartupRefusalReason.scrub`'s known-safe
+/// categories, still named nothing but the bare "startup failed" string before this --
+/// the exact "three of five startup guards collapse to the same string" complaint the
+/// issue raised, just for the non-signal case the signal-naming fix didn't cover. The
+/// exit code carries no entity/surrogate/mapping data (a small integer), so naming it is
+/// safe to surface unscrubbed, same as the signal number.
+@Test func childExitingWithUnrecognizedStderrAndNoSignalNamesTheExitCodeNotTheBareGenericFallback() {
+    let launcher = FakeProxyProcessLauncher()
+    let supervisor = ProxySupervisor(launcher: launcher, exePath: "blindfold-proxy", args: ["serve"])
+    supervisor.start()
+    launcher.process.hasExited = true
+    launcher.process.exitCode = 3
+    launcher.process.terminationSignal = nil
+    launcher.process.standardErrorText = ""
+
+    let liveness = supervisor.currentLiveness()
+
+    guard case let .refused(reason) = liveness else {
+        Issue.record("expected .refused, got \(liveness)")
+        return
+    }
+    #expect(reason == "startup failed: proxy process exited with code 3 before completing startup")
 }
 
 /// A crash after the proxy was already healthy renders as `notStarted` (the same
