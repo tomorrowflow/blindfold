@@ -18,6 +18,13 @@ must satisfy, kept in one place so:
 
 ## Contract — what "clean" means for the macOS job (first cut, stub app)
 
+- **Builds the real `BlindfoldCore` package first** (issue #208) — `swift build
+  --package-path macos/BlindfoldCore` against the committed `Package.swift`, no
+  `-Xswiftc -target` override. This is the step that actually exercises `Package.swift`'s
+  `platforms: [.macOS(.v14)]` deployment target on real macOS; before #208 this job only
+  ever compiled the throwaway stub below, so a green run proved the CI plumbing and
+  nothing about whether this repo's Swift (in particular `StatusClient`'s `Task`/`async`
+  use) compiles on macOS at all.
 - **Unsigned.** No signing identity is invoked. Authenticode/notarization are deferred to a
   v2 issue (ADR-0041/ADR-0042) — out of scope here, and that deferral is what lets this job
   run on a free hosted runner with zero secrets.
@@ -30,11 +37,12 @@ must satisfy, kept in one place so:
   `Contents/MacOS/<executable>` directly (no window to open, no UI to drive) proves the
   toolchain + bundle-launch mechanics ahead of the real shell landing on it. No UI/window
   assertion in this first cut.
-- **Leak-audit: N/A.** The stub touches no **entity**/**surrogate**/**mapping** — it is pure
-  build + process-launch mechanics, off the request path entirely.
+- **Leak-audit: N/A.** Neither the `BlindfoldCore` library build nor the stub touches any
+  **entity**/**surrogate**/**mapping** — both are pure build + process-launch mechanics, off
+  the request path entirely.
 - `swift test` for `BlindfoldCore` is **not** this job's concern — that runs in-sandbox on
   Linux (#190/#193/#194, ADR-0042), since Swift is cross-platform and the risk-bearing logic
-  is deliberately AppKit-free.
+  is deliberately AppKit-free. This job only proves the library *builds* on real macOS.
 
 ## When the real shell lands (#129)
 

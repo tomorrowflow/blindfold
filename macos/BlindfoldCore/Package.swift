@@ -7,6 +7,9 @@ import PackageDescription
 // gated separately on the self-hosted macOS runner.
 let package = Package(
     name: "BlindfoldCore",
+    platforms: [
+        .macOS(.v14),
+    ],
     products: [
         .library(name: "BlindfoldCore", targets: ["BlindfoldCore"]),
     ],

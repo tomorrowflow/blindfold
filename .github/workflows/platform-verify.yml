@@ -14,8 +14,12 @@
 #
 # BlindfoldCore (Swift) and Blindfold.Core (C#) are cross-platform and already tested
 # in-sandbox on Linux (#190/#193/#194) — this workflow does NOT re-run swift test/dotnet
-# test. It proves the OS-irreducible half: the macOS job still builds + smoke-launches a
-# trivial STUB app (#129 AppKit menu bar app is not yet built); the Windows job builds +
+# test. It proves the OS-irreducible half: the macOS job now also `swift build`s the real
+# committed BlindfoldCore package (issue #208 — Package.swift previously declared no
+# `platforms:`, so it silently built at the 10.13 SwiftPM default where Swift concurrency
+# doesn't exist; a green macOS gate proved nothing about this repo's Swift until this
+# build step existed) and still builds + smoke-launches a trivial STUB app (#129 AppKit
+# menu bar app is not yet built); the Windows job builds +
 # smoke-launches the real WinForms tray supervisor (issue #196, ADR-0041) and freezes the
 # real `blindfold-proxy.exe` (issue #195, ADR-0039/0041) it spawns as a child.
 # The workflow is fully declarative (plain shell steps, no LLM agent on the runner) —
@@ -41,6 +45,17 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
+
+      # macOS: build the real, committed BlindfoldCore SwiftPM package (issue #208). This
+      # is a library build only (no test run — swift test for BlindfoldCore stays an
+      # in-sandbox Linux concern per ADR-0042, see the file header above); it exists so a
+      # green macOS gate proves Package.swift's `platforms:` deployment target actually
+      # compiles Swift concurrency (Task/async) on real macOS, not just on Linux where
+      # `platforms:` is ignored.
+      - name: Build BlindfoldCore (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: swift build --package-path macos/BlindfoldCore
 
       # macOS: compile a trivial unsigned stub, wrap it in a minimal .app bundle (the
       # shape the real AppKit menu-bar app will fill in — #129), and smoke-launch it by
