@@ -53,7 +53,7 @@ final class StatusPollingModel: ObservableObject {
     private func pollForever(client: StatusClient) async {
         while !Task.isCancelled {
             do {
-                try await client.pollLoop(intervalSeconds: Self.cadenceSeconds, sleeper: RealSleeper()) { payload in
+                try await client.pollLoop(intervalSeconds: Self.cadenceSeconds, sleeper: RealSleeper()) { @Sendable payload in
                     Task { @MainActor [weak self] in
                         self?.lastStatus = payload
                         self?.appState = AppStateMachine.reduce(liveness: .running, status: payload)
