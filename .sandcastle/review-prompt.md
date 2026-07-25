@@ -70,9 +70,10 @@ green suite with a missing or weakened leak-audit assertion is a **FAIL**, not a
   uv run pytest
   ```
 
-  If the slice touches a **native core**, also run that core's tests (they build and test
-  in this Linux sandbox — ADR-0040/0042; the OS-only shells are gated on the hosted
-  platform-verify runner, not here):
+  Also run both cross-platform native-core suites, **regardless of which paths this branch
+  touched** — they build and test right here in this Linux sandbox (ADR-0040/0042); only the
+  OS-only shells (AppKit `.app`, WinForms tray) are gated separately on the hosted
+  platform-verify runner:
 
   ```
   # macos/ (Swift BlindfoldCore)
@@ -80,6 +81,12 @@ green suite with a missing or weakened leak-audit assertion is a **FAIL**, not a
   # windows/ (C# Blindfold.Core)
   dotnet test windows/Blindfold.Core.Tests/Blindfold.Core.Tests.csproj
   ```
+
+  A failing native-core test is a gate **FAIL** exactly like a failing Python test or a
+  leak-audit gap: do not attest, do not apply cosmetic edits on top. Comment on the issue
+  naming the failing suite (Swift/`BlindfoldCore` or C#/`Blindfold.Core`) and the failing
+  test so the next iteration routes to the right owner — the `macos` or `windows`
+  SUSPECTED-OWNER role in `.claude/agents/verify.md`'s taxonomy, not `backend`.
 
   Commit describing the refinements. If the code is already clean, do nothing.
 
