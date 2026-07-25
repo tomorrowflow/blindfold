@@ -18,6 +18,10 @@ final class StatusPollingModel: ObservableObject {
 
     @Published private(set) var appState: AppState = .stopped
     @Published private(set) var lastStatus: StatusPayload?
+    /// The in-menu fallback for the ADR-0038 auto-revert notice (issue #214):
+    /// `UNUserNotificationCenter` delivery is unreliable from this unsigned,
+    /// ad-hoc bundle, so this must never be the only surface that raises it.
+    @Published private(set) var autoRevertNotice: String?
 
     /// The supervisor Start/Stop Proxy and Quit drive directly (issue #213) -- exposed so
     /// the menu view can call `MenuActions.toggleProxy`/`MenuActions.quit` against the same
@@ -25,12 +29,17 @@ final class StatusPollingModel: ObservableObject {
     let supervisor: ProxySupervisor
 
     private var pollTask: Task<Void, Never>?
+    private var control: UnprotectedModeControlling?
+    private var previousAlarm: UnprotectedAlarm?
+    private var manualResumeRequested = false
 
     init(
         supervisor: ProxySupervisor,
-        baseURL: URL = URL(string: "http://127.0.0.1:\(StatusPollingModel.proxyPort)/v1/status")!
+        baseURL: URL = URL(string: "http://127.0.0.1:\(StatusPollingModel.proxyPort)/v1/status")!,
+        unprotectedModeURL: URL = URL(string: "http://127.0.0.1:\(StatusPollingModel.proxyPort)/v1/unprotected-mode")!
     ) {
         self.supervisor = supervisor
+        control = try? UnprotectedModeControlClient(baseURL: unprotectedModeURL, sender: URLSessionUnprotectedModeSending())
         do {
             let client = try StatusClient(baseURL: baseURL, fetcher: URLSessionStatusFetching())
             pollTask = Task { [weak self] in
@@ -56,6 +65,29 @@ final class StatusPollingModel: ObservableObject {
         )
     }
 
+    /// Issue #187/#188's capability gate: the submenu doesn't exist at all until
+    /// `/v1/status` reports the capability enabled -- absence, not a disabled row.
+    var showsUnprotectedModeSubmenu: Bool {
+        UnprotectedModeMenu.isVisible(capabilityEnabled: lastStatus?.unprotectedMode?.capabilityEnabled ?? false)
+    }
+
+    /// The submenu's rows for the currently-polled alarm state (issue #187).
+    var unprotectedModeItems: [UnprotectedModeMenuItem] {
+        UnprotectedModeMenu.items(alarm: alarm)
+    }
+
+    /// Drives a submenu row's action through the control seam (issue #214). A
+    /// nil `control` (construction somehow failed the loopback guard) fails
+    /// closed as a no-op rather than reaching for a wider URL.
+    func performUnprotectedModeAction(_ action: UnprotectedModeAction) {
+        autoRevertNotice = nil
+        if case .resume = action {
+            manualResumeRequested = true
+        }
+        guard let control else { return }
+        UnprotectedModeMenu.perform(action, control: control)
+    }
+
     /// Re-reduces immediately from the supervisor's current liveness -- called right after
     /// a menu action (`Start Proxy`/`Stop Proxy`/`Quit`) mutates the supervisor, so the menu
     /// reflects the new state on the next render instead of waiting up to `cadenceSeconds`
@@ -69,13 +101,19 @@ final class StatusPollingModel: ObservableObject {
     /// `windows/Blindfold.Tray/TrayApplicationContext.cs`'s `PollAsync`). Everything else
     /// always polls, even mid-Refused, since a fresh Start can only be observed by trying
     /// again. Never hangs or crashes on an unreachable proxy (AC) -- a failed fetch just
-    /// clears `lastStatus` and the loop keeps going on the same cadence.
+    /// clears `lastStatus` and the loop keeps going on the same cadence. Delegates the
+    /// actual fetch-and-wait cadence to `client.pollLoop`, which runs until the first
+    /// failure so `apply(_:)` -- and its ADR-0038 auto-revert check -- fires on every
+    /// successful poll, not just the first.
     private func pollForever(client: StatusClient) async {
         while !Task.isCancelled {
             if supervisor.currentLiveness() != .notStarted {
                 do {
-                    lastStatus = try await client.poll()
-                    supervisor.notifyHealthy()
+                    try await client.pollLoop(intervalSeconds: Self.cadenceSeconds, sleeper: RealSleeper()) { @Sendable payload in
+                        Task { @MainActor [weak self] in
+                            self?.apply(payload)
+                        }
+                    }
                 } catch {
                     lastStatus = nil
                 }
@@ -86,6 +124,30 @@ final class StatusPollingModel: ObservableObject {
             appState = AppStateMachine.reduce(liveness: supervisor.currentLiveness(), status: lastStatus)
             try? await RealSleeper().sleep(seconds: Self.cadenceSeconds)
         }
+    }
+
+    /// Applies one polled payload: tells the supervisor the poll succeeded, then the state
+    /// reduction, then the ADR-0038 auto-revert check (issue #214) -- the alarm lapsing on
+    /// its own (not via a manual "Resume protection now") raises the notice on both
+    /// surfaces, the system notification (best-effort) and the in-menu fallback
+    /// (authoritative, since delivery from this unsigned bundle isn't guaranteed).
+    private func apply(_ payload: StatusPayload) {
+        supervisor.notifyHealthy()
+        lastStatus = payload
+        appState = AppStateMachine.reduce(liveness: supervisor.currentLiveness(), status: payload)
+
+        let currentAlarm = AppStateMachine.unprotectedAlarm(status: payload)
+        if UnprotectedModeMenu.shouldNotifyAutoRevert(
+            previousAlarm: previousAlarm,
+            currentAlarm: currentAlarm,
+            manualResumeRequested: manualResumeRequested
+        ) {
+            autoRevertNotice = UnprotectedModeMenu.autoRevertNotificationMessage
+            UnprotectedModeAutoRevertNotifier.notify(message: UnprotectedModeMenu.autoRevertNotificationMessage)
+        }
+        previousAlarm = currentAlarm
+        // One-shot: only suppresses the tick immediately after a manual Resume click.
+        manualResumeRequested = false
     }
 
     deinit {

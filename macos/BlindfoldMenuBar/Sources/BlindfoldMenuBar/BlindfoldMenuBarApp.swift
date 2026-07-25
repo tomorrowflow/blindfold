@@ -2,11 +2,12 @@ import SwiftUI
 import AppKit
 import BlindfoldCore
 
-/// The menu bar app's root scene (ADR-0039/0040/0041, issues #211/#213): icon + header,
-/// the count deep-links, Open Blindfold, Settings, and About (issue #211), plus
-/// supervision -- Start/Stop Proxy, the Refused remedy, and Quit (issue #213). The
-/// Unprotected-mode submenu stays a separate slice. Not `@main` itself: `main.swift`
-/// decides between this and the headless `--smoke-test`/`--smoke-launch-full` paths.
+/// The menu bar app's root scene (ADR-0039/0040/0041, issues #211/#213/#214): icon + header,
+/// the count deep-links, Open Blindfold, Settings, and About (issue #211), the
+/// Unprotected-mode submenu and its auto-revert fallback notice (issue #214), plus
+/// supervision -- Start/Stop Proxy, the Refused remedy, and Quit (issue #213). Not `@main`
+/// itself: `main.swift` decides between this and the headless
+/// `--smoke-test`/`--smoke-launch-full` paths.
 struct BlindfoldMenuBarApp: App {
     @StateObject private var model: StatusPollingModel
 
@@ -35,11 +36,39 @@ struct BlindfoldMenuBarApp: App {
 
             MenuBarRows(model: model)
 
+            if model.showsUnprotectedModeSubmenu {
+                Divider()
+                Menu("Unprotected Mode") {
+                    ForEach(model.unprotectedModeItems, id: \.label) { item in
+                        unprotectedModeRow(for: item)
+                    }
+                }
+            }
+            if let notice = model.autoRevertNotice {
+                Text(notice)
+            }
+
             Divider()
 
             MenuBarSupervisionRows(model: model)
         } label: {
             MenuBarIconLabel(iconState: model.iconState, showsAlarmBadge: model.showsAlarmBadge)
+        }
+    }
+
+    /// One Unprotected-mode submenu row (issue #214): label/action come straight
+    /// from `UnprotectedModeMenu.items(alarm:)`, never re-derived here. Only
+    /// "Resume protection now" carries a shortcut today (⌘⇧P), so this special-cases
+    /// that one keyboard shortcut rather than parsing `keyboardShortcut` generally.
+    @ViewBuilder
+    private func unprotectedModeRow(for item: UnprotectedModeMenuItem) -> some View {
+        let button = Button(item.label) {
+            model.performUnprotectedModeAction(item.action)
+        }
+        if item.keyboardShortcut != nil {
+            button.keyboardShortcut("p", modifiers: [.command, .shift])
+        } else {
+            button
         }
     }
 }

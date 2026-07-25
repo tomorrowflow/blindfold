@@ -28,6 +28,8 @@ func runSmokeTest() -> Int32 {
     do {
         let baseURL = URL(string: "http://127.0.0.1:\(StatusPollingModel.proxyPort)/v1/status")!
         _ = try StatusClient(baseURL: baseURL, fetcher: URLSessionStatusFetching())
+        let unprotectedModeURL = URL(string: "http://127.0.0.1:\(StatusPollingModel.proxyPort)/v1/unprotected-mode")!
+        _ = try UnprotectedModeControlClient(baseURL: unprotectedModeURL, sender: URLSessionUnprotectedModeSending())
         _ = MenuBarPresentation.iconState(for: .stopped)
         _ = MenuBarPresentation.headerText(for: .stopped)
         print("Blindfold menu bar app (macOS): smoke-test OK")
