@@ -1,6 +1,9 @@
 # ADR-0008: Store security — OpenBao Transit + ciphertext columns + blind index
 
-**Status:** Accepted
+**Status:** Accepted — wholly authoritative for the **shared** store; **partially superseded
+by ADR-0045** for the single-user local install, where a **Local key cipher** keyed by a
+supervisor-held **Store key** replaces Transit and the "app never holds key material"
+property does not hold. Transit becomes one of two **mapping cipher** implementations.
 **Date:** 2026-06-17
 
 ## Context

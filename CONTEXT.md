@@ -34,7 +34,7 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   of the **mapping**. Authorized **iff the referent is tagged to a workspace the
   caller holds the `re-identifier` role on** — a multi-workspace referent is
   re-identifiable from any of its workspaces. Every re-identify **attempt** is an
-  audit event — a denied (no role) or failed (unknown surrogate, Transit
+  audit event — a denied (no role) or failed (unknown surrogate, **mapping cipher**
   unavailable, decrypt error) attempt is audited too, not just a success (SEC-8):
   an attacker probing for surrogates always leaves a trail.
 - **Entity** — a real-world referent that must be protected: a person, organization,
@@ -176,7 +176,8 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   import the local install mints its **own** surrogates, so two installs importing
   the same bundle get **divergent** surrogates — a bundle seeds **detection**,
   never shared **re-identification** (that stays the job of a shared **store**). v1
-  is plaintext JSON; an **encrypted** variant (file-level crypto, **not Transit**)
+  is plaintext JSON; an **encrypted** variant (file-level crypto, **not** the
+  **mapping cipher**)
   is a deferred v2 option. The vendored **Sample data** is the shipped instance.
   _Avoid_: dump, export file, backup.
 - **Sample data** — the vendored **Seed bundle** (ADR-0012) shipped with
@@ -205,12 +206,12 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   directly is deferred (v2).
 - **Review inbox** — the queue of **provisional**ly-blindfolded novel candidates
   awaiting human confirmation. A **durable real-value surface** (ADR-0037): it holds
-  each candidate's real value and surrounding **context** as **Transit** ciphertext
+  each candidate's real value and surrounding **context** as **mapping cipher** ciphertext
   (+ a **blind index** on the real value for dedup), never plaintext — the same
   storage class as the **entity graph** and the re-identification **mapping**, and
   the opposite of the deliberately-ephemeral **Processing trace**. Persists only when
-  a store and Transit are wired; otherwise in-memory and ephemeral, never plaintext
-  on disk.
+  a store and a **mapping cipher** are wired; otherwise in-memory and ephemeral, never
+  plaintext on disk.
 - **Provisional surrogate** — the fake auto-minted for a novel entity at request
   time, before review; protection happens immediately and non-blocking.
 - **Learning loop** — review actions feed the system: **confirm** grows the entity
@@ -277,14 +278,31 @@ to add it via `/grill-with-docs`, not to invent a synonym.
 - **Sliding-window restore** — streaming restore that holds back a tail buffer (≥
   the longest known surrogate) so surrogates split across stream chunks are matched
   before emitting; tool-call JSON is reassembled before restoring inside it.
+- **Mapping cipher** — whatever encrypts and decrypts the **mapping**'s real values and
+  derives their **blind index**. Two kinds (ADR-0045): the **Transit cipher** for the
+  **shared** store, and the **Local key cipher** for a single-user local install. Exactly
+  one is active per install, chosen by which secret is configured; both configured is a
+  startup refusal. With **none** configured, real-value surfaces — the **entity graph**,
+  the **review inbox** — are in-memory and ephemeral, never plaintext on disk, while
+  surrogate-space and RBAC tables persist normally. Its absence never affects whether
+  traffic is protected: **Protected** is a claim about egress, not about remembering.
+  _Avoid_: key provider (collides with **L3** provider), crypto backend.
 - **Transit** — the OpenBao (MPL-2.0) encryption-as-a-service engine that holds the
-  encryption keys and performs encrypt/decrypt; the app never holds key material.
-  It holds **keys, not data**, and is **not a dataset-distribution channel**: the
+  encryption keys and performs encrypt/decrypt; the **Transit cipher** is the
+  **mapping cipher** built on it, and the app never holds key material. It holds
+  **keys, not data**, and is **not a dataset-distribution channel**: the
   encrypted **mapping** lives in the **store**, and sharing data means connecting
   to a shared store + shared Transit (RBAC-gated), never exchanging a
   Transit-encrypted file.
+- **Store key** — the single root secret keying the **Local key cipher**, held by the
+  **supervisor** in the platform secret store and injected through the **launch
+  environment** (ADR-0044/0045). Named for the **Store directory** it protects. It is
+  never exported, escrowed or displayed, and losing it makes that store undecryptable —
+  a **startup refusal**, recovered by re-running **Setup**, not a recovery flow.
+  _Avoid_: master key, passphrase, recovery key.
 - **Blind index** — a deterministic derived column enabling equality lookups over
-  encrypted real-value columns without decrypting them.
+  encrypted real-value columns without decrypting them, derived by the active
+  **mapping cipher**.
 - **Fail-closed** — when the full detection pipeline can't run, block by default;
   deterministic L1+L2 still protect known entities. A per-workspace opt-in allows
   degrading to deterministic-only.
@@ -374,4 +392,7 @@ to add it via `/grill-with-docs`, not to invent a synonym.
 - Intercepting apps whose endpoint can't be redirected (claude.ai web, ChatGPT
   desktop/mobile). Scope is tools where the base URL is configurable.
 - Irreversible anonymization. Blindfold is reversible pseudonymization by design.
-- Being a general secrets manager. Secret/key custody is delegated to OpenBao.
+- Being a general secrets manager. Key custody is delegated — to OpenBao for the
+  **shared** store, and to the **supervisor**'s platform secret store for a single-user
+  local install (the **Store key**, ADR-0045). Blindfold never invents its own key
+  storage, and never offers key escrow, export or recovery.

@@ -61,9 +61,20 @@ store**, and demote in-memory to an explicit dev/demo mode.
    "no server for crypto": Transit still means running **OpenBao** (a server). Making
    local key custody serverless (supervisor-spawned/bundled OpenBao, or an OS-keychain
    local path) is a **separate, explicitly-tracked decision** — a future ADR, not this
-   one. Until it lands, SQLite-**without**-Transit is a **dev/demo posture** in the same
-   honesty class as in-memory: persisting real mapping in plaintext stays gated
-   (mapping-secrecy invariant + ADR-0009 fail-closed), not a real durable store.
+   one. **Resolved by ADR-0045** (local **mapping cipher** keyed by a supervisor-held
+   **Store key**).
+
+   > **Correction (2026-07-25, ADR-0045).** The original text of this clause claimed that
+   > "persisting real mapping in plaintext stays gated (mapping-secrecy invariant + ADR-0009
+   > fail-closed)". **That gate did not exist.** No guard, banner or fail-closed trip fired
+   > for "persistent store configured, no Transit"; `persons.canonical_name`,
+   > `terms.canonical_name`, `org_units.name` and the variation `value` columns were `NOT
+   > NULL` plaintext and always written, and the ciphertext columns' only writer was
+   > Postgres-only. Making SQLite the unset default therefore moved the default install from
+   > "no durable data" to "durable plaintext real values", silently. The claim is left
+   > standing here, struck through by this note rather than rewritten, because the error was
+   > trusting an unverified invariant — and that is the part worth remembering. ADR-0045
+   > builds the gate and moves the entity graph to ciphertext-only columns.
 
 ## Considered Options
 
