@@ -137,19 +137,34 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   that child, never the supervisor. Everything privacy-critical stays in the proxy.
   _Avoid_: "the server" (blurs supervisor and proxy), "shell" (ambiguous with the
   terminal / `blindfold serve`), agent, daemon (as the canonical word).
+- **Launch environment** — the set of `BLINDFOLD_*` values the **supervisor** owns and
+  is the *sole author* of when it spawns the **proxy**. The supervisor injects them and
+  **strips** any ambient `BLINDFOLD_*` it inherited, so the proxy runs the same way
+  whether launched from a menu, a login item, or a terminal — and so a stale variable in
+  a shell profile can never reach it. Non-Blindfold variables (`PATH`, `HOME`, locale)
+  pass through untouched. Distinct from the **store**'s persisted settings: a launch
+  environment names *how to reach* a dependency (L3 endpoint, Transit address), never
+  entity data or **mapping**. A field left *automatic* is **omitted** rather than
+  defaulted, so a store-persisted setting still decides. Authoritative: ADR-0044.
+  _Avoid_: "the config", "env" (both ambiguous across the real environment, the
+  supervisor's values, and store settings), profile.
 - **Bootstrap** — the *automatic, headless* step that makes a fresh install
   non-empty and self-consistent without human interaction: it seeds the entity
   graph from the vendored seed and grants the bootstrap-admin identity so the
   store isn't RBAC-locked-out of itself. Machine-run at startup, no operator in
   the loop. Distinct from **Setup**. _Avoid_ using "bootstrap" for the human
-  first-run flow.
+  first-run flow, and for the human act of editing a **launch environment**.
 - **Setup** — the *human-driven* first-run flow an operator walks through to make
   a fresh install *theirs*: claim the install as admin, create the first real
   **workspace**, and populate it with real **entities** (optionally loading the
   vendored seed as **sample data**). Triggered by an **empty store** (no
   **workspace** exists yet) and pointed to from the startup console line. The
   counterpart to **Bootstrap**: Setup is deliberate and interactive, Bootstrap is
-  automatic and headless. _Avoid_: wizard, onboarding, initialization (as the
+  automatic and headless. Scoped to making the *install* theirs — **workspace**, admin,
+  entities — and explicitly **not** to machine wiring: pointing Blindfold at a local L3
+  daemon or a Transit address is a **launch environment** concern, and lives in the
+  **supervisor** because Setup is served *by* the **proxy** and is unreachable when
+  misconfiguration stops it starting. _Avoid_: wizard, onboarding, initialization (as the
   canonical word).
 - **Seed bundle** — a portable **entity-graph** artifact (persons, **terms**, org
   units, **variations**, **relationships** — real names) importable into a
