@@ -14,12 +14,13 @@
 #
 # BlindfoldCore (Swift) and Blindfold.Core (C#) are cross-platform and already tested
 # in-sandbox on Linux (#190/#193/#194) — this workflow does NOT re-run swift test/dotnet
-# test. It proves the OS-irreducible half: the macOS job now also `swift build`s the real
+# test. It proves the OS-irreducible half: the macOS job `swift build`s the real
 # committed BlindfoldCore package (issue #208 — Package.swift previously declared no
 # `platforms:`, so it silently built at the 10.13 SwiftPM default where Swift concurrency
 # doesn't exist; a green macOS gate proved nothing about this repo's Swift until this
-# build step existed) and still builds + smoke-launches a trivial STUB app (#129 AppKit
-# menu bar app is not yet built); the Windows job builds +
+# build step existed), then builds + smoke-launches the real `BlindfoldMenuBar` MenuBarExtra
+# shell (issue #210, ADR-0039/0040) -- the trivial `BlindfoldStub.swift` throwaway (#129's
+# earlier placeholder) is gone now that the real shell exists; the Windows job builds +
 # smoke-launches the real WinForms tray supervisor (issue #196, ADR-0041) and freezes the
 # real `blindfold-proxy.exe` (issue #195, ADR-0039/0041) it spawns as a child.
 # The workflow is fully declarative (plain shell steps, no LLM agent on the runner) —
@@ -57,45 +58,36 @@ jobs:
         shell: bash
         run: swift build --package-path macos/BlindfoldCore
 
-      # macOS: compile a trivial unsigned stub, wrap it in a minimal .app bundle (the
-      # shape the real AppKit menu-bar app will fill in — #129), and smoke-launch it by
-      # running the bundle's executable directly and checking it exits 0. No Xcode
-      # project exists yet (that's #129's scope), so this proves the toolchain +
-      # bundle-launch mechanics ahead of the real shell landing on it.
-      - name: Build stub macOS app
+      # macOS: build the real, committed BlindfoldMenuBar SwiftPM executable target (issue
+      # #210, ADR-0039/0040) -- the MenuBarExtra shell bound to BlindfoldCore, unsigned
+      # (signing is a deferred v2 concern, ADR-0041/0042). No Xcode project exists in this
+      # repo (macos/BlindfoldMenuBar is a SwiftPM executable, same as BlindfoldCore is a
+      # SwiftPM library), so this step assembles the `.app` bundle inline from the built
+      # binary + the committed Info.plist, rather than relying on an xcodebuild archive step.
+      - name: Build BlindfoldMenuBar (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: swift build --package-path macos/BlindfoldMenuBar --configuration release
+
+      - name: Assemble BlindfoldMenuBar.app
         if: runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
-          APP=stub-app/BlindfoldStub.app
+          APP=menu-bar-app/BlindfoldMenuBar.app
           mkdir -p "$APP/Contents/MacOS"
-          cat > /tmp/BlindfoldStub.swift <<'SWIFT'
-          print("Blindfold stub app (macOS): smoke-launch OK")
-          SWIFT
-          swiftc /tmp/BlindfoldStub.swift -o "$APP/Contents/MacOS/BlindfoldStub"
-          cat > "$APP/Contents/Info.plist" <<'PLIST'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>CFBundleExecutable</key>
-            <string>BlindfoldStub</string>
-            <key>CFBundleIdentifier</key>
-            <string>dev.tomorrowflow.blindfold.stub</string>
-            <key>CFBundleName</key>
-            <string>BlindfoldStub</string>
-            <key>CFBundlePackageType</key>
-            <string>APPL</string>
-            <key>CFBundleShortVersionString</key>
-            <string>0.0.0-stub</string>
-          </dict>
-          </plist>
-          PLIST
+          cp macos/BlindfoldMenuBar/.build/release/BlindfoldMenuBar "$APP/Contents/MacOS/BlindfoldMenuBar"
+          cp macos/BlindfoldMenuBar/Info.plist "$APP/Contents/Info.plist"
 
-      - name: Smoke-launch stub macOS app
+      # Smoke-launch = the bundle's executable exits 0 under --smoke-test: constructs the
+      # loopback StatusClient wiring and the BlindfoldCore reduction calls headlessly, no
+      # NSApplication run loop and no interactive dialog (mac-verify-prompt.md's
+      # headless-safe contract, mirroring Blindfold.Tray's --smoke-test on Windows). No
+      # proxy is started for this -- the app never spawns one (out of scope, see the issue).
+      - name: Smoke-launch BlindfoldMenuBar.app
         if: runner.os == 'macOS'
         shell: bash
-        run: ./stub-app/BlindfoldStub.app/Contents/MacOS/BlindfoldStub
+        run: ./menu-bar-app/BlindfoldMenuBar.app/Contents/MacOS/BlindfoldMenuBar --smoke-test
 
       # Windows: build the real WinForms tray supervisor (issue #196, ADR-0041) --
       # unsigned, self-contained single-file per the ADR's first-cut distribution -- and
