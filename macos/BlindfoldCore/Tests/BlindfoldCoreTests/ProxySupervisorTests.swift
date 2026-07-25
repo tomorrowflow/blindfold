@@ -142,6 +142,31 @@ private final class FakeProxyProcessLauncher: ProxyProcessLaunching, @unchecked 
     #expect(reason == "startup failed: proxy process terminated by signal 9 before completing startup")
 }
 
+/// Issue #219: a child that exits (not signal-killed) before ever answering `/v1/status`,
+/// with stderr that doesn't match any of `StartupRefusalReason.scrub`'s known-safe
+/// categories, still named nothing but the bare "startup failed" string before this --
+/// the exact "three of five startup guards collapse to the same string" complaint the
+/// issue raised, just for the non-signal case the signal-naming fix didn't cover. The
+/// exit code carries no entity/surrogate/mapping data (a small integer), so naming it is
+/// safe to surface unscrubbed, same as the signal number.
+@Test func childExitingWithUnrecognizedStderrAndNoSignalNamesTheExitCodeNotTheBareGenericFallback() {
+    let launcher = FakeProxyProcessLauncher()
+    let supervisor = ProxySupervisor(launcher: launcher, exePath: "blindfold-proxy", args: ["serve"])
+    supervisor.start()
+    launcher.process.hasExited = true
+    launcher.process.exitCode = 3
+    launcher.process.terminationSignal = nil
+    launcher.process.standardErrorText = ""
+
+    let liveness = supervisor.currentLiveness()
+
+    guard case let .refused(reason) = liveness else {
+        Issue.record("expected .refused, got \(liveness)")
+        return
+    }
+    #expect(reason == "startup failed: proxy process exited with code 3 before completing startup")
+}
+
 /// A crash after the proxy was already healthy renders as `notStarted` (the same
 /// bucket `AppStateMachine` already maps to the Stopped state) rather than `refused`
 /// — AC "crash-after-healthy -> Stopped, no auto-restart": a privacy tool fails

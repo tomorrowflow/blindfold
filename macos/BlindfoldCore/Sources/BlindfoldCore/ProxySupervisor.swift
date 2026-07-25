@@ -34,6 +34,11 @@ public protocol ProxyProcessLaunching: Sendable {
 /// traceback, a locale-dependent OS error) falls back to a generic reason rather than
 /// echoing raw process output.
 public enum StartupRefusalReason {
+    /// The fallback reason for stderr that matches none of the known-safe categories
+    /// below -- exposed so `ProxySupervisor` can detect this exact case and name it
+    /// further (issue #219's exit-code diagnostic) without duplicating the string.
+    public static let genericReason = "startup failed"
+
     public static func scrub(_ rawStandardErrorText: String) -> String {
         let lowered = rawStandardErrorText.lowercased()
 
@@ -46,7 +51,7 @@ public enum StartupRefusalReason {
         if lowered.contains("address already in use") || lowered.contains("port in use") {
             return "port in use"
         }
-        return "startup failed"
+        return genericReason
     }
 }
 
@@ -96,7 +101,17 @@ public final class ProxySupervisor: ProxySupervising, @unchecked Sendable {
             if let signal = process.terminationSignal {
                 return .refused(reason: "startup failed: proxy process terminated by signal \(signal) before completing startup")
             }
-            return .refused(reason: StartupRefusalReason.scrub(process.standardErrorText))
+
+            // A non-signal exit whose stderr matches none of scrub's known-safe
+            // categories still falls to the bare generic reason (issue #219's "three
+            // of five startup guards collapse to the same string" complaint) unless
+            // named further -- the exit code is a small integer, never entity data,
+            // so it's safe to surface unscrubbed here just like the signal number.
+            let scrubbed = StartupRefusalReason.scrub(process.standardErrorText)
+            guard scrubbed == StartupRefusalReason.genericReason else {
+                return .refused(reason: scrubbed)
+            }
+            return .refused(reason: "startup failed: proxy process exited with code \(process.exitCode) before completing startup")
         }
 
         return everHealthy ? .running : .starting
