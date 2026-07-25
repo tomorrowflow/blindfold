@@ -104,6 +104,32 @@ enum GoldenVectorFixture {
         let expected_accept: Bool
     }
 
+    /// A `SupervisorSettingsValidation` cloud-model-tag advisory case (issue #224, ADR-0044)
+    /// -- mirrors `serve.refuse_if_cloud_model` / `ollama.is_cloud_model`.
+    struct CloudModelAdvisoryCase: Decodable, Sendable {
+        let name: String
+        let l3_model: String
+        let expected_flagged: Bool
+    }
+
+    /// A `SupervisorSettingsValidation` oMLX-loopback advisory case (issue #224, ADR-0044)
+    /// -- mirrors `serve.refuse_if_omlx_non_loopback`.
+    struct OmlxLoopbackAdvisoryCase: Decodable, Sendable {
+        let name: String
+        let l3_provider: String
+        let l3_base_url: String
+        let l3_model: String
+        let expected_flagged: Bool
+    }
+
+    /// A `SupervisorSettingsValidation` legacy-`BLINDFOLD_OLLAMA_*`-env-var advisory case
+    /// (issue #224, ADR-0044) -- mirrors `serve.refuse_if_legacy_l3_env_vars`.
+    struct LegacyOllamaEnvVarAdvisoryCase: Decodable, Sendable {
+        let name: String
+        let environment: [String: String]
+        let expected_flagged_keys: [String]
+    }
+
     /// A recorded sequence of `ProxySupervisor` events (start / notifyHealthy / a
     /// child exit carrying stderr) and the resulting `ProxyLiveness` — issue #212,
     /// ADR-0041 ported to Swift. `exited` implies the exit happens after any
@@ -132,6 +158,9 @@ enum GoldenVectorFixture {
         let header_text_cases: [HeaderTextCase]
         let alarm_badge_cases: [AlarmBadgeCase]
         let loopback_guard_cases: [LoopbackGuardCase]
+        let cloud_model_advisory_cases: [CloudModelAdvisoryCase]
+        let omlx_loopback_advisory_cases: [OmlxLoopbackAdvisoryCase]
+        let legacy_ollama_env_var_advisory_cases: [LegacyOllamaEnvVarAdvisoryCase]
         let supervisor_lifecycle_cases: [SupervisorLifecycleCase]
         let refusal_scrub_cases: [RefusalScrubCase]
     }

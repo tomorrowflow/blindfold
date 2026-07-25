@@ -57,6 +57,14 @@ struct SupervisorSettingsView: View {
             SecureField("L3 API key", text: $model.secrets.l3ApiKey)
             SecureField("OpenBao token", text: $model.secrets.openBaoToken)
 
+            // Advisory only (ADR-0044): never disables Save. The proxy's own startup
+            // guards remain the authoritative gate -- this is early feedback on the
+            // three locally-decidable rules, nothing more.
+            ForEach(Array(model.advisoryWarnings.enumerated()), id: \.offset) { _, warning in
+                Text(warning.message)
+                    .foregroundStyle(.orange)
+            }
+
             Button("Save") {
                 model.save()
             }
