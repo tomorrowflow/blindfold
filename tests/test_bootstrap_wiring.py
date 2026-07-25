@@ -51,23 +51,30 @@ def _make_client() -> httpx.AsyncClient:
     )
 
 
+@pytest.fixture(scope="module")
+def pg_dsn():
+    """Same container-fixture shape as the other nine Postgres test files (e.g.
+    test_entity_graph_postgres.py, test_postgres_rbac_store.py) -- yields *inside*
+    the `with PostgresContainer` block so the container stays alive for the whole
+    test body instead of being torn down before anything connects."""
+    from testcontainers.postgres import PostgresContainer
+
+    with PostgresContainer("postgres:16-alpine", driver=None) as pg:
+        yield pg.get_connection_url()
+
+
 @pytest.mark.anyio
 @pytest.mark.skipif(not _docker_available(), reason="Docker unavailable")
-async def test_fresh_database_entity_list_renders_empty():
+async def test_fresh_database_entity_list_renders_empty(pg_dsn):
     """Issue #104: a fresh database (no vendored-seed auto-load) returns an empty
     entity list.  The real get_entity_graph() connects to the Postgres-backed store;
     a blank workspace renders [] with no automatic seeding.
 
     Requires Docker (PostgresContainer) — same guard as test_entity_graph_postgres.py.
     """
-    from testcontainers.postgres import PostgresContainer
-
-    with PostgresContainer("postgres:16-alpine", driver=None) as pg:
-        dsn = pg.get_connection_url()
-
     from blindfold.store.entity_graph_store import PostgresEntityGraphStore
 
-    fresh_store = PostgresEntityGraphStore(dsn)
+    fresh_store = PostgresEntityGraphStore(pg_dsn)
     app.dependency_overrides[get_entity_graph] = lambda: fresh_store
     try:
         async with _make_client() as client:
@@ -82,19 +89,14 @@ async def test_fresh_database_entity_list_renders_empty():
 
 @pytest.mark.anyio
 @pytest.mark.skipif(not _docker_available(), reason="Docker unavailable")
-async def test_fresh_database_org_graph_renders_empty():
+async def test_fresh_database_org_graph_renders_empty(pg_dsn):
     """Issue #104: a fresh database renders empty nodes and edges (no auto-seed).
 
     Requires Docker (PostgresContainer).
     """
-    from testcontainers.postgres import PostgresContainer
-
-    with PostgresContainer("postgres:16-alpine", driver=None) as pg:
-        dsn = pg.get_connection_url()
-
     from blindfold.store.entity_graph_store import PostgresEntityGraphStore
 
-    fresh_store = PostgresEntityGraphStore(dsn)
+    fresh_store = PostgresEntityGraphStore(pg_dsn)
     app.dependency_overrides[get_entity_graph] = lambda: fresh_store
     try:
         async with _make_client() as client:
