@@ -38,6 +38,20 @@ public enum StartupRefusalReason {
         if lowered.contains("address already in use") || lowered.contains("port in use") {
             return "port in use"
         }
+        // These three (issue #223) name a stale env var, a rejected model choice, and a
+        // missing model directory -- configuration facts, not entity values, so naming
+        // them specifically costs nothing in privacy. The scrub exists to avoid
+        // forwarding raw child output verbatim, not to withhold which known-safe
+        // category a refusal falls into.
+        if lowered.contains("no longer read") {
+            return "refusing to start: legacy BLINDFOLD_OLLAMA_* variable set (renamed under ADR-0031)"
+        }
+        if lowered.contains("remotely-executing") {
+            return "refusing to start: L3 model must run locally, not a remote/cloud model"
+        }
+        if lowered.contains("gliner") {
+            return "refusing to start: GLiNER model not provisioned"
+        }
         return "startup failed"
     }
 }
