@@ -2,12 +2,12 @@ import SwiftUI
 import AppKit
 import BlindfoldCore
 
-/// The menu bar app's root scene (ADR-0039/0040/0041, issues #211/#213/#214): icon + header,
-/// the count deep-links, Open Blindfold, Settings, and About (issue #211), the
-/// Unprotected-mode submenu and its auto-revert fallback notice (issue #214), plus
-/// supervision -- Start/Stop Proxy, the Refused remedy, and Quit (issue #213). Not `@main`
-/// itself: `main.swift` decides between this and the headless
-/// `--smoke-test`/`--smoke-launch-full` paths.
+/// The menu bar app's root scene (ADR-0039/0040/0041, issues #211/#213/#214/#216): icon +
+/// header, the count deep-links, Open Blindfold, Settings, and About (issue #211), the
+/// Unprotected-mode submenu and its auto-revert fallback notice (issue #214),
+/// supervision -- Start/Stop Proxy, the Refused remedy, and Quit (issue #213) -- plus the
+/// "Start at login" toggle (issue #216). Not `@main` itself: `main.swift` decides between
+/// this and the headless `--smoke-test`/`--smoke-launch-full` paths.
 struct BlindfoldMenuBarApp: App {
     @StateObject private var model: StatusPollingModel
 
@@ -50,6 +50,10 @@ struct BlindfoldMenuBarApp: App {
 
             Divider()
 
+            LoginItemRow(model: model)
+
+            Divider()
+
             MenuBarSupervisionRows(model: model)
         } label: {
             MenuBarIconLabel(iconState: model.iconState, showsAlarmBadge: model.showsAlarmBadge)
@@ -69,6 +73,26 @@ struct BlindfoldMenuBarApp: App {
             button.keyboardShortcut("p", modifiers: [.command, .shift])
         } else {
             button
+        }
+    }
+}
+
+/// The "Start at login" row (issue #216, ADR-0039): deliberately lives here, in the menu
+/// bar app's own menu, not the management SPA -- `SMAppService` is an app-local API the
+/// SPA (a browser page) cannot call. Do not "fix" this later by moving it into
+/// `/ui/settings`; that would require a bridge that doesn't exist. Holds no logic of its
+/// own -- checked-state and the action both come straight from `StatusPollingModel`,
+/// which itself never derives it from a cached preference (ADR-0040).
+private struct LoginItemRow: View {
+    @ObservedObject var model: StatusPollingModel
+
+    var body: some View {
+        Toggle(LoginItemMenu.label, isOn: Binding(
+            get: { model.loginItemIsOn },
+            set: { _ in model.toggleLoginItem() }
+        ))
+        if let message = model.loginItemErrorMessage {
+            Text(message)
         }
     }
 }

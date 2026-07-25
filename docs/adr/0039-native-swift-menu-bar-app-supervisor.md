@@ -61,6 +61,21 @@ privacy-relevant logic is machine-verifiable (see ADR-0040).
   that misses a dependency); this is dev/CI-time only, off the target's install path.
 - Code-signing and notarization become release concerns; distribution (DMG / update
   channel) is out of scope for the first cut.
+- **Launch at login (issue #216).** In scope, built with `SMAppService.mainApp`
+  (`register()`/`.unregister()`, checked state read from `.status`, never a cached
+  preference), default off. Does **not** need code signing: the maintainer's ad-hoc-signed
+  (`codesign --force --sign -`) SwiftPM build registers and launches at login
+  successfully in practice, so this isn't sequenced behind the deferred Developer ID
+  signing work (#198). The toggle lives in the menu bar app's own menu, not
+  `/ui/settings` — `SMAppService` is app-local and the management SPA (a browser page)
+  cannot call it. Open, not yet empirically established from this project's Linux
+  sandbox (ADR-0040's whole reason the split exists): whether registration survives a
+  rebuild of the ad-hoc-signed bundle, since an ad-hoc signature's identity changes on
+  every rebuild and some OS-granted state tied to binary identity doesn't reliably
+  survive that (the same class of problem as Keychain ACLs / TCC grants lapsing for
+  ad-hoc dev builds). Establish this on a real macOS build before relying on it, and if
+  it doesn't survive, put the remedy next to the build instructions (README), not in a
+  code comment.
 
 ## Alternatives considered
 

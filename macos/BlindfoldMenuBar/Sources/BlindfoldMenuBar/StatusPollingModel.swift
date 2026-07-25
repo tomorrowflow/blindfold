@@ -23,6 +23,18 @@ final class StatusPollingModel: ObservableObject {
     /// ad-hoc bundle, so this must never be the only surface that raises it.
     @Published private(set) var autoRevertNotice: String?
 
+    /// "Start at login" (issue #216, ADR-0039): re-read from `loginItemControl.status`
+    /// on init and every poll tick, never cached locally -- the OS is the source of
+    /// truth, and a user can revoke the login item in System Settings behind this
+    /// app's back, which must be reflected without restarting the app (AC).
+    @Published private(set) var loginItemStatus: LoginItemStatus
+    /// Set only on a `register()`/`unregister()` failure (issue #216 AC): the toggle
+    /// must not silently appear enabled, and this is always `LoginItemMenu`'s fixed,
+    /// scrubbed message, never the raw error.
+    @Published private(set) var loginItemErrorMessage: String?
+
+    private let loginItemControl: LoginItemControlling
+
     /// The supervisor Start/Stop Proxy and Quit drive directly (issue #213) -- exposed so
     /// the menu view can call `MenuActions.toggleProxy`/`MenuActions.quit` against the same
     /// instance this poll loop feeds `notifyHealthy` into.
@@ -36,9 +48,12 @@ final class StatusPollingModel: ObservableObject {
     init(
         supervisor: ProxySupervisor,
         baseURL: URL = URL(string: "http://127.0.0.1:\(StatusPollingModel.proxyPort)/v1/status")!,
-        unprotectedModeURL: URL = URL(string: "http://127.0.0.1:\(StatusPollingModel.proxyPort)/v1/unprotected-mode")!
+        unprotectedModeURL: URL = URL(string: "http://127.0.0.1:\(StatusPollingModel.proxyPort)/v1/unprotected-mode")!,
+        loginItemControl: LoginItemControlling = RealLoginItemControl()
     ) {
         self.supervisor = supervisor
+        self.loginItemControl = loginItemControl
+        loginItemStatus = loginItemControl.status
         control = try? UnprotectedModeControlClient(baseURL: unprotectedModeURL, sender: URLSessionUnprotectedModeSending())
         do {
             let client = try StatusClient(baseURL: baseURL, fetcher: URLSessionStatusFetching())
@@ -56,6 +71,7 @@ final class StatusPollingModel: ObservableObject {
     var iconState: MenuBarIconState { MenuBarPresentation.iconState(for: appState) }
     var alarm: UnprotectedAlarm? { AppStateMachine.unprotectedAlarm(status: lastStatus) }
     var showsAlarmBadge: Bool { MenuBarPresentation.showsUnprotectedAlarmBadge(alarm: alarm) }
+    var loginItemIsOn: Bool { LoginItemMenu.isOn(status: loginItemStatus) }
     var headerText: String {
         MenuBarPresentation.headerText(
             for: appState,
@@ -88,6 +104,15 @@ final class StatusPollingModel: ObservableObject {
         UnprotectedModeMenu.perform(action, control: control)
     }
 
+    /// "Start at login" toggle's action (issue #216): drives `loginItemControl`
+    /// through `LoginItemMenu.toggle`, then re-reads `status` fresh rather than
+    /// assuming the call succeeded -- a failed `register()` leaves the OS status
+    /// unchanged, so the toggle can never read as checked on failure.
+    func toggleLoginItem() {
+        loginItemErrorMessage = LoginItemMenu.toggle(currentStatus: loginItemStatus, control: loginItemControl)
+        loginItemStatus = loginItemControl.status
+    }
+
     /// Re-reduces immediately from the supervisor's current liveness -- called right after
     /// a menu action (`Start Proxy`/`Stop Proxy`/`Quit`) mutates the supervisor, so the menu
     /// reflects the new state on the next render instead of waiting up to `cadenceSeconds`
@@ -107,6 +132,10 @@ final class StatusPollingModel: ObservableObject {
     /// successful poll, not just the first.
     private func pollForever(client: StatusClient) async {
         while !Task.isCancelled {
+            // Re-read fresh every tick (issue #216 AC): a login item revoked in System
+            // Settings must be reflected here without restarting the app.
+            loginItemStatus = loginItemControl.status
+
             if supervisor.currentLiveness() != .notStarted {
                 do {
                     try await client.pollLoop(intervalSeconds: Self.cadenceSeconds, sleeper: RealSleeper()) { @Sendable payload in
