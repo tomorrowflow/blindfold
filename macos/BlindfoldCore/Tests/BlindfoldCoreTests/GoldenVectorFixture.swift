@@ -104,6 +104,27 @@ enum GoldenVectorFixture {
         let expected_accept: Bool
     }
 
+    /// A recorded sequence of `ProxySupervisor` events (start / notifyHealthy / a
+    /// child exit carrying stderr) and the resulting `ProxyLiveness` — issue #212,
+    /// ADR-0041 ported to Swift. `exited` implies the exit happens after any
+    /// `notified_healthy`, mirroring the only order a real child can produce.
+    struct SupervisorLifecycleCase: Decodable, Sendable {
+        let name: String
+        let started: Bool
+        let notified_healthy: Bool
+        let exited: Bool
+        let exit_stderr: String
+        let expected_liveness: TaggedState
+    }
+
+    /// A `StartupRefusalReason.scrub` case (issue #212, ADR-0041 ported to Swift) —
+    /// the known-safe categories plus the fail-closed generic fallback.
+    struct RefusalScrubCase: Decodable, Sendable {
+        let name: String
+        let raw_stderr: String
+        let expected_reason: String
+    }
+
     struct GoldenVectors: Decodable, Sendable {
         let reducer_truth_table: [ReducerCase]
         let unprotected_alarm_cases: [UnprotectedAlarmCase]
@@ -111,6 +132,8 @@ enum GoldenVectorFixture {
         let header_text_cases: [HeaderTextCase]
         let alarm_badge_cases: [AlarmBadgeCase]
         let loopback_guard_cases: [LoopbackGuardCase]
+        let supervisor_lifecycle_cases: [SupervisorLifecycleCase]
+        let refusal_scrub_cases: [RefusalScrubCase]
     }
 
     /// Walks up from this test source file to the repo root, then into `fixtures/` —

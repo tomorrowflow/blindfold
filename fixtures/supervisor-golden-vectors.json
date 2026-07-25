@@ -98,5 +98,57 @@
     { "name": "rejectsPublicHostname", "url": "https://example.com/v1/status", "expected_accept": false },
     { "name": "rejectsPublicIP", "url": "http://93.184.216.34:8000/v1/status", "expected_accept": false },
     { "name": "rejectsMissingHost", "url": "/v1/status", "expected_accept": false }
+  ],
+
+  "supervisor_lifecycle_cases": [
+    {
+      "name": "notStartedBeforeStart",
+      "started": false, "notified_healthy": false, "exited": false, "exit_stderr": "",
+      "expected_liveness": { "type": "notStarted" }
+    },
+    {
+      "name": "startingAfterStartBeforeFirstHealthyPoll",
+      "started": true, "notified_healthy": false, "exited": false, "exit_stderr": "",
+      "expected_liveness": { "type": "starting" }
+    },
+    {
+      "name": "runningAfterFirstHealthyPollWhileStillAlive",
+      "started": true, "notified_healthy": true, "exited": false, "exit_stderr": "",
+      "expected_liveness": { "type": "running" }
+    },
+    {
+      "name": "refusedWithScrubbedReasonWhenChildExitsBeforeEverHealthy",
+      "started": true, "notified_healthy": false, "exited": true,
+      "exit_stderr": "RuntimeError: refusing to start against a root OpenBao Transit token",
+      "expected_liveness": { "type": "refused", "reason": "refusing to start: root Transit token outside dev mode" }
+    },
+    {
+      "name": "notStartedNoAutoRestartWhenChildCrashesAfterHavingBeenHealthy",
+      "started": true, "notified_healthy": true, "exited": true, "exit_stderr": "Segmentation fault",
+      "expected_liveness": { "type": "notStarted" }
+    }
+  ],
+
+  "refusal_scrub_cases": [
+    {
+      "name": "rootTransitTokenStderrScrubsToItsKnownSafeReason",
+      "raw_stderr": "RuntimeError: refusing to start against a root OpenBao Transit token",
+      "expected_reason": "refusing to start: root Transit token outside dev mode"
+    },
+    {
+      "name": "nonLoopbackL3StderrScrubsToItsKnownSafeReason",
+      "raw_stderr": "ValueError: L3 endpoint http://198.51.100.7:11434 is non-loopback",
+      "expected_reason": "refusing to start: L3 endpoint is not loopback"
+    },
+    {
+      "name": "portInUseStderrScrubsToItsKnownSafeReason",
+      "raw_stderr": "OSError: [Errno 98] Address already in use",
+      "expected_reason": "port in use"
+    },
+    {
+      "name": "unrecognizedStderrScrubsToTheGenericReasonNeverASubstringOfTheRawText",
+      "raw_stderr": "Traceback (most recent call last): File \"unexpected.py\", line 1, in <module>",
+      "expected_reason": "startup failed"
+    }
   ]
 }
