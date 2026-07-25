@@ -205,6 +205,27 @@ class BatchL3Adjudicator(Protocol):
 _DEFAULT_CACHE_MAX_ENTRIES = 4096
 
 
+def _shift_span(decision: L3Adjudication, delta: int) -> L3Adjudication:
+    """Translate ``decision``'s authoritative span offsets by ``delta``.
+
+    A no-op (returns the decision unchanged) when the adjudicator recorded no
+    span. Used by :class:`L3ContentCache` to store spans context-relative
+    (``delta = -window_left``) and re-anchor them to the querying occurrence
+    (``delta = +window_left``).
+    """
+    if decision.span_start is None and decision.span_end is None:
+        return decision
+    return replace(
+        decision,
+        span_start=(
+            decision.span_start + delta if decision.span_start is not None else None
+        ),
+        span_end=(
+            decision.span_end + delta if decision.span_end is not None else None
+        ),
+    )
+
+
 @dataclass
 class L3ContentCache:
     """Cache adjudications keyed by ``(span_text, context)`` so unchanged chunks of
@@ -245,42 +266,15 @@ class L3ContentCache:
         if key not in self._entries:
             return None
         self._entries.move_to_end(key)
-        stored = self._entries[key]
-        if stored.span_start is None and stored.span_end is None:
-            return stored
         window_left = candidate.start - candidate.context_offset
-        return replace(
-            stored,
-            span_start=(
-                stored.span_start + window_left
-                if stored.span_start is not None
-                else None
-            ),
-            span_end=(
-                stored.span_end + window_left if stored.span_end is not None else None
-            ),
-        )
+        return _shift_span(self._entries[key], window_left)
 
     def put(
         self, candidate: CandidateSpan, decision: L3Adjudication
     ) -> None:
         key = (candidate.text, candidate.context)
-        if decision.span_start is not None or decision.span_end is not None:
-            window_left = candidate.start - candidate.context_offset
-            decision = replace(
-                decision,
-                span_start=(
-                    decision.span_start - window_left
-                    if decision.span_start is not None
-                    else None
-                ),
-                span_end=(
-                    decision.span_end - window_left
-                    if decision.span_end is not None
-                    else None
-                ),
-            )
-        self._entries[key] = decision
+        window_left = candidate.start - candidate.context_offset
+        self._entries[key] = _shift_span(decision, -window_left)
         self._entries.move_to_end(key)
         if len(self._entries) > self.max_entries:
             self._entries.popitem(last=False)
