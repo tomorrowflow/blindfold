@@ -20,7 +20,7 @@ import logging
 import re
 import time
 from collections import OrderedDict
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -210,7 +210,24 @@ class L3ContentCache:
     """Cache adjudications keyed by ``(span_text, context)`` so unchanged chunks of
     text — same span, same surroundings — aren't re-scanned across agent turns
     (ADR-0003). The key is the span + its minimal context, not the whole payload:
-    a candidate in identical context produces an identical decision.
+    a candidate in identical context produces an identical ``is_entity``/
+    ``entity_type`` verdict.
+
+    Issue #207 (residual of #179): ``L3Adjudication.span_start``/``span_end`` are
+    NOT position-independent the way ``is_entity``/``entity_type`` are — they are
+    absolute offsets into whichever hop's text first populated this entry. The
+    identical local ``(span_text, context)`` pair recurs at a *different* absolute
+    position whenever an agentic transcript re-quotes the same sentence turn over
+    turn (the whole point of caching "across agent turns") — reusing the first
+    occurrence's absolute span for a later occurrence mis-anchors it, and issue
+    #170's span-widening (an authoritative span may extend past the confirming
+    candidate's own token) means the stale span can still pass engine.py's #179
+    containment backstop by coincidence, silently slicing whatever real text
+    happens to sit at the *first* occurrence's coordinates instead. Stored and
+    retrieved values translate span_start/span_end through the *querying*
+    candidate's own ``window_left`` (``candidate.start - candidate.context_offset``)
+    so every retrieval re-anchors to its own occurrence — exactly what a fresh
+    (uncached) adjudication of that occurrence would have produced.
 
     Keys hold real, un-blindfolded candidate text, so this is an in-memory
     real-value store (ADR-0022) — bounded by ``max_entries`` with least-recently-used
@@ -228,12 +245,41 @@ class L3ContentCache:
         if key not in self._entries:
             return None
         self._entries.move_to_end(key)
-        return self._entries[key]
+        stored = self._entries[key]
+        if stored.span_start is None and stored.span_end is None:
+            return stored
+        window_left = candidate.start - candidate.context_offset
+        return replace(
+            stored,
+            span_start=(
+                stored.span_start + window_left
+                if stored.span_start is not None
+                else None
+            ),
+            span_end=(
+                stored.span_end + window_left if stored.span_end is not None else None
+            ),
+        )
 
     def put(
         self, candidate: CandidateSpan, decision: L3Adjudication
     ) -> None:
         key = (candidate.text, candidate.context)
+        if decision.span_start is not None or decision.span_end is not None:
+            window_left = candidate.start - candidate.context_offset
+            decision = replace(
+                decision,
+                span_start=(
+                    decision.span_start - window_left
+                    if decision.span_start is not None
+                    else None
+                ),
+                span_end=(
+                    decision.span_end - window_left
+                    if decision.span_end is not None
+                    else None
+                ),
+            )
         self._entries[key] = decision
         self._entries.move_to_end(key)
         if len(self._entries) > self.max_entries:

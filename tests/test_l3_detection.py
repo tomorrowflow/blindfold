@@ -597,6 +597,64 @@ def test_content_cache_only_re_scans_spans_whose_context_changed():
     assert flagged.count("Yasmin") == 1
 
 
+def test_content_cache_reanchors_a_cached_span_to_each_occurrences_own_position():
+    # Issue #207 (residual of #179): L3ContentCache's docstring claims "a candidate
+    # in identical context produces an identical decision" -- true for is_entity/
+    # entity_type, but NOT for L3Adjudication.span_start/span_end, which are
+    # absolute offsets into whichever hop's text first populated the cache entry.
+    # An agentic transcript re-quotes the same sentence turn after turn (the exact
+    # scenario this cache exists for) -- the identical (span_text, context) pair
+    # then recurs at a *different* absolute position. Issue #170's span widening
+    # (an authoritative span may extend past the confirming candidate's own token)
+    # means a stale, first-occurrence span can still coincidentally satisfy
+    # engine.py's #179 containment backstop for the new position too -- silently
+    # mis-anchoring onto whatever real text sits at the stale coordinates instead
+    # (here: a phone number that happens to follow the second occurrence).
+    org_text = "Kestrel Dynamics GmbH"
+    filler_before = "the meeting today about " * 3  # > candidate window (40 chars)
+    filler_after = " is our vendor for this project today, thanks"  # ditto
+    block = filler_before + org_text + filler_after
+    kestrel_local_start = block.index("Kestrel")
+    gmbh_local_end = block.index("GmbH") + len("GmbH")
+
+    # Turn one: "Kestrel" confirms with an authoritative span widened (#170) to
+    # the whole "Kestrel Dynamics GmbH" -- absolute coordinates for turn one only.
+    turn_one_prefix = "Z" * 60
+    turn_one = turn_one_prefix + block
+    span_start = len(turn_one_prefix) + kestrel_local_start
+    span_end = len(turn_one_prefix) + gmbh_local_end
+    adjudicator = _RecordingAdjudicator(
+        {
+            "Kestrel": L3Adjudication(
+                is_entity=True,
+                entity_type="organization",
+                span_start=span_start,
+                span_end=span_end,
+            )
+        }
+    )
+    detector = L3Detector(adjudicator)
+    detector.detect(turn_one, known_entities=[])
+
+    # Turn two: the identical sentence recurs, shifted a few characters later (more
+    # transcript ahead of it), now trailed by an unrelated phone number.
+    turn_two_prefix = "Z" * 70
+    turn_two = turn_two_prefix + block + " Call +49 30 5550 2277 now"
+    kestrel_start_turn_two = len(turn_two_prefix) + kestrel_local_start
+
+    results = detector.detect(turn_two, known_entities=[])
+    candidate, decision = next(c for c in results if c[0].text == "Kestrel")
+    assert candidate.start == kestrel_start_turn_two
+    # "Kestrel" served from cache on turn two, never re-adjudicated.
+    assert [call.text for call in adjudicator.calls].count("Kestrel") == 1
+
+    # The re-anchored span must belong to *this* occurrence, not turn one's stale
+    # coordinates, and must still cover the real org text -- never the phone number.
+    assert decision.span_start == kestrel_start_turn_two
+    assert decision.span_end == kestrel_start_turn_two + (span_end - span_start)
+    assert turn_two[decision.span_start : decision.span_end] == org_text
+
+
 class _UnavailableAdjudicator:
     """Stub for an Ollama outage — every adjudicate() call raises."""
 

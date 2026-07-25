@@ -887,6 +887,97 @@ def test_umlaut_preceding_novel_org_mints_one_intact_surrogate_no_fragment_leak(
     resolution_gate(restored, session)  # must not raise: nothing left unresolved
 
 
+def test_recurring_org_mention_reanchors_per_hop_no_stale_span_fragment_leak(
+    monkeypatch,
+):
+    # Issue #207, residual of #179. Confirmed root cause (NOT the primary "NFC vs
+    # NFD tokenizer offset" hypothesis in the issue body -- see this test file's
+    # own #179 tests above, which prove that path already sound): L3ContentCache
+    # (l3.py) is keyed only on (span_text, context) -- content, not position -- but
+    # before this fix it stored/replayed L3Adjudication.span_start/span_end
+    # *verbatim*, which are absolute offsets into whichever hop's text first
+    # populated the entry. An agentic transcript re-quotes the same sentence turn
+    # after turn (ADR-0003's own stated reason this cache exists), so the identical
+    # local (candidate.text, candidate.context) pair recurs at a *different*
+    # absolute position on a later hop. Issue #170's span widening (an
+    # authoritative span may extend past the confirming candidate's own token,
+    # e.g. "Kestrel" confirms but the org span widens to "Kestrel LLC") gives the
+    # stale span just enough slack to still pass engine.py's #179 containment
+    # backstop for the new position -- so instead of raising L3Unavailable, the
+    # mint pass silently slices whatever real characters sit at the *first*
+    # occurrence's stale coordinates in the *second* hop's text.
+    #
+    # Leak-audit clause A: neither hop's outbound text may carry a real-value
+    # fragment glued to a placeholder (the #179 signature: no separating word
+    # boundary). Leak-audit clause B: closed-world restore hands back the exact
+    # real org name on both hops, with no raw placeholder left over.
+    org_text = "Kestrel LLC"
+    # "LLC" alone doesn't match `_CAPITALIZED_RE` (all-caps after the first
+    # letter) -- only "Kestrel" is its own candidate, so GLiNER's confirmed span
+    # (widened to cover "Kestrel LLC") has slack past "Kestrel"'s own end, the
+    # exact condition that lets a stale cached span coincidentally satisfy the
+    # containment backstop instead of tripping it.
+    filler_before = "Annika Brückner mentioned that " * 2
+    filler_after = " signed the agreement yesterday afternoon"
+    block = filler_before + org_text + filler_after
+
+    stub_model = _LabelAwareStubGlinerModel(tagged_hits={org_text: "organization"})
+    monkeypatch.setattr(l3_gliner, "_load_gliner_model", lambda model_path: stub_model)
+    classifier = GlinerOnnxClassifier(model_path="gliner-pii-base-v1.0")
+    detector = L3Detector(
+        GlinerCascadeAdjudicator(classifier=classifier, inner=_DismissAllInner())
+    )
+    mapping = SurrogateMapping.from_pairs([])
+    inbox = ReviewInbox()
+
+    # Hop one: mints "Kestrel LLC" as a fresh novel org, populating the content
+    # cache's "Kestrel" entry.
+    turn_one = "Notes: " + block
+    payload_one = {"model": "m", "messages": [{"role": "user", "content": turn_one}]}
+    blinded_one, session_one = blindfold_payload(
+        payload_one, mapping, detector, inbox
+    )
+    text_one = blinded_one["messages"][0]["content"]
+    assert org_text not in text_one
+    org_item = next(item for item in inbox.list() if item.entity_type == "organization")
+    assert org_item.real == org_text
+    assert org_item.provisional_surrogate in text_one
+
+    # Hop two: the identical sentence recurs (an agent re-quoting earlier
+    # context), shifted a few characters later -- still within the widened
+    # span's own slack -- with unrelated trailing prose after it.
+    turn_two_prefix = "Notes: " + "p" * 3 + " "
+    trailing = " the deal closed quickly and the client seemed satisfied with pricing"
+    turn_two = turn_two_prefix + block + trailing
+    payload_two = {"model": "m", "messages": [{"role": "user", "content": turn_two}]}
+    blinded_two, session_two = blindfold_payload(
+        payload_two, mapping, detector, inbox
+    )
+    text_two = blinded_two["messages"][0]["content"]
+
+    # Same real value -> same provisional surrogate (inbox.upsert reuses by
+    # `real`, ADR-0037) -- so hop two must blindfold to the exact same surrogate
+    # hop one used, with clean word boundaries on both sides: no real-value
+    # fragment glued to a placeholder (the #179 signature), and the unrelated
+    # trailing prose completely intact -- never partially consumed by a
+    # mis-anchored mint.
+    assert "mentioned that " + org_item.provisional_surrogate + " signed" in text_two
+    assert trailing in text_two
+    assert org_text not in text_two
+
+    response_two = {
+        "id": "msg_2",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": text_two}],
+    }
+    restored_two = restore_response(response_two, session_two)
+    restored_text_two = restored_two["content"][0]["text"]
+    assert org_text in restored_text_two
+
+    resolution_gate(restored_two, session_two)  # fail-closed: nothing unresolved
+
+
 class _FakeGLiNERClass:
     """Stand-in for the real ``gliner.GLiNER`` class -- records the kwargs
     ``from_pretrained`` receives, so a test can assert the loader requests the
