@@ -129,6 +129,30 @@
     }
   ],
 
+  "cloud_model_advisory_cases": [
+    { "name": "flagsCloudSuffixedModel", "l3_model": "qwen3:cloud", "expected_flagged": true },
+    { "name": "flagsCloudSuffixCaseInsensitively", "l3_model": "qwen3:CLOUD", "expected_flagged": true },
+    { "name": "acceptsAnOrdinaryLocalModelTag", "l3_model": "llama3.1:8b", "expected_flagged": false },
+    { "name": "acceptsABareModelNameWithNoTag", "l3_model": "llama3.1", "expected_flagged": false },
+    { "name": "notFlaggedWhenNoModelIsConfigured", "l3_model": "", "expected_flagged": false }
+  ],
+
+  "omlx_loopback_advisory_cases": [
+    { "name": "flagsANonLoopbackBaseUrlForTheOmlxProvider", "l3_provider": "omlx", "l3_base_url": "http://l3.internal:8080", "l3_model": "qwen2.5-7b-mlx", "expected_flagged": true },
+    { "name": "acceptsAnIpv4LoopbackBaseUrlForTheOmlxProvider", "l3_provider": "omlx", "l3_base_url": "http://127.0.0.1:8080", "l3_model": "qwen2.5-7b-mlx", "expected_flagged": false },
+    { "name": "acceptsTheLocalhostHostnameForTheOmlxProvider", "l3_provider": "omlx", "l3_base_url": "http://localhost:8080", "l3_model": "qwen2.5-7b-mlx", "expected_flagged": false },
+    { "name": "notFlaggedForTheOllamaProviderRegardlessOfBaseUrl", "l3_provider": "ollama", "l3_base_url": "http://l3.internal:11434", "l3_model": "llama3.1", "expected_flagged": false },
+    { "name": "notFlaggedWhenNoModelIsConfigured", "l3_provider": "omlx", "l3_base_url": "http://l3.internal:8080", "l3_model": "", "expected_flagged": false }
+  ],
+
+  "legacy_ollama_env_var_advisory_cases": [
+    { "name": "flagsTheLegacyAddrVarAlone", "environment": { "BLINDFOLD_OLLAMA_ADDR": "http://127.0.0.1:11434" }, "expected_flagged_keys": ["BLINDFOLD_OLLAMA_ADDR"] },
+    { "name": "flagsTheLegacyModelVarAlone", "environment": { "BLINDFOLD_OLLAMA_MODEL": "llama3.1" }, "expected_flagged_keys": ["BLINDFOLD_OLLAMA_MODEL"] },
+    { "name": "flagsBothLegacyVarsTogether", "environment": { "BLINDFOLD_OLLAMA_ADDR": "http://127.0.0.1:11434", "BLINDFOLD_OLLAMA_MODEL": "llama3.1" }, "expected_flagged_keys": ["BLINDFOLD_OLLAMA_ADDR", "BLINDFOLD_OLLAMA_MODEL"] },
+    { "name": "notFlaggedWhenOnlyTheRenamedKeyIsPresent", "environment": { "BLINDFOLD_L3_BASE_URL": "http://127.0.0.1:11434" }, "expected_flagged_keys": [] },
+    { "name": "notFlaggedWithAnEmptyEnvironment", "environment": {}, "expected_flagged_keys": [] }
+  ],
+
   "refusal_scrub_cases": [
     {
       "name": "rootTransitTokenStderrScrubsToItsKnownSafeReason",

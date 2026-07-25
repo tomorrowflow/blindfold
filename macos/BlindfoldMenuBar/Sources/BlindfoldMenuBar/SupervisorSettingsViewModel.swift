@@ -20,6 +20,14 @@ final class SupervisorSettingsViewModel: ObservableObject {
 
     var restartNotice: String { SupervisorSettingsRestart.restartNotice }
 
+    /// Advisory pre-checks (issue #224, ADR-0044) against the edit buffer plus the
+    /// store's currently-held values -- where a legacy `BLINDFOLD_OLLAMA_*` key can only
+    /// have arrived via the `.env` one-shot import. Never gates `save()`: the proxy's
+    /// startup guards remain the real gate.
+    var advisoryWarnings: [SupervisorSettingsAdvisoryWarning] {
+        SupervisorSettingsValidation.advisoryWarnings(for: settings, environment: store.values())
+    }
+
     init(store: LaunchEnvironmentStore, supervisor: ProxySupervising, currentAppState: @escaping () -> AppState) {
         self.store = store
         self.supervisor = supervisor

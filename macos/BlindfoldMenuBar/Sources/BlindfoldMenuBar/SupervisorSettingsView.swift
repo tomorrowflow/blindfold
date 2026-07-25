@@ -50,6 +50,14 @@ struct SupervisorSettingsView: View {
 
             TextField("OpenBao address", text: $model.settings.openBaoAddr)
 
+            // Advisory only (ADR-0044): never disables Save. The proxy's own startup
+            // guards remain the authoritative gate -- this is early feedback on the
+            // three locally-decidable rules, nothing more.
+            ForEach(Array(model.advisoryWarnings.enumerated()), id: \.offset) { _, warning in
+                Text(warning.message)
+                    .foregroundStyle(.orange)
+            }
+
             Button("Save") {
                 model.save()
             }
