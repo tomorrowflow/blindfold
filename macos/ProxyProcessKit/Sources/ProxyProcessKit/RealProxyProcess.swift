@@ -10,7 +10,7 @@ import BlindfoldCore
 /// safe to surface (never this class); stdout is explicitly discarded to the null device
 /// (issue #219), never captured or surfaced (AC "only stderr is redirected from the child;
 /// stdout is untouched").
-final class RealProxyProcess: ProxyProcess, @unchecked Sendable {
+public final class RealProxyProcess: ProxyProcess, @unchecked Sendable {
     /// Caps how much of a chatty child's stderr (issue #219: the GLiNER cascade's
     /// tqdm-style progress spam over a ~2-minute load) this keeps in memory -- only the
     /// tail is kept, since `StartupRefusalReason.scrub` only ever needs to recognize a
@@ -24,7 +24,7 @@ final class RealProxyProcess: ProxyProcess, @unchecked Sendable {
     private var stderrBuffer = Data()
     private let lock = NSLock()
 
-    init(process: Process, stderrPipe: Pipe) {
+    public init(process: Process, stderrPipe: Pipe) {
         self.process = process
         self.stderrPipe = stderrPipe
 
@@ -49,25 +49,31 @@ final class RealProxyProcess: ProxyProcess, @unchecked Sendable {
     /// without ever blocking on the child -- a synchronous wait here would silently
     /// reintroduce a supervisor that can freeze during exactly the slow-start window
     /// this issue is about, just with the hang moved from the child to the supervisor.
-    var hasExited: Bool { !process.isRunning }
-    var exitCode: Int32 { process.isRunning ? 0 : process.terminationStatus }
+    public var hasExited: Bool { !process.isRunning }
+    public var exitCode: Int32 { process.isRunning ? 0 : process.terminationStatus }
+
+    /// Exposed only for this issue's own regression test to simulate an OS-level kill
+    /// from outside the app (`kill(processIdentifier, SIGKILL)`) -- not read anywhere in
+    /// `ProxySupervisor`, which only ever observes a child's *outcome*
+    /// (`hasExited`/`terminationSignal`), never reaches for its pid.
+    public var processIdentifier: Int32 { process.processIdentifier }
 
     /// Issue #219: a child terminated by an uncaught signal (e.g. an OS-level kill
     /// mid-slow-start) rather than a normal exit -- read straight from
     /// `Process.terminationReason`/`terminationStatus`, never derived from stderr, which
     /// a signal kill typically leaves empty.
-    var terminationSignal: Int32? {
+    public var terminationSignal: Int32? {
         guard !process.isRunning, process.terminationReason == .uncaughtSignal else { return nil }
         return process.terminationStatus
     }
 
-    var standardErrorText: String {
+    public var standardErrorText: String {
         lock.lock()
         defer { lock.unlock() }
         return String(data: stderrBuffer, encoding: .utf8) ?? ""
     }
 
-    func kill() {
+    public func kill() {
         guard process.isRunning else { return }
         process.terminate()
     }
@@ -77,25 +83,27 @@ final class RealProxyProcess: ProxyProcess, @unchecked Sendable {
 /// represented as an already-exited `ProxyProcess` so it flows through `ProxySupervisor`'s
 /// ordinary exit-before-healthy path (AC "a missing proxy binary surfaces as a refusal, not
 /// a crash") rather than needing its own special case.
-final class FailedProxyLaunch: ProxyProcess, @unchecked Sendable {
-    let standardErrorText: String
-    let hasExited = true
-    let exitCode: Int32 = -1
-    let terminationSignal: Int32? = nil
+public final class FailedProxyLaunch: ProxyProcess, @unchecked Sendable {
+    public let standardErrorText: String
+    public let hasExited = true
+    public let exitCode: Int32 = -1
+    public let terminationSignal: Int32? = nil
 
-    init(message: String) {
+    public init(message: String) {
         self.standardErrorText = message
     }
 
-    func kill() {}
+    public func kill() {}
 }
 
 /// The `ProxyProcessLaunching` seam backed by a real child-process spawn (issue #213,
 /// ADR-0039/0041). Redirects stderr to a capturing pipe and stdout to the null device
 /// (issue #219) -- neither is ever captured or surfaced as the child's own raw output
 /// (AC).
-struct RealProxyProcessLauncher: ProxyProcessLaunching {
-    func launch(exePath: String, args: [String]) -> any ProxyProcess {
+public struct RealProxyProcessLauncher: ProxyProcessLaunching {
+    public init() {}
+
+    public func launch(exePath: String, args: [String]) -> any ProxyProcess {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: exePath)
         process.arguments = args

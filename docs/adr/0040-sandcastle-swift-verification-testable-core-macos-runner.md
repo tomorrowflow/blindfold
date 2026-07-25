@@ -67,6 +67,15 @@ sandbox, and gate the irreducibly-macOS part on a self-hosted runner.
 - The split is a *design constraint* on ADR-0039's app, not just a test strategy: keeping
   the shell logic-free is what makes the bulk of the app machine-verifiable. If logic
   leaks into the AppKit layer, coverage silently drops — a review smell to watch.
+- Issue #219 reused this same precedent for a piece of the shell that isn't
+  AppKit/SwiftUI-bound: `RealProxyProcess`/`RealProxyProcessLauncher` (real `Process`/
+  `Pipe` child-spawn) only needed Foundation, so it moved out of `BlindfoldMenuBar` into
+  its own sibling package, `macos/ProxyProcessKit`, tested in-sandbox exactly like
+  `BlindfoldCore`. `swift test` always builds a package's *entire* target graph, so a
+  second target nested inside `BlindfoldMenuBar` still hit its `import SwiftUI` wall —
+  only a genuinely separate package isolates it. The generalizable lesson: any shell code
+  that happens to be plain-Foundation is a candidate for this same split, not just the
+  core's own business logic.
 
 ## Alternatives considered
 

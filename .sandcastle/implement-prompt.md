@@ -106,6 +106,11 @@ completion exactly like a Python test failure — do not commit or complete over
 ```
 # macos/ (Swift BlindfoldCore)
 swift test --package-path macos/BlindfoldCore
+# macos/ (Swift ProxyProcessKit -- issue #219: the real Process/Pipe child-spawn seam,
+# split out of BlindfoldMenuBar into its own sibling package precisely so it can build
+# and test on Linux like BlindfoldCore does, instead of only via a disposable throwaway
+# package outside the repo)
+swift test --package-path macos/ProxyProcessKit
 # windows/ (C# Blindfold.Core)
 dotnet test windows/Blindfold.Core.Tests/Blindfold.Core.Tests.csproj
 ```

@@ -2,6 +2,7 @@ import Foundation
 import SwiftUI
 import AppKit
 import BlindfoldCore
+import ProxyProcessKit
 
 /// Session-scoped single-instance guard path (issue #213, ADR-0039/0041's macOS-appropriate
 /// equivalent of Windows' named mutex): under the same app-data convention

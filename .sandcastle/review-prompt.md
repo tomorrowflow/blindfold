@@ -78,6 +78,9 @@ green suite with a missing or weakened leak-audit assertion is a **FAIL**, not a
   ```
   # macos/ (Swift BlindfoldCore)
   swift test --package-path macos/BlindfoldCore
+  # macos/ (Swift ProxyProcessKit -- issue #219's real Process/Pipe child-spawn seam,
+  # split out of BlindfoldMenuBar so it builds/tests on Linux like BlindfoldCore does)
+  swift test --package-path macos/ProxyProcessKit
   # windows/ (C# Blindfold.Core)
   dotnet test windows/Blindfold.Core.Tests/Blindfold.Core.Tests.csproj
   ```
