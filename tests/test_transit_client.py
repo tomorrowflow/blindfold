@@ -169,6 +169,19 @@ def test_transit_health_check_reports_healthy_when_the_daemon_answers():
     assert client.health_check() == DependencyHealth(healthy=True)
 
 
+# ---------------------------------------------------------------------------
+# 7. TransitClient satisfies the MappingCipher seam unchanged (ADR-0045 §2,
+#    issue #228) -- encrypt/decrypt/blind_index is the entire touch surface.
+# ---------------------------------------------------------------------------
+
+
+def test_transit_client_satisfies_the_mapping_cipher_protocol():
+    from blindfold.mapping_cipher import MappingCipher
+
+    client = TransitClient(addr="http://openbao.test", token="dev-root-token")
+    assert isinstance(client, MappingCipher)
+
+
 def test_transit_health_check_reports_unhealthy_scrubbed_detail_when_unreachable():
     from blindfold.status import DependencyHealth
 

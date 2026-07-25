@@ -89,7 +89,12 @@ from fastapi.responses import JSONResponse, StreamingResponse
 
 from .allowlist_seed import load_seeded_allowlist_tokens
 from .bootstrap import bootstrap_admin, bootstrap_from_vendored_seed
-from .config import Settings, get_settings, raw_l3_gliner_model_path_override
+from .config import (
+    MAPPING_CIPHER_LOCAL,
+    Settings,
+    get_settings,
+    raw_l3_gliner_model_path_override,
+)
 from .entity_graph import (
     CrossKindMergeError,
     EntityGraph,
@@ -374,17 +379,20 @@ def _default_l3_probe() -> DependencyHealth:
 
 
 def _default_transit_probe() -> DependencyHealth:
-    """The cipher dependency's probe (ADR-0045 §10, issue #227).
+    """The cipher dependency's probe (ADR-0045 §10, issue #227/#228).
 
     A missing mapping cipher is not a down dependency -- ``/v1/status``'s four
     dependencies are claims about egress, not durability, and no request path
     decrypts. Reports the active cipher via ``detail`` (``settings.mapping_cipher``)
-    and stays healthy when none is configured. Configured-but-unreachable Transit is
-    a distinct concern (reachability, not cipher-presence honesty) and still reports
-    unhealthy, unchanged.
+    and stays healthy when none is configured. The Local key cipher has no network
+    dependency to probe -- always healthy when selected. Configured-but-unreachable
+    Transit is a distinct concern (reachability, not cipher-presence honesty) and
+    still reports unhealthy, unchanged.
     """
     settings = get_settings()
     if not settings.openbao_token:
+        if settings.mapping_cipher == MAPPING_CIPHER_LOCAL:
+            return DependencyHealth(healthy=True, detail=MAPPING_CIPHER_LOCAL)
         return DependencyHealth(healthy=True, detail="none — real values ephemeral")
     health = TransitClient(addr=settings.openbao_addr, token=settings.openbao_token).health_check()
     if health.healthy:

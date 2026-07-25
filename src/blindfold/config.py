@@ -9,14 +9,16 @@ OpenBao Transit (ADR-0008 / issue #10):
   BLINDFOLD_OPENBAO_ADDR   — OpenBao server address (e.g. http://localhost:8200)
   BLINDFOLD_OPENBAO_TOKEN  — token with blindfold-proxy policy rights
 
-Mapping cipher (ADR-0045 §4, issue #227):
-  BLINDFOLD_STORE_KEY      — root secret for the Local key cipher (ADR-0045 §7 --
-                             not yet wired to any encryption in this slice; a
-                             read-only presence signal for `Settings.mapping_cipher`
-                             and the ambiguity refusal below). Configuring this
-                             alongside BLINDFOLD_OPENBAO_TOKEN refuses startup
-                             (`serve.refuse_if_ambiguous_mapping_cipher`) --
-                             ambiguity about which secret encrypted a store
+Mapping cipher (ADR-0045 §3/§4, issue #227/#228):
+  BLINDFOLD_STORE_KEY      — root secret for the Local key cipher (ADR-0045 §7),
+                             32 bytes base64-encoded. Selects the Local key
+                             cipher (`mapping_cipher.LocalKeyCipher`) via
+                             `Settings.mapping_cipher` when set with no Transit
+                             token. A malformed/wrong-length/non-base64 value
+                             refuses startup (`serve.refuse_if_malformed_store_key`).
+                             Configuring this alongside BLINDFOLD_OPENBAO_TOKEN
+                             refuses startup (`serve.refuse_if_ambiguous_mapping_cipher`)
+                             -- ambiguity about which secret encrypted a store
                              surfaces later as undecryptable data.
 
 Bootstrap admin (issue #43 / UX-1):
@@ -161,6 +163,7 @@ DEFAULT_PORT = 25463
 MEMORY_DATABASE_URL = "memory://"
 DEFAULT_SQLITE_STORE_FILENAME = "blindfold.sqlite3"
 MAPPING_CIPHER_TRANSIT = "transit"
+MAPPING_CIPHER_LOCAL = "local"
 MAPPING_CIPHER_NONE = "none"
 
 
@@ -212,22 +215,23 @@ class Settings:
 
     @property
     def mapping_cipher(self) -> str:
-        """Which **mapping cipher** is active for this process (ADR-0045 §4, issue #227).
+        """Which **mapping cipher** is active for this process (ADR-0045 §4, issue #227/#228).
 
         The single resolution point every consumer (the status endpoint's cipher
         dependency, the honesty banner, the startup console line) reads instead of
         re-deriving this from raw env presence. Presence-based: a configured
-        ``openbao_token`` selects the **Transit cipher**; nothing configured means
+        ``openbao_token`` selects the **Transit cipher**; else a configured
+        ``store_key`` selects the **Local key cipher**
+        (:class:`~blindfold.mapping_cipher.LocalKeyCipher`); nothing configured means
         **no mapping cipher** (persisted real values stay plaintext, ADR-0045 §12's
-        interim posture). A ``store_key``-only **Local key cipher** is this ADR's
-        next slice -- until it lands, a Store key alone does not yet select a
-        cipher here, it only participates in
-        :func:`~blindfold.serve.refuse_if_ambiguous_mapping_cipher`'s ambiguity
-        check. Both secrets configured is refused at startup before this property
-        would ever need to choose between them.
+        interim posture). Both secrets configured is refused at startup
+        (:func:`~blindfold.serve.refuse_if_ambiguous_mapping_cipher`) before this
+        property would ever need to choose between them.
         """
         if self.openbao_token:
             return MAPPING_CIPHER_TRANSIT
+        if self.store_key:
+            return MAPPING_CIPHER_LOCAL
         return MAPPING_CIPHER_NONE
 
 

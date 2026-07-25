@@ -245,13 +245,12 @@ def test_settings_mapping_cipher_is_transit_when_openbao_token_is_configured(mon
     assert get_settings().mapping_cipher == "transit"
 
 
-def test_settings_mapping_cipher_stays_none_with_only_a_store_key_configured(monkeypatch):
-    # ADR-0045 §4's Local key cipher branch is wired in a future slice (issue #227's
-    # own scope note) -- a Store key alone participates in the ambiguity refusal
-    # only, it doesn't yet select a cipher.
+def test_settings_mapping_cipher_is_local_with_only_a_store_key_configured(monkeypatch):
+    # ADR-0045 §4/§228: the Local key cipher branch -- a Store key alone (no
+    # Transit token) now selects the local cipher.
     monkeypatch.delenv("BLINDFOLD_OPENBAO_TOKEN", raising=False)
     monkeypatch.setenv("BLINDFOLD_STORE_KEY", "a-local-store-key")
-    assert get_settings().mapping_cipher == "none"
+    assert get_settings().mapping_cipher == "local"
 
 
 def test_settings_gliner_model_path_resolves_from_data_dir_when_env_unset(
