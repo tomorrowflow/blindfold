@@ -55,6 +55,14 @@ import Testing
     #expect(MenuActions.settings == MenuDeepLink(label: "Settings…", path: "/ui/settings"))
 }
 
+/// About (issue #211 / ADR-0039): ADR-0039's Consequences enumerates About among the menu
+/// elements, so it needs a `MenuActions` member the same as every other row -- a hardcoded
+/// view string would let the enumeration and the code drift. The bundle version is a pure
+/// input here; reading `Bundle.main` is the shell's job (untestable on Linux), not Core's.
+@Test func aboutFormatsTheBundleVersionIntoTheLabel() {
+    #expect(MenuActions.about(version: "0.1.0") == "Blindfold 0.1.0")
+}
+
 /// Start/Stop Proxy (issue #186 / ADR-0039) toggles by `AppState`: `.stopped`
 /// offers "Start Proxy" (nothing to stop).
 @Test func startStopLabelIsStartProxyWhenStopped() {

@@ -70,6 +70,14 @@ public enum MenuActions {
     public static let openBlindfold = MenuDeepLink(label: "Open Blindfold", path: "/ui/")
     public static let settings = MenuDeepLink(label: "Settings…", path: "/ui/settings")
 
+    /// About (issue #211 / ADR-0039): ADR-0039's Consequences enumerates About among the
+    /// menu elements, so it needs a member here rather than a hardcoded view string --
+    /// keeps the enumeration and the code consistent, same as every other row. `version`
+    /// is a pure input: reading `Bundle.main` is the (untestable-on-Linux) shell's job.
+    public static func about(version: String) -> String {
+        "Blindfold \(version)"
+    }
+
     /// Whether the proxy has nothing running to stop -- `.stopped` (never
     /// launched) and `.refused` (the child already exited on the startup
     /// guard) both need Start, not Stop; every other state has a live or
