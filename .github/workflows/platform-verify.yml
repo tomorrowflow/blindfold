@@ -79,6 +79,22 @@ jobs:
           cp macos/BlindfoldMenuBar/.build/release/BlindfoldMenuBar "$APP/Contents/MacOS/BlindfoldMenuBar"
           cp macos/BlindfoldMenuBar/Info.plist "$APP/Contents/Info.plist"
 
+      # Ad-hoc codesign (`--sign -`, no identity/secret involved) -- required for the
+      # smoke-launch below to even start: on arm64 (Apple Silicon) macOS, the kernel
+      # refuses to exec an unsigned Mach-O binary at all (SIGKILL at launch), which is
+      # what silently failed this gate before this step existed, on GitHub's arm64
+      # macos-latest runners. Signs the assembled `.app` bundle as a whole (not just the
+      # raw executable) so the seal covers `Contents/Info.plist` too. Must run before any
+      # root-level bundle symlink is ever introduced here -- a symlink at the bundle root
+      # created after signing invalidates the seal ("unsealed contents"); this bundle has
+      # none today (no SwiftPM resource bundle is referenced -- MenuBarIconLabel uses SF
+      # Symbols, not Bundle.module), but if one is ever added it must be created before
+      # this step, not after. Developer ID signing and notarization stay deferred to #198.
+      - name: Codesign BlindfoldMenuBar.app (ad-hoc)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: codesign --force --sign - menu-bar-app/BlindfoldMenuBar.app
+
       # Smoke-launch = the bundle's executable exits 0 under --smoke-test: constructs the
       # loopback StatusClient wiring and the BlindfoldCore reduction calls headlessly, no
       # NSApplication run loop and no interactive dialog (mac-verify-prompt.md's

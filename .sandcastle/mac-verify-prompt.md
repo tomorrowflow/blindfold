@@ -28,15 +28,22 @@ must satisfy, kept in one place so:
   of `BlindfoldCore`; it only ever builds on macOS (`import SwiftUI` has no Linux target),
   which is exactly why it lives in its own package rather than inside `BlindfoldCore` and
   is not part of Sandcastle's in-sandbox `swift test` run.
-- **Unsigned.** No signing identity is invoked. Authenticode/notarization are deferred to a
-  v2 issue (ADR-0041/ADR-0042) — out of scope here, and that deferral is what lets this job
-  run on a free hosted runner with zero secrets.
 - **Produces a `.app` bundle** — `Contents/MacOS/BlindfoldMenuBar` + the committed
   `macos/BlindfoldMenuBar/Info.plist` (`LSUIElement=1` — menu-bar-only, no Dock icon — and
   a bundle identifier). No Xcode project exists in this repo (`BlindfoldMenuBar` is a
   SwiftPM executable target, same shape as `BlindfoldCore`'s library target), so the
   workflow assembles the bundle inline from the built binary + the committed `Info.plist`
   rather than an `xcodebuild archive` step.
+- **Ad-hoc signed, not identity-signed.** `codesign --force --sign -` then runs against the
+  assembled `.app` bundle — no signing identity, keychain, or secret is involved (`-` is
+  codesign's ad-hoc form). This is required, not optional: GitHub's `macos-latest` runner
+  is arm64 (Apple Silicon), and the kernel refuses to execute an unsigned Mach-O binary at
+  all on arm64 — the smoke-launch step below would fail to even start without it. Developer
+  ID signing and notarization stay deferred to #198 — out of scope here, and that deferral
+  is what lets this job run on a free hosted runner with zero secrets. If a SwiftPM
+  resource bundle or any root-level bundle symlink is ever introduced, it must be created
+  **before** the codesign step — a symlink at the bundle root introduced afterward
+  invalidates the seal ("unsealed contents").
 - **Smoke-launch = the bundle's executable exits 0 under `--smoke-test`.** Running
   `Contents/MacOS/BlindfoldMenuBar --smoke-test` constructs the loopback `StatusClient`
   wiring and the `BlindfoldCore` reduction calls (the egress guard included) with no
