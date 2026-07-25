@@ -35,6 +35,7 @@ struct BlindfoldMenuBarApp: App {
         _model = StateObject(wrappedValue: statusModel)
         _settingsModel = StateObject(wrappedValue: SupervisorSettingsViewModel(
             store: launchEnvironmentStore,
+            secretsStore: secretsStore,
             supervisor: supervisor,
             currentAppState: { statusModel.appState }
         ))

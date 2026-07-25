@@ -23,12 +23,28 @@ private let singleInstanceGuard = SingleInstanceGuard()
 /// construction site shares it.
 let launchEnvironmentStore = LaunchEnvironmentStore(suiteName: "dev.tomorrowflow.blindfold.launchEnvironment")
 
+/// The supervisor-owned secrets store (issue #222, ADR-0044): Keychain in a bundled build,
+/// `UserDefaults` in the dev loop -- `SecretsBackend.select` is the pure policy
+/// (`BlindfoldCore`, Linux-tested); `isBundledBuild()` is the one place that reads
+/// code-signing info to decide which this process actually is. A separate store from
+/// `launchEnvironmentStore` on purpose: that one is documented as plain non-secret
+/// configuration only. Not `private`: `BlindfoldMenuBarApp.swift`'s construction site
+/// shares it.
+let secretsStore: SecretsStoring =
+    SecretsBackend.select(isBundledBuild: isBundledBuild()) == .keychain
+    ? KeychainSecretsStore(service: "dev.tomorrowflow.blindfold.secrets")
+    : UserDefaultsSecretsStore(suiteName: "dev.tomorrowflow.blindfold.secrets")
+
 /// Reduces the real ambient environment plus the launch environment store's held
-/// `BLINDFOLD_*` values into the child's actual environment (ADR-0044) -- the one place
-/// both supervisor-construction sites (the real app and `--smoke-launch-full`) build the
-/// value `ProxySupervisor` hands verbatim to the launcher.
+/// `BLINDFOLD_*` values, merged with the secrets store's held values, into the child's
+/// actual environment (ADR-0044) -- the one place both supervisor-construction sites (the
+/// real app and `--smoke-launch-full`) build the value `ProxySupervisor` hands verbatim to
+/// the launcher. Secrets are held in their own store (never `launchEnvironmentStore`) but
+/// still reach the child as ordinary `BLINDFOLD_*` values once merged in here.
 func childEnvironment() -> [String: String] {
-    LaunchEnvironment.reduce(ambient: ProcessInfo.processInfo.environment, launchEnvironment: launchEnvironmentStore.values())
+    let heldValues = launchEnvironmentStore.values()
+        .merging(SupervisorSecrets.load(from: secretsStore).launchEnvironmentValues()) { _, secret in secret }
+    return LaunchEnvironment.reduce(ambient: ProcessInfo.processInfo.environment, launchEnvironment: heldValues)
 }
 
 /// Headless-safe entry point (`.sandcastle/mac-verify-prompt.md`'s contract, mirroring

@@ -50,6 +50,13 @@ struct SupervisorSettingsView: View {
 
             TextField("OpenBao address", text: $model.settings.openBaoAddr)
 
+            // SecureField, not TextField (issue #222, ADR-0044's "never echoed back into
+            // the settings UI as plaintext once stored"): both fields are write-only from
+            // this view's perspective -- clearing a field back to empty and saving removes
+            // the held secret (SupervisorSecrets.save's "omitted, not defaulted" contract).
+            SecureField("L3 API key", text: $model.secrets.l3ApiKey)
+            SecureField("OpenBao token", text: $model.secrets.openBaoToken)
+
             Button("Save") {
                 model.save()
             }
