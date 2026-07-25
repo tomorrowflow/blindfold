@@ -35,15 +35,55 @@ let secretsStore: SecretsStoring =
     ? KeychainSecretsStore(service: "dev.tomorrowflow.blindfold.secrets")
     : UserDefaultsSecretsStore(suiteName: "dev.tomorrowflow.blindfold.secrets")
 
+/// Whether a persistent **store** (the default embedded-SQLite database, ADR-0043) already
+/// exists on disk -- the same default path `resolve_store_dir`/`resolve_database_url`
+/// (`src/blindfold/config.py`) compute. This is what `SupervisorStoreKey.provision`
+/// (issue #233, ADR-0045 §7) needs to tell "first launch, safe to generate" apart from "a
+/// missing key would orphan real data a prior launch already encrypted" -- the
+/// undecryptable-store refusal's territory, not a cue to mint a replacement. A plain
+/// filesystem check, so it lives here in the untestable-on-Linux shell rather than
+/// `BlindfoldCore`, exactly like `singleInstanceLockPath` above.
+private func persistentStoreAlreadyExists() -> Bool {
+    let storeFilePath = FileManager.default.homeDirectoryForCurrentUser
+        .appendingPathComponent("Library/Application Support/blindfold/store/blindfold.sqlite3")
+        .path
+    return FileManager.default.fileExists(atPath: storeFilePath)
+}
+
+/// Generates, holds and injects the Store key (issue #233, ADR-0045 §7): the supervisor's
+/// own secret, held through the same `secretsStore` seam as
+/// `BLINDFOLD_L3_API_KEY`/`BLINDFOLD_OPENBAO_TOKEN` (Keychain in a bundled build,
+/// `UserDefaults` in dev) -- so a bundled build never writes it to `UserDefaults`, the same
+/// guarantee #222 already gives those two secrets. `SupervisorStoreKey.provision` is the
+/// pure decision (`BlindfoldCore`, Linux-tested); this is only the filesystem check it
+/// needs plus the one place the resulting key is written. Idempotent: a key already held
+/// is reused, never regenerated. A `.refuseUndecryptableStore` outcome deliberately writes
+/// nothing -- the Store key stays absent from the launch environment rather than injecting
+/// a fresh key that would silently orphan whatever the existing store already encrypted.
+private func provisionStoreKeyIfNeeded() {
+    let outcome = SupervisorStoreKey.provision(
+        existingKey: secretsStore.value(for: SupervisorStoreKey.environmentKey),
+        persistentStoreAlreadyExists: persistentStoreAlreadyExists()
+    )
+    if case let .generate(newKey) = outcome {
+        secretsStore.setValue(newKey, for: SupervisorStoreKey.environmentKey)
+    }
+}
+
 /// Reduces the real ambient environment plus the launch environment store's held
-/// `BLINDFOLD_*` values, merged with the secrets store's held values, into the child's
-/// actual environment (ADR-0044) -- the one place both supervisor-construction sites (the
-/// real app and `--smoke-launch-full`) build the value `ProxySupervisor` hands verbatim to
-/// the launcher. Secrets are held in their own store (never `launchEnvironmentStore`) but
-/// still reach the child as ordinary `BLINDFOLD_*` values once merged in here.
+/// `BLINDFOLD_*` values, merged with the secrets store's held values (including the Store
+/// key, issue #233), into the child's actual environment (ADR-0044) -- the one place both
+/// supervisor-construction sites (the real app and `--smoke-launch-full`) build the value
+/// `ProxySupervisor` hands verbatim to the launcher. Secrets are held in their own store
+/// (never `launchEnvironmentStore`) but still reach the child as ordinary `BLINDFOLD_*`
+/// values once merged in here.
 func childEnvironment() -> [String: String] {
-    let heldValues = launchEnvironmentStore.values()
+    provisionStoreKeyIfNeeded()
+    var heldValues = launchEnvironmentStore.values()
         .merging(SupervisorSecrets.load(from: secretsStore).launchEnvironmentValues()) { _, secret in secret }
+    if let storeKey = secretsStore.value(for: SupervisorStoreKey.environmentKey), !storeKey.isEmpty {
+        heldValues[SupervisorStoreKey.environmentKey] = storeKey
+    }
     return LaunchEnvironment.reduce(ambient: ProcessInfo.processInfo.environment, launchEnvironment: heldValues)
 }
 

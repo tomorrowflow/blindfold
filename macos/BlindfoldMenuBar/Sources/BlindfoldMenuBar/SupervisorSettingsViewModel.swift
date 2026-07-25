@@ -25,6 +25,14 @@ final class SupervisorSettingsViewModel: ObservableObject {
 
     var restartNotice: String { SupervisorSettingsRestart.restartNotice }
 
+    /// Whether the supervisor-generated Store key (issue #233, ADR-0045 §7) is currently
+    /// held -- configured/not configured only. Unlike `secrets`'s fields, there is no
+    /// bound `SecureField` for this: ADR-0045 §7 rejected key export/reveal/escrow
+    /// outright, so this view model exposes no accessor that returns the key's value.
+    var storeKeyConfigured: Bool {
+        SupervisorStoreKey.isConfigured(in: secretsStore)
+    }
+
     /// Advisory pre-checks (issue #224, ADR-0044) against the edit buffer plus the
     /// store's currently-held values -- where a legacy `BLINDFOLD_OLLAMA_*` key can only
     /// have arrived via the `.env` one-shot import. Never gates `save()`: the proxy's
