@@ -4,16 +4,14 @@ import BlindfoldCore
 /// The menu's action rows (issue #211 / ADR-0039): binds the count deep-links, Open
 /// Blindfold, Settings, and About into the shell. Every visibility and label decision is a
 /// `MenuActions` call -- this view renders exactly what it's given and holds no logic of
-/// its own (ADR-0040's thin-shell discipline).
+/// its own (ADR-0040's thin-shell discipline). The header lives in `BlindfoldMenuBarApp`
+/// (issue #213 merge) since it's shared with the supervision rows, not duplicated here.
 struct MenuBarRows: View {
     @ObservedObject var model: StatusPollingModel
 
     private var baseURL: String { "http://127.0.0.1:\(StatusPollingModel.proxyPort)" }
 
     var body: some View {
-        Text(model.headerText)
-        Divider()
-
         if let link = MenuActions.reviewDeepLink(pending: model.lastStatus?.reviewInboxPending ?? 0) {
             deepLinkRow(link)
         }
