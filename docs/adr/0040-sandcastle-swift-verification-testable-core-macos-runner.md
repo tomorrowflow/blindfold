@@ -1,7 +1,15 @@
 # ADR-0040: Verifying the Swift app — a testable core in-sandbox + a self-hosted macOS gate
 
-**Status:** Accepted
+**Status:** Accepted — runner decision revised by [ADR-0042](0042-platform-verification-gate-all-hosted-github-actions.md)
 **Date:** 2026-07-22
+
+> **Revised by ADR-0042:** the self-hosted macOS runner and the `macAppVerifyNeeded` gate
+> described below were never built and are **not** the current plan — ADR-0042 revises
+> this ADR's runner decision to a hosted GitHub Actions runner (`platformVerifyNeeded`,
+> generalized across macOS and Windows). The testable-core half of this decision
+> (`BlindfoldCore` as pure-Swift, built and unit-tested in-sandbox on Linux, with its own
+> leak-audit clause) shipped and still holds — only the irreducibly-macOS gate below
+> changed backend.
 
 ## Context
 

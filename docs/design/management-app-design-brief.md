@@ -129,6 +129,13 @@ old surrogate (which stays reserved forever).* Collision remains a hard reject.
 
 ## 5. macOS menu bar item
 
+> **Superseded by ADR-0039:** the menu bar app ships as a **supervisor** — it launches
+> and owns the proxy — not the observe-only satellite this section describes. ADR-0039
+> also expands the icon's state machine to **five** states (Stopped / Starting /
+> Protected / Degraded / Refused) plus the ADR-0038 Unprotected-mode alarm state,
+> superseding the four-state set below. The icon-design guidance (18 px template images,
+> light/dark legibility) is still live for whichever state set ships.
+
 Native Swift (`NSStatusItem` + SwiftUI dropdown), observe-only in v1, polling
 `GET /v1/status` every ~5 s. Design deliverables:
 
@@ -195,7 +202,9 @@ relations `employer` / `subsidiary_of` (closed vocabulary), roles `curator` /
 ## 9. v2 ledger
 
 - **Push channel** for status (SSE/WebSocket) replacing the 5 s poll.
-- **launchd integration**: start/stop Blindfold from the menu bar.
+- **launchd integration** (auto-start at login). Superseded in part by ADR-0039: the app
+  already starts/stops the proxy it supervises in v1 (a menu element, not a v2 slot); only
+  OS-level launchd auto-launch remains v2.
 - Bulk actions in the entity list (unlocks the multi-select re-target picker
   flavour).
 - Heavy-friction reveal (reason textarea) if compliance demands it.
