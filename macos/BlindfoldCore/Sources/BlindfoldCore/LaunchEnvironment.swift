@@ -33,6 +33,15 @@ public final class LaunchEnvironmentStore: @unchecked Sendable {
         defaults.set(value, forKey: key)
         defaults.synchronize()
     }
+
+    /// Clears a held value entirely (issue #221) -- distinct from `setValue`, which can
+    /// only ever overwrite, never produce an absent key. Needed when a settings field
+    /// that once held an explicit value is switched back to automatic/empty, so
+    /// `values()` stops reporting the stale key at all.
+    public func removeValue(for key: String) {
+        defaults.removeObject(forKey: key)
+        defaults.synchronize()
+    }
 }
 
 /// The launch environment reduction (CONTEXT.md, ADR-0044): the supervisor is the sole

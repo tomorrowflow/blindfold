@@ -11,6 +11,9 @@ import ProxyProcessKit
 /// this and the headless `--smoke-test`/`--smoke-launch-full` paths.
 struct BlindfoldMenuBarApp: App {
     @StateObject private var model: StatusPollingModel
+    @StateObject private var settingsModel: SupervisorSettingsViewModel
+
+    static let settingsWindowID = "supervisor-settings"
 
     init() {
         let bundledExecutableDirectory = Bundle.main.executableURL?
@@ -28,7 +31,13 @@ struct BlindfoldMenuBarApp: App {
             args: located.args,
             environment: childEnvironment()
         )
-        _model = StateObject(wrappedValue: StatusPollingModel(supervisor: supervisor))
+        let statusModel = StatusPollingModel(supervisor: supervisor)
+        _model = StateObject(wrappedValue: statusModel)
+        _settingsModel = StateObject(wrappedValue: SupervisorSettingsViewModel(
+            store: launchEnvironmentStore,
+            supervisor: supervisor,
+            currentAppState: { statusModel.appState }
+        ))
     }
 
     var body: some Scene {
@@ -53,12 +62,17 @@ struct BlindfoldMenuBarApp: App {
             Divider()
 
             LoginItemRow(model: model)
+            SupervisorSettingsRow()
 
             Divider()
 
             MenuBarSupervisionRows(model: model)
         } label: {
             MenuBarIconLabel(iconState: model.iconState, showsAlarmBadge: model.showsAlarmBadge)
+        }
+
+        Window("Supervisor Settings", id: Self.settingsWindowID) {
+            SupervisorSettingsView(model: settingsModel)
         }
     }
 
@@ -95,6 +109,21 @@ private struct LoginItemRow: View {
         ))
         if let message = model.loginItemErrorMessage {
             Text(message)
+        }
+    }
+}
+
+/// Opens the native settings surface (issue #221, ADR-0044) -- deliberately a native
+/// window, not a deep link into the management SPA's `/ui/settings`: that page is
+/// served *by* the proxy, so it would be unreachable exactly when a launch-environment
+/// fix is needed to get the proxy started at all. Holds no logic of its own -- opening
+/// the window is the only thing this row does.
+private struct SupervisorSettingsRow: View {
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("Supervisor Settings…") {
+            openWindow(id: BlindfoldMenuBarApp.settingsWindowID)
         }
     }
 }

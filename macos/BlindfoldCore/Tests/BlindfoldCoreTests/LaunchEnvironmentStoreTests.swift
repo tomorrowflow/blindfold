@@ -28,3 +28,19 @@ import Testing
 
     #expect(secondLaunch.values() == ["BLINDFOLD_L3_MODEL": "llama3.2"])
 }
+
+/// AC "On Automatic, BLINDFOLD_L3_PROVIDER is absent from the child environment" --
+/// covers the case where a field previously held an explicit value and is switched back
+/// to automatic: `setValue` alone can never produce an absent key, so the store needs an
+/// explicit removal the settings surface can call when a field's held value must be
+/// cleared, not merely overwritten (issue #221).
+@Test func removingAValueClearsItFromASubsequentValuesCall() {
+    let suiteName = "test-\(UUID().uuidString)"
+    defer { UserDefaults().removePersistentDomain(forName: suiteName) }
+    let store = LaunchEnvironmentStore(suiteName: suiteName)
+    store.setValue("gliner", for: "BLINDFOLD_L3_PROVIDER")
+
+    store.removeValue(for: "BLINDFOLD_L3_PROVIDER")
+
+    #expect(store.values() == [:])
+}
