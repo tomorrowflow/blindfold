@@ -110,6 +110,25 @@ swift test --package-path macos/BlindfoldCore
 dotnet test windows/Blindfold.Core.Tests/Blindfold.Core.Tests.csproj
 ```
 
+**A green `uv run pytest` here does NOT mean the Postgres-backed tests ran.** This sandbox has
+no Docker, so every `@pytest.mark.skipif(not _docker_available())` test — roughly 60 of them
+across ~10 `tests/test_postgres_*.py` / `test_entity_graph_postgres.py` /
+`test_transit_ciphertext_columns.py` / `test_bootstrap_wiring.py` files — **silently skips**.
+Consequences you must honor:
+
+- **Never cite a green suite as evidence for Postgres-backed store behavior.** It is a blind
+  spot, not coverage. Under ADR-0043 SQLite is the default and Postgres is the opt-in shared
+  backend, so the skipped set is exactly the *less*-exercised backend.
+- **If your slice touches Postgres store code or those test files, say so explicitly in the
+  completion notes** — state that the affected tests could not be executed in-sandbox and that
+  local verification with Docker is required. A maintainer can then run them; the loop cannot.
+- **Never weaken, remove, or route around the `_docker_available` guard to make them run.**
+  Deleting the guard would turn a skip into a hard failure in every sandbox run.
+
+Issue #217 is the precedent: two of those tests captured the container's DSN and then exited the
+`with PostgresContainer` block before connecting, so they failed on every machine that *has*
+Docker — and the loop never saw it across dozens of green runs.
+
 # COMMIT
 
 Make a git commit. The message must:

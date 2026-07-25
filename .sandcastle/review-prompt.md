@@ -88,6 +88,18 @@ green suite with a missing or weakened leak-audit assertion is a **FAIL**, not a
   test so the next iteration routes to the right owner — the `macos` or `windows`
   SUSPECTED-OWNER role in `.claude/agents/verify.md`'s taxonomy, not `backend`.
 
+  **Do not attest coverage this sandbox cannot produce.** There is no Docker here, so every
+  `@pytest.mark.skipif(not _docker_available())` test silently skips — roughly 60 across the
+  `tests/test_postgres_*.py`, `test_entity_graph_postgres.py`, `test_transit_ciphertext_columns.py`
+  and `test_bootstrap_wiring.py` files. A green suite is therefore **not** evidence about
+  Postgres-backed store behavior (under ADR-0043 the skipped backend is the opt-in shared one;
+  SQLite is the default and *is* covered). If the branch touches Postgres store code or those
+  tests, note in your attestation that the affected tests were unexecuted in-sandbox and need a
+  local Docker run — do not silently count them as passing, and never weaken or remove the
+  `_docker_available` guard to make them run. Issue #217 is the precedent: two such tests tore
+  the container down before connecting and failed on every Docker-equipped machine while the loop
+  stayed green.
+
   Commit describing the refinements. If the code is already clean, do nothing.
 
 Once the change is verified correct, leak-clean, and tidy, output <promise>COMPLETE</promise>.
