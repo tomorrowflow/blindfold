@@ -9,6 +9,16 @@ OpenBao Transit (ADR-0008 / issue #10):
   BLINDFOLD_OPENBAO_ADDR   — OpenBao server address (e.g. http://localhost:8200)
   BLINDFOLD_OPENBAO_TOKEN  — token with blindfold-proxy policy rights
 
+Mapping cipher (ADR-0045 §4, issue #227):
+  BLINDFOLD_STORE_KEY      — root secret for the Local key cipher (ADR-0045 §7 --
+                             not yet wired to any encryption in this slice; a
+                             read-only presence signal for `Settings.mapping_cipher`
+                             and the ambiguity refusal below). Configuring this
+                             alongside BLINDFOLD_OPENBAO_TOKEN refuses startup
+                             (`serve.refuse_if_ambiguous_mapping_cipher`) --
+                             ambiguity about which secret encrypted a store
+                             surfaces later as undecryptable data.
+
 Bootstrap admin (issue #43 / UX-1):
   BLINDFOLD_BOOTSTRAP_ADMIN — identity granted every role on the vendored seed's
                               workspace at startup, so a fresh single-user install
@@ -150,6 +160,8 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 25463
 MEMORY_DATABASE_URL = "memory://"
 DEFAULT_SQLITE_STORE_FILENAME = "blindfold.sqlite3"
+MAPPING_CIPHER_TRANSIT = "transit"
+MAPPING_CIPHER_NONE = "none"
 
 
 @dataclass(frozen=True)
@@ -157,6 +169,7 @@ class Settings:
     upstream_base_url: str = DEFAULT_UPSTREAM_BASE_URL
     openbao_addr: str = DEFAULT_OPENBAO_ADDR
     openbao_token: str = ""
+    store_key: str = ""
     bootstrap_admin_identity: str = ""
     dev_mode: bool = False
     l3_base_url: str = DEFAULT_L3_BASE_URL
@@ -196,6 +209,26 @@ class Settings:
         if self.l3_provider == "gliner":
             return self.l3_inner_provider
         return self.l3_provider
+
+    @property
+    def mapping_cipher(self) -> str:
+        """Which **mapping cipher** is active for this process (ADR-0045 §4, issue #227).
+
+        The single resolution point every consumer (the status endpoint's cipher
+        dependency, the honesty banner, the startup console line) reads instead of
+        re-deriving this from raw env presence. Presence-based: a configured
+        ``openbao_token`` selects the **Transit cipher**; nothing configured means
+        **no mapping cipher** (persisted real values stay plaintext, ADR-0045 §12's
+        interim posture). A ``store_key``-only **Local key cipher** is this ADR's
+        next slice -- until it lands, a Store key alone does not yet select a
+        cipher here, it only participates in
+        :func:`~blindfold.serve.refuse_if_ambiguous_mapping_cipher`'s ambiguity
+        check. Both secrets configured is refused at startup before this property
+        would ever need to choose between them.
+        """
+        if self.openbao_token:
+            return MAPPING_CIPHER_TRANSIT
+        return MAPPING_CIPHER_NONE
 
 
 @functools.lru_cache(maxsize=None)
@@ -332,6 +365,7 @@ def get_settings() -> Settings:
         ),
         openbao_addr=os.environ.get("BLINDFOLD_OPENBAO_ADDR", DEFAULT_OPENBAO_ADDR),
         openbao_token=os.environ.get("BLINDFOLD_OPENBAO_TOKEN", ""),
+        store_key=os.environ.get("BLINDFOLD_STORE_KEY", ""),
         bootstrap_admin_identity=os.environ.get("BLINDFOLD_BOOTSTRAP_ADMIN", ""),
         dev_mode=os.environ.get("BLINDFOLD_DEV_MODE", "") not in ("", "0", "false", "False"),
         l3_base_url=os.environ.get("BLINDFOLD_L3_BASE_URL", DEFAULT_L3_BASE_URL),

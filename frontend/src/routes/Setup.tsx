@@ -44,6 +44,7 @@ export function Setup() {
   const [loadSample, setLoadSample] = useState(false);
   const [enhancedDetection, setEnhancedDetection] = useState(false);
   const [hasPersistentStore, setHasPersistentStore] = useState(false);
+  const [mappingCipher, setMappingCipher] = useState<"transit" | "none">("none");
   const [submitting, setSubmitting] = useState(false);
   const [downloadingModel, setDownloadingModel] = useState(false);
   const [restartNeeded, setRestartNeeded] = useState(false);
@@ -54,9 +55,15 @@ export function Setup() {
     let cancelled = false;
     fetch("/v1/status")
       .then((r) => r.json())
-      .then((data: { config?: { has_persistent_store?: boolean } }) => {
-        if (!cancelled && data.config?.has_persistent_store) setHasPersistentStore(true);
-      })
+      .then(
+        (data: {
+          config?: { has_persistent_store?: boolean; mapping_cipher?: "transit" | "none" };
+        }) => {
+          if (cancelled) return;
+          if (data.config?.has_persistent_store) setHasPersistentStore(true);
+          if (data.config?.mapping_cipher) setMappingCipher(data.config.mapping_cipher);
+        }
+      )
       .catch(() => {
         // Fails closed on the toggle's own visibility: an unreachable status
         // check leaves it hidden, same as the in-memory-default hidden state.
@@ -149,6 +156,17 @@ export function Setup() {
           You've opted out of persistence — this store is in-memory. Every workspace
           and entity is lost when Blindfold restarts. Set <code>BLINDFOLD_DATABASE_URL</code>{" "}
           to configure a durable store.
+        </p>
+      )}
+      {hasPersistentStore && mappingCipher === "none" && (
+        <p
+          className="bf-setup-unencrypted-banner"
+          role="status"
+          data-testid="setup-unencrypted-store-banner"
+        >
+          No mapping cipher is configured — real values are being persisted
+          unencrypted. Set <code>BLINDFOLD_OPENBAO_TOKEN</code> to configure the
+          Transit cipher.
         </p>
       )}
       <form className="bf-setup-form" onSubmit={handleSubmit}>

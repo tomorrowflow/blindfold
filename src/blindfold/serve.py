@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 
 import uvicorn
 
-from .config import DEFAULT_HOST, DEFAULT_PORT, Settings, get_settings
+from .config import DEFAULT_HOST, DEFAULT_PORT, MAPPING_CIPHER_NONE, Settings, get_settings
 from .entity_graph import EntityGraph
 from .gliner_provisioning import is_gliner_model_ready
 from .ollama import is_cloud_model
@@ -75,6 +75,16 @@ class GlinerModelMissingError(RuntimeError):
     on-disk state (issue #150). Failing at startup rather than mid-request keeps the
     failure mode identical to the other local-only guards: an actionable error before
     the ASGI server accepts traffic, not a per-candidate runtime surprise.
+    """
+
+
+class AmbiguousMappingCipherError(RuntimeError):
+    """Raised when both a Transit token and a Store key are configured (ADR-0045 §4).
+
+    Neither alone refuses -- only naming both secrets at once does, joining the
+    existing startup-guard family rather than silently preferring one. Ambiguity
+    about which key encrypted a store surfaces years later as undecryptable data,
+    so this is a startup refusal rather than an implicit precedence rule.
     """
 
 
@@ -147,6 +157,24 @@ def refuse_if_cloud_model(settings: Settings | None = None) -> None:
             f"({settings.l3_model!r}); candidate spans are un-blindfolded real "
             "values and must never leave the machine (ADR-0022). Configure a local "
             "Ollama model instead. There is no override for this invariant."
+        )
+
+
+def refuse_if_ambiguous_mapping_cipher(settings: Settings | None = None) -> None:
+    """Fail fast (ADR-0045 §4) if both a Transit token and a Store key are configured.
+
+    A no-op with neither configured, or with exactly one configured -- either
+    alone resolves unambiguously via :attr:`Settings.mapping_cipher`. There is no
+    override: ambiguity about which secret encrypted a store surfaces later as
+    undecryptable data (issue #227).
+    """
+    settings = settings or get_settings()
+    if settings.openbao_token and settings.store_key:
+        raise AmbiguousMappingCipherError(
+            "refusing to start: both BLINDFOLD_OPENBAO_TOKEN and BLINDFOLD_STORE_KEY "
+            "are configured; a store can only ever be encrypted under one mapping "
+            "cipher. Unset whichever one this install does not intend to use "
+            "(ADR-0045 §4)."
         )
 
 
@@ -246,15 +274,16 @@ def run_server(
 
     Binds loopback by default (SEC-11); binding elsewhere is the caller's explicit
     opt-in via ``host``. Runs the ADR-0031 legacy-env-var guard, the SEC-2 root-token
-    guard, the ADR-0022 local-only-L3 guard (Ollama's ``:cloud`` tag), the ADR-0031 §3
-    local-only-L3 guard (oMLX's loopback-only base url), and the ADR-0033 §2
-    local-only-L3 guard (GLiNER's readable-model-file check) before starting the
-    server so a misconfigured deploy never has the ASGI server accept traffic in the
-    first place.
+    guard, the ADR-0045 §4 ambiguous-mapping-cipher guard, the ADR-0022 local-only-L3
+    guard (Ollama's ``:cloud`` tag), the ADR-0031 §3 local-only-L3 guard (oMLX's
+    loopback-only base url), and the ADR-0033 §2 local-only-L3 guard (GLiNER's
+    readable-model-file check) before starting the server so a misconfigured deploy
+    never has the ASGI server accept traffic in the first place.
     """
     refuse_if_legacy_l3_env_vars()
     settings = settings or get_settings()
     refuse_if_root_token(settings, transit_client=transit_client)
+    refuse_if_ambiguous_mapping_cipher(settings)
     refuse_if_cloud_model(settings)
     refuse_if_omlx_non_loopback(settings)
     refuse_if_gliner_model_missing(settings)
@@ -290,5 +319,15 @@ def run_server(
             "blindfold: store is ephemeral (in-memory) -- entities and workspaces "
             "are lost on restart. Set BLINDFOLD_DATABASE_URL to configure a "
             "durable store."
+        )
+    elif settings.mapping_cipher == MAPPING_CIPHER_NONE:
+        # "Real values persisted unencrypted" honesty banner (ADR-0045 §10/§12,
+        # issue #227): the #199 ephemeral banner's sibling condition -- a
+        # persistent store with no mapping cipher configured. Warn, don't
+        # withdraw persistence (ADR-0045 §12's interim posture).
+        logger.info(
+            "blindfold: no mapping cipher configured -- real values are persisted "
+            "unencrypted. Set BLINDFOLD_OPENBAO_TOKEN to configure the Transit "
+            "cipher."
         )
     runner(APP_TARGET, host=host, port=port)

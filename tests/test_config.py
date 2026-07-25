@@ -223,6 +223,37 @@ def test_settings_database_url_is_read_from_env(monkeypatch):
     assert get_settings().database_url == "postgresql://user:pass@localhost/blindfold"
 
 
+def test_settings_store_key_is_read_from_env(monkeypatch):
+    monkeypatch.setenv("BLINDFOLD_STORE_KEY", "dev-store-key")
+    assert get_settings().store_key == "dev-store-key"
+
+
+def test_settings_store_key_defaults_to_empty_string(monkeypatch):
+    monkeypatch.delenv("BLINDFOLD_STORE_KEY", raising=False)
+    assert get_settings().store_key == ""
+
+
+def test_settings_mapping_cipher_is_none_with_no_secret_configured(monkeypatch):
+    monkeypatch.delenv("BLINDFOLD_OPENBAO_TOKEN", raising=False)
+    monkeypatch.delenv("BLINDFOLD_STORE_KEY", raising=False)
+    assert get_settings().mapping_cipher == "none"
+
+
+def test_settings_mapping_cipher_is_transit_when_openbao_token_is_configured(monkeypatch):
+    monkeypatch.setenv("BLINDFOLD_OPENBAO_TOKEN", "s.transit-token")
+    monkeypatch.delenv("BLINDFOLD_STORE_KEY", raising=False)
+    assert get_settings().mapping_cipher == "transit"
+
+
+def test_settings_mapping_cipher_stays_none_with_only_a_store_key_configured(monkeypatch):
+    # ADR-0045 §4's Local key cipher branch is wired in a future slice (issue #227's
+    # own scope note) -- a Store key alone participates in the ambiguity refusal
+    # only, it doesn't yet select a cipher.
+    monkeypatch.delenv("BLINDFOLD_OPENBAO_TOKEN", raising=False)
+    monkeypatch.setenv("BLINDFOLD_STORE_KEY", "a-local-store-key")
+    assert get_settings().mapping_cipher == "none"
+
+
 def test_settings_gliner_model_path_resolves_from_data_dir_when_env_unset(
     monkeypatch, tmp_path
 ):

@@ -374,10 +374,22 @@ def _default_l3_probe() -> DependencyHealth:
 
 
 def _default_transit_probe() -> DependencyHealth:
+    """The cipher dependency's probe (ADR-0045 §10, issue #227).
+
+    A missing mapping cipher is not a down dependency -- ``/v1/status``'s four
+    dependencies are claims about egress, not durability, and no request path
+    decrypts. Reports the active cipher via ``detail`` (``settings.mapping_cipher``)
+    and stays healthy when none is configured. Configured-but-unreachable Transit is
+    a distinct concern (reachability, not cipher-presence honesty) and still reports
+    unhealthy, unchanged.
+    """
     settings = get_settings()
     if not settings.openbao_token:
-        return DependencyHealth(healthy=True)
-    return TransitClient(addr=settings.openbao_addr, token=settings.openbao_token).health_check()
+        return DependencyHealth(healthy=True, detail="none — real values ephemeral")
+    health = TransitClient(addr=settings.openbao_addr, token=settings.openbao_token).health_check()
+    if health.healthy:
+        return DependencyHealth(healthy=True, detail=settings.mapping_cipher)
+    return health
 
 
 def _default_store_probe() -> DependencyHealth:
@@ -1248,6 +1260,10 @@ async def status(
             # ADR-0034 §2: Setup's "Enhanced local detection" toggle is store-gated
             # -- the SPA reads this to decide whether to render the toggle at all.
             "has_persistent_store": bool(settings.database_url),
+            # ADR-0045 §4/§10, issue #227: the active mapping cipher ("transit" /
+            # "none") -- the SPA pairs this with has_persistent_store to decide
+            # whether to surface the "real values persisted unencrypted" banner.
+            "mapping_cipher": settings.mapping_cipher,
         },
     }
 

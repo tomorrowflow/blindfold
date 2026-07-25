@@ -2822,7 +2822,8 @@ body {
   color: var(--bf-muted);
 }
 
-.bf-setup-ephemeral-banner {
+.bf-setup-ephemeral-banner,
+.bf-setup-unencrypted-banner {
   margin: 12px 0 0;
   padding: 10px 12px;
   border-radius: 8px;
