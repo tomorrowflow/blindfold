@@ -16,6 +16,20 @@ private let singleInstanceLockPath = FileManager.default.homeDirectoryForCurrent
 /// is what lets a *later* launch acquire it, so this must not be a short-lived local.
 private let singleInstanceGuard = SingleInstanceGuard()
 
+/// The supervisor-owned launch environment store (ADR-0044): a dedicated UserDefaults
+/// suite under the app's own bundle identifier, distinct from `.standard` so it can never
+/// collide with an unrelated preference. Not `private`: `BlindfoldMenuBarApp.swift`'s
+/// construction site shares it.
+let launchEnvironmentStore = LaunchEnvironmentStore(suiteName: "dev.tomorrowflow.blindfold.launchEnvironment")
+
+/// Reduces the real ambient environment plus the launch environment store's held
+/// `BLINDFOLD_*` values into the child's actual environment (ADR-0044) -- the one place
+/// both supervisor-construction sites (the real app and `--smoke-launch-full`) build the
+/// value `ProxySupervisor` hands verbatim to the launcher.
+func childEnvironment() -> [String: String] {
+    LaunchEnvironment.reduce(ambient: ProcessInfo.processInfo.environment, launchEnvironment: launchEnvironmentStore.values())
+}
+
 /// Headless-safe entry point (`.sandcastle/mac-verify-prompt.md`'s contract, mirroring
 /// `windows/Blindfold.Tray/Program.cs`'s `--smoke-test`): constructs the loopback wiring
 /// and exits 0 without an `NSApplication` run loop or any interactive dialog, so it can't
@@ -65,7 +79,8 @@ func runSmokeLaunchFull() async -> Int32 {
     let supervisor = ProxySupervisor(
         launcher: RealProxyProcessLauncher(),
         exePath: located.exePath,
-        args: located.args
+        args: located.args,
+        environment: childEnvironment()
     )
 
     let statusClient: StatusClient

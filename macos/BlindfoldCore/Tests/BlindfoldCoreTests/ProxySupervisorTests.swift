@@ -16,10 +16,10 @@ private final class FakeProxyProcess: ProxyProcess, @unchecked Sendable {
 
 private final class FakeProxyProcessLauncher: ProxyProcessLaunching, @unchecked Sendable {
     let process = FakeProxyProcess()
-    var launches: [(exePath: String, args: [String])] = []
+    var launches: [(exePath: String, args: [String], environment: [String: String])] = []
 
-    func launch(exePath: String, args: [String]) -> any ProxyProcess {
-        launches.append((exePath, args))
+    func launch(exePath: String, args: [String], environment: [String: String]) -> any ProxyProcess {
+        launches.append((exePath, args, environment))
         return process
     }
 }
@@ -48,6 +48,25 @@ private final class FakeProxyProcessLauncher: ProxyProcessLaunching, @unchecked 
     #expect(launcher.launches.count == 1)
     #expect(launcher.launches[0].exePath == "blindfold-proxy")
     #expect(launcher.launches[0].args == ["serve"])
+}
+
+/// AC "The spawned child's BLINDFOLD_* values come only from that store" (ADR-0044) --
+/// the supervisor hands the launcher exactly the environment it was constructed with, on
+/// every launch. `ProxySupervisor` never derives or reduces this itself (main.swift's job,
+/// via `LaunchEnvironment.reduce`); it is process-lifecycle plumbing only.
+@Test func startPassesTheConfiguredEnvironmentToTheLauncher() {
+    let launcher = FakeProxyProcessLauncher()
+    let supervisor = ProxySupervisor(
+        launcher: launcher,
+        exePath: "blindfold-proxy",
+        args: ["serve"],
+        environment: ["BLINDFOLD_L3_MODEL": "llama3.2", "PATH": "/usr/bin"]
+    )
+
+    supervisor.start()
+
+    #expect(launcher.launches.count == 1)
+    #expect(launcher.launches[0].environment == ["BLINDFOLD_L3_MODEL": "llama3.2", "PATH": "/usr/bin"])
 }
 
 /// Once a `/v1/status` poll has succeeded, a still-running child is `running`

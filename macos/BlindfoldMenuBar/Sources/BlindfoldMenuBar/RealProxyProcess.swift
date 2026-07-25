@@ -63,10 +63,11 @@ final class FailedProxyLaunch: ProxyProcess, @unchecked Sendable {
 /// ADR-0039/0041). Redirects only stderr -- stdout is left alone, never captured or
 /// surfaced (AC).
 struct RealProxyProcessLauncher: ProxyProcessLaunching {
-    func launch(exePath: String, args: [String]) -> any ProxyProcess {
+    func launch(exePath: String, args: [String], environment: [String: String]) -> any ProxyProcess {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: exePath)
         process.arguments = args
+        process.environment = environment
 
         let stderrPipe = Pipe()
         process.standardError = stderrPipe
