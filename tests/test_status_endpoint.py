@@ -443,6 +443,23 @@ def test_default_transit_probe_reports_no_cipher_and_stays_healthy_when_unconfig
     assert health.detail == "none — real values ephemeral"
 
 
+def test_default_transit_probe_reports_the_local_cipher_when_a_store_key_is_configured(
+    monkeypatch,
+):
+    # issue #228: a Store key alone (no Transit token) selects the Local key
+    # cipher, which has no network dependency to probe -- always healthy, and
+    # the detail names it rather than falling into the "none" case.
+    import base64
+
+    monkeypatch.delenv("BLINDFOLD_OPENBAO_TOKEN", raising=False)
+    monkeypatch.setenv("BLINDFOLD_STORE_KEY", base64.b64encode(b"0" * 32).decode())
+
+    health = _default_transit_probe()
+
+    assert health.healthy is True
+    assert health.detail == "local"
+
+
 def test_default_transit_probe_reports_the_active_cipher_when_transit_is_reachable(
     monkeypatch,
 ):

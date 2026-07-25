@@ -24,6 +24,7 @@ import uvicorn
 from .config import DEFAULT_HOST, DEFAULT_PORT, MAPPING_CIPHER_NONE, Settings, get_settings
 from .entity_graph import EntityGraph
 from .gliner_provisioning import is_gliner_model_ready
+from .mapping_cipher import InvalidStoreKeyError, LocalKeyCipher
 from .ollama import is_cloud_model
 from .transit import TransitClient
 
@@ -85,6 +86,16 @@ class AmbiguousMappingCipherError(RuntimeError):
     existing startup-guard family rather than silently preferring one. Ambiguity
     about which key encrypted a store surfaces years later as undecryptable data,
     so this is a startup refusal rather than an implicit precedence rule.
+    """
+
+
+class MalformedStoreKeyError(RuntimeError):
+    """Raised when ``BLINDFOLD_STORE_KEY`` is set but malformed (ADR-0045 §3).
+
+    Non-base64, or not exactly 32 decoded bytes -- a named startup refusal,
+    never a silent fallback. The message never carries the key material, only
+    the shape of the problem (:class:`~blindfold.mapping_cipher.InvalidStoreKeyError`'s
+    own message, which is scrubbed the same way).
     """
 
 
@@ -176,6 +187,28 @@ def refuse_if_ambiguous_mapping_cipher(settings: Settings | None = None) -> None
             "cipher. Unset whichever one this install does not intend to use "
             "(ADR-0045 §4)."
         )
+
+
+def refuse_if_malformed_store_key(settings: Settings | None = None) -> None:
+    """Fail fast (ADR-0045 §3) if ``settings.store_key`` is set but malformed.
+
+    A no-op with no Store key configured. Construction alone
+    (:class:`~blindfold.mapping_cipher.LocalKeyCipher`) is enough to validate
+    shape (base64, exactly 32 decoded bytes) -- this never encrypts or
+    decrypts anything, so it costs nothing beyond that check. The refusal
+    message is the underlying :class:`~blindfold.mapping_cipher.InvalidStoreKeyError`'s
+    own scrubbed text, never the key value itself.
+    """
+    settings = settings or get_settings()
+    if not settings.store_key:
+        return
+    try:
+        LocalKeyCipher(settings.store_key)
+    except InvalidStoreKeyError as exc:
+        raise MalformedStoreKeyError(
+            f"refusing to start: BLINDFOLD_STORE_KEY is malformed ({exc}); it must "
+            "be exactly 32 bytes, base64-encoded (ADR-0045 §3)."
+        ) from exc
 
 
 def _is_loopback_base_url(base_url: str) -> bool:
@@ -274,16 +307,18 @@ def run_server(
 
     Binds loopback by default (SEC-11); binding elsewhere is the caller's explicit
     opt-in via ``host``. Runs the ADR-0031 legacy-env-var guard, the SEC-2 root-token
-    guard, the ADR-0045 §4 ambiguous-mapping-cipher guard, the ADR-0022 local-only-L3
-    guard (Ollama's ``:cloud`` tag), the ADR-0031 §3 local-only-L3 guard (oMLX's
-    loopback-only base url), and the ADR-0033 §2 local-only-L3 guard (GLiNER's
-    readable-model-file check) before starting the server so a misconfigured deploy
-    never has the ASGI server accept traffic in the first place.
+    guard, the ADR-0045 §4 ambiguous-mapping-cipher guard, the ADR-0045 §3
+    malformed-Store-key guard, the ADR-0022 local-only-L3 guard (Ollama's ``:cloud``
+    tag), the ADR-0031 §3 local-only-L3 guard (oMLX's loopback-only base url), and
+    the ADR-0033 §2 local-only-L3 guard (GLiNER's readable-model-file check) before
+    starting the server so a misconfigured deploy never has the ASGI server accept
+    traffic in the first place.
     """
     refuse_if_legacy_l3_env_vars()
     settings = settings or get_settings()
     refuse_if_root_token(settings, transit_client=transit_client)
     refuse_if_ambiguous_mapping_cipher(settings)
+    refuse_if_malformed_store_key(settings)
     refuse_if_cloud_model(settings)
     refuse_if_omlx_non_loopback(settings)
     refuse_if_gliner_model_missing(settings)

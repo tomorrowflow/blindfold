@@ -22,11 +22,13 @@ from blindfold.serve import (
     GlinerModelMissingError,
     LegacyEnvVarError,
     LocalOnlyModelRequiredError,
+    MalformedStoreKeyError,
     OmlxLoopbackRequiredError,
     refuse_if_ambiguous_mapping_cipher,
     refuse_if_cloud_model,
     refuse_if_gliner_model_missing,
     refuse_if_legacy_l3_env_vars,
+    refuse_if_malformed_store_key,
     refuse_if_omlx_non_loopback,
     refuse_if_root_token,
     run_server,
@@ -70,6 +72,15 @@ def test_refuse_if_root_token_is_a_noop_with_no_transit_token_configured():
 
     # No transit_client seam passed either — a real TransitClient must never be
     # constructed (and no network call made) when there's nothing configured to check.
+    refuse_if_root_token(settings)
+
+
+def test_refuse_if_root_token_is_a_noop_when_the_local_cipher_is_active():
+    # ADR-0045 §2, issue #228: the root-token guard is conditional on the Transit
+    # cipher being active -- a Store key alone (the Local key cipher) has no token
+    # concept, so this stays a no-op regardless of what a real client would report.
+    settings = Settings(openbao_token="", store_key="a-local-store-key", dev_mode=False)
+
     refuse_if_root_token(settings)
 
 
@@ -295,6 +306,43 @@ def test_refuse_if_legacy_l3_env_vars_is_a_noop_with_neither_old_name_set(monkey
 
 
 # ---------------------------------------------------------------------------
+# 1d. refuse_if_malformed_store_key — ADR-0045 §3 named refusal, never a
+#     silent fallback; the message never carries the key material.
+# ---------------------------------------------------------------------------
+
+
+def test_refuse_if_malformed_store_key_blocks_non_base64_key():
+    settings = Settings(store_key="not-valid-base64!!!")
+
+    with pytest.raises(MalformedStoreKeyError) as exc_info:
+        refuse_if_malformed_store_key(settings)
+    assert "not-valid-base64!!!" not in str(exc_info.value)
+
+
+def test_refuse_if_malformed_store_key_blocks_a_wrong_length_key():
+    import base64
+
+    settings = Settings(store_key=base64.b64encode(b"too-short").decode())
+
+    with pytest.raises(MalformedStoreKeyError):
+        refuse_if_malformed_store_key(settings)
+
+
+def test_refuse_if_malformed_store_key_allows_a_well_formed_key():
+    import base64
+
+    settings = Settings(store_key=base64.b64encode(b"0" * 32).decode())
+
+    refuse_if_malformed_store_key(settings)
+
+
+def test_refuse_if_malformed_store_key_is_a_noop_with_no_store_key_configured():
+    settings = Settings(store_key="")
+
+    refuse_if_malformed_store_key(settings)
+
+
+# ---------------------------------------------------------------------------
 # 2. run_server — wires the guard + the bundled ASGI server (SEC-11 loopback default)
 # ---------------------------------------------------------------------------
 
@@ -356,6 +404,21 @@ def test_run_server_refuses_an_ambiguous_mapping_cipher_before_starting_the_asgi
         run_server(
             settings=settings,
             transit_client=_StubTransitClient(root=False),
+            runner=lambda app, **kwargs: calls.append((app, kwargs)),
+        )
+
+    assert calls == []
+
+
+def test_run_server_refuses_a_malformed_store_key_before_starting_the_asgi_server():
+    # ADR-0045 §3: a malformed/wrong-length/non-base64 Store key is a named
+    # refusal, never a silent fallback -- joins the existing startup-guard family.
+    settings = Settings(store_key="not-valid-base64!!!")
+    calls = []
+
+    with pytest.raises(MalformedStoreKeyError):
+        run_server(
+            settings=settings,
             runner=lambda app, **kwargs: calls.append((app, kwargs)),
         )
 
@@ -650,6 +713,28 @@ def test_run_server_does_not_log_the_unencrypted_warning_when_a_cipher_is_config
         )
 
     assert "unencrypted" not in caplog.text
+
+
+def test_run_server_does_not_log_the_unencrypted_warning_when_a_store_key_is_configured(
+    caplog,
+):
+    # ADR-0045 §228: a Store key alone (no Transit token) now selects the Local
+    # key cipher -- the same mutual-exclusion as the Transit case above.
+    import base64
+
+    settings = Settings(
+        upstream_base_url="http://shared.test",
+        database_url="postgresql://db.test/blindfold",
+        store_key=base64.b64encode(b"0" * 32).decode(),
+    )
+    graph = EntityGraph()
+    graph.add_entity("person", "acme", "Martin Bach")
+
+    with caplog.at_level("INFO"):
+        run_server(settings=settings, entity_graph=graph, runner=lambda app, **kwargs: None)
+
+    assert "unencrypted" not in caplog.text
+    assert "ephemeral" not in caplog.text
 
 
 def test_run_server_does_not_log_the_unencrypted_warning_on_the_ephemeral_default(caplog):
