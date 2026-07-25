@@ -2,22 +2,35 @@ import Foundation
 import Combine
 import BlindfoldCore
 
-/// Owns the `/v1/status` poll loop and republishes `BlindfoldCore`'s reduction --
-/// `BlindfoldMenuBarApp`'s view binds to this and holds no logic of its own (ADR-0040's
-/// thin-shell discipline: every state/icon/header decision is a `BlindfoldCore` call).
+/// Owns the `/v1/status` poll loop and the real `ProxySupervisor`, and republishes
+/// `BlindfoldCore`'s reduction -- `BlindfoldMenuBarApp`'s view binds to this and holds no
+/// logic of its own (ADR-0040's thin-shell discipline: every state/icon/header/liveness
+/// decision is a `BlindfoldCore` call). The poll loop is the only thing that ever tells the
+/// supervisor a poll succeeded (`notifyHealthy`) -- this shell never derives liveness itself
+/// (issue #213's AC), it only asks the supervisor for its current value each tick.
 @MainActor
 final class StatusPollingModel: ObservableObject {
     // nonisolated: an immutable Int constant referenced from main.swift's nonisolated
-    // `runSmokeTest()`, which never touches the class's actor-isolated mutable state.
+    // `runSmokeTest()`/`runSmokeLaunchFull()`, which never touch the class's actor-isolated
+    // mutable state.
     nonisolated static let proxyPort = 25463
     private static let cadenceSeconds = 2.0
 
     @Published private(set) var appState: AppState = .stopped
     @Published private(set) var lastStatus: StatusPayload?
 
+    /// The supervisor Start/Stop Proxy and Quit drive directly (issue #213) -- exposed so
+    /// the menu view can call `MenuActions.toggleProxy`/`MenuActions.quit` against the same
+    /// instance this poll loop feeds `notifyHealthy` into.
+    let supervisor: ProxySupervisor
+
     private var pollTask: Task<Void, Never>?
 
-    init(baseURL: URL = URL(string: "http://127.0.0.1:\(StatusPollingModel.proxyPort)/v1/status")!) {
+    init(
+        supervisor: ProxySupervisor,
+        baseURL: URL = URL(string: "http://127.0.0.1:\(StatusPollingModel.proxyPort)/v1/status")!
+    ) {
+        self.supervisor = supervisor
         do {
             let client = try StatusClient(baseURL: baseURL, fetcher: URLSessionStatusFetching())
             pollTask = Task { [weak self] in
@@ -43,27 +56,35 @@ final class StatusPollingModel: ObservableObject {
         )
     }
 
-    /// `StatusClient.pollLoop` throws and stops entirely on the first failed fetch --
-    /// correct for its own bounded-iterations test contract, but a menu bar app polling an
-    /// already-running (or not-yet-running) proxy must keep trying rather than give up
-    /// after one failure. This wraps it in an outer retry: an unreachable proxy renders
-    /// stopped/refused (never hangs or crashes -- AC) and polling resumes on the same
-    /// cadence. This app never spawns the proxy (out of scope, see the issue), so
-    /// `.notStarted` is the only liveness this shell can honestly report for "unreachable."
+    /// Re-reduces immediately from the supervisor's current liveness -- called right after
+    /// a menu action (`Start Proxy`/`Stop Proxy`/`Quit`) mutates the supervisor, so the menu
+    /// reflects the new state on the next render instead of waiting up to `cadenceSeconds`
+    /// for the poll loop to catch up.
+    func refreshFromSupervisor() {
+        appState = AppStateMachine.reduce(liveness: supervisor.currentLiveness(), status: lastStatus)
+    }
+
+    /// Skips polling a child that was never started -- otherwise every tick would hammer a
+    /// closed port with a failed connection for no reason (mirrors
+    /// `windows/Blindfold.Tray/TrayApplicationContext.cs`'s `PollAsync`). Everything else
+    /// always polls, even mid-Refused, since a fresh Start can only be observed by trying
+    /// again. Never hangs or crashes on an unreachable proxy (AC) -- a failed fetch just
+    /// clears `lastStatus` and the loop keeps going on the same cadence.
     private func pollForever(client: StatusClient) async {
         while !Task.isCancelled {
-            do {
-                try await client.pollLoop(intervalSeconds: Self.cadenceSeconds, sleeper: RealSleeper()) { @Sendable payload in
-                    Task { @MainActor [weak self] in
-                        self?.lastStatus = payload
-                        self?.appState = AppStateMachine.reduce(liveness: .running, status: payload)
-                    }
+            if supervisor.currentLiveness() != .notStarted {
+                do {
+                    lastStatus = try await client.poll()
+                    supervisor.notifyHealthy()
+                } catch {
+                    lastStatus = nil
                 }
-            } catch {
+            } else {
                 lastStatus = nil
-                appState = AppStateMachine.reduce(liveness: .notStarted, status: nil)
-                try? await RealSleeper().sleep(seconds: Self.cadenceSeconds)
             }
+
+            appState = AppStateMachine.reduce(liveness: supervisor.currentLiveness(), status: lastStatus)
+            try? await RealSleeper().sleep(seconds: Self.cadenceSeconds)
         }
     }
 

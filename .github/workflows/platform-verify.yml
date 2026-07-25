@@ -18,11 +18,15 @@
 # committed BlindfoldCore package (issue #208 — Package.swift previously declared no
 # `platforms:`, so it silently built at the 10.13 SwiftPM default where Swift concurrency
 # doesn't exist; a green macOS gate proved nothing about this repo's Swift until this
-# build step existed), then builds + smoke-launches the real `BlindfoldMenuBar` MenuBarExtra
-# shell (issue #210, ADR-0039/0040) -- the trivial `BlindfoldStub.swift` throwaway (#129's
-# earlier placeholder) is gone now that the real shell exists; the Windows job builds +
-# smoke-launches the real WinForms tray supervisor (issue #196, ADR-0041) and freezes the
-# real `blindfold-proxy.exe` (issue #195, ADR-0039/0041) it spawns as a child.
+# build step existed), builds the real `BlindfoldMenuBar` MenuBarExtra shell (issue #210,
+# ADR-0039/0040) -- the trivial `BlindfoldStub.swift` throwaway (#129's earlier placeholder)
+# is gone now that the real shell exists -- freezes the real `blindfold-proxy` binary
+# (issue #184/#213, same shared spec as Windows) and embeds it in the bundle per ADR-0039's
+# `.app ⊃ frozen-proxy ⊃ ui_dist` layering, then smoke-launches the assembled `.app`
+# (issue #213: `--smoke-launch-full` spawns that embedded proxy for real, supervises it,
+# and asserts it reaches a non-error terminal state). The Windows job builds + smoke-launches
+# the real WinForms tray supervisor (issue #196, ADR-0041) and freezes the real
+# `blindfold-proxy.exe` (issue #195, ADR-0039/0041) it spawns as a child.
 # The workflow is fully declarative (plain shell steps, no LLM agent on the runner) —
 # see .sandcastle/mac-verify-prompt.md / win-verify-prompt.md for why, and for the
 # written build+smoke-launch contract each job below satisfies.
@@ -69,6 +73,29 @@ jobs:
         shell: bash
         run: swift build --package-path macos/BlindfoldMenuBar --configuration release
 
+      # macOS: freeze `blindfold serve` into a `blindfold-proxy` binary via the shared,
+      # cross-platform PyInstaller spec (packaging/blindfold-proxy.spec, ADR-0039/0041) --
+      # issue #213's embedded child the assembled .app spawns, same spec the Windows job's
+      # freeze step and the Linux in-sandbox test (tests/test_frozen_proxy_packaging.py)
+      # already exercise unchanged.
+      - name: Set up Python (macOS freeze)
+        if: runner.os == 'macOS'
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv (macOS freeze)
+        if: runner.os == 'macOS'
+        uses: astral-sh/setup-uv@v5
+
+      - name: Freeze blindfold-proxy (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv sync --group freeze
+          uv run pyinstaller packaging/blindfold-proxy.spec --distpath dist --workpath build -y
+
       - name: Assemble BlindfoldMenuBar.app
         if: runner.os == 'macOS'
         shell: bash
@@ -78,18 +105,32 @@ jobs:
           mkdir -p "$APP/Contents/MacOS"
           cp macos/BlindfoldMenuBar/.build/release/BlindfoldMenuBar "$APP/Contents/MacOS/BlindfoldMenuBar"
           cp macos/BlindfoldMenuBar/Info.plist "$APP/Contents/Info.plist"
+          # ADR-0039's `.app ⊃ frozen-proxy ⊃ ui_dist` layering (issue #213): the frozen
+          # proxy rides inside the bundle beside the menu bar app's own executable, so
+          # ProxyBinaryLocator finds it at runtime with no Python/uv/Node on the target Mac.
+          cp dist/blindfold-proxy "$APP/Contents/MacOS/blindfold-proxy"
+          chmod +x "$APP/Contents/MacOS/blindfold-proxy"
 
-      # Ad-hoc codesign (`--sign -`, no identity/secret involved) -- required for the
-      # smoke-launch below to even start: on arm64 (Apple Silicon) macOS, the kernel
-      # refuses to exec an unsigned Mach-O binary at all (SIGKILL at launch), which is
-      # what silently failed this gate before this step existed, on GitHub's arm64
-      # macos-latest runners. Signs the assembled `.app` bundle as a whole (not just the
+      # Ad-hoc codesign (`--sign -`, no identity/secret involved) -- required for both
+      # binaries to even exec: on arm64 (Apple Silicon) macOS, the kernel refuses to exec
+      # an unsigned Mach-O binary at all (SIGKILL at launch), which is what silently failed
+      # this gate before the app's own codesign step existed. The embedded blindfold-proxy
+      # is spawned directly by ProxySupervisor as a child process (not launched through the
+      # app bundle's own Info.plist/CFBundleExecutable machinery), so sealing the outer
+      # .app does not cover it -- it needs its own signature, signed first (nested code is
+      # conventionally signed before the bundle that contains it, same ordering rule as
+      # frameworks/plugins). Signs the assembled `.app` bundle as a whole (not just the
       # raw executable) so the seal covers `Contents/Info.plist` too. Must run before any
       # root-level bundle symlink is ever introduced here -- a symlink at the bundle root
       # created after signing invalidates the seal ("unsealed contents"); this bundle has
       # none today (no SwiftPM resource bundle is referenced -- MenuBarIconLabel uses SF
       # Symbols, not Bundle.module), but if one is ever added it must be created before
       # this step, not after. Developer ID signing and notarization stay deferred to #198.
+      - name: Codesign embedded blindfold-proxy (ad-hoc)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: codesign --force --sign - menu-bar-app/BlindfoldMenuBar.app/Contents/MacOS/blindfold-proxy
+
       - name: Codesign BlindfoldMenuBar.app (ad-hoc)
         if: runner.os == 'macOS'
         shell: bash
@@ -99,11 +140,23 @@ jobs:
       # loopback StatusClient wiring and the BlindfoldCore reduction calls headlessly, no
       # NSApplication run loop and no interactive dialog (mac-verify-prompt.md's
       # headless-safe contract, mirroring Blindfold.Tray's --smoke-test on Windows). No
-      # proxy is started for this -- the app never spawns one (out of scope, see the issue).
+      # proxy is started for this -- the app never spawns one for --smoke-test.
       - name: Smoke-launch BlindfoldMenuBar.app
         if: runner.os == 'macOS'
         shell: bash
         run: ./menu-bar-app/BlindfoldMenuBar.app/Contents/MacOS/BlindfoldMenuBar --smoke-test
+
+      # Issue #213's supervision AC: --smoke-launch-full spawns the real embedded
+      # blindfold-proxy, polls /v1/status, supervises it via ProxySupervisor, and exits 0
+      # once AppStateMachine reduces to a non-error terminal state (Protected OR Degraded)
+      # -- Degraded is expected and sufficient here, since no L3 dependency is configured
+      # on this runner (unlike the Windows one-hop assertion, this does NOT require
+      # Protected -- see main.swift's runSmokeLaunchFull doc comment and issue #197's
+      # cautionary precedent for why requiring Protected here would be the wrong assertion).
+      - name: Smoke-launch-full BlindfoldMenuBar.app
+        if: runner.os == 'macOS'
+        shell: bash
+        run: ./menu-bar-app/BlindfoldMenuBar.app/Contents/MacOS/BlindfoldMenuBar --smoke-launch-full
 
       # Windows: build the real WinForms tray supervisor (issue #196, ADR-0041) --
       # unsigned, self-contained single-file per the ADR's first-cut distribution -- and
