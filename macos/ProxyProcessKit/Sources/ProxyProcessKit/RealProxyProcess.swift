@@ -103,10 +103,11 @@ public final class FailedProxyLaunch: ProxyProcess, @unchecked Sendable {
 public struct RealProxyProcessLauncher: ProxyProcessLaunching {
     public init() {}
 
-    public func launch(exePath: String, args: [String]) -> any ProxyProcess {
+    public func launch(exePath: String, args: [String], environment: [String: String]) -> any ProxyProcess {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: exePath)
         process.arguments = args
+        process.environment = environment
 
         // Issue #219: verified empirically (a throwaway Linux SwiftPM package spawning a
         // real, continuously-printing Python child against the real Process/Pipe types)

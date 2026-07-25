@@ -24,7 +24,7 @@ public protocol ProxyProcess: Sendable {
 /// Spawns the frozen proxy child — stubbed in tests (leak-audit's seam-stub pattern),
 /// backed by a real `Process` in the menu-bar app.
 public protocol ProxyProcessLaunching: Sendable {
-    func launch(exePath: String, args: [String]) -> any ProxyProcess
+    func launch(exePath: String, args: [String], environment: [String: String]) -> any ProxyProcess
 }
 
 /// Scrubs a startup-guard child's raw stderr into one of a fixed set of known-safe
@@ -63,18 +63,24 @@ public final class ProxySupervisor: ProxySupervising, @unchecked Sendable {
     private let launcher: ProxyProcessLaunching
     private let exePath: String
     private let args: [String]
+    private let environment: [String: String]
     private var process: (any ProxyProcess)?
     private var everHealthy = false
 
-    public init(launcher: ProxyProcessLaunching, exePath: String, args: [String]) {
+    /// `environment` is the already-reduced child environment (`LaunchEnvironment.reduce`,
+    /// ADR-0044) -- the supervisor hands it to the launcher verbatim on every `start()` and
+    /// never derives or reduces it itself, keeping this class process-lifecycle plumbing
+    /// only. Defaults to empty for callers (existing lifecycle tests) not concerned with it.
+    public init(launcher: ProxyProcessLaunching, exePath: String, args: [String], environment: [String: String] = [:]) {
         self.launcher = launcher
         self.exePath = exePath
         self.args = args
+        self.environment = environment
     }
 
     public func start() {
         everHealthy = false
-        process = launcher.launch(exePath: exePath, args: args)
+        process = launcher.launch(exePath: exePath, args: args, environment: environment)
     }
 
     /// Tells the supervisor a `/v1/status` poll succeeded — called by the menu bar's

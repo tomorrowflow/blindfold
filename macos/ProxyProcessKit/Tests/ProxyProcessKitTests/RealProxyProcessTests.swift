@@ -19,7 +19,7 @@ import BlindfoldCore
 @Test func slowChildStaysNotExitedWhileSleepingThenExitsCleanlyOnceItFinishes() throws {
     let launcher = RealProxyProcessLauncher()
 
-    let process = launcher.launch(exePath: "/bin/sh", args: ["-c", "sleep 0.4; exit 0"])
+    let process = launcher.launch(exePath: "/bin/sh", args: ["-c", "sleep 0.4; exit 0"], environment: [:])
 
     #expect(process.hasExited == false)
 
@@ -45,7 +45,8 @@ import BlindfoldCore
 
     let process = launcher.launch(
         exePath: "/bin/sh",
-        args: ["-c", "yes 'loading model shard progress ...' | head -n 6000 1>&2"]
+        args: ["-c", "yes 'loading model shard progress ...' | head -n 6000 1>&2"],
+        environment: [:]
     )
 
     let deadline = Date().addingTimeInterval(10)
@@ -76,7 +77,7 @@ import BlindfoldCore
 @Test func osLevelSignalKillIsReportedAsTerminationSignalNotAsAnExitCode() throws {
     let launcher = RealProxyProcessLauncher()
 
-    let process = launcher.launch(exePath: "/bin/sleep", args: ["30"])
+    let process = launcher.launch(exePath: "/bin/sleep", args: ["30"], environment: [:])
     guard let real = process as? RealProxyProcess else {
         Issue.record("expected a RealProxyProcess")
         return
@@ -105,7 +106,8 @@ import BlindfoldCore
 
     let process = launcher.launch(
         exePath: "/bin/sh",
-        args: ["-c", "yes 'stdout progress' | head -n 6000"]
+        args: ["-c", "yes 'stdout progress' | head -n 6000"],
+        environment: [:]
     )
 
     let deadline = Date().addingTimeInterval(10)
