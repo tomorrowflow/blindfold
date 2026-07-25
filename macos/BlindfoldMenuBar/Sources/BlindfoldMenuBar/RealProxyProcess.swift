@@ -39,6 +39,15 @@ final class RealProxyProcess: ProxyProcess, @unchecked Sendable {
         }
     }
 
+    /// Never `process.waitUntilExit()` in this seam, here or anywhere else: verified
+    /// empirically (issue #219, a throwaway Linux SwiftPM package spawning a real child
+    /// against the real `Process`/`Pipe` types) that it can hang indefinitely on at
+    /// least one Foundation implementation, even for a child that already exited moments
+    /// earlier. `ProxySupervisor`'s whole design depends on `hasExited`/
+    /// `terminationSignal` being observable by *polling* from the menu bar's async loop
+    /// without ever blocking on the child -- a synchronous wait here would silently
+    /// reintroduce a supervisor that can freeze during exactly the slow-start window
+    /// this issue is about, just with the hang moved from the child to the supervisor.
     var hasExited: Bool { !process.isRunning }
     var exitCode: Int32 { process.isRunning ? 0 : process.terminationStatus }
 
