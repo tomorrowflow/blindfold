@@ -7,7 +7,9 @@ import BlindfoldCore
 /// thin-shell discipline: every state/icon/header decision is a `BlindfoldCore` call).
 @MainActor
 final class StatusPollingModel: ObservableObject {
-    static let proxyPort = 25463
+    // nonisolated: an immutable Int constant referenced from main.swift's nonisolated
+    // `runSmokeTest()`, which never touches the class's actor-isolated mutable state.
+    nonisolated static let proxyPort = 25463
     private static let cadenceSeconds = 2.0
 
     @Published private(set) var appState: AppState = .stopped
