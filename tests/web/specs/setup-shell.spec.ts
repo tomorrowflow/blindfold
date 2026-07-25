@@ -62,6 +62,14 @@ test.describe("Setup — empty-store forced redirect", () => {
     await expect(banner).toBeVisible();
     await expect(banner).toContainText("opted out of persistence");
     await expect(banner).toContainText("BLINDFOLD_DATABASE_URL");
+    // The unencrypted-persistence banner (ADR-0045 §4/§10, issue #227) is a
+    // distinct condition (a persistent store configured with no mapping cipher)
+    // -- on a store with no persistence at all, it must not also render. See
+    // setup-unencrypted-store.spec.ts for the persistent-store fixture where
+    // this banner's own show/hide behavior is exercised.
+    await expect(
+      operatorPage.getByTestId("setup-unencrypted-store-banner")
+    ).toHaveCount(0);
   });
 });
 

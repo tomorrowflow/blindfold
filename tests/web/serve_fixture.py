@@ -23,6 +23,19 @@ Degraded browser-verify specs, launched by `playwright.config.ts`'s second
   unconfigured-L3 default in place (no `BLINDFOLD_L3_MODEL` in this process's
   env) instead of stubbing a fake outage, so the Degraded render is exercised
   against an honest fail-closed condition, not a synthetic one.
+
+Setup's unencrypted-persistence honesty banner (ADR-0045 §4/§10, issue #227) needs
+a fixture instance with an actual *persistent* store, unlike every other instance
+here -- `BLINDFOLD_FIXTURE_PERSISTENT_STORE=1` opts a process into that (a fresh
+per-process scratch SQLite file, never the real host's app-data path). Pair with
+`BLINDFOLD_OPENBAO_TOKEN` unset (the banner's "no mapping cipher" case) or set (the
+banner's "Transit cipher configured" case). Setting the token makes
+`blindfold.app`'s own module-level startup bootstrap construct a *real*
+`TransitClient` before any `dependency_overrides` exist to intercept it (every
+request-time Transit call this fixture makes goes through this file's own
+`_stub_transit()` MockTransport instead) -- so a loopback-only stub OpenBao HTTP
+server is started first and `BLINDFOLD_OPENBAO_ADDR` pointed at it, never a real
+OpenBao daemon.
 """
 
 from __future__ import annotations
@@ -32,7 +45,57 @@ import hashlib
 import json
 import os
 import tempfile
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+
+# Keep every fixture instance ephemeral by default (ADR-0043 §1, issue #204): an
+# *unset* BLINDFOLD_DATABASE_URL now resolves to a durable SQLite store at the
+# real host's app-data path, not "in-memory" as this fixture originally assumed
+# (every existing spec here bakes in has_persistent_store=False unless it opts
+# into persistence below). Set BEFORE `blindfold.app` is imported -- that import
+# already triggers a module-level `get_settings()` call, so setting this any
+# later would still let one real file get touched under the operator's actual
+# home directory at import time.
+if os.environ.get("BLINDFOLD_FIXTURE_PERSISTENT_STORE") == "1":
+    _persistent_store_dir = tempfile.mkdtemp(prefix="blindfold-fixture-store-")
+    os.environ.setdefault(
+        "BLINDFOLD_DATABASE_URL",
+        f"sqlite:///{Path(_persistent_store_dir) / 'blindfold.sqlite3'}",
+    )
+os.environ.setdefault("BLINDFOLD_DATABASE_URL", "memory://")
+
+
+def _start_stub_openbao_server() -> str:
+    """A minimal loopback-only HTTP stub answering Transit's encrypt/decrypt shape.
+
+    Only needed for the one real network call `blindfold.app`'s own module-level
+    startup bootstrap makes when `BLINDFOLD_OPENBAO_TOKEN` is set (issue #227's
+    "Transit cipher configured" banner-hidden case) -- that call fires before this
+    fixture's own `app.dependency_overrides[get_transit_client]` (the MockTransport
+    `_stub_transit()` below) exists to intercept it. Answers every POST with a
+    fixed, fabricated ciphertext -- never a real entity value, and never reachable
+    from outside loopback.
+    """
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            body = json.dumps({"data": {"ciphertext": "vault:v1:fixture-stub-ciphertext"}})
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body.encode())
+
+        def log_message(self, format: str, *args: object) -> None:  # noqa: A002
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return f"http://127.0.0.1:{server.server_port}"
+
+
+if os.environ.get("BLINDFOLD_OPENBAO_TOKEN"):
+    os.environ.setdefault("BLINDFOLD_OPENBAO_ADDR", _start_stub_openbao_server())
 
 import httpx
 import uvicorn
