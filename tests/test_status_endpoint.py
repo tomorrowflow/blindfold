@@ -19,6 +19,7 @@ import httpx
 import pytest
 
 from blindfold.app import (
+    _default_transit_probe,
     app,
     get_block_history,
     get_entity_graph,
@@ -59,6 +60,7 @@ async def test_status_endpoint_returns_the_settled_contract_shape():
         "l3_model",
         "fail_closed_policy",
         "has_persistent_store",
+        "mapping_cipher",
     }
 
 
@@ -338,6 +340,7 @@ async def test_config_never_carries_the_openbao_token_or_any_secret(monkeypatch)
         "l3_model",
         "fail_closed_policy",
         "has_persistent_store",
+        "mapping_cipher",
     }
     assert secret_token not in str(body)
 
@@ -412,6 +415,99 @@ async def test_config_fail_closed_policy_reflects_the_deterministic_only_opt_in(
 
     assert degraded_resp.json()["config"]["fail_closed_policy"] == "deterministic-only"
     assert default_resp.json()["config"]["fail_closed_policy"] == "fail-closed"
+
+
+class _StubTransitClientForCipherProbe:
+    def __init__(self, *, healthy: bool) -> None:
+        self._healthy = healthy
+
+    def health_check(self):
+        return DependencyHealth(healthy=self._healthy, detail=None if self._healthy else "openbao unreachable")
+
+
+# ---------------------------------------------------------------------------
+# Mapping cipher honesty (ADR-0045 §10, issue #227): a missing mapping cipher is
+# not a down dependency -- the cipher dependency's detail names the active cipher
+# (or its absence) and stays healthy either way.
+# ---------------------------------------------------------------------------
+
+
+def test_default_transit_probe_reports_no_cipher_and_stays_healthy_when_unconfigured(
+    monkeypatch,
+):
+    monkeypatch.delenv("BLINDFOLD_OPENBAO_TOKEN", raising=False)
+
+    health = _default_transit_probe()
+
+    assert health.healthy is True
+    assert health.detail == "none — real values ephemeral"
+
+
+def test_default_transit_probe_reports_the_active_cipher_when_transit_is_reachable(
+    monkeypatch,
+):
+    import blindfold.app as app_module
+
+    monkeypatch.setenv("BLINDFOLD_OPENBAO_TOKEN", "s.transit-token")
+    monkeypatch.setattr(
+        app_module,
+        "TransitClient",
+        lambda **kwargs: _StubTransitClientForCipherProbe(healthy=True),
+    )
+
+    health = _default_transit_probe()
+
+    assert health.healthy is True
+    assert health.detail == "transit"
+
+
+def test_default_transit_probe_stays_unhealthy_when_transit_is_configured_but_unreachable(
+    monkeypatch,
+):
+    # Reachability failure is a distinct concern from cipher-presence honesty --
+    # an unreachable, but configured, Transit still reports the dependency down
+    # (unchanged pre-existing behavior).
+    import blindfold.app as app_module
+
+    monkeypatch.setenv("BLINDFOLD_OPENBAO_TOKEN", "s.transit-token")
+    monkeypatch.setattr(
+        app_module,
+        "TransitClient",
+        lambda **kwargs: _StubTransitClientForCipherProbe(healthy=False),
+    )
+
+    health = _default_transit_probe()
+
+    assert health.healthy is False
+    assert health.detail == "openbao unreachable"
+
+
+@pytest.mark.anyio
+async def test_status_endpoint_transit_dependency_reports_no_cipher_when_unconfigured(
+    monkeypatch,
+):
+    monkeypatch.delenv("BLINDFOLD_OPENBAO_TOKEN", raising=False)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://proxy.test") as client:
+        resp = await client.get("/v1/status")
+
+    dependency = resp.json()["dependencies"]["transit"]
+    assert dependency["healthy"] is True
+    assert dependency["detail"] == "none — real values ephemeral"
+
+
+@pytest.mark.anyio
+async def test_config_mapping_cipher_reflects_the_resolution_contract(monkeypatch):
+    monkeypatch.delenv("BLINDFOLD_OPENBAO_TOKEN", raising=False)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://proxy.test") as client:
+        none_resp = await client.get("/v1/status")
+    assert none_resp.json()["config"]["mapping_cipher"] == "none"
+
+    monkeypatch.setenv("BLINDFOLD_OPENBAO_TOKEN", "s.transit-token")
+    async with httpx.AsyncClient(transport=transport, base_url="http://proxy.test") as client:
+        transit_resp = await client.get("/v1/status")
+    assert transit_resp.json()["config"]["mapping_cipher"] == "transit"
 
 
 @pytest.mark.anyio

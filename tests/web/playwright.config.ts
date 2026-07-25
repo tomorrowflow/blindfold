@@ -27,6 +27,20 @@ const IMPORT_BUNDLE_EMPTY_PORT = 8955;
 // resulting single "" identity isn't polluted by (or doesn't pollute) any other
 // spec's fixture state.
 const ACCESS_EMPTY_PORT = 8956;
+// Seventh and eighth fixture instances (issue #227, ADR-0045 §4/§10): Setup's
+// unencrypted-persistence honesty banner needs a fixture with an actual
+// *persistent* store (`BLINDFOLD_FIXTURE_PERSISTENT_STORE=1`) -- unlike every
+// instance above, which stays ephemeral (`has_persistent_store=false`) since
+// serve_fixture.py's default now explicitly opts out via `memory://` (ADR-0043
+// §1, issue #204's own "unset means durable SQLite" changed what "not setting
+// BLINDFOLD_DATABASE_URL" used to mean). One pairs a persistent store with no
+// mapping cipher configured (the banner's shown case); the other pairs it with
+// `BLINDFOLD_OPENBAO_TOKEN` set (the banner's hidden case, since a mapping
+// cipher IS then active) -- serve_fixture.py answers the one real network call
+// that setting makes (its own startup bootstrap) with a loopback-only stub, so
+// no real OpenBao daemon is ever contacted.
+const PERSISTENT_UNENCRYPTED_PORT = 8957;
+const PERSISTENT_ENCRYPTED_PORT = 8958;
 
 export default defineConfig({
   testDir: "./specs",
@@ -98,6 +112,31 @@ export default defineConfig({
       env: {
         BLINDFOLD_FIXTURE_PORT: String(ACCESS_EMPTY_PORT),
         BLINDFOLD_FIXTURE_STATE: "empty",
+      },
+    },
+    {
+      command: "uv run python serve_fixture.py",
+      cwd: __dirname,
+      url: `http://127.0.0.1:${PERSISTENT_UNENCRYPTED_PORT}/ui/setup`,
+      reuseExistingServer: false,
+      timeout: 20_000,
+      env: {
+        BLINDFOLD_FIXTURE_PORT: String(PERSISTENT_UNENCRYPTED_PORT),
+        BLINDFOLD_FIXTURE_STATE: "empty",
+        BLINDFOLD_FIXTURE_PERSISTENT_STORE: "1",
+      },
+    },
+    {
+      command: "uv run python serve_fixture.py",
+      cwd: __dirname,
+      url: `http://127.0.0.1:${PERSISTENT_ENCRYPTED_PORT}/ui/setup`,
+      reuseExistingServer: false,
+      timeout: 20_000,
+      env: {
+        BLINDFOLD_FIXTURE_PORT: String(PERSISTENT_ENCRYPTED_PORT),
+        BLINDFOLD_FIXTURE_STATE: "empty",
+        BLINDFOLD_FIXTURE_PERSISTENT_STORE: "1",
+        BLINDFOLD_OPENBAO_TOKEN: "fixture-transit-token",
       },
     },
   ],

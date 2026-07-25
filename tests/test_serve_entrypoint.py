@@ -17,11 +17,13 @@ from blindfold.entity_graph import EntityGraph
 from blindfold.serve import (
     DEFAULT_HOST,
     DEFAULT_PORT,
+    AmbiguousMappingCipherError,
     DevModeRequiredError,
     GlinerModelMissingError,
     LegacyEnvVarError,
     LocalOnlyModelRequiredError,
     OmlxLoopbackRequiredError,
+    refuse_if_ambiguous_mapping_cipher,
     refuse_if_cloud_model,
     refuse_if_gliner_model_missing,
     refuse_if_legacy_l3_env_vars,
@@ -233,6 +235,38 @@ def test_refuse_if_gliner_model_missing_is_a_noop_for_the_ollama_provider():
 
 
 # ---------------------------------------------------------------------------
+# 1b4. refuse_if_ambiguous_mapping_cipher — ADR-0045 §4 startup guard, issue #227.
+# Ambiguity about which secret encrypted a store surfaces later as undecryptable
+# data, so both configured refuses rather than silently preferring one.
+# ---------------------------------------------------------------------------
+
+
+def test_refuse_if_ambiguous_mapping_cipher_blocks_both_secrets_configured():
+    settings = Settings(openbao_token="s.transit-token", store_key="a-local-store-key")
+
+    with pytest.raises(AmbiguousMappingCipherError):
+        refuse_if_ambiguous_mapping_cipher(settings)
+
+
+def test_refuse_if_ambiguous_mapping_cipher_allows_only_a_transit_token():
+    settings = Settings(openbao_token="s.transit-token", store_key="")
+
+    refuse_if_ambiguous_mapping_cipher(settings)
+
+
+def test_refuse_if_ambiguous_mapping_cipher_allows_only_a_store_key():
+    settings = Settings(openbao_token="", store_key="a-local-store-key")
+
+    refuse_if_ambiguous_mapping_cipher(settings)
+
+
+def test_refuse_if_ambiguous_mapping_cipher_is_a_noop_with_neither_configured():
+    settings = Settings(openbao_token="", store_key="")
+
+    refuse_if_ambiguous_mapping_cipher(settings)
+
+
+# ---------------------------------------------------------------------------
 # 1c. refuse_if_legacy_l3_env_vars — ADR-0031 operator migration aid
 # ---------------------------------------------------------------------------
 
@@ -306,6 +340,22 @@ def test_run_server_refuses_a_root_token_before_starting_the_asgi_server():
         run_server(
             settings=settings,
             transit_client=_StubTransitClient(root=True),
+            runner=lambda app, **kwargs: calls.append((app, kwargs)),
+        )
+
+    assert calls == []
+
+
+def test_run_server_refuses_an_ambiguous_mapping_cipher_before_starting_the_asgi_server():
+    # ADR-0045 §4, issue #227: joins the existing startup-guard family -- ambiguity
+    # about which secret encrypted a store surfaces later as undecryptable data.
+    settings = Settings(openbao_token="s.transit-token", store_key="a-local-store-key")
+    calls = []
+
+    with pytest.raises(AmbiguousMappingCipherError):
+        run_server(
+            settings=settings,
+            transit_client=_StubTransitClient(root=False),
             runner=lambda app, **kwargs: calls.append((app, kwargs)),
         )
 
@@ -552,3 +602,65 @@ def test_run_server_does_not_log_the_ephemeral_store_warning_for_the_unset_defau
         )
 
     assert "ephemeral" not in caplog.text
+
+
+# ---------------------------------------------------------------------------
+# 6. "Real values persisted unencrypted" honesty banner on the startup console
+#    line (ADR-0045 §10/§12, issue #227) -- the #199 ephemeral banner's sibling
+#    condition: a persistent store with no mapping cipher configured.
+# ---------------------------------------------------------------------------
+
+
+def test_run_server_logs_the_unencrypted_warning_for_a_persistent_store_with_no_cipher(
+    caplog,
+):
+    settings = Settings(
+        upstream_base_url="http://shared.test",
+        database_url="postgresql://db.test/blindfold",
+    )
+    graph = EntityGraph()
+    graph.add_entity("person", "acme", "Martin Bach")
+
+    with caplog.at_level("INFO"):
+        run_server(settings=settings, entity_graph=graph, runner=lambda app, **kwargs: None)
+
+    assert "unencrypted" in caplog.text
+    # Mutually exclusive with the ephemeral-store wording (issue #227 AC) -- exactly
+    # one of the two honesty postures fires per install.
+    assert "ephemeral" not in caplog.text
+
+
+def test_run_server_does_not_log_the_unencrypted_warning_when_a_cipher_is_configured(
+    caplog,
+):
+    settings = Settings(
+        upstream_base_url="http://shared.test",
+        database_url="postgresql://db.test/blindfold",
+        openbao_token="s.transit-token",
+    )
+    graph = EntityGraph()
+    graph.add_entity("person", "acme", "Martin Bach")
+
+    with caplog.at_level("INFO"):
+        run_server(
+            settings=settings,
+            transit_client=_StubTransitClient(root=False),
+            entity_graph=graph,
+            runner=lambda app, **kwargs: None,
+        )
+
+    assert "unencrypted" not in caplog.text
+
+
+def test_run_server_does_not_log_the_unencrypted_warning_on_the_ephemeral_default(caplog):
+    # The ephemeral (#199) banner already covers the falsy-database_url case --
+    # the unencrypted banner must not also fire there (mutually exclusive).
+    settings = Settings(upstream_base_url="http://shared.test")
+
+    with caplog.at_level("INFO"):
+        run_server(
+            settings=settings, entity_graph=EntityGraph(), runner=lambda app, **kwargs: None
+        )
+
+    assert "unencrypted" not in caplog.text
+    assert "ephemeral" in caplog.text

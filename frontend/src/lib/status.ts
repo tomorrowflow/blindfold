@@ -40,6 +40,11 @@ export type StatusResponse = {
     // configured -- Setup's "Enhanced local detection" toggle is store-gated,
     // hidden on the ephemeral in-memory default (issue #146).
     has_persistent_store: boolean;
+    // ADR-0045 §4/§10, issue #227: the active mapping cipher -- "transit" or
+    // "none" this slice (the Local key cipher is a follow-on). Setup pairs this
+    // with has_persistent_store to decide whether real values are being
+    // persisted unencrypted.
+    mapping_cipher: "transit" | "none";
   };
 };
 
