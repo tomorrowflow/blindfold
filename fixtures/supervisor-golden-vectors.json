@@ -146,6 +146,21 @@
       "expected_reason": "port in use"
     },
     {
+      "name": "legacyOllamaEnvVarStderrScrubsToItsKnownSafeReason",
+      "raw_stderr": "LegacyEnvVarError: BLINDFOLD_OLLAMA_ADDR is no longer read (ADR-0031 renamed L3 config to provider-agnostic names); rename it to BLINDFOLD_L3_BASE_URL.",
+      "expected_reason": "refusing to start: legacy BLINDFOLD_OLLAMA_* variable set (renamed under ADR-0031)"
+    },
+    {
+      "name": "cloudModelStderrScrubsToItsKnownSafeReason",
+      "raw_stderr": "LocalOnlyModelRequiredError: refusing to run L3 against a remotely-executing model ('gpt-4:cloud'); candidate spans are un-blindfolded real values and must never leave the machine (ADR-0022).",
+      "expected_reason": "refusing to start: L3 model must run locally, not a remote/cloud model"
+    },
+    {
+      "name": "glinerModelMissingStderrScrubsToItsKnownSafeReason",
+      "raw_stderr": "GlinerModelMissingError: refusing to start: BLINDFOLD_L3_PROVIDER=gliner requires a provisioned GLiNER model directory (got '/data/models/gliner-pii-base-v1.0').",
+      "expected_reason": "refusing to start: GLiNER model not provisioned"
+    },
+    {
       "name": "unrecognizedStderrScrubsToTheGenericReasonNeverASubstringOfTheRawText",
       "raw_stderr": "Traceback (most recent call last): File \"unexpected.py\", line 1, in <module>",
       "expected_reason": "startup failed"
