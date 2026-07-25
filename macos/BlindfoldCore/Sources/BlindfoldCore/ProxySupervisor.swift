@@ -10,6 +10,14 @@ public protocol ProxyProcess: Sendable {
     /// becomes a `ProxyLiveness.refused` reason.
     var standardErrorText: String { get }
 
+    /// The POSIX signal number that terminated the child, if it exited via an uncaught
+    /// signal rather than a normal exit — `nil` otherwise (issue #219). A signal-killed
+    /// child (e.g. an OS-level kill partway through a slow start) typically leaves
+    /// nothing recognizable in `standardErrorText`, since the OS gives it no chance to
+    /// write anything: this is how the supervisor can still name the failure precisely
+    /// without depending on stderr content.
+    var terminationSignal: Int32? { get }
+
     func kill()
 }
 
@@ -80,9 +88,15 @@ public final class ProxySupervisor: ProxySupervising, @unchecked Sendable {
         if process.hasExited {
             // Crash after healthy: notStarted, no auto-restart (ADR-0041) -- the same
             // bucket AppStateMachine already maps to the Stopped state.
-            return everHealthy
-                ? .notStarted
-                : .refused(reason: StartupRefusalReason.scrub(process.standardErrorText))
+            guard !everHealthy else { return .notStarted }
+
+            // A signal-terminated child (issue #219) is named precisely from the
+            // process's own termination info -- never from stderr, which a signal kill
+            // typically leaves empty -- before falling back to the text-based scrub.
+            if let signal = process.terminationSignal {
+                return .refused(reason: "startup failed: proxy process terminated by signal \(signal) before completing startup")
+            }
+            return .refused(reason: StartupRefusalReason.scrub(process.standardErrorText))
         }
 
         return everHealthy ? .running : .starting

@@ -10,6 +10,14 @@ import BlindfoldCore
 /// safe to surface (never this class); stdout is left untouched, never captured or surfaced
 /// (AC "only stderr is redirected from the child; stdout is untouched").
 final class RealProxyProcess: ProxyProcess, @unchecked Sendable {
+    /// Caps how much of a chatty child's stderr (issue #219: the GLiNER cascade's
+    /// tqdm-style progress spam over a ~2-minute load) this keeps in memory -- only the
+    /// tail is kept, since `StartupRefusalReason.scrub` only ever needs to recognize a
+    /// keyword near the end of a traceback/error, never the full transcript. An
+    /// always-running background app must not let an unbounded buffer grow for as long
+    /// as a slow-starting child keeps talking.
+    private static let maxBufferedBytes = 64 * 1024
+
     private let process: Process
     private let stderrPipe: Pipe
     private var stderrBuffer = Data()
@@ -24,12 +32,24 @@ final class RealProxyProcess: ProxyProcess, @unchecked Sendable {
             guard !chunk.isEmpty, let self else { return }
             self.lock.lock()
             self.stderrBuffer.append(chunk)
+            if self.stderrBuffer.count > Self.maxBufferedBytes {
+                self.stderrBuffer.removeFirst(self.stderrBuffer.count - Self.maxBufferedBytes)
+            }
             self.lock.unlock()
         }
     }
 
     var hasExited: Bool { !process.isRunning }
     var exitCode: Int32 { process.isRunning ? 0 : process.terminationStatus }
+
+    /// Issue #219: a child terminated by an uncaught signal (e.g. an OS-level kill
+    /// mid-slow-start) rather than a normal exit -- read straight from
+    /// `Process.terminationReason`/`terminationStatus`, never derived from stderr, which
+    /// a signal kill typically leaves empty.
+    var terminationSignal: Int32? {
+        guard !process.isRunning, process.terminationReason == .uncaughtSignal else { return nil }
+        return process.terminationStatus
+    }
 
     var standardErrorText: String {
         lock.lock()
@@ -51,6 +71,7 @@ final class FailedProxyLaunch: ProxyProcess, @unchecked Sendable {
     let standardErrorText: String
     let hasExited = true
     let exitCode: Int32 = -1
+    let terminationSignal: Int32? = nil
 
     init(message: String) {
         self.standardErrorText = message
