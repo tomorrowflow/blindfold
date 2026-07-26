@@ -271,15 +271,28 @@ jobs:
           $ErrorActionPreference = "Stop"
           Copy-Item "dist\blindfold-proxy.exe" "tray-app\publish\blindfold-proxy.exe" -Force
 
-      # Windows: issue #197's portable-folder AC, verified as two complementary assertions
+      # Windows: issue #197's portable-folder AC, verified as three complementary assertions
       # (a deliberate contract split -- see Program.cs RunSmokeLaunchFull and ADR-0041's
       # "thin, logic-free front door"):
       #
-      #   1. ONE-HOP -- the frozen proxy's own capability. Launch blindfold-proxy.exe directly
-      #      with the L3 stub env set at PowerShell scope and assert /v1/status reaches
+      #   1. ONE-HOP (L3) -- the frozen proxy's own capability. Launch blindfold-proxy.exe
+      #      directly with the L3 stub env set at PowerShell scope and assert /v1/status reaches
       #      "protected". This proves the portable folder's proxy reaches Protected when its
       #      L3 dependency is configured.
-      #   2. TWO-HOP -- the tray's supervision job. Launch blindfold.exe --smoke-launch-full,
+      #   2. ONE-HOP (Store key) -- issue #234's own isolation, added after five prior cycles
+      #      (620102b..c691584) exhausted every hypothesis about RealProxyProcessLauncher/the
+      #      tray's launch seam without landing a hosted fix: every one of those cycles assumed
+      #      the gap was somewhere in the tray's TWO-HOP spawn, but none of them first confirmed
+      #      that BLINDFOLD_STORE_KEY -- as opposed to BLINDFOLD_L3_MODEL/BASE_URL, the only vars
+      #      assertion 1 has ever exercised -- actually survives even the simplest possible case:
+      #      PowerShell setting it directly, no tray involved at all. This launches
+      #      blindfold-proxy.exe the same way assertion 1 does (memory:// database, so it can't
+      #      touch the OS-default Store file the TWO-HOP run below depends on finding absent) and
+      #      asserts config.mapping_cipher == "local". A failure here would mean the loss is
+      #      inside blindfold-proxy.exe's own onefile parent/child re-exec (or something Windows-
+      #      runner-specific to this one variable), completely exonerating the tray and
+      #      RealProxyProcessLauncher that every prior cycle's fix attempts targeted.
+      #   3. TWO-HOP -- the tray's supervision job. Launch blindfold.exe --smoke-launch-full,
       #      which spawns the proxy, polls it, supervises it, and reduces its /v1/status; it
       #      exits 0 on any non-error terminal (Protected OR Degraded). It does NOT require
       #      Protected: the single-file WinExe host does not reliably propagate ambient env to
@@ -380,6 +393,49 @@ jobs:
               # Issue #234: this session-scoped override must not leak into the TWO-HOP launch
               # just below -- that run needs the real OS-default persistence path (no override)
               # to prove the tray's own DPAPI-provisioned Store key against a durable store.
+              Remove-Item Env:\BLINDFOLD_DATABASE_URL -ErrorAction SilentlyContinue
+            }
+
+            # ONE-HOP (Store key) assertion (issue #234) -- see this step's header comment for
+            # why this is its own assertion rather than folded into #1: it isolates the Store
+            # key specifically, with no tray involved, from the TWO-HOP spawn every prior cycle
+            # on this issue has been diagnosing.
+            $storeKeyStdout = "tray-app/publish/onehop-storekey-stdout.log"
+            $storeKeyStderr = "tray-app/publish/onehop-storekey-stderr.log"
+            $env:BLINDFOLD_STORE_KEY = "smoke-test-one-hop-store-key-0123456789abcdef"
+            $env:BLINDFOLD_DATABASE_URL = "memory://"
+            $storeKeyHop = Start-Process -FilePath "tray-app/publish/blindfold-proxy.exe" `
+              -ArgumentList "serve", "--host", "127.0.0.1", "--port", "25466" `
+              -PassThru -NoNewWindow -RedirectStandardOutput $storeKeyStdout -RedirectStandardError $storeKeyStderr
+            try {
+              $storeKeyDeadline = (Get-Date).AddSeconds(30)
+              $storeKeyOk = $false
+              $lastCipher = "<never answered>"
+              while ((Get-Date) -lt $storeKeyDeadline) {
+                if ($storeKeyHop.HasExited) {
+                  throw "one-hop store-key blindfold-proxy.exe exited early with code $($storeKeyHop.ExitCode)"
+                }
+                try {
+                  $resp = Invoke-WebRequest -Uri "http://127.0.0.1:25466/v1/status" -UseBasicParsing
+                  $lastCipher = ($resp.Content | ConvertFrom-Json).config.mapping_cipher
+                  if ($lastCipher -eq "local") { $storeKeyOk = $true; break }
+                } catch { }
+                Start-Sleep -Milliseconds 500
+              }
+              if (-not $storeKeyOk) {
+                foreach ($log in @($storeKeyStdout, $storeKeyStderr)) {
+                  if ((Test-Path $log) -and (Get-Item $log).Length -gt 0) {
+                    Write-Host "---- $log ----"; Get-Content $log; Write-Host "----"
+                  }
+                }
+                throw ("one-hop store-key assertion: expected config.mapping_cipher=`"local`" with " +
+                  "BLINDFOLD_STORE_KEY set at PowerShell scope (no tray involved), got `"$lastCipher`" " +
+                  "-- isolates whether the TWO-HOP gap is inside blindfold-proxy.exe's own onefile " +
+                  "re-exec, independent of the tray/RealProxyProcessLauncher (issue #234)")
+              }
+            } finally {
+              Stop-Process -Id $storeKeyHop.Id -Force -ErrorAction SilentlyContinue
+              Remove-Item Env:\BLINDFOLD_STORE_KEY -ErrorAction SilentlyContinue
               Remove-Item Env:\BLINDFOLD_DATABASE_URL -ErrorAction SilentlyContinue
             }
 
