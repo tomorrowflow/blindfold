@@ -163,6 +163,25 @@ public static class GoldenVectorFixture
         public bool ExpectedAccept { get; set; }
     }
 
+    /// <summary>
+    /// A <c>StartupRefusalReason.Scrub</c> case (issue #212/#223/#232/#234) -- the known-safe
+    /// categories plus the fail-closed generic fallback, shared with the Swift
+    /// <c>GoldenVectorFixture.RefusalScrubCase</c> reader.
+    /// </summary>
+    public sealed class RefusalScrubCase
+    {
+        [JsonPropertyName("name")]
+        public string Name { get; set; } = "";
+
+        [JsonPropertyName("raw_stderr")]
+        public string RawStderr { get; set; } = "";
+
+        [JsonPropertyName("expected_reason")]
+        public string ExpectedReason { get; set; } = "";
+
+        public override string ToString() => Name;
+    }
+
     public sealed class GoldenVectors
     {
         [JsonPropertyName("reducer_truth_table")]
@@ -182,6 +201,9 @@ public static class GoldenVectorFixture
 
         [JsonPropertyName("loopback_guard_cases")]
         public List<LoopbackGuardCase> LoopbackGuardCases { get; set; } = new();
+
+        [JsonPropertyName("refusal_scrub_cases")]
+        public List<RefusalScrubCase> RefusalScrubCases { get; set; } = new();
     }
 
     private static GoldenVectors? _cached;

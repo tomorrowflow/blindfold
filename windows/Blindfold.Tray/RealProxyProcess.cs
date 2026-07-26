@@ -60,7 +60,7 @@ internal sealed class FailedProxyLaunch : IProxyProcess
 /// </summary>
 internal sealed class RealProxyProcessLauncher : IProxyProcessLauncher
 {
-    public IProxyProcess Launch(string exePath, IReadOnlyList<string> args)
+    public IProxyProcess Launch(string exePath, IReadOnlyList<string> args, IReadOnlyDictionary<string, string> environment)
     {
         // UseShellExecute=false makes the child inherit this process's environment block by
         // default, so a real deployment where the user has BLINDFOLD_* set in their environment
@@ -77,6 +77,14 @@ internal sealed class RealProxyProcessLauncher : IProxyProcessLauncher
         };
 
         foreach (var arg in args) startInfo.ArgumentList.Add(arg);
+
+        // startInfo.Environment starts pre-populated with a copy of this process's own
+        // environment (UseShellExecute=false's inheritance above) -- setting a key here only
+        // adds or overrides on top of that inherited copy, never replaces the whole block. This
+        // is how the tray's own provisioned BLINDFOLD_STORE_KEY (issue #234, ADR-0045 §7/§9)
+        // reaches the child alongside whatever BLINDFOLD_* values the user already has set,
+        // with no separate launch-environment-store seam needed for this one secret.
+        foreach (var (key, value) in environment) startInfo.Environment[key] = value;
 
         try
         {

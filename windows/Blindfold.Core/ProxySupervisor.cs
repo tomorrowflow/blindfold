@@ -26,7 +26,15 @@ public interface IProxyProcess
 /// </summary>
 public interface IProxyProcessLauncher
 {
-    IProxyProcess Launch(string exePath, IReadOnlyList<string> args);
+    /// <summary>
+    /// <paramref name="environment"/> (issue #234, ADR-0044/ADR-0045 §9) is the exact child
+    /// environment to launch with -- e.g. the injected Store key alongside whatever
+    /// <c>BLINDFOLD_*</c> values the caller already holds. Empty means "no explicit
+    /// injection" -- the real launcher still lets the child inherit this process's ambient
+    /// environment by default (see <c>RealProxyProcessLauncher</c>), so an empty dictionary
+    /// here is not the same as "no environment at all".
+    /// </summary>
+    IProxyProcess Launch(string exePath, IReadOnlyList<string> args, IReadOnlyDictionary<string, string> environment);
 }
 
 /// <summary>
@@ -57,6 +65,46 @@ public static class StartupRefusalReason
             return "port in use";
         }
 
+        // These three (issue #223, ported to this core in #234) name a stale env var, a
+        // rejected model choice, and a missing model directory -- configuration facts, not
+        // entity values, so naming them specifically costs nothing in privacy.
+        if (rawStandardErrorText.Contains("no longer read", StringComparison.OrdinalIgnoreCase))
+        {
+            return "refusing to start: legacy BLINDFOLD_OLLAMA_* variable set (renamed under ADR-0031)";
+        }
+
+        if (rawStandardErrorText.Contains("remotely-executing", StringComparison.OrdinalIgnoreCase))
+        {
+            return "refusing to start: L3 model must run locally, not a remote/cloud model";
+        }
+
+        if (rawStandardErrorText.Contains("gliner", StringComparison.OrdinalIgnoreCase))
+        {
+            return "refusing to start: GLiNER model not provisioned";
+        }
+
+        // These three (issue #232, ADR-0045 §4/§3/§6, ported to this core in #234) name the
+        // three named startup refusals a lost/misconfigured mapping cipher produces -- which
+        // secret is configured and which Store directory is affected, never the secret or any
+        // real value itself.
+        if (rawStandardErrorText.Contains(
+            "only ever be encrypted under one mapping cipher", StringComparison.OrdinalIgnoreCase))
+        {
+            return "refusing to start: both a Transit token and a Store key are configured (ambiguous mapping cipher)";
+        }
+
+        if (rawStandardErrorText.Contains(
+            "must be exactly 32 bytes, base64-encoded", StringComparison.OrdinalIgnoreCase))
+        {
+            return "refusing to start: BLINDFOLD_STORE_KEY is malformed";
+        }
+
+        if (rawStandardErrorText.Contains(
+            "cannot be decrypted with the configured cipher", StringComparison.OrdinalIgnoreCase))
+        {
+            return "refusing to start: the store cannot be decrypted with the configured cipher";
+        }
+
         return "startup failed";
     }
 }
@@ -69,23 +117,32 @@ public static class StartupRefusalReason
 /// </summary>
 public sealed class ProxySupervisor
 {
+    private static readonly IReadOnlyDictionary<string, string> EmptyEnvironment =
+        new Dictionary<string, string>();
+
     private readonly IProxyProcessLauncher _launcher;
     private readonly string _exePath;
     private readonly IReadOnlyList<string> _args;
+    private readonly IReadOnlyDictionary<string, string> _environment;
     private IProxyProcess? _process;
     private bool _everHealthy;
 
-    public ProxySupervisor(IProxyProcessLauncher launcher, string exePath, IReadOnlyList<string> args)
+    public ProxySupervisor(
+        IProxyProcessLauncher launcher,
+        string exePath,
+        IReadOnlyList<string> args,
+        IReadOnlyDictionary<string, string>? environment = null)
     {
         _launcher = launcher;
         _exePath = exePath;
         _args = args;
+        _environment = environment ?? EmptyEnvironment;
     }
 
     public void Start()
     {
         _everHealthy = false;
-        _process = _launcher.Launch(_exePath, _args);
+        _process = _launcher.Launch(_exePath, _args, _environment);
     }
 
     /// <summary>

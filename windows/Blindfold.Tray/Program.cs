@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Windows.Forms;
 using Blindfold.Core;
 
@@ -102,7 +103,8 @@ internal static class Program
         var supervisor = new ProxySupervisor(
             new RealProxyProcessLauncher(),
             proxyExePath,
-            new[] { "serve", "--host", "127.0.0.1", "--port", "25463" });
+            new[] { "serve", "--host", "127.0.0.1", "--port", "25463" },
+            StoreKeyEnvironment.Build());
         var statusClient = new StatusClient("http://127.0.0.1:25463/v1/status", new RealStatusFetching());
 
         supervisor.Start();
@@ -147,7 +149,46 @@ internal static class Program
                 // that capability is asserted one-hop in platform-verify.yml, not here.
                 if (state.Kind is AppStateKind.Protected or AppStateKind.Degraded)
                 {
+                    // Issue #234 AC: the two-hop (tray-spawned) path must reach a
+                    // cipher-configured state, proving the DPAPI-provisioned Store key
+                    // (StoreKeyEnvironment.Build() above) actually reached the child --
+                    // config.mapping_cipher reports "local" once BLINDFOLD_STORE_KEY is set
+                    // (src/blindfold/app.py's status route), "none" if the injection never
+                    // happened. A raw fetch, not StatusClient/StatusPayload: that decode is
+                    // deliberately narrow (state/unprotected_mode/dependency counts only, no
+                    // config field), and mapping_cipher is a cipher *name*, not a secret --
+                    // safe to read and to report in a failure diagnostic, same as
+                    // src/blindfold/app.py already logs it openly.
+                    string? mappingCipher = null;
+                    try
+                    {
+                        var rawStatusJson = new RealStatusFetching()
+                            .FetchStatusAsync(statusClient.BaseUrl)
+                            .GetAwaiter()
+                            .GetResult();
+                        using var document = JsonDocument.Parse(rawStatusJson);
+                        mappingCipher = document.RootElement
+                            .GetProperty("config")
+                            .GetProperty("mapping_cipher")
+                            .GetString();
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine(
+                            "--smoke-launch-full: failed to confirm the mapping cipher: " + ex.Message);
+                    }
+
                     supervisor.Stop();
+
+                    if (mappingCipher != "local")
+                    {
+                        Console.Error.WriteLine(
+                            "--smoke-launch-full: expected the tray-provisioned Store key to configure "
+                            + $"the Local key cipher, but /v1/status reports mapping_cipher=\"{mappingCipher ?? "<unavailable>"}\" "
+                            + "(issue #234: the tray-spawned proxy must reach a cipher-configured state)");
+                        return 1;
+                    }
+
                     return 0;
                 }
             }

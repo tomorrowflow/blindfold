@@ -34,7 +34,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _supervisor = new ProxySupervisor(
             new RealProxyProcessLauncher(),
             proxyExePath,
-            new[] { "serve", "--host", ProxyHost, "--port", ProxyPort.ToString() });
+            new[] { "serve", "--host", ProxyHost, "--port", ProxyPort.ToString() },
+            StoreKeyEnvironment.Build());
         _statusClient = new StatusClient($"{ProxyBaseUrl}/v1/status", new RealStatusFetching());
         _unprotectedControl = new RealUnprotectedModeControl(ProxyBaseUrl);
         _autostartEnabled = WindowsAutostart.IsEnabled();

@@ -225,6 +225,13 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
+          # Issue #234: this step only proves the endpoints answer, never touches persistence
+          # -- memory:// (ADR-0043's explicit ephemeral opt-out) keeps it from ever creating
+          # the OS-default Store file (%LOCALAPPDATA%\Blindfold\Store\blindfold.sqlite3), which
+          # the "Smoke-launch portable folder (Windows)" step below now depends on finding
+          # absent to prove the tray's DPAPI-provisioned Store key is a first-launch generate,
+          # not a withheld-because-a-store-already-exists refusal.
+          $env:BLINDFOLD_DATABASE_URL = "memory://"
           $proc = Start-Process -FilePath "dist\blindfold-proxy.exe" -ArgumentList "serve" `
             -PassThru -RedirectStandardOutput "proxy-stdout.log" -RedirectStandardError "proxy-stderr.log"
           try {
@@ -279,7 +286,11 @@ jobs:
       #      its child, so the tray-spawned proxy's l3 probe stays unhealthy (Degraded) even
       #      though the one-hop proxy above reaches Protected. Requiring Protected here would be
       #      testing env-inheritance-through-a-GUI-host, not the tray's contract, and is what
-      #      previously deadlocked this gate.
+      #      previously deadlocked this gate. It DOES now require a cipher-configured state
+      #      (issue #234, ADR-0045 §7/§9): RunSmokeLaunchFull provisions and injects
+      #      BLINDFOLD_STORE_KEY via DPAPI itself (StoreKeyEnvironment.Build()) -- unlike the l3
+      #      probe, this injection does not depend on the WinExe host's ambient-env propagation,
+      #      so config.mapping_cipher must report "local" or the step fails.
       #
       # /v1/status only reports "protected" once every dependency probe is healthy
       # (status.py's compute_state) -- with no BLINDFOLD_L3_MODEL configured, the l3 probe
@@ -333,6 +344,11 @@ jobs:
             # deliberately does NOT require Protected; see the step's header comment.)
             $oneHopStdout = "tray-app/publish/onehop-proxy-stdout.log"
             $oneHopStderr = "tray-app/publish/onehop-proxy-stderr.log"
+            # Issue #234: like the standalone smoke-launch step above, this one-hop assertion
+            # only cares about reaching Protected, never persistence -- memory:// keeps it from
+            # touching the OS-default Store file, which the TWO-HOP tray-spawned run just below
+            # depends on finding absent (a "clean Windows machine" first launch, AC2/AC3).
+            $env:BLINDFOLD_DATABASE_URL = "memory://"
             $oneHop = Start-Process -FilePath "tray-app/publish/blindfold-proxy.exe" `
               -ArgumentList "serve", "--host", "127.0.0.1", "--port", "25465" `
               -PassThru -NoNewWindow -RedirectStandardOutput $oneHopStdout -RedirectStandardError $oneHopStderr
@@ -361,6 +377,10 @@ jobs:
               }
             } finally {
               Stop-Process -Id $oneHop.Id -Force -ErrorAction SilentlyContinue
+              # Issue #234: this session-scoped override must not leak into the TWO-HOP launch
+              # just below -- that run needs the real OS-default persistence path (no override)
+              # to prove the tray's own DPAPI-provisioned Store key against a durable store.
+              Remove-Item Env:\BLINDFOLD_DATABASE_URL -ErrorAction SilentlyContinue
             }
 
             $stdout = "tray-app/publish/smoke-launch-full-stdout.log"
