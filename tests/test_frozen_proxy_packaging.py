@@ -181,6 +181,58 @@ def test_frozen_binary_reaches_local_mapping_cipher_with_store_key_env(
         proc.wait(timeout=5)
 
 
+def test_frozen_binary_reaches_local_mapping_cipher_with_ambient_store_key_cleared_after_spawn(
+    frozen_proxy_binary: pathlib.Path,
+) -> None:
+    """issue #234: every sandbox-executable onefile check so far (this file's own
+    ``test_frozen_binary_reaches_local_mapping_cipher_with_store_key_env`` included) hands
+    ``BLINDFOLD_STORE_KEY`` to the child via an explicit ``env=`` dict passed straight to
+    ``subprocess.Popen`` -- the mechanism ``RealProxyProcessLauncher`` used *before* 2fff155.
+    The tray's current mechanism is different in two ways at once: it sets the key on its
+    *own* ambient environment (``Environment.SetEnvironmentVariable``, never
+    ``startInfo.Environment``) so the child inherits via ``lpEnvironment=NULL``, and it
+    clears the key from its own environment immediately after ``Process.Start`` returns
+    (c691584). No test has combined *both* against a real onefile-built binary -- only
+    against plain ``/bin/sh`` (``ProcessEnvironmentPropagationTests``, Blindfold.Core.Tests)
+    or an onefile binary via the *old* explicit-dict mechanism (this file). Reproduces both
+    at once: ``os.environ`` (this test process's own ambient environment, the POSIX analog of
+    the tray's) carries the key, ``subprocess.Popen(..., env=None)`` inherits it ambiently
+    (the POSIX analog of ``lpEnvironment=NULL``), and the key is popped from ``os.environ``
+    immediately after ``Popen`` returns -- matching ``RealProxyProcessLauncher.Launch``'s
+    set-spawn-clear ordering exactly. A pass here would rule out "ambient-inherit +
+    immediate-clear, combined, breaks a real onefile child's re-exec" as a *generalizable*
+    (not Windows-CreateProcess-specific) mechanism, leaving Windows/CreateProcess and
+    blindfold-proxy.exe's own *compiled* (not source) Windows bootloader binary as the only
+    remaining untested candidates, exactly where 17569da's own new ONE-HOP (Store key)
+    platform-verify.yml assertion is aimed. A failure here would be a new, generalizable
+    finding no prior cycle on this issue considered.
+    """
+    port = _free_port()
+    key = base64.b64encode(os.urandom(32)).decode()
+    os.environ["BLINDFOLD_STORE_KEY"] = key
+    try:
+        proc = subprocess.Popen(
+            [str(frozen_proxy_binary), "serve", "--port", str(port)],
+            env=None,
+            cwd=str(REPO_ROOT.parent),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+    finally:
+        del os.environ["BLINDFOLD_STORE_KEY"]
+
+    try:
+        _wait_for_port(port)
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/status", timeout=5) as resp:
+            assert resp.status == 200
+            payload = json.loads(resp.read().decode("utf-8"))
+        assert payload["config"]["mapping_cipher"] == "local"
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+
+
 def test_frozen_binary_refuses_cloud_l3_model_with_scrubbed_stderr(
     frozen_proxy_binary: pathlib.Path,
 ) -> None:
