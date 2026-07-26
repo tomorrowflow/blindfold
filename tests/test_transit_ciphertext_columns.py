@@ -161,11 +161,15 @@ async def test_etl_with_transit_writes_ciphertext_not_plaintext_to_ciphertext_co
     transit = _make_stub_transit()
     await run_etl_with_transit(pg_dsn, transit)
 
+    # No plaintext canonical_name column exists any more (ADR-0045 §5, issue #229) --
+    # look the row up by blind index instead, exactly like a real caller must.
+    expected_blind_index = transit.blind_index("Martin Bach")
     conn = await asyncpg.connect(pg_dsn)
     try:
         row = await conn.fetchrow(
-            "SELECT canonical_name, canonical_name_ciphertext, canonical_name_blind_index "
-            "FROM persons WHERE canonical_name = 'Martin Bach'"
+            "SELECT canonical_name_ciphertext, canonical_name_blind_index "
+            "FROM persons WHERE canonical_name_blind_index = $1",
+            expected_blind_index,
         )
     finally:
         await conn.close()
@@ -173,8 +177,8 @@ async def test_etl_with_transit_writes_ciphertext_not_plaintext_to_ciphertext_co
     assert row is not None
     assert row["canonical_name_ciphertext"] == "vault:v1:enc:Martin Bach"
     assert row["canonical_name_blind_index"] == "vault:v1:hmac:Martin Bach"
-    # Clause G: plaintext column still has the value (entity-graph queries), but the
-    # ciphertext column is what the re-identify endpoint reads.
+    # Clause G: persons are ciphertext-only -- there is no plaintext column to fall
+    # back to; the ciphertext column is the only representation on disk.
 
 
 # ---------------------------------------------------------------------------
@@ -196,14 +200,16 @@ async def test_blind_index_enables_equality_lookup_by_real_value(pg_dsn):
     conn = await asyncpg.connect(pg_dsn)
     try:
         row = await conn.fetchrow(
-            "SELECT canonical_name FROM persons WHERE canonical_name_blind_index = $1",
+            "SELECT canonical_name_ciphertext FROM persons WHERE canonical_name_blind_index = $1",
             expected_blind_index,
         )
     finally:
         await conn.close()
 
     assert row is not None
-    assert row["canonical_name"] == "Stefan Wegner"
+    # No plaintext canonical_name column exists any more (ADR-0045 §5, issue #229) --
+    # the blind index found the row without decrypting; decrypt to confirm the match.
+    assert transit.decrypt(row["canonical_name_ciphertext"]) == "Stefan Wegner"
 
 
 # ---------------------------------------------------------------------------

@@ -443,6 +443,15 @@ _relationship_store = RelationshipStore()
 # dependency_overrides[get_entity_graph].
 _entity_graph_fallback: EntityGraph | None = None
 
+# Process-scoped in-memory EntityGraph for persons when no mapping cipher is configured
+# (ADR-0045 §5/§8, issue #229 AC6). Persons are ephemeral in this mode -- they live
+# only for the process lifetime and are never written to the DB (the ciphertext-only
+# schema has no plaintext path). This singleton ensures persons added in one request
+# are visible in the next within the same process, mirroring the _entity_graph_fallback
+# behavior for the DB-backed path. Built lazily on first need; never None once created
+# so _entity_graph_store.add_entity delegates to a stable object, not an ephemeral one.
+_persons_fallback_graph: EntityGraph | None = None
+
 # No module-level Transit client singleton — get_transit_client() reads settings on each
 # call (matching get_upstream_client() pattern). Tests substitute via
 # dependency_overrides[get_transit_client].
@@ -752,6 +761,27 @@ def get_reidentify_store() -> ReIdentificationStore:
     return _reidentify_store_fallback
 
 
+def get_mapping_cipher():
+    """Return the active mapping cipher, or None when no cipher is configured.
+
+    Mirrors ``Settings.mapping_cipher``'s own presence-based resolution (ADR-0045 §4):
+    a configured ``store_key`` selects the ``LocalKeyCipher``, a configured
+    ``openbao_token`` selects ``TransitClient``, and neither configured is ``None``
+    (the no-cipher / ephemeral-persons path, ADR-0045 §5, issue #229).
+
+    Used by ``get_entity_graph()`` to wire the cipher into ``PostgresEntityGraphStore``
+    so persons are persisted as ciphertext (or kept ephemeral when absent).
+    """
+    settings = get_settings()
+    if settings.mapping_cipher == MAPPING_CIPHER_LOCAL:
+        from .mapping_cipher import LocalKeyCipher
+
+        return LocalKeyCipher(settings.store_key)
+    if settings.openbao_token:
+        return TransitClient(addr=settings.openbao_addr, token=settings.openbao_token)
+    return None
+
+
 def get_entity_graph() -> EntityGraph:
     """Return the entity graph store, constructed lazily on first call.
 
@@ -760,9 +790,9 @@ def get_entity_graph() -> EntityGraph:
     endpoint (breaking hermeticity if eager). Tests override via dependency_overrides.
 
     - database_url configured (Postgres or SQLite -- unset now defaults to a
-      durable SQLite DSN, ADR-0043 §1/issue #204) → PostgresEntityGraphStore
-      (stateless per-call; hydrates fresh from the store on every invocation so a
-      process restart always reads live state).
+      durable SQLite DSN, ADR-0043 §1/issue #204) → PostgresEntityGraphStore with
+      mapping_cipher wired (ADR-0045 §5, issue #229): persons are stored as ciphertext
+      when a cipher is configured, or kept ephemeral in _persons_fallback_graph when not.
     - BLINDFOLD_DATABASE_URL=memory:// (falsy database_url) → lazily-created
       module-level in-memory singleton (_entity_graph_fallback), so mutations are
       stable across HTTP requests within one process (mirrors the pre-slice
@@ -770,13 +800,28 @@ def get_entity_graph() -> EntityGraph:
       hit under the memory:// sentinel operates on this in-memory graph — an
       acceptable, documented gap per the issue #104 brief.
     """
-    global _entity_graph_fallback
+    global _entity_graph_fallback, _persons_fallback_graph
 
     database_url = get_settings().database_url
     if database_url:
         from .store.entity_graph_store import PostgresEntityGraphStore
 
-        return PostgresEntityGraphStore(database_url)  # type: ignore[return-value]
+        cipher = get_mapping_cipher()
+        # When no cipher: supply the process-scoped persons fallback so ephemeral
+        # persons added in one request remain visible in the next within this process
+        # (ADR-0045 §8, issue #229 AC6 -- ephemeral persons are in-process only).
+        if cipher is None:
+            if _persons_fallback_graph is None:
+                _persons_fallback_graph = EntityGraph()
+            return PostgresEntityGraphStore(  # type: ignore[return-value]
+                database_url,
+                mapping_cipher=None,
+                persons_fallback=_persons_fallback_graph,
+            )
+        return PostgresEntityGraphStore(  # type: ignore[return-value]
+            database_url,
+            mapping_cipher=cipher,
+        )
 
     # Unset DSN: return (or lazily create) the process-wide in-memory singleton.
     if _entity_graph_fallback is None:

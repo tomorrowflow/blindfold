@@ -248,6 +248,10 @@ async def test_novel_candidate_through_proxy_persists_transit_ciphertext_to_real
 def _confirm_fixture(tmp_path):
     """Shared setup: one pending review item + real SQLite-backed entity_graph
     and reidentify stores (one SQLite file, two tables) + a recording audit log.
+
+    The entity_graph store is constructed with the Transit stub as the mapping cipher
+    (ADR-0045 §5, issue #229): persons confirmed via the /confirm endpoint are
+    persisted as ciphertext in the real SQLite file, never as plaintext.
     """
     from blindfold.policy import AuditLog
     from blindfold.rbac import RbacRegistry
@@ -257,14 +261,16 @@ def _confirm_fixture(tmp_path):
     from blindfold.surrogates import SurrogateMapping
 
     dsn = f"sqlite:///{tmp_path / 'confirm_reveal.sqlite3'}"
-    entity_graph = PostgresEntityGraphStore(dsn)
+    transit = _stub_transit()
+    # Pass transit as the mapping cipher so persons are persisted as ciphertext
+    # (ADR-0045 §5): get_by_canonical can then decrypt and find the confirmed entity.
+    entity_graph = PostgresEntityGraphStore(dsn, mapping_cipher=transit)
     reidentify_store = PostgresReIdentificationStore(dsn)
     mapping = SurrogateMapping.from_pairs([])
     inbox = ReviewInbox()
     item = inbox.upsert(
         "Astrid Voss", context="Brief Astrid Voss tomorrow.", workspace="acme"
     )
-    transit = _stub_transit()
     rbac = RbacRegistry()
     audit_log = AuditLog()
     return {

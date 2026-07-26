@@ -6,16 +6,21 @@ test_entity_graph_postgres.py. Docker-gated; skip when Docker unavailable.
 
 Leak-audit clauses:
 - A/B/C/D/E — N/A: no proxy request path touched.
-- G (mapping secrecy) — N/A per ADR-0012/ADR-0008 deferral: canonical names are
-  PLAINTEXT in this schema. Transit ciphertext is deferred to #10.
+- G (mapping secrecy) — ASSERTED for the persons kind (issue #229, ADR-0045 §5):
+  canonical names are stored as mapping-cipher ciphertext (a LocalKeyCipher stub here,
+  since this file only needs a working cipher, not Transit specifically -- the seam is
+  the point). Terms remain plaintext (deferred follow-up slice).
 - F (fail-closed/access control) — unaffected: _require_role gates are untouched.
-- Verify: no canonical_name/variation value is written to a log line or error response.
+- Verify: no canonical_name value is written to a log line or error response.
 
 Process-restart contract: entities written through one store instance are visible
 from a second, independently-constructed instance against the same DSN.
 """
 
 from __future__ import annotations
+
+import base64
+import os
 
 import pytest
 
@@ -50,14 +55,28 @@ def _psycopg_dsn(pg_dsn: str) -> str:
     return pg_dsn
 
 
+def _make_store_key() -> str:
+    return base64.b64encode(os.urandom(32)).decode()
+
+
+@pytest.fixture
+def cipher():
+    """A mapping cipher for persons (ADR-0045 §5, issue #229): persons now require
+    one to persist at all -- every test below that adds/reads a person passes this in.
+    """
+    from blindfold.mapping_cipher import LocalKeyCipher
+
+    return LocalKeyCipher(_make_store_key())
+
+
 # ---------------------------------------------------------------------------
 # Test 1: is_empty() returns True on a fresh (migrated but empty) database
 # ---------------------------------------------------------------------------
 
-async def test_is_empty_returns_true_on_fresh_database(pg_dsn):
+async def test_is_empty_returns_true_on_fresh_database(pg_dsn, cipher):
     from blindfold.store.entity_graph_store import PostgresEntityGraphStore
 
-    store = PostgresEntityGraphStore(pg_dsn)
+    store = PostgresEntityGraphStore(pg_dsn, mapping_cipher=cipher)
     assert store.is_empty() is True
 
 
@@ -65,37 +84,37 @@ async def test_is_empty_returns_true_on_fresh_database(pg_dsn):
 # Test 2: create_workspace is idempotent, is_empty() returns False after
 # ---------------------------------------------------------------------------
 
-async def test_create_workspace_makes_store_non_empty(pg_dsn):
+async def test_create_workspace_makes_store_non_empty(pg_dsn, cipher):
     from blindfold.store.entity_graph_store import PostgresEntityGraphStore
 
-    store = PostgresEntityGraphStore(pg_dsn)
+    store = PostgresEntityGraphStore(pg_dsn, mapping_cipher=cipher)
     store.create_workspace("test-ws", "Test Workspace")
     assert store.is_empty() is False
 
 
-async def test_create_workspace_is_idempotent(pg_dsn):
+async def test_create_workspace_is_idempotent(pg_dsn, cipher):
     from blindfold.store.entity_graph_store import PostgresEntityGraphStore
 
-    store = PostgresEntityGraphStore(pg_dsn)
+    store = PostgresEntityGraphStore(pg_dsn, mapping_cipher=cipher)
     store.create_workspace("idempotent-ws", "Idempotent Workspace")
     # A second call must not raise.
     store.create_workspace("idempotent-ws", "Idempotent Workspace")
 
 
-async def test_workspace_name_returns_the_created_name(pg_dsn):
+async def test_workspace_name_returns_the_created_name(pg_dsn, cipher):
     """Topbar switcher fidelity (issue #114): the display name persists and is
     readable by slug, independent of the RBAC/entity-list query paths."""
     from blindfold.store.entity_graph_store import PostgresEntityGraphStore
 
-    store = PostgresEntityGraphStore(pg_dsn)
+    store = PostgresEntityGraphStore(pg_dsn, mapping_cipher=cipher)
     store.create_workspace("named-ws", "Named Workspace")
     assert store.workspace_name("named-ws") == "Named Workspace"
 
 
-async def test_workspace_name_falls_back_to_slug_when_unknown(pg_dsn):
+async def test_workspace_name_falls_back_to_slug_when_unknown(pg_dsn, cipher):
     from blindfold.store.entity_graph_store import PostgresEntityGraphStore
 
-    store = PostgresEntityGraphStore(pg_dsn)
+    store = PostgresEntityGraphStore(pg_dsn, mapping_cipher=cipher)
     assert store.workspace_name("never-created") == "never-created"
 
 
@@ -104,12 +123,12 @@ async def test_workspace_name_falls_back_to_slug_when_unknown(pg_dsn):
 # (process-restart contract: acceptance criterion 3)
 # ---------------------------------------------------------------------------
 
-async def test_add_entity_visible_from_second_store_instance(pg_dsn):
+async def test_add_entity_visible_from_second_store_instance(pg_dsn, cipher):
     """Entities written through one instance are visible from another (simulates restart)."""
     from blindfold.store.entity_graph_store import PostgresEntityGraphStore
 
     ws = "restart-test-ws"
-    store1 = PostgresEntityGraphStore(pg_dsn)
+    store1 = PostgresEntityGraphStore(pg_dsn, mapping_cipher=cipher)
     store1.create_workspace(ws, "Restart Test Workspace")
     store1.add_entity(
         kind="person",
@@ -120,7 +139,7 @@ async def test_add_entity_visible_from_second_store_instance(pg_dsn):
     )
 
     # Construct a completely independent second instance — simulates process restart.
-    store2 = PostgresEntityGraphStore(pg_dsn)
+    store2 = PostgresEntityGraphStore(pg_dsn, mapping_cipher=cipher)
     entities = store2.list_entities(ws)
 
     assert len(entities) == 1
@@ -133,11 +152,11 @@ async def test_add_entity_visible_from_second_store_instance(pg_dsn):
 # Test 4: get_by_canonical / get_by_id round-trip
 # ---------------------------------------------------------------------------
 
-async def test_get_by_canonical_returns_entity(pg_dsn):
+async def test_get_by_canonical_returns_entity(pg_dsn, cipher):
     from blindfold.store.entity_graph_store import PostgresEntityGraphStore
 
     ws = "canonical-test-ws"
-    store = PostgresEntityGraphStore(pg_dsn)
+    store = PostgresEntityGraphStore(pg_dsn, mapping_cipher=cipher)
     store.create_workspace(ws, "Canonical Test")
     store.add_entity(kind="term", workspace=ws, canonical_name="ProjectAlpha", surrogate="FakeTerm-01")
 
@@ -147,11 +166,11 @@ async def test_get_by_canonical_returns_entity(pg_dsn):
     assert rec.active_surrogate == "FakeTerm-01"
 
 
-async def test_get_by_id_returns_entity(pg_dsn):
+async def test_get_by_id_returns_entity(pg_dsn, cipher):
     from blindfold.store.entity_graph_store import PostgresEntityGraphStore
 
     ws = "byid-test-ws"
-    store = PostgresEntityGraphStore(pg_dsn)
+    store = PostgresEntityGraphStore(pg_dsn, mapping_cipher=cipher)
     store.create_workspace(ws, "By-ID Test")
     rec = store.add_entity(kind="person", workspace=ws, canonical_name="Bob Example", surrogate="FakeName-002")
 
@@ -164,11 +183,11 @@ async def test_get_by_id_returns_entity(pg_dsn):
 # Test 5: search_by_real_name matches canonical name and variations
 # ---------------------------------------------------------------------------
 
-async def test_search_by_real_name_matches_canonical_name(pg_dsn):
+async def test_search_by_real_name_matches_canonical_name(pg_dsn, cipher):
     from blindfold.store.entity_graph_store import PostgresEntityGraphStore
 
     ws = "search-test-ws"
-    store = PostgresEntityGraphStore(pg_dsn)
+    store = PostgresEntityGraphStore(pg_dsn, mapping_cipher=cipher)
     store.create_workspace(ws, "Search Test")
     store.add_entity(
         kind="person",
@@ -183,11 +202,11 @@ async def test_search_by_real_name_matches_canonical_name(pg_dsn):
     assert hits[0].canonical_name == "Carol Example"
 
 
-async def test_search_by_real_name_matches_variation(pg_dsn):
+async def test_search_by_real_name_matches_variation(pg_dsn, cipher):
     from blindfold.store.entity_graph_store import PostgresEntityGraphStore
 
     ws = "search-var-ws"
-    store = PostgresEntityGraphStore(pg_dsn)
+    store = PostgresEntityGraphStore(pg_dsn, mapping_cipher=cipher)
     store.create_workspace(ws, "Search Variation Test")
     store.add_entity(
         kind="person",
@@ -206,11 +225,11 @@ async def test_search_by_real_name_matches_variation(pg_dsn):
 # Test 6: merge_by_ids persists the result
 # ---------------------------------------------------------------------------
 
-async def test_merge_by_ids_persists_to_database(pg_dsn):
+async def test_merge_by_ids_persists_to_database(pg_dsn, cipher):
     from blindfold.store.entity_graph_store import PostgresEntityGraphStore
 
     ws = "merge-test-ws"
-    store = PostgresEntityGraphStore(pg_dsn)
+    store = PostgresEntityGraphStore(pg_dsn, mapping_cipher=cipher)
     store.create_workspace(ws, "Merge Test")
     winner = store.add_entity(kind="person", workspace=ws, canonical_name="Eve Winner", surrogate="FakeName-005")
     loser = store.add_entity(kind="person", workspace=ws, canonical_name="Eve Loser", surrogate="FakeName-006")
@@ -220,7 +239,7 @@ async def test_merge_by_ids_persists_to_database(pg_dsn):
     assert "Eve Loser" in merged.variations
 
     # Confirm in a second store instance (simulates process restart).
-    store2 = PostgresEntityGraphStore(pg_dsn)
+    store2 = PostgresEntityGraphStore(pg_dsn, mapping_cipher=cipher)
     entities = store2.list_entities(ws)
     assert len(entities) == 1
     assert entities[0].canonical_name == "Eve Winner"
@@ -231,11 +250,11 @@ async def test_merge_by_ids_persists_to_database(pg_dsn):
 # Test 7: edit_surrogate persists active + retired surrogates
 # ---------------------------------------------------------------------------
 
-async def test_edit_surrogate_persists_to_database(pg_dsn):
+async def test_edit_surrogate_persists_to_database(pg_dsn, cipher):
     from blindfold.store.entity_graph_store import PostgresEntityGraphStore
 
     ws = "edit-surrogate-ws"
-    store = PostgresEntityGraphStore(pg_dsn)
+    store = PostgresEntityGraphStore(pg_dsn, mapping_cipher=cipher)
     store.create_workspace(ws, "Edit Surrogate Test")
     rec = store.add_entity(kind="person", workspace=ws, canonical_name="Frank Example", surrogate="FakeName-Old")
 
@@ -244,7 +263,7 @@ async def test_edit_surrogate_persists_to_database(pg_dsn):
     assert "FakeName-Old" in updated.retired_surrogates
 
     # Confirm in a second store instance.
-    store2 = PostgresEntityGraphStore(pg_dsn)
+    store2 = PostgresEntityGraphStore(pg_dsn, mapping_cipher=cipher)
     entities = store2.list_entities(ws)
     assert entities[0].active_surrogate == "FakeName-New"
     assert "FakeName-Old" in entities[0].retired_surrogates
@@ -254,11 +273,11 @@ async def test_edit_surrogate_persists_to_database(pg_dsn):
 # Test 8: add_relationship / list_relationships persist
 # ---------------------------------------------------------------------------
 
-async def test_add_relationship_persists(pg_dsn):
+async def test_add_relationship_persists(pg_dsn, cipher):
     from blindfold.store.entity_graph_store import PostgresEntityGraphStore
 
     ws = "rel-test-ws"
-    store = PostgresEntityGraphStore(pg_dsn)
+    store = PostgresEntityGraphStore(pg_dsn, mapping_cipher=cipher)
     store.create_workspace(ws, "Relationship Test")
     person = store.add_entity(kind="person", workspace=ws, canonical_name="Grace Example", surrogate="FakeName-007")
     term = store.add_entity(kind="term", workspace=ws, canonical_name="OrgAlpha", surrogate="FakeTerm-002")
@@ -281,11 +300,11 @@ async def test_add_relationship_persists(pg_dsn):
 # Test 9: add_role_assignment / list_role_assignments persist
 # ---------------------------------------------------------------------------
 
-async def test_add_role_assignment_persists(pg_dsn):
+async def test_add_role_assignment_persists(pg_dsn, cipher):
     from blindfold.store.entity_graph_store import PostgresEntityGraphStore
 
     ws = "role-assign-ws"
-    store = PostgresEntityGraphStore(pg_dsn)
+    store = PostgresEntityGraphStore(pg_dsn, mapping_cipher=cipher)
     store.create_workspace(ws, "Role Assignment Test")
     person = store.add_entity(kind="person", workspace=ws, canonical_name="Hank Example", surrogate="FakeName-008")
 

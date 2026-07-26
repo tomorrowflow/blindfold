@@ -610,6 +610,10 @@ def test_run_server_logs_the_ephemeral_store_warning_when_database_url_is_unset(
 def test_run_server_does_not_log_the_ephemeral_store_warning_when_database_url_is_configured(
     caplog,
 ):
+    # With a durable database_url the IN-MEMORY STORE banner must not fire.
+    # Note: with no cipher configured the "persons are ephemeral" banner (issue #229 AC6)
+    # DOES fire -- but that is a separate message.  This test asserts only that the
+    # "store is ephemeral" / "BLINDFOLD_DATABASE_URL" banner is absent.
     settings = Settings(
         upstream_base_url="http://shared.test", database_url="postgresql://db.test/blindfold"
     )
@@ -623,7 +627,8 @@ def test_run_server_does_not_log_the_ephemeral_store_warning_when_database_url_i
             runner=lambda app, **kwargs: None,
         )
 
-    assert "ephemeral" not in caplog.text
+    # The in-memory store banner contains "BLINDFOLD_DATABASE_URL" as the remedy.
+    assert "BLINDFOLD_DATABASE_URL" not in caplog.text
 
 
 def test_run_server_logs_the_ephemeral_store_warning_for_the_memory_sentinel_end_to_end(
@@ -650,8 +655,10 @@ def test_run_server_does_not_log_the_ephemeral_store_warning_for_the_unset_defau
     caplog, monkeypatch, tmp_path
 ):
     # ADR-0043 §1, issue #204: unset now resolves to a durable SQLite store, so the
-    # banner must NOT fire on the default (unset) install -- driven through the real
-    # env-resolution seam.
+    # IN-MEMORY STORE banner must NOT fire on the default (unset) install -- driven
+    # through the real env-resolution seam.
+    # Note: the "persons are ephemeral" banner (issue #229 AC6) DOES fire when no cipher
+    # is configured; we check for the store-level "BLINDFOLD_DATABASE_URL" cue specifically.
     from blindfold.config import get_settings
 
     monkeypatch.delenv("BLINDFOLD_DATABASE_URL", raising=False)
@@ -664,7 +671,8 @@ def test_run_server_does_not_log_the_ephemeral_store_warning_for_the_unset_defau
             runner=lambda app, **kwargs: None,
         )
 
-    assert "ephemeral" not in caplog.text
+    # The in-memory store banner contains "BLINDFOLD_DATABASE_URL" as the remedy.
+    assert "BLINDFOLD_DATABASE_URL" not in caplog.text
 
 
 # ---------------------------------------------------------------------------
@@ -674,9 +682,12 @@ def test_run_server_does_not_log_the_ephemeral_store_warning_for_the_unset_defau
 # ---------------------------------------------------------------------------
 
 
-def test_run_server_logs_the_unencrypted_warning_for_a_persistent_store_with_no_cipher(
+def test_run_server_logs_the_ephemeral_persons_warning_for_a_persistent_store_with_no_cipher(
     caplog,
 ):
+    # Issue #229 AC6: with a durable database_url but no mapping cipher, persons are
+    # ephemeral (in-memory, lost on restart) because the ciphertext-only schema
+    # (ADR-0045 §5) has no plaintext-person path.  The banner names a remedy.
     settings = Settings(
         upstream_base_url="http://shared.test",
         database_url="postgresql://db.test/blindfold",
@@ -687,10 +698,10 @@ def test_run_server_logs_the_unencrypted_warning_for_a_persistent_store_with_no_
     with caplog.at_level("INFO"):
         run_server(settings=settings, entity_graph=graph, runner=lambda app, **kwargs: None)
 
-    assert "unencrypted" in caplog.text
-    # Mutually exclusive with the ephemeral-store wording (issue #227 AC) -- exactly
-    # one of the two honesty postures fires per install.
-    assert "ephemeral" not in caplog.text
+    assert "no mapping cipher" in caplog.text
+    assert "persons are in-memory" in caplog.text
+    # The in-memory STORE banner must not fire -- only the persons-ephemeral banner does.
+    assert "BLINDFOLD_DATABASE_URL" not in caplog.text
 
 
 def test_run_server_does_not_log_the_unencrypted_warning_when_a_cipher_is_configured(

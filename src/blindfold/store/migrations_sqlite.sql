@@ -10,10 +10,14 @@
 -- Idempotent: every statement is CREATE ... IF NOT EXISTS / ADD COLUMN IF NOT
 -- EXISTS, so applying migrations onto an already-migrated database is a no-op.
 --
--- Leak-audit clause G is N/A THIS SLICE, same as migrations.sql: real-value
--- columns (canonical_name, variation value) are stored PLAINTEXT here. Transit
--- encryption + blind index land in #10 (ADR-0008) -- an intentional, ADR-backed
--- deferral, not an egress/leak.
+-- Leak-audit clause G:
+--   * persons.canonical_name_ciphertext / canonical_name_blind_index: ASSERTED
+--     (issue #229, ADR-0045 §5) -- persons are ciphertext-only as of this slice;
+--     the legacy plaintext canonical_name column has been removed from the schema.
+--   * terms.canonical_name, variation value columns: N/A THIS SLICE -- these
+--     remain plaintext per ADR-0045's "tracer then extend" deferral; their
+--     ciphertext migration is a follow-up slice.
+--   * org_units.name: N/A THIS SLICE, same deferral.
 
 -- The unit of team access (RBAC), disambiguation context, and audit scope (ADR-0007).
 CREATE TABLE IF NOT EXISTS workspaces (
@@ -22,12 +26,19 @@ CREATE TABLE IF NOT EXISTS workspaces (
     name TEXT NOT NULL
 );
 
--- Canonical person referents.
+-- Canonical person referents (ADR-0045 §5, issue #229): ciphertext-only.
+-- canonical_name is stored as mapping-cipher ciphertext; the blind index enables
+-- equality lookups without decrypting.  The UNIQUE constraint moves to the blind
+-- index so idempotent upsert (deterministic HMAC, same input -> same index) is
+-- preserved.  The legacy plaintext canonical_name column was removed; a store
+-- built against the old schema is refused at startup by persons_migration.py
+-- (populated rows) or migrated silently (zero rows) -- see ADR-0045 §6.
 CREATE TABLE IF NOT EXISTS persons (
-    id             INTEGER PRIMARY KEY,
-    workspace_id   INTEGER NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
-    canonical_name TEXT NOT NULL,
-    UNIQUE (workspace_id, canonical_name)
+    id                         INTEGER PRIMARY KEY,
+    workspace_id               INTEGER NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
+    canonical_name_ciphertext  TEXT NOT NULL,
+    canonical_name_blind_index TEXT NOT NULL,
+    UNIQUE (workspace_id, canonical_name_blind_index)
 );
 
 -- Coreference variations ("Martin", "Bach", ...) of a person (ADR-0004).
@@ -109,13 +120,11 @@ CREATE TABLE IF NOT EXISTS retired_surrogates (
     UNIQUE (workspace_id, referent_kind, referent_id, surrogate)
 );
 
--- Transit ciphertext + blind-index columns (ADR-0008 / issue #10).
--- Real-value columns are stored as Transit ciphertext; the blind index enables equality
--- lookups without decrypting. Nullable so existing plain-ETL rows are valid; the
--- Transit-backed ETL (run_etl_with_transit) populates both.
-ALTER TABLE persons ADD COLUMN IF NOT EXISTS canonical_name_ciphertext TEXT;
-ALTER TABLE persons ADD COLUMN IF NOT EXISTS canonical_name_blind_index TEXT;
-
+-- Mapping-cipher ciphertext + blind-index columns for non-person real-value
+-- columns (ADR-0008 / issue #10, extended by ADR-0045 §5 / issue #229).
+-- persons.canonical_name_{ciphertext,blind_index} are now part of the CREATE
+-- TABLE above (NOT NULL, no plaintext fallback).  The variation-value and term
+-- columns below remain nullable additive columns for the deferred follow-up slice.
 ALTER TABLE person_variations ADD COLUMN IF NOT EXISTS value_ciphertext TEXT;
 ALTER TABLE person_variations ADD COLUMN IF NOT EXISTS value_blind_index TEXT;
 

@@ -6,13 +6,13 @@ pairs — canonical values AND every coreference variation — from the graph af
 has populated it. The in-process and DB-backed implementations therefore yield identical
 pairs, so the hermetic round-trip and the persisted graph agree on every surrogate.
 
-When a :class:`~blindfold.transit.TransitClient` is provided (Transit-backed ETL path,
-issue #10 / ADR-0008), ``seeded_pairs()`` reads the ``*_ciphertext`` columns and decrypts
-them via Transit rather than reading the plaintext column directly. The result is identical
-to the plaintext path: (real -> surrogate) pairs for every referent and variation.
-
-Without Transit, real values are read from the plaintext columns (clause G N/A for the
-plain-ETL path).
+Mapping cipher (ADR-0045 §5, issue #229): persons are now ciphertext-only in the DB (the
+``canonical_name`` plaintext column no longer exists). Pass ``mapping_cipher`` (or the
+backward-compat ``transit`` alias) to decrypt persons from ``canonical_name_ciphertext``
+and optionally decrypt terms/variations from their optional ciphertext columns -- mirrors
+:class:`~blindfold.store.sqlite.SQLiteSeedRepository` exactly (same query shape, asyncpg
+instead of stdlib sqlite3). Without a cipher, persons are absent from the DB (they are
+ephemeral when no cipher is configured, ADR-0045 §8) so only terms/variations are returned.
 """
 
 from __future__ import annotations
@@ -22,23 +22,13 @@ from typing import TYPE_CHECKING
 import asyncpg
 
 if TYPE_CHECKING:
+    from blindfold.mapping_cipher import MappingCipher
     from blindfold.transit import TransitClient
 
-# Canonical values and variations for both persons and terms — plaintext path.
+# Plaintext path (no cipher): terms and term_variations only.
+# Persons are absent from the DB when no cipher was configured (they are ephemeral,
+# ADR-0045 §5/§8, issue #229 AC6); the ``canonical_name`` column no longer exists.
 _SEEDED_PAIRS_SQL = """
-SELECT p.canonical_name AS real, s.surrogate AS surrogate
-  FROM persons p
-  JOIN surrogates s
-    ON s.workspace_id = p.workspace_id
-   AND s.referent_kind = 'person' AND s.referent_id = p.id
-UNION ALL
-SELECT pv.value AS real, s.surrogate AS surrogate
-  FROM person_variations pv
-  JOIN persons p ON p.id = pv.person_id
-  JOIN surrogates s
-    ON s.workspace_id = p.workspace_id
-   AND s.referent_kind = 'person' AND s.referent_id = p.id
-UNION ALL
 SELECT t.canonical_name AS real, s.surrogate AS surrogate
   FROM terms t
   JOIN surrogates s
@@ -53,61 +43,73 @@ SELECT tv.value AS real, s.surrogate AS surrogate
    AND s.referent_kind = 'term' AND s.referent_id = t.id
 """
 
-# Transit-backed path: read ciphertext columns instead of plaintext.
-_SEEDED_PAIRS_CIPHERTEXT_SQL = """
-SELECT p.canonical_name_ciphertext AS ciphertext, s.surrogate AS surrogate
+# Mapping-cipher path: persons via canonical_name_ciphertext (NOT NULL, always decrypt);
+# person variations via plaintext value (variations stay plaintext, issue #229 scope);
+# terms via COALESCE(canonical_name_ciphertext, canonical_name) so this query works
+# whether or not the optional terms ciphertext column was populated;
+# term_variations likewise via COALESCE(value_ciphertext, value).
+# The is_ct column (0/1) signals whether the value must be decrypted.
+_SEEDED_PAIRS_CIPHER_SQL = """
+SELECT p.canonical_name_ciphertext AS val, TRUE AS is_ct, s.surrogate AS surrogate
   FROM persons p
   JOIN surrogates s
     ON s.workspace_id = p.workspace_id
    AND s.referent_kind = 'person' AND s.referent_id = p.id
- WHERE p.canonical_name_ciphertext IS NOT NULL
 UNION ALL
-SELECT pv.value_ciphertext AS ciphertext, s.surrogate AS surrogate
+SELECT pv.value AS val, FALSE AS is_ct, s.surrogate AS surrogate
   FROM person_variations pv
   JOIN persons p ON p.id = pv.person_id
   JOIN surrogates s
     ON s.workspace_id = p.workspace_id
    AND s.referent_kind = 'person' AND s.referent_id = p.id
- WHERE pv.value_ciphertext IS NOT NULL
 UNION ALL
-SELECT t.canonical_name_ciphertext AS ciphertext, s.surrogate AS surrogate
+SELECT COALESCE(t.canonical_name_ciphertext, t.canonical_name) AS val,
+       (t.canonical_name_ciphertext IS NOT NULL) AS is_ct,
+       s.surrogate AS surrogate
   FROM terms t
   JOIN surrogates s
     ON s.workspace_id = t.workspace_id
    AND s.referent_kind = 'term' AND s.referent_id = t.id
- WHERE t.canonical_name_ciphertext IS NOT NULL
 UNION ALL
-SELECT tv.value_ciphertext AS ciphertext, s.surrogate AS surrogate
+SELECT COALESCE(tv.value_ciphertext, tv.value) AS val,
+       (tv.value_ciphertext IS NOT NULL) AS is_ct,
+       s.surrogate AS surrogate
   FROM term_variations tv
   JOIN terms t ON t.id = tv.term_id
   JOIN surrogates s
     ON s.workspace_id = t.workspace_id
    AND s.referent_kind = 'term' AND s.referent_id = t.id
- WHERE tv.value_ciphertext IS NOT NULL
 """
 
 
 class PostgresSeedRepository:
     """Entity-graph repository over a live Postgres connection.
 
-    Pass ``transit`` to decrypt ciphertext columns (Transit-backed ETL path, ADR-0008 /
-    issue #10). Without Transit, the plaintext ``canonical_name`` / ``value`` columns are
-    used (clause G N/A for the plain-ETL path).
+    Pass ``mapping_cipher`` (or the backward-compat ``transit`` alias) to decrypt persons
+    from their ciphertext-only column and optionally decrypt terms/variations when their
+    optional ciphertext columns are populated (ADR-0045 §5, issue #229).
+
+    Without a cipher only terms/variations are returned (persons are ephemeral when no
+    cipher is configured and are therefore absent from the DB -- clause G is honoured by
+    design, not by assertion, for that path).
     """
 
     def __init__(
         self,
         conn: asyncpg.Connection,
         transit: "TransitClient | None" = None,
+        mapping_cipher: "MappingCipher | None" = None,
     ) -> None:
         self._conn = conn
-        self._transit = transit
+        # mapping_cipher takes precedence; transit is a backward-compat alias.
+        # TransitClient satisfies the MappingCipher protocol.
+        self._cipher = mapping_cipher or transit
 
     async def seeded_pairs(self) -> list[tuple[str, str]]:
-        if self._transit is not None:
-            rows = await self._conn.fetch(_SEEDED_PAIRS_CIPHERTEXT_SQL)
+        if self._cipher is not None:
+            rows = await self._conn.fetch(_SEEDED_PAIRS_CIPHER_SQL)
             return [
-                (self._transit.decrypt(row["ciphertext"]), row["surrogate"])
+                (self._cipher.decrypt(row["val"]) if row["is_ct"] else row["val"], row["surrogate"])
                 for row in rows
             ]
         rows = await self._conn.fetch(_SEEDED_PAIRS_SQL)
