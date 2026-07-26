@@ -98,4 +98,53 @@ public class ProcessEnvironmentPropagationTests
         Assert.Equal(0, process.ExitCode);
         Assert.Equal("a-generated-key", stdout);
     }
+
+    /// <summary>
+    /// Exercises the actual fix this cycle lands (issue #234, <c>RealProxyProcessLauncher.Launch</c>):
+    /// setting the entry via <c>Environment.SetEnvironmentVariable</c> on the launching process
+    /// itself, and never touching <c>ProcessStartInfo.Environment</c> at all, keeps
+    /// <c>Process.Start</c> on the OS-native <c>lpEnvironment=NULL</c> ("inherit my own block
+    /// verbatim") path -- the one mechanism <c>platform-verify.yml</c>'s ONE-HOP assertion already
+    /// proves survives <c>blindfold-proxy.exe</c>'s own onefile bootloader re-exec on the hosted
+    /// windows-latest runner (PowerShell's ambient <c>$env:X = ...</c> before <c>Start-Process</c>
+    /// uses the identical NULL-block mechanism, and that assertion reaches Protected). The two
+    /// tests above recreate the *previous* <c>startInfo.Environment[key]=value</c> merge instead --
+    /// proven to survive an equivalent nested POSIX spawn on this sandbox, but never shown to
+    /// survive the real two-hop case the hosted gate actually hits (TWO-HOP is the only assertion
+    /// that used the explicit-block mechanism rather than NULL/ambient inheritance). Same nested
+    /// shape as <see cref="FreshlyMergedEnvironmentEntryReachesAGrandchildProcess"/> -- only the
+    /// injection mechanism differs.
+    /// </summary>
+    [Fact]
+    public void SetEnvironmentVariableWithoutTouchingProcessStartInfoEnvironmentReachesAGrandchildProcess()
+    {
+        Environment.SetEnvironmentVariable("BLINDFOLD_STORE_KEY", "a-generated-key");
+        try
+        {
+            var startInfo = new ProcessStartInfo("/bin/sh")
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                CreateNoWindow = true,
+            };
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add("/bin/sh -c 'printf \"%s\" \"$BLINDFOLD_STORE_KEY\"'");
+
+            // Deliberately never touched: startInfo.Environment. Touching it at all -- even to
+            // read it -- makes .NET rebuild a full explicit environment block for CreateProcess
+            // instead of passing NULL, which is exactly the mechanism this fix moves away from.
+
+            using var process = Process.Start(startInfo);
+            Assert.NotNull(process);
+            var stdout = process!.StandardOutput.ReadToEnd();
+            process.WaitForExit();
+
+            Assert.Equal(0, process.ExitCode);
+            Assert.Equal("a-generated-key", stdout);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("BLINDFOLD_STORE_KEY", null);
+        }
+    }
 }

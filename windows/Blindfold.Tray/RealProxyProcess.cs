@@ -62,20 +62,26 @@ internal sealed class RealProxyProcessLauncher : IProxyProcessLauncher
 {
     public IProxyProcess Launch(string exePath, IReadOnlyList<string> args, IReadOnlyDictionary<string, string> environment)
     {
-        // UseShellExecute=false makes the child inherit this process's environment block by
-        // default, so a real deployment where the user has BLINDFOLD_* set in their environment
-        // before launching the tray propagates to the proxy without any explicit copy. (An earlier
-        // explicit env-copy here, added chasing issue #197's CI smoke failure, was a no-op: per
-        // a1ce4f2's own diagnosis, that loss was one hop further upstream -- PowerShell's
-        // Start-Process not delivering ambient env into blindfold.exe itself -- not this
-        // tray-to-proxy spawn, so copying here had nothing to fix. The smoke test no longer
-        // requires the tray-spawned proxy to reach Protected for THAT reason -- see Program.cs
-        // RunSmokeLaunchFull and platform-verify.yml's one-hop Protected assertion. It does,
-        // however, now require BLINDFOLD_STORE_KEY specifically to cross exactly this hop
-        // (issue #234, ADR-0045 §7/§9): unlike the ambient L3 vars, the Store key never crosses
-        // the PowerShell-to-WinExe hop at all -- it is minted inside this process by
-        // StoreKeyEnvironment.Build() and merged into `environment` below, so #197's
-        // upstream-hop diagnosis doesn't apply to it one way or the other.)
+        // Set on THIS (tray) process's own environment -- never on startInfo.Environment (issue
+        // #234). Touching ProcessStartInfo.Environment at all, even once, makes .NET build a full
+        // explicit environment block and pass it to CreateProcess instead of the OS-native
+        // lpEnvironment=NULL ("inherit my own block verbatim") every other launch here otherwise
+        // gets. That distinction is exactly what separated platform-verify.yml's two Windows
+        // assertions: the ONE-HOP assertion launches this identical frozen blindfold-proxy.exe
+        // directly from PowerShell with L3 env set via plain `$env:X = ...` (NULL-block, ambient
+        // inheritance) and reaches Protected -- proving this exact onefile-bootloader binary's
+        // re-exec correctly forwards ambient env through its own internal child hop on the hosted
+        // windows-latest runner. The TWO-HOP assertion, spawning the same binary through this
+        // launcher with an explicit merged block (the prior startInfo.Environment[key]=value
+        // approach, see git blame), is the one path never shown to survive that same re-exec --
+        // mapping_cipher stayed "none" across six diagnostic cycles (620102b..aca054c) that ruled
+        // out every other seam (provisioning, every C#/Python logic path, UAC elevation, .NET's
+        // own env-merge mechanism, the onefile bootloader's own source, generic nested
+        // CreateProcess) without finding a fix. Switching this launcher onto the one mechanism
+        // already proven end-to-end on real Windows removes that difference, rather than adding a
+        // seventh diagnostic probe with no way to execute it from this sandbox.
+        foreach (var (key, value) in environment) Environment.SetEnvironmentVariable(key, value);
+
         var startInfo = new ProcessStartInfo(exePath)
         {
             UseShellExecute = false,
@@ -84,14 +90,6 @@ internal sealed class RealProxyProcessLauncher : IProxyProcessLauncher
         };
 
         foreach (var arg in args) startInfo.ArgumentList.Add(arg);
-
-        // startInfo.Environment starts pre-populated with a copy of this process's own
-        // environment (UseShellExecute=false's inheritance above) -- setting a key here only
-        // adds or overrides on top of that inherited copy, never replaces the whole block. This
-        // is how the tray's own provisioned BLINDFOLD_STORE_KEY (issue #234, ADR-0045 §7/§9)
-        // reaches the child alongside whatever BLINDFOLD_* values the user already has set,
-        // with no separate launch-environment-store seam needed for this one secret.
-        foreach (var (key, value) in environment) startInfo.Environment[key] = value;
 
         try
         {
