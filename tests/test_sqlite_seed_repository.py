@@ -15,17 +15,23 @@ store duck-types the in-memory ``EntityGraph`` interface
 (``add_entity``/``search_by_real_name``/``add_relationship``/``add_role_assignment``),
 so the vendored-seed repository's ``seed_entity_graph`` writes through it unchanged.
 
+Persons are now ciphertext-only (ADR-0045 §5, issue #229): seeding and reading persons
+requires a mapping cipher.  Test 1 uses LocalKeyCipher; test 2 uses the Transit stub
+and additionally writes terms ciphertext (the optional columns) to exercise the
+COALESCE/mixed read path.
+
 Leak-audit clauses: A/B/C/D/E/F -- N/A, no proxy request path touched (this is a
 startup/Setup read, mirroring issue #200's analysis). G (mapping secrecy) -- exercised
-for the read side only: the Transit-ciphertext test asserts the SQLite reader decrypts
-via Transit rather than reading the plaintext column when Transit is wired; this slice
-adds no new SQLite write-side encryption (that stays #10/ADR-0008 scope).
+for the read side: the mapping-cipher test asserts the SQLite reader decrypts persons
+via the cipher; terms/variations use COALESCE so both ciphertext-set and plaintext-only
+rows are returned correctly.
 """
 
 from __future__ import annotations
 
 import base64
 import json
+import os
 
 import httpx
 
@@ -54,6 +60,10 @@ def _make_stub_transit():
                 return httpx.Response(200, json={"data": {"plaintext": _b64(plain)}})
             return httpx.Response(400, json={"errors": ["bad ciphertext"]})
 
+        if "hmac" in path:
+            raw = base64.b64decode(body["input"]).decode()
+            return httpx.Response(200, json={"data": {"hmac": f"vault:v1:hmac:{raw}"}})
+
         return httpx.Response(404, json={"errors": ["not found"]})
 
     return TransitClient(
@@ -64,14 +74,20 @@ def _make_stub_transit():
 
 
 def _write_ciphertext_columns(dsn: str, transit) -> None:
-    """Synchronously encrypt every real-value column already written by
-    _seed_sqlite_from_vendored and write the ciphertext (test scaffolding only --
-    production SQLite Transit-write wiring is out of scope for this slice / #10)."""
+    """Synchronously encrypt every real-value column for terms/variations via Transit.
+
+    Persons are now encrypted at insert time by PostgresEntityGraphStore (issue #229,
+    ADR-0045 §5) -- skip the persons table here (canonical_name column is gone).
+    Only terms and variations need the optional ciphertext columns written; this is
+    test scaffolding only (production SQLite Transit-write wiring is out of scope for
+    this slice / issue #10).
+    """
     from blindfold.store.dialect import connect
 
     with connect(dsn) as conn:
         for table, col, ct_col in (
-            ("persons", "canonical_name", "canonical_name_ciphertext"),
+            # persons: canonical_name_ciphertext is set at INSERT time (issue #229);
+            # skip persons here -- reading persons.canonical_name would fail (column removed).
             ("terms", "canonical_name", "canonical_name_ciphertext"),
             ("person_variations", "value", "value_ciphertext"),
             ("term_variations", "value", "value_ciphertext"),
@@ -86,16 +102,21 @@ def _write_ciphertext_columns(dsn: str, transit) -> None:
         conn.commit()
 
 
-def _seed_sqlite_from_vendored(dsn: str) -> str:
+def _seed_sqlite_from_vendored(dsn: str, mapping_cipher=None) -> str:
     """Populate a fresh sqlite:/// DSN with the vendored seed via the entity-graph
     store seam (issue #200), the same path production uses -- NOT a new SQLite ETL.
     Returns the workspace slug used.
+
+    ``mapping_cipher`` must be supplied to persist person entities (ADR-0045 §5,
+    issue #229); without it persons are ephemeral and the seed will fail when
+    ``seed_entity_graph`` tries to call ``add_role_assignment`` on an ephemeral
+    person's UUID entity_id.
     """
     from blindfold.bootstrap import seed_entity_graph_from_vendored_seed
     from blindfold.store import vendored_seed_repository
     from blindfold.store.entity_graph_store import PostgresEntityGraphStore
 
-    store = PostgresEntityGraphStore(dsn)
+    store = PostgresEntityGraphStore(dsn, mapping_cipher=mapping_cipher)
     repo = vendored_seed_repository()
     workspace = repo.workspace_slug()
     store.create_workspace(workspace, workspace)
@@ -104,13 +125,23 @@ def _seed_sqlite_from_vendored(dsn: str) -> str:
 
 
 def test_sqlite_repository_seeded_pairs_match_the_vendored_seam(tmp_path):
+    """Seeded pairs from the SQLite store match the in-process vendored repository.
+
+    Persons are now ciphertext-only (issue #229): a LocalKeyCipher is used to seed
+    and read persons.  The SQLiteSeedRepository's COALESCE path returns all pairs
+    (persons decrypted from ciphertext, terms from plaintext canonical_name).
+    """
+    from blindfold.mapping_cipher import LocalKeyCipher
     from blindfold.store import vendored_seed_repository
     from blindfold.store.sqlite import SQLiteSeedRepository
 
-    dsn = f"sqlite:///{tmp_path / 'entity_graph.sqlite3'}"
-    _seed_sqlite_from_vendored(dsn)
+    key = base64.b64encode(os.urandom(32)).decode()
+    cipher = LocalKeyCipher(key)
 
-    db_pairs = set(SQLiteSeedRepository(dsn).seeded_pairs())
+    dsn = f"sqlite:///{tmp_path / 'entity_graph.sqlite3'}"
+    _seed_sqlite_from_vendored(dsn, mapping_cipher=cipher)
+
+    db_pairs = set(SQLiteSeedRepository(dsn, mapping_cipher=cipher).seeded_pairs())
     vendored_pairs = set(vendored_seed_repository().seeded_pairs())
 
     # Both implementations of the seeded_pairs() seam expose the same (real -> surrogate)
@@ -124,19 +155,27 @@ def test_sqlite_repository_seeded_pairs_match_the_vendored_seam(tmp_path):
 
 
 def test_sqlite_repository_with_transit_decrypts_ciphertext_columns(tmp_path):
+    """Transit-backed read decrypts all ciphertext columns and yields the same pairs.
+
+    Persons are seeded via Transit (cipher at insert time), terms/variations via
+    _write_ciphertext_columns (the optional ciphertext columns).  The SQLiteSeedRepository
+    COALESCE path decrypts all encrypted rows and passes through plaintext rows unchanged.
+    """
     from blindfold.store import vendored_seed_repository
     from blindfold.store.sqlite import SQLiteSeedRepository
 
     dsn = f"sqlite:///{tmp_path / 'entity_graph.sqlite3'}"
-    _seed_sqlite_from_vendored(dsn)
 
     transit = _make_stub_transit()
+    # Seed persons with Transit as the mapping cipher (persons go to DB as ciphertext).
+    _seed_sqlite_from_vendored(dsn, mapping_cipher=transit)
+    # Write terms/variations ciphertext (optional columns, COALESCE falls back to plaintext).
     _write_ciphertext_columns(dsn, transit)
 
     db_pairs = set(SQLiteSeedRepository(dsn, transit=transit).seeded_pairs())
     vendored_pairs = set(vendored_seed_repository().seeded_pairs())
 
-    # The Transit-ciphertext read path yields pairs identical to the plaintext path --
+    # The mapping-cipher read path yields pairs identical to the plaintext path --
     # decrypted real values, paired with the same stable surrogates.
     assert db_pairs == vendored_pairs
     assert dict(db_pairs)["Bach"] == dict(db_pairs)["Martin Bach"]

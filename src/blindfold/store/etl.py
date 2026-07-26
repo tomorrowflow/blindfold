@@ -10,7 +10,13 @@ Idempotency (re-running adds no duplicate rows and keeps the same surrogate) com
 
 Transit-backed path (issue #10 / ADR-0008): ``run_etl_with_transit`` accepts a
 :class:`~blindfold.transit.TransitClient` and additionally writes ciphertext +
-blind-index columns. The plain ``run_etl`` path leaves those columns NULL.
+blind-index columns for terms/variations. Persons are inserted directly with Transit
+ciphertext (ADR-0045 §5, issue #229) -- there is no two-step plain-then-encrypt step
+for persons any more; the ``canonical_name`` plaintext column no longer exists.
+
+The plain ``run_etl`` path skips persons entirely (the ciphertext-only schema has no
+path for plain-text person insertion) and skips role_assignments (which depend on
+person_ids). Use ``run_etl_with_transit`` to load the full seed including persons.
 """
 
 from __future__ import annotations
@@ -30,7 +36,8 @@ if TYPE_CHECKING:
 _MIGRATIONS_SQL = Path(__file__).with_name("migrations.sql").read_text(encoding="utf-8")
 
 _KIND_TABLE = {"person": "persons", "term": "terms", "org_unit": "org_units"}
-_KIND_NAME_COL = {"person": "canonical_name", "term": "canonical_name", "org_unit": "name"}
+# For terms and org_units, canonical lookup columns (persons use blind_index now).
+_KIND_NAME_COL = {"term": "canonical_name", "org_unit": "name"}
 _ENTITY_KEYS = (("person", "persons"), ("term", "terms"))
 
 
@@ -55,7 +62,16 @@ async def apply_migrations(conn: asyncpg.Connection) -> None:
 
 
 async def load_seed(conn: asyncpg.Connection, seed: dict[str, Any]) -> None:
-    """Load the vendored seed into the graph + mint a surrogate per referent (idempotent)."""
+    """Load the vendored seed into the graph + mint a surrogate per referent (idempotent).
+
+    Persons are skipped: the ciphertext-only schema (ADR-0045 §5, issue #229) has no
+    ``canonical_name`` column for plain-text insertion. Use ``run_etl_with_transit``
+    to load the full seed including persons under Transit encryption.
+
+    Role_assignments are also skipped here because they reference person_id rows that
+    are not yet in the DB (persons are inserted by ``_load_persons_with_cipher`` in
+    ``run_etl_with_transit``).
+    """
     ws = seed["workspace"]
     ws_id = await conn.fetchval(
         "INSERT INTO workspaces (slug, name) VALUES ($1, $2) "
@@ -66,22 +82,7 @@ async def load_seed(conn: asyncpg.Connection, seed: dict[str, Any]) -> None:
 
     known_values = _known_entity_values(seed)
 
-    for index, person in enumerate(seed.get("persons", [])):
-        person_id = await conn.fetchval(
-            "INSERT INTO persons (workspace_id, canonical_name) VALUES ($1, $2) "
-            "ON CONFLICT (workspace_id, canonical_name) "
-            "DO UPDATE SET canonical_name = EXCLUDED.canonical_name RETURNING id",
-            ws_id,
-            person["canonical_name"],
-        )
-        for variation in person.get("variations", []):
-            await conn.execute(
-                "INSERT INTO person_variations (person_id, value) VALUES ($1, $2) "
-                "ON CONFLICT (person_id, value) DO NOTHING",
-                person_id,
-                variation,
-            )
-        await _store_surrogate(conn, ws_id, "person", person_id, index, known_values)
+    # Persons: skipped -- require a mapping cipher (ADR-0045 §5, issue #229).
 
     for index, term in enumerate(seed.get("terms", [])):
         term_id = await conn.fetchval(
@@ -117,6 +118,9 @@ async def load_seed(conn: asyncpg.Connection, seed: dict[str, Any]) -> None:
         await _store_surrogate(conn, ws_id, "org_unit", org_id, index)
 
     for rel in seed.get("entity_relationships", []):
+        # Skip relationships involving persons -- persons are not in DB yet.
+        if rel.get("source_kind") == "person" or rel.get("target_kind") == "person":
+            continue
         source_id = await _lookup_id(conn, ws_id, rel["source_kind"], rel["source"])
         target_id = await _lookup_id(conn, ws_id, rel["target_kind"], rel["target"])
         await conn.execute(
@@ -133,17 +137,108 @@ async def load_seed(conn: asyncpg.Connection, seed: dict[str, Any]) -> None:
             target_id,
         )
 
-    for assignment in seed.get("role_assignments", []):
-        person_id = await _lookup_id(conn, ws_id, "person", assignment["person"])
-        org_id = await _lookup_id(conn, ws_id, "org_unit", assignment["org_unit"])
-        await conn.execute(
-            "INSERT INTO role_assignments (person_id, org_unit_id, role) "
+    # Role_assignments: skipped -- require persons to be in the DB first.
+    # They are inserted by _load_persons_with_cipher in run_etl_with_transit.
+
+
+async def _load_persons_with_cipher(
+    conn: asyncpg.Connection,
+    seed: dict[str, Any],
+    cipher: "TransitClient",
+) -> None:
+    """Insert persons with mapping-cipher ciphertext + role_assignments (idempotent).
+
+    Called by ``run_etl_with_transit`` after ``load_seed`` has inserted org_units so
+    role_assignment lookups can resolve org_unit_id by name.
+
+    Uses blind_index for idempotency (ON CONFLICT on the blind-index UNIQUE constraint)
+    and for role_assignment person lookups (no plaintext column to query).
+
+    No ``context=`` kwarg -- generic store code uses the two-arg protocol form that both
+    ``LocalKeyCipher`` and ``TransitClient`` honour (ADR-0045 §5 seam note).
+    """
+    ws_id = await conn.fetchval(
+        "SELECT id FROM workspaces WHERE slug = $1", seed["workspace"]["slug"]
+    )
+    known_values = _known_entity_values(seed)
+
+    for index, person in enumerate(seed.get("persons", [])):
+        ciphertext = cipher.encrypt(person["canonical_name"])
+        blind_index = cipher.blind_index(person["canonical_name"])
+        person_id = await conn.fetchval(
+            "INSERT INTO persons "
+            "(workspace_id, canonical_name_ciphertext, canonical_name_blind_index) "
             "VALUES ($1, $2, $3) "
-            "ON CONFLICT (person_id, org_unit_id, role) DO NOTHING",
-            person_id,
-            org_id,
-            assignment["role"],
+            "ON CONFLICT (workspace_id, canonical_name_blind_index) "
+            "DO UPDATE SET canonical_name_ciphertext = EXCLUDED.canonical_name_ciphertext "
+            "RETURNING id",
+            ws_id,
+            ciphertext,
+            blind_index,
         )
+        for variation in person.get("variations", []):
+            await conn.execute(
+                "INSERT INTO person_variations (person_id, value) VALUES ($1, $2) "
+                "ON CONFLICT (person_id, value) DO NOTHING",
+                person_id,
+                variation,
+            )
+        await _store_surrogate(conn, ws_id, "person", person_id, index, known_values)
+
+    # Insert role_assignments now that persons are in the DB.
+    for assignment in seed.get("role_assignments", []):
+        blind = cipher.blind_index(assignment["person"])
+        person_id = await conn.fetchval(
+            "SELECT id FROM persons WHERE workspace_id = $1 AND canonical_name_blind_index = $2",
+            ws_id,
+            blind,
+        )
+        org_id = await conn.fetchval(
+            "SELECT id FROM org_units WHERE workspace_id = $1 AND name = $2",
+            ws_id,
+            assignment["org_unit"],
+        )
+        if person_id is not None and org_id is not None:
+            await conn.execute(
+                "INSERT INTO role_assignments (person_id, org_unit_id, role) "
+                "VALUES ($1, $2, $3) "
+                "ON CONFLICT (person_id, org_unit_id, role) DO NOTHING",
+                person_id,
+                org_id,
+                assignment["role"],
+            )
+
+    # Insert entity_relationships involving persons now that persons are in the DB.
+    for rel in seed.get("entity_relationships", []):
+        if rel.get("source_kind") != "person" and rel.get("target_kind") != "person":
+            continue  # already inserted in load_seed
+        src_kind = rel["source_kind"]
+        tgt_kind = rel["target_kind"]
+        if src_kind == "person":
+            src_blind = cipher.blind_index(rel["source"])
+            source_id = await conn.fetchval(
+                "SELECT id FROM persons WHERE workspace_id = $1 AND canonical_name_blind_index = $2",
+                ws_id, src_blind,
+            )
+        else:
+            source_id = await _lookup_id(conn, ws_id, src_kind, rel["source"])
+        if tgt_kind == "person":
+            tgt_blind = cipher.blind_index(rel["target"])
+            target_id = await conn.fetchval(
+                "SELECT id FROM persons WHERE workspace_id = $1 AND canonical_name_blind_index = $2",
+                ws_id, tgt_blind,
+            )
+        else:
+            target_id = await _lookup_id(conn, ws_id, tgt_kind, rel["target"])
+        if source_id is not None and target_id is not None:
+            await conn.execute(
+                "INSERT INTO entity_relationships "
+                "(workspace_id, source_kind, source_id, relation, target_kind, target_id) "
+                "VALUES ($1, $2, $3, $4, $5, $6) "
+                "ON CONFLICT (workspace_id, source_kind, source_id, relation, target_kind, "
+                "target_id) DO NOTHING",
+                ws_id, src_kind, source_id, rel["relation"], tgt_kind, target_id,
+            )
 
 
 async def _store_surrogate(
@@ -170,6 +265,11 @@ async def _store_surrogate(
 async def _lookup_id(
     conn: asyncpg.Connection, ws_id: int, kind: str, name: str
 ) -> int | None:
+    """Look up a non-person entity by its canonical name column.
+
+    Persons are looked up by blind_index (not canonical_name) -- use the cipher directly
+    in callers that need to resolve a person (see ``_load_persons_with_cipher``).
+    """
     table = _KIND_TABLE[kind]
     col = _KIND_NAME_COL[kind]
     return await conn.fetchval(
@@ -178,7 +278,11 @@ async def _lookup_id(
 
 
 async def run_etl(dsn: str) -> None:
-    """One-time ETL entry point: apply migrations + load the vendored seed (idempotent)."""
+    """One-time ETL entry point: apply migrations + load the vendored seed (idempotent).
+
+    Persons are skipped (ciphertext-only schema, ADR-0045 §5, issue #229).
+    Use ``run_etl_with_transit`` to load the full seed including persons.
+    """
     conn = await asyncpg.connect(dsn)
     try:
         await apply_migrations(conn)
@@ -188,38 +292,41 @@ async def run_etl(dsn: str) -> None:
 
 
 async def run_etl_with_transit(dsn: str, transit: "TransitClient") -> None:
-    """ETL entry point that additionally encrypts real values via Transit (ADR-0008 / #10).
+    """ETL entry point that encrypts persons + real values via Transit (ADR-0008 / #10).
 
-    Applies migrations, loads the vendored seed (plain columns), then re-encrypts every
-    real-value column (canonical_name, variation value) through Transit, writing the
-    ciphertext and blind-index columns. Idempotent: ON CONFLICT upserts overwrite the
-    ciphertext with the same value on re-run.
+    Applies migrations, loads org_units + terms (plain columns), inserts persons with
+    Transit ciphertext directly (ADR-0045 §5, issue #229 -- no two-step plain-then-encrypt
+    for persons), then writes ciphertext + blind-index columns for terms/variations.
+    Idempotent: ON CONFLICT upserts overwrite the ciphertext with the same value on re-run.
     """
     conn = await asyncpg.connect(dsn)
     try:
+        seed = load_vendored_seed()
         await apply_migrations(conn)
-        await load_seed(conn, load_vendored_seed())
-        await _encrypt_real_values(conn, transit)
+        await load_seed(conn, seed)
+        await _load_persons_with_cipher(conn, seed, transit)
+        await _encrypt_term_values(conn, transit)
     finally:
         await conn.close()
 
 
-async def _encrypt_real_values(conn: asyncpg.Connection, transit: "TransitClient") -> None:
-    """Write ciphertext + blind-index columns for every real-value row (idempotent)."""
-    for table, name_col, ct_col, bi_col in (
-        ("persons", "canonical_name", "canonical_name_ciphertext", "canonical_name_blind_index"),
-        ("terms", "canonical_name", "canonical_name_ciphertext", "canonical_name_blind_index"),
-    ):
-        rows = await conn.fetch(f"SELECT id, {name_col} FROM {table}")
-        for row in rows:
-            ciphertext = transit.encrypt(row[name_col])
-            blind_index = transit.blind_index(row[name_col])
-            await conn.execute(
-                f"UPDATE {table} SET {ct_col} = $1, {bi_col} = $2 WHERE id = $3",
-                ciphertext,
-                blind_index,
-                row["id"],
-            )
+async def _encrypt_term_values(conn: asyncpg.Connection, transit: "TransitClient") -> None:
+    """Write ciphertext + blind-index columns for terms and variations only (idempotent).
+
+    Persons are already encrypted at insert time by ``_load_persons_with_cipher``
+    (ADR-0045 §5, issue #229) -- no separate re-encryption step is needed for persons.
+    """
+    rows = await conn.fetch("SELECT id, canonical_name FROM terms")
+    for row in rows:
+        ciphertext = transit.encrypt(row["canonical_name"])
+        blind_index = transit.blind_index(row["canonical_name"])
+        await conn.execute(
+            "UPDATE terms SET canonical_name_ciphertext = $1, canonical_name_blind_index = $2 "
+            "WHERE id = $3",
+            ciphertext,
+            blind_index,
+            row["id"],
+        )
 
     for table, val_col, ct_col, bi_col in (
         ("person_variations", "value", "value_ciphertext", "value_blind_index"),

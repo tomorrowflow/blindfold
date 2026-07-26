@@ -9,13 +9,19 @@ Leak-audit clauses exercised:
 - E-stable / idempotent mint: re-running the ETL keeps the SAME surrogate per referent and
   adds no duplicate rows.
 - A precondition: a surrogate is never the real entity value.
-N/A this slice (stated): G mapping-secrecy — real-value columns are PLAINTEXT here;
-Transit encryption + blind index are deferred to #10 (ADR-0008), an intentional ADR-backed
-deferral, NOT an egress/leak. Do not treat plaintext-at-rest as a leak this slice.
+Persons (ADR-0045 §5, issue #229): the ciphertext-only schema means the plain ``run_etl``
+path no longer inserts persons at all (no plaintext column to insert into) -- tests that
+need persons use ``run_etl_with_transit`` with a stubbed Transit client, mirroring
+test_transit_ciphertext_columns.py's network-boundary stub. G mapping-secrecy is ASSERTED
+for persons via that path; terms/org_units remain the deferred plaintext case (N/A here).
 """
 
 from __future__ import annotations
 
+import base64
+import json
+
+import httpx
 import pytest
 
 
@@ -42,6 +48,47 @@ def pg_dsn():
     # driver=None -> a plain postgresql:// DSN that asyncpg accepts directly.
     with PostgresContainer("postgres:16-alpine", driver=None) as pg:
         yield pg.get_connection_url()
+
+
+def _b64(s: str) -> str:
+    return base64.b64encode(s.encode()).decode()
+
+
+def _make_stub_transit():
+    """A TransitClient double at the network boundary (same shape as
+    test_transit_ciphertext_columns.py's stub): encrypt(v) -> vault:v1:enc:{v},
+    blind_index(v) -> vault:v1:hmac:{v}. Persons require a mapping cipher to
+    persist at all (ADR-0045 §5, issue #229) -- every test below that needs
+    persons in the DB uses ``run_etl_with_transit`` with this stub.
+    """
+    from blindfold.transit import TransitClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        path = request.url.path
+
+        if "encrypt" in path:
+            raw = base64.b64decode(body["plaintext"]).decode()
+            return httpx.Response(200, json={"data": {"ciphertext": f"vault:v1:enc:{raw}"}})
+
+        if "decrypt" in path:
+            ct = body["ciphertext"]
+            if ct.startswith("vault:v1:enc:"):
+                plain = ct[len("vault:v1:enc:"):]
+                return httpx.Response(200, json={"data": {"plaintext": _b64(plain)}})
+            return httpx.Response(400, json={"errors": ["bad ciphertext"]})
+
+        if "hmac" in path:
+            raw = base64.b64decode(body["input"]).decode()
+            return httpx.Response(200, json={"data": {"hmac": f"vault:v1:hmac:{raw}"}})
+
+        return httpx.Response(404, json={"errors": ["not found"]})
+
+    return TransitClient(
+        addr="http://openbao.test",
+        token="dev-root-token",
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
 
 
 async def test_migrations_create_the_entity_graph_schema(pg_dsn):
@@ -78,9 +125,12 @@ async def test_etl_populates_persons_variations_org_units_and_terms(pg_dsn):
     import asyncpg
 
     from blindfold.store._seed import load_vendored_seed
-    from blindfold.store.etl import run_etl
+    from blindfold.store.etl import run_etl_with_transit
 
-    await run_etl(pg_dsn)
+    # Persons require a mapping cipher to persist at all (ADR-0045 §5, issue #229) --
+    # the plain run_etl path no longer has a plaintext column to insert them into.
+    transit = _make_stub_transit()
+    await run_etl_with_transit(pg_dsn, transit)
     seed = load_vendored_seed()
 
     conn = await asyncpg.connect(pg_dsn)
@@ -89,8 +139,10 @@ async def test_etl_populates_persons_variations_org_units_and_terms(pg_dsn):
         org_count = await conn.fetchval("SELECT count(*) FROM org_units")
         term_count = await conn.fetchval("SELECT count(*) FROM terms")
         # A specific seeded person, its variation, and the self-referential org hierarchy.
+        # No plaintext canonical_name column exists any more -- look up by blind index.
         bach_id = await conn.fetchval(
-            "SELECT id FROM persons WHERE canonical_name = $1", "Martin Bach"
+            "SELECT id FROM persons WHERE canonical_name_blind_index = $1",
+            transit.blind_index("Martin Bach"),
         )
         variation_exists = await conn.fetchval(
             "SELECT count(*) FROM person_variations WHERE person_id = $1 AND value = $2",
@@ -118,9 +170,10 @@ async def test_etl_mints_one_surrogate_per_referent_never_equal_to_the_real_valu
     import asyncpg
 
     from blindfold.store._seed import load_vendored_seed
-    from blindfold.store.etl import run_etl
+    from blindfold.store.etl import run_etl_with_transit
 
-    await run_etl(pg_dsn)
+    transit = _make_stub_transit()
+    await run_etl_with_transit(pg_dsn, transit)
     seed = load_vendored_seed()
     expected_referents = (
         len(seed["persons"]) + len(seed["terms"]) + len(seed["org_units"])
@@ -130,16 +183,21 @@ async def test_etl_mints_one_surrogate_per_referent_never_equal_to_the_real_valu
     try:
         surrogate_count = await conn.fetchval("SELECT count(*) FROM surrogates")
         # Clause A precondition: no surrogate equals its referent's real canonical name.
-        collisions = await conn.fetchval(
-            "SELECT count(*) FROM surrogates s JOIN persons p "
-            "ON s.referent_kind = 'person' AND s.referent_id = p.id "
-            "WHERE s.surrogate = p.canonical_name"
+        # No plaintext canonical_name column exists any more -- decrypt in Python and
+        # compare, rather than comparing inside the SQL WHERE clause.
+        person_rows = await conn.fetch(
+            "SELECT s.surrogate AS surrogate, p.canonical_name_ciphertext AS ciphertext "
+            "FROM surrogates s JOIN persons p "
+            "ON s.referent_kind = 'person' AND s.referent_id = p.id"
+        )
+        collisions = sum(
+            1 for row in person_rows if row["surrogate"] == transit.decrypt(row["ciphertext"])
         )
         bach_surrogate = await conn.fetchval(
             "SELECT s.surrogate FROM surrogates s JOIN persons p "
             "ON s.referent_kind = 'person' AND s.referent_id = p.id "
-            "WHERE p.canonical_name = $1",
-            "Martin Bach",
+            "WHERE p.canonical_name_blind_index = $1",
+            transit.blind_index("Martin Bach"),
         )
     finally:
         await conn.close()
@@ -152,9 +210,10 @@ async def test_etl_mints_one_surrogate_per_referent_never_equal_to_the_real_valu
 async def test_rerunning_the_etl_is_idempotent_and_keeps_the_same_surrogate(pg_dsn):
     import asyncpg
 
-    from blindfold.store.etl import run_etl
+    from blindfold.store.etl import run_etl_with_transit
 
-    await run_etl(pg_dsn)
+    transit = _make_stub_transit()
+    await run_etl_with_transit(pg_dsn, transit)
 
     async def _snapshot(conn):
         counts = {}
@@ -173,8 +232,8 @@ async def test_rerunning_the_etl_is_idempotent_and_keeps_the_same_surrogate(pg_d
         bach_surrogate = await conn.fetchval(
             "SELECT s.surrogate FROM surrogates s JOIN persons p "
             "ON s.referent_kind = 'person' AND s.referent_id = p.id "
-            "WHERE p.canonical_name = $1",
-            "Martin Bach",
+            "WHERE p.canonical_name_blind_index = $1",
+            transit.blind_index("Martin Bach"),
         )
         return counts, bach_surrogate
 
@@ -185,7 +244,7 @@ async def test_rerunning_the_etl_is_idempotent_and_keeps_the_same_surrogate(pg_d
         await conn.close()
 
     # Re-run the full ETL (migrations + load) against the already-populated database.
-    await run_etl(pg_dsn)
+    await run_etl_with_transit(pg_dsn, transit)
 
     conn = await asyncpg.connect(pg_dsn)
     try:
@@ -203,14 +262,16 @@ async def test_postgres_repository_seeded_pairs_match_the_vendored_seam(pg_dsn):
     import asyncpg
 
     from blindfold.store import vendored_seed_repository
-    from blindfold.store.etl import run_etl
+    from blindfold.store.etl import run_etl_with_transit
     from blindfold.store.postgres import PostgresSeedRepository
 
-    await run_etl(pg_dsn)
+    # Persons require a mapping cipher to persist at all (ADR-0045 §5, issue #229).
+    transit = _make_stub_transit()
+    await run_etl_with_transit(pg_dsn, transit)
 
     conn = await asyncpg.connect(pg_dsn)
     try:
-        db_pairs = set(await PostgresSeedRepository(conn).seeded_pairs())
+        db_pairs = set(await PostgresSeedRepository(conn, transit=transit).seeded_pairs())
     finally:
         await conn.close()
 

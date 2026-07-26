@@ -9,12 +9,16 @@ counterpart, but reached through the unset-env selection contract itself
 (`blindfold.config.get_settings()`), not a hand-built DSN.
 
 Leak-audit clauses: A/B/C/D/E -- N/A, no proxy request path touched. G (mapping
-secrecy) -- N/A per ADR-0012/ADR-0008 deferral, unchanged by this slice: canonical
-names are plaintext in this schema regardless of which DSN string selected it. F
-(fail-closed) -- unaffected, _require_role gates untouched.
+secrecy) -- ASSERTED for the persons kind (issue #229, ADR-0045 §5): a
+LocalKeyCipher is required to persist persons; without one persons are ephemeral
+and the restart test would always return 0 entities. F (fail-closed) -- unaffected,
+_require_role gates untouched.
 """
 
 from __future__ import annotations
+
+import base64
+import os
 
 
 def test_unset_database_url_persists_entity_graph_across_a_simulated_restart(
@@ -24,13 +28,19 @@ def test_unset_database_url_persists_entity_graph_across_a_simulated_restart(
     monkeypatch.setenv("BLINDFOLD_STORE_DIR", str(tmp_path))
 
     from blindfold.config import get_settings
+    from blindfold.mapping_cipher import LocalKeyCipher
     from blindfold.store.entity_graph_store import PostgresEntityGraphStore
 
     dsn = get_settings().database_url
     assert dsn == f"sqlite:///{tmp_path / 'blindfold.sqlite3'}"
 
+    # Persons are now ciphertext-only (ADR-0045 §5, issue #229): a mapping cipher
+    # is required to persist them.  LocalKeyCipher is used here (no Transit dependency).
+    key = base64.b64encode(os.urandom(32)).decode()
+    cipher = LocalKeyCipher(key)
+
     ws = "default-install-ws"
-    store1 = PostgresEntityGraphStore(dsn)
+    store1 = PostgresEntityGraphStore(dsn, mapping_cipher=cipher)
     store1.create_workspace(ws, "Default Install Workspace")
     store1.add_entity(
         kind="person",
@@ -43,7 +53,7 @@ def test_unset_database_url_persists_entity_graph_across_a_simulated_restart(
     # A fresh get_settings() + a completely independent second store instance --
     # simulates a process restart against the same unset-default DSN.
     dsn_after_restart = get_settings().database_url
-    store2 = PostgresEntityGraphStore(dsn_after_restart)
+    store2 = PostgresEntityGraphStore(dsn_after_restart, mapping_cipher=cipher)
     entities = store2.list_entities(ws)
 
     assert len(entities) == 1

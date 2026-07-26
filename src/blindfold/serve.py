@@ -280,6 +280,9 @@ def _entity_graph_for_startup_check(settings: Settings) -> EntityGraph:
     importing the ASGI app module: Postgres-backed when a DSN is configured (a real
     ``workspaces`` table row count), else a fresh in-memory ``EntityGraph`` -- which,
     with no durable backing, is always empty at process boot.
+
+    No mapping_cipher is passed: the startup check only reads the ``workspaces`` table
+    row count (``is_empty()``), which requires no cipher.  Persons are not consulted.
     """
     if settings.database_url:
         from .store.entity_graph_store import PostgresEntityGraphStore
@@ -356,13 +359,14 @@ def run_server(
             "durable store."
         )
     elif settings.mapping_cipher == MAPPING_CIPHER_NONE:
-        # "Real values persisted unencrypted" honesty banner (ADR-0045 §10/§12,
-        # issue #227): the #199 ephemeral banner's sibling condition -- a
-        # persistent store with no mapping cipher configured. Warn, don't
-        # withdraw persistence (ADR-0045 §12's interim posture).
+        # "No mapping cipher" honesty banner (ADR-0045 §10/§12, issue #227/#229):
+        # persons are ephemeral (in-process only, lost on restart) because the DB
+        # schema is ciphertext-only for persons (ADR-0045 §5). Terms and other
+        # entities persist normally (plaintext for terms is an accepted interim
+        # posture, ADR-0045 §12). Configure a mapping cipher to persist persons.
         logger.info(
-            "blindfold: no mapping cipher configured -- real values are persisted "
-            "unencrypted. Set BLINDFOLD_OPENBAO_TOKEN to configure the Transit "
-            "cipher."
+            "blindfold: no mapping cipher configured -- persons are in-memory and "
+            "ephemeral (lost on restart). Set BLINDFOLD_STORE_KEY (local cipher) or "
+            "BLINDFOLD_OPENBAO_TOKEN (Transit) to persist persons."
         )
     runner(APP_TARGET, host=host, port=port)

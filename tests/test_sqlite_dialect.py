@@ -53,12 +53,15 @@ def test_sqlite_on_delete_cascade_removes_dependent_rows(tmp_path):
         apply_sqlite_migrations(conn, migrations_sql)
         conn.execute("INSERT INTO workspaces (slug, name) VALUES (%s, %s)", ("ws", "WS"))
         ws_id = conn.execute("SELECT id FROM workspaces WHERE slug = %s", ("ws",)).fetchone()[0]
+        # Schema as of issue #229: persons has ciphertext-only columns (no canonical_name).
         conn.execute(
-            "INSERT INTO persons (workspace_id, canonical_name) VALUES (%s, %s)",
-            (ws_id, "Alice"),
+            "INSERT INTO persons (workspace_id, canonical_name_ciphertext, canonical_name_blind_index) "
+            "VALUES (%s, %s, %s)",
+            (ws_id, "bf:v1:dummy_ciphertext_for_alice", "bf:v1:dummy_blind_index_for_alice"),
         )
         person_id = conn.execute(
-            "SELECT id FROM persons WHERE canonical_name = %s", ("Alice",)
+            "SELECT id FROM persons WHERE canonical_name_blind_index = %s",
+            ("bf:v1:dummy_blind_index_for_alice",),
         ).fetchone()[0]
         conn.execute(
             "INSERT INTO person_variations (person_id, value) VALUES (%s, %s)",

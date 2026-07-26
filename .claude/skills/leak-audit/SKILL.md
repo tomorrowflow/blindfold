@@ -18,7 +18,7 @@ counts. A test double records what crossed the boundary; assertions are made on 
   (Anthropic `/v1/messages` and OpenAI `/v1/chat/completions`). The egress oracle.
 - **Stubbed Ollama (L3)** — returns scripted adjudications for candidate spans; can be
   forced unavailable to exercise fail-closed.
-- **Stubbed OpenBao Transit** — encrypt/decrypt doubles; the app never holds key material.
+- **Stubbed mapping cipher** — encrypt/decrypt doubles for both the ``LocalKeyCipher`` and ``TransitClient`` implementations; the app never holds key material in tests.
 
 ## The assertions
 
@@ -59,8 +59,8 @@ surrogate was left unresolved. Both failure modes are covered by distinct tests.
 
 ### G. Mapping secrecy (store-touching slices)
 The real-value side of the **mapping** is never persisted in plaintext — assert stored
-columns are Transit ciphertext; equality lookups go through the **blind index** without
-decrypting.
+columns are mapping-cipher ciphertext (``LocalKeyCipher`` or ``TransitClient``);
+equality lookups go through the **blind index** without decrypting.
 
 ## How to use it
 - For a request-path slice, every acceptance criterion's test should also satisfy the
