@@ -203,6 +203,21 @@ internal static class Program
                                   + "in provisioning itself (most likely StoreKeyProvisioning resolved to "
                                   + "RefuseUndecryptableStore: no key held but a persistent store already exists "
                                   + "at the default path)."));
+
+                        // A prior hosted run (issue #234) confirmed keyWasInjected == true here, narrowing
+                        // the gap to "environment propagation to the child, or the child not reading it" --
+                        // but config.get_settings()'s BLINDFOLD_STORE_KEY read is a plain os.environ.get with
+                        // no other gate (checked by inspection), so a present-but-unread env var isn't
+                        // possible on the Python side; the child's os.environ must genuinely lack the entry.
+                        // That leaves ProcessStartInfo.Environment -> CreateProcess's own delivery to this
+                        // specific child unconfirmed: blindfold-proxy.exe is a frozen PyInstaller onefile
+                        // binary, whose bootloader may re-exec itself as a second process before Python ever
+                        // runs (a mechanism this launcher never has to account for otherwise). Probing with a
+                        // plain cmd.exe child through the exact same IProxyProcessLauncher seam disambiguates
+                        // "ProcessStartInfo.Environment doesn't reach any child on this runner image" from
+                        // "it's specific to the frozen onefile child's own re-exec" -- without guessing at a
+                        // fix for either. Presence-only report, same "never logged" AC as every diagnostic here.
+                        ProbeEnvironmentPropagation(launchEnvironment);
                         return 1;
                     }
 
@@ -226,5 +241,36 @@ internal static class Program
               + $"unreachable in {pollAttempts} attempts; last error: {lastPollError}");
         supervisor.Stop();
         return 1;
+    }
+
+    /// <summary>
+    /// Narrows the "environment propagation to the child" half of the mapping-cipher diagnostic
+    /// above (issue #234): launches a plain <c>cmd.exe</c> through the exact same
+    /// <see cref="IProxyProcessLauncher"/> seam <see cref="RunSmokeLaunchFull"/> uses for the real
+    /// proxy, with the identical launch environment, and asks it to report (never print)
+    /// whether it can see <c>BLINDFOLD_STORE_KEY</c>. "present" narrows the gap to something
+    /// specific to the frozen PyInstaller onefile child (its bootloader may re-exec itself as a
+    /// second process before Python ever runs); "absent" points at
+    /// <c>ProcessStartInfo.Environment</c>/<c>CreateProcess</c> delivery itself on this runner
+    /// image, for *any* child launched this way -- either way, real evidence for the next
+    /// iteration instead of another guess.
+    /// </summary>
+    private static void ProbeEnvironmentPropagation(IReadOnlyDictionary<string, string> launchEnvironment)
+    {
+        var probe = new RealProxyProcessLauncher().Launch(
+            "cmd.exe",
+            new[] { "/c", "if defined BLINDFOLD_STORE_KEY (echo present 1>&2) else (echo absent 1>&2)" },
+            launchEnvironment);
+
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (!probe.HasExited && DateTime.UtcNow < deadline)
+        {
+            Thread.Sleep(100);
+        }
+
+        Console.Error.WriteLine(probe.HasExited
+            ? "--smoke-launch-full: environment-propagation probe (cmd.exe, same launch seam) reports "
+              + $"BLINDFOLD_STORE_KEY is \"{probe.StandardErrorText.Trim()}\" to a plain child process."
+            : "--smoke-launch-full: environment-propagation probe (cmd.exe) never exited within 5s -- inconclusive.");
     }
 }
