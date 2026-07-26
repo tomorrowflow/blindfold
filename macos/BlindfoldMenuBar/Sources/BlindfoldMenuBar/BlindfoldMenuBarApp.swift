@@ -29,7 +29,8 @@ struct BlindfoldMenuBarApp: App {
             launcher: RealProxyProcessLauncher(),
             exePath: located.exePath,
             args: located.args,
-            environmentProvider: childEnvironment
+            environmentProvider: childEnvironment,
+            logSink: supervisorLogSink
         )
         let statusModel = StatusPollingModel(supervisor: supervisor)
         _model = StateObject(wrappedValue: statusModel)
@@ -129,13 +130,15 @@ private struct SupervisorSettingsRow: View {
     }
 }
 
-/// The supervision rows (issue #213, ADR-0039/0041): Start/Stop Proxy (drives
+/// The supervision rows (issue #213/#239, ADR-0039/0041/0046): Start/Stop Proxy (drives
 /// `MenuActions.toggleProxy`/`startStopLabel`, which the core guarantees can never
-/// disagree), the Refused remedy (scrubbed reason + Open Settings/Open Logs, ADR-0039's
-/// GUI surface for a refusal that previously only printed to a terminal), and Quit
-/// (`MenuActions.quit` stops the child before the app terminates). Holds no logic of its
-/// own -- every label/visibility decision is a `BlindfoldCore` call. Rendered after the
-/// issue #211 rows so Quit stays the last row in the menu.
+/// disagree), the Refused remedy (scrubbed reason + Open Settings, ADR-0039's GUI surface
+/// for a refusal that previously only printed to a terminal), Open Logs (issue #239 --
+/// always present, not gated on Refused: a Degraded running proxy needs a diagnosable
+/// record just as much), and Quit (`MenuActions.quit` stops the child before the app
+/// terminates). Holds no logic of its own -- every label/visibility decision is a
+/// `BlindfoldCore` call. Rendered after the issue #211 rows so Quit stays the last row in
+/// the menu.
 private struct MenuBarSupervisionRows: View {
     @ObservedObject var model: StatusPollingModel
 
@@ -151,9 +154,10 @@ private struct MenuBarSupervisionRows: View {
             Button(remedy.openSettings.label) {
                 openDeepLink(remedy.openSettings)
             }
-            Button(remedy.openLogsLabel) {
-                openLogs()
-            }
+        }
+
+        Button(MenuActions.openLogsLabel) {
+            openLogs()
         }
 
         Divider()
@@ -169,13 +173,18 @@ private struct MenuBarSupervisionRows: View {
         NSWorkspace.shared.open(url)
     }
 
-    /// No structured file-logging exists in this codebase yet -- this opens the standard
-    /// macOS per-app Logs location so the row has somewhere real to point at, created on
-    /// demand rather than assumed to already exist.
+    /// Issue #239: opens the supervisor log file itself (reveals it selected in Finder),
+    /// not merely its containing directory -- `~/Library/Logs/Blindfold` used to open empty
+    /// because nothing ever wrote to it. Creates the parent directory on demand (the log
+    /// file itself is created lazily by `FileSupervisorLogSink` on first `append`, e.g. at
+    /// the next spawn attempt) so this never errors on a brand-new install that hasn't
+    /// spawned yet.
     private func openLogs() {
-        let logsDirectory = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Logs/Blindfold", isDirectory: true)
-        try? FileManager.default.createDirectory(at: logsDirectory, withIntermediateDirectories: true)
-        NSWorkspace.shared.open(logsDirectory)
+        let logFileURL = URL(fileURLWithPath: supervisorLogPath)
+        try? FileManager.default.createDirectory(
+            at: logFileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        NSWorkspace.shared.activateFileViewerSelecting([logFileURL])
     }
 }

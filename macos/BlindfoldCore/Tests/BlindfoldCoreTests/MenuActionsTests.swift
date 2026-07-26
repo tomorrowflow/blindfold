@@ -55,6 +55,13 @@ import Testing
     #expect(MenuActions.settings == MenuDeepLink(label: "Settings…", path: "/ui/settings"))
 }
 
+/// "Open Logs…" (issue #239): unlike the Refused-only `RefusedRemedy.openLogsLabel`, this
+/// label is always present -- the AC that the supervisor log is "reachable from a running
+/// state as well as from Refused", not gated on the startup guard having tripped.
+@Test func openLogsLabelIsAlwaysPresentNotGatedOnRefused() {
+    #expect(MenuActions.openLogsLabel == "Open Logs…")
+}
+
 /// About (issue #211 / ADR-0039): ADR-0039's Consequences enumerates About among the menu
 /// elements, so it needs a `MenuActions` member the same as every other row -- a hardcoded
 /// view string would let the enumeration and the code drift. The bundle version is a pure

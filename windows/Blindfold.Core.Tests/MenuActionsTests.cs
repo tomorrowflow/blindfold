@@ -78,6 +78,17 @@ public class MenuActionsTests
         Assert.Equal(new MenuDeepLink("Settings…", "/ui/settings"), MenuActions.Settings);
     }
 
+    /// <summary>
+    /// "Open Logs…" (issue #239): unlike the Refused-only <c>RefusedRemedy.OpenLogsLabel</c>,
+    /// this label is always present -- the AC that the supervisor log is "reachable from a
+    /// running state as well as from Refused", not gated on the startup guard having tripped.
+    /// </summary>
+    [Fact]
+    public void OpenLogsLabelIsAlwaysPresentNotGatedOnRefused()
+    {
+        Assert.Equal("Open Logs…", MenuActions.OpenLogsLabel);
+    }
+
     [Fact]
     public void StartStopLabelIsStartProxyWhenStopped()
     {

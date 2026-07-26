@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Windows.Forms;
 using Blindfold.Core;
 
@@ -29,12 +30,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private bool _manualResumeRequested;
     private bool _autostartEnabled;
 
-    internal TrayApplicationContext(string proxyExePath)
+    /// <summary>
+    /// <paramref name="logSink"/> defaults to <see cref="NullSupervisorLogSink"/> (issue #239)
+    /// so the headless <c>--smoke-test</c> construction site (<c>Program.cs</c>) is unaffected;
+    /// the real tray entry point passes a <see cref="FileSupervisorLogSink"/> at
+    /// <see cref="Program.SupervisorLogPath"/>, which the Open Logs row (below) also opens.
+    /// </summary>
+    internal TrayApplicationContext(string proxyExePath, ISupervisorLogSink? logSink = null)
     {
         _supervisor = new ProxySupervisor(
             new RealProxyProcessLauncher(),
             proxyExePath,
-            new[] { "serve", "--host", ProxyHost, "--port", ProxyPort.ToString() });
+            new[] { "serve", "--host", ProxyHost, "--port", ProxyPort.ToString() },
+            logSink ?? new NullSupervisorLogSink());
         _statusClient = new StatusClient($"{ProxyBaseUrl}/v1/status", new RealStatusFetching());
         _unprotectedControl = new RealUnprotectedModeControl(ProxyBaseUrl);
         _autostartEnabled = WindowsAutostart.IsEnabled();
@@ -146,6 +154,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
         autostartItem.Click += (_, _) => ToggleAutostart();
         menu.Items.Add(autostartItem);
 
+        // Issue #239: always present, not gated on Refused -- a Degraded running proxy needs
+        // a diagnosable record just as much as a refused start does.
+        menu.Items.Add(new ToolStripMenuItem(MenuActions.OpenLogsLabel, null, (_, _) => OpenLogs()));
+
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add(new ToolStripMenuItem("About Blindfold", null, (_, _) => ShowAbout()));
         menu.Items.Add(new ToolStripMenuItem("Quit", null, (_, _) => Quit()));
@@ -199,6 +211,24 @@ internal sealed class TrayApplicationContext : ApplicationContext
         MenuActions.ToggleProxy(_state, _supervisor);
         _state = AppStateMachine.Reduce(_supervisor.CurrentLiveness(), _lastStatus);
         Render();
+    }
+
+    /// <summary>
+    /// Issue #239: reveals the supervisor log file in Explorer, selected -- not merely its
+    /// containing folder. Creates the parent directory on demand (the log file itself is
+    /// created lazily by <see cref="FileSupervisorLogSink"/> on first <c>Append</c>, e.g. at
+    /// the next spawn attempt) so this never throws on a brand-new install that hasn't
+    /// spawned yet.
+    /// </summary>
+    private static void OpenLogs()
+    {
+        var directory = Path.GetDirectoryName(Program.SupervisorLogPath);
+        if (!string.IsNullOrEmpty(directory))
+        {
+            Directory.CreateDirectory(directory);
+        }
+
+        Process.Start("explorer.exe", $"/select,\"{Program.SupervisorLogPath}\"");
     }
 
     private void ToggleAutostart()

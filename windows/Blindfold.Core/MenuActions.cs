@@ -65,6 +65,13 @@ public static class MenuActions
     public static readonly MenuDeepLink Settings = new("Settings…", "/ui/settings");
 
     /// <summary>
+    /// "Open Logs…" (issue #239, ADR-0046): unlike <see cref="RefusedRemedy.OpenLogsLabel"/>,
+    /// always present -- a refused start is exactly when a diagnosable record matters most, but
+    /// a Degraded running proxy needs one just as much, so this row is never gated on state.
+    /// </summary>
+    public const string OpenLogsLabel = "Open Logs…";
+
+    /// <summary>
     /// Whether the proxy has nothing running to stop -- <c>Stopped</c> (never launched) and
     /// <c>Refused</c> (the child already exited on the startup guard) both need Start, not
     /// Stop; every other state has a live or coming-up child. The single source of truth

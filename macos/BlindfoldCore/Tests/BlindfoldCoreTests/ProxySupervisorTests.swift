@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import BlindfoldCore
 
@@ -271,6 +272,126 @@ private final class InvocationCounter: @unchecked Sendable {
     #expect(liveness == .notStarted)
     // No auto-restart: the supervisor never re-launches on its own.
     #expect(launcher.launches.count == 1)
+}
+
+/// A recorded double at the log seam (issue #239, mirroring `FakeProxyProcessLauncher`
+/// above) -- `ProxySupervisor` is asserted only through this seam, never by inspecting a
+/// real file from this test target.
+private final class RecordingLogSink: SupervisorLogSink, @unchecked Sendable {
+    var lines: [String] = []
+    func append(_ line: String) { lines.append(line) }
+}
+
+/// Issue #239: a spawn attempt must be appended to the log -- the exe path and args, never
+/// an environment *value* (variable names would be fine, but this slice logs none at all).
+@Test func startAppendsASpawnAttemptToTheLogNeverAnEnvironmentValue() {
+    let launcher = FakeProxyProcessLauncher()
+    let log = RecordingLogSink()
+    let supervisor = ProxySupervisor(
+        launcher: launcher,
+        exePath: "blindfold-proxy",
+        args: ["serve", "--port", "25443"],
+        environment: ["BLINDFOLD_STORE_KEY": "top-secret-sentinel-value"],
+        logSink: log
+    )
+
+    supervisor.start()
+
+    #expect(log.lines.contains { $0.contains("blindfold-proxy") && $0.contains("serve") && $0.contains("25443") })
+    #expect(!log.lines.contains { $0.contains("top-secret-sentinel-value") })
+}
+
+/// Issue #239: a refused start's already-scrubbed reason is appended to the log -- the
+/// same string the menu bar's `RefusedRemedy` already shows, never raw stderr.
+@Test func aRefusedStartAppendsTheScrubbedReasonToTheLog() {
+    let launcher = FakeProxyProcessLauncher()
+    let log = RecordingLogSink()
+    let supervisor = ProxySupervisor(launcher: launcher, exePath: "blindfold-proxy", args: ["serve"], logSink: log)
+    supervisor.start()
+    launcher.process.hasExited = true
+    launcher.process.exitCode = 1
+    launcher.process.standardErrorText = "RuntimeError: refusing to start against a root OpenBao Transit token"
+
+    _ = supervisor.currentLiveness()
+
+    #expect(log.lines.contains { $0.contains("refusing to start: root Transit token outside dev mode") })
+    #expect(!log.lines.contains { $0.contains("RuntimeError") })
+}
+
+/// Issue #239: `currentLiveness()` is polled repeatedly by the menu bar's poll loop -- the
+/// exit outcome must be logged exactly once, not once per poll.
+@Test func theExitOutcomeIsLoggedExactlyOnceAcrossManyPolls() {
+    let launcher = FakeProxyProcessLauncher()
+    let log = RecordingLogSink()
+    let supervisor = ProxySupervisor(launcher: launcher, exePath: "blindfold-proxy", args: ["serve"], logSink: log)
+    supervisor.start()
+    launcher.process.hasExited = true
+    launcher.process.exitCode = 1
+    launcher.process.standardErrorText = "port in use"
+
+    for _ in 0..<5 {
+        _ = supervisor.currentLiveness()
+    }
+
+    #expect(log.lines.filter { $0.contains("port in use") }.count == 1)
+}
+
+/// Issue #239: `stop()` (Quit or the Stop Proxy row) is itself a lifecycle event worth a
+/// diagnosable record.
+@Test func stopAppendsAStopRequestToTheLog() {
+    let launcher = FakeProxyProcessLauncher()
+    let log = RecordingLogSink()
+    let supervisor = ProxySupervisor(launcher: launcher, exePath: "blindfold-proxy", args: ["serve"], logSink: log)
+    supervisor.start()
+
+    supervisor.stop()
+
+    #expect(log.lines.contains { $0.contains("stop requested") })
+}
+
+/// Leak-audit (issue #239's own AC): a spawn whose environment and stderr both carry
+/// planted sentinel values standing in for a Store key, an OpenBao token, an L3 API key,
+/// and an entity/surrogate value -- none may ever reach the durable log file, end to end
+/// through the real `FileSupervisorLogSink`, not just the in-memory recording double the
+/// tests above use.
+@Test func issue239LeakAuditNoPlantedSentinelSurvivesInTheRealLogFile() {
+    let path = NSTemporaryDirectory() + "blindfold-supervisor-leak-audit-\(UUID().uuidString).log"
+    defer { try? FileManager.default.removeItem(atPath: path) }
+    let fileSink = FileSupervisorLogSink(path: path)
+    let launcher = FakeProxyProcessLauncher()
+    let supervisor = ProxySupervisor(
+        launcher: launcher,
+        exePath: "blindfold-proxy",
+        args: ["serve"],
+        environment: [
+            "BLINDFOLD_STORE_KEY": "PLANTED-STORE-KEY-VALUE",
+            "BLINDFOLD_OPENBAO_TOKEN": "PLANTED-OPENBAO-TOKEN-VALUE",
+            "BLINDFOLD_L3_API_KEY": "PLANTED-L3-API-KEY-VALUE",
+        ],
+        logSink: fileSink
+    )
+
+    supervisor.start()
+    launcher.process.hasExited = true
+    launcher.process.exitCode = 1
+    launcher.process.standardErrorText = """
+    RuntimeError: refusing to start against a root OpenBao Transit token
+    entity leak check: real person PLANTED-ENTITY-NAME mapped to surrogate PLANTED-SURROGATE-NAME
+    """
+    _ = supervisor.currentLiveness()
+    supervisor.stop()
+
+    let contents = (try? String(contentsOfFile: path, encoding: .utf8)) ?? ""
+    #expect(!contents.isEmpty)
+    for sentinel in [
+        "PLANTED-STORE-KEY-VALUE",
+        "PLANTED-OPENBAO-TOKEN-VALUE",
+        "PLANTED-L3-API-KEY-VALUE",
+        "PLANTED-ENTITY-NAME",
+        "PLANTED-SURROGATE-NAME",
+    ] {
+        #expect(!contents.contains(sentinel), "log leaked sentinel: \(sentinel)")
+    }
 }
 
 /// AC "Supervisor spawns/stops the frozen proxy child; Quit stops the child first" —

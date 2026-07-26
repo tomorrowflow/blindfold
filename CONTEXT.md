@@ -346,6 +346,14 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   surrogate/hashed references only, never a real value, raw hop content,
   candidate-span text, or a payload diff. Exposed viewer-gated and
   workspace-scoped, the same RBAC story as the audit log.
+- **Supervisor log** (ADR-0046) — a durable, size-bounded (truncated, not rotated),
+  allowlisted-by-construction file the menu bar/tray's **supervisor** appends its own
+  lifecycle events to: spawn attempt (exe path + args, never an environment value), exit
+  outcome (exit code or signal), the already-**scrubbed reason**, and stop/quit. Distinct
+  from the **Dismissal log** (L3 curation evidence) and the **Processing trace** (in-memory,
+  request-path exchanges): this is process-lifecycle-only and the one durable thing "Open
+  Logs" points at. Never the child proxy's raw stdout/stderr — that stream is a separate,
+  unaudited, out-of-scope concern (ADR-0046).
 
 ## Key invariants
 

@@ -35,6 +35,21 @@ let secretsStore: SecretsStoring =
     ? KeychainSecretsStore(service: "dev.tomorrowflow.blindfold.secrets")
     : UserDefaultsSecretsStore(suiteName: "dev.tomorrowflow.blindfold.secrets")
 
+/// The supervisor log's real, per-user location (issue #239, ADR-0046): the standard macOS
+/// per-app Logs convention, mirroring `singleInstanceLockPath`/`storeFilePath` above -- a
+/// plain filesystem path, so it's computed here in the untestable-on-Linux shell rather than
+/// `BlindfoldCore`, which only ever takes an already-resolved `path` (`FileSupervisorLogSink`
+/// is Linux-tested against disposable temp-file paths, never this one). Not `private`:
+/// `BlindfoldMenuBarApp.swift`'s Open Logs action shares it.
+let supervisorLogPath = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent("Library/Logs/Blindfold/blindfold.log")
+    .path
+
+/// The real `SupervisorLogSink` (issue #239): every `ProxySupervisor` construction site in
+/// this file and `BlindfoldMenuBarApp.swift` shares this one instance, so a spawn from either
+/// path (the real app or `--smoke-launch-full`) lands in the same durable file.
+let supervisorLogSink: SupervisorLogSink = FileSupervisorLogSink(path: supervisorLogPath)
+
 /// Whether a persistent **store** (the default embedded-SQLite database, ADR-0043) already
 /// exists on disk -- the same default path `resolve_store_dir`/`resolve_database_url`
 /// (`src/blindfold/config.py`) compute. This is what `SupervisorStoreKey.provision`
@@ -140,7 +155,8 @@ func runSmokeLaunchFull() async -> Int32 {
         launcher: RealProxyProcessLauncher(),
         exePath: located.exePath,
         args: located.args,
-        environmentProvider: childEnvironment
+        environmentProvider: childEnvironment,
+        logSink: supervisorLogSink
     )
 
     let statusClient: StatusClient

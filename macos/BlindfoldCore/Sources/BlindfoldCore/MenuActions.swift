@@ -70,6 +70,11 @@ public enum MenuActions {
     public static let openBlindfold = MenuDeepLink(label: "Open Blindfold", path: "/ui/")
     public static let settings = MenuDeepLink(label: "Settings…", path: "/ui/settings")
 
+    /// "Open Logs…" (issue #239, ADR-0046): unlike `RefusedRemedy.openLogsLabel`, always
+    /// present -- a refused start is exactly when a diagnosable record matters most, but a
+    /// Degraded running proxy needs one just as much, so this row is never gated on state.
+    public static let openLogsLabel = "Open Logs…"
+
     /// About (issue #211 / ADR-0039): ADR-0039's Consequences enumerates About among the
     /// menu elements, so it needs a member here rather than a hardcoded view string --
     /// keeps the enumeration and the code consistent, same as every other row. `version`

@@ -82,19 +82,33 @@ public sealed class ProxySupervisor
     private readonly IProxyProcessLauncher _launcher;
     private readonly string _exePath;
     private readonly IReadOnlyList<string> _args;
+    private readonly ISupervisorLogSink _logSink;
     private IProxyProcess? _process;
     private bool _everHealthy;
+    private bool _hasLoggedExitOutcome;
 
-    public ProxySupervisor(IProxyProcessLauncher launcher, string exePath, IReadOnlyList<string> args)
+    /// <summary>
+    /// <paramref name="logSink"/> (issue #239, ADR-0046, mirroring macOS's <c>ProxySupervisor</c>)
+    /// is the only I/O this class performs beyond the <see cref="IProxyProcessLauncher"/> seam --
+    /// and even that is indirect, through the same kind of injected seam. Every line handed to it
+    /// is built from the fixed allowlist <see cref="ISupervisorLogSink"/> documents (exe path,
+    /// args, exit code, the already-scrubbed refusal reason): never an environment <i>value</i>,
+    /// never raw stdout/stderr. Defaults to <see cref="NullSupervisorLogSink"/> so every
+    /// pre-existing construction site/test is unaffected.
+    /// </summary>
+    public ProxySupervisor(IProxyProcessLauncher launcher, string exePath, IReadOnlyList<string> args, ISupervisorLogSink? logSink = null)
     {
         _launcher = launcher;
         _exePath = exePath;
         _args = args;
+        _logSink = logSink ?? new NullSupervisorLogSink();
     }
 
     public void Start()
     {
         _everHealthy = false;
+        _hasLoggedExitOutcome = false;
+        _logSink.Append($"spawn: exe={_exePath} args={string.Join(" ", _args)}");
         _process = _launcher.Launch(_exePath, _args);
     }
 
@@ -115,12 +129,26 @@ public sealed class ProxySupervisor
         {
             // Crash after healthy: Stopped, no auto-restart (ADR-0041) -- the same NotStarted
             // value AppStateMachine already maps to the Stopped bucket.
-            return _everHealthy
-                ? ProxyLiveness.NotStarted()
-                : ProxyLiveness.Refused(StartupRefusalReason.Scrub(_process.StandardErrorText));
+            if (_everHealthy) return ProxyLiveness.NotStarted();
+
+            var scrubbed = StartupRefusalReason.Scrub(_process.StandardErrorText);
+            LogExitOutcomeOnce($"refused: {scrubbed}");
+            return ProxyLiveness.Refused(scrubbed);
         }
 
         return _everHealthy ? ProxyLiveness.Running() : ProxyLiveness.Starting();
+    }
+
+    /// <summary>
+    /// <see cref="CurrentLiveness"/> is polled repeatedly by the tray's poll loop -- this logs
+    /// the exit outcome exactly once per spawn (reset in <see cref="Start"/>), never once per
+    /// poll.
+    /// </summary>
+    private void LogExitOutcomeOnce(string line)
+    {
+        if (_hasLoggedExitOutcome) return;
+        _hasLoggedExitOutcome = true;
+        _logSink.Append(line);
     }
 
     /// <summary>
@@ -129,6 +157,7 @@ public sealed class ProxySupervisor
     /// </summary>
     public void Stop()
     {
+        _logSink.Append("stop requested");
         _process?.Kill();
     }
 }

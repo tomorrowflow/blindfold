@@ -158,6 +158,122 @@ public class ProxySupervisorTests
 
         supervisor.Stop();
     }
+
+    /// <summary>A recorded double at the log seam (issue #239), mirroring <see cref="FakeProxyProcessLauncher"/>.</summary>
+    private sealed class RecordingLogSink : ISupervisorLogSink
+    {
+        public List<string> Lines { get; } = new();
+        public void Append(string line) => Lines.Add(line);
+    }
+
+    /// <summary>
+    /// Issue #239: a spawn attempt must be appended to the log -- the exe path and args, never
+    /// an environment value (this constructor doesn't even accept an environment yet -- a
+    /// pre-existing, separately-tracked gap, so there is nothing to leak here by construction).
+    /// </summary>
+    [Fact]
+    public void StartAppendsASpawnAttemptToTheLog()
+    {
+        var launcher = new FakeProxyProcessLauncher();
+        var log = new RecordingLogSink();
+        var supervisor = new ProxySupervisor(launcher, "blindfold-proxy.exe", new[] { "serve", "--port", "25463" }, log);
+
+        supervisor.Start();
+
+        Assert.Contains(log.Lines, line => line.Contains("blindfold-proxy.exe") && line.Contains("serve") && line.Contains("25463"));
+    }
+
+    /// <summary>Issue #239: a refused start's already-scrubbed reason is appended to the log -- never raw stderr.</summary>
+    [Fact]
+    public void ARefusedStartAppendsTheScrubbedReasonToTheLog()
+    {
+        var launcher = new FakeProxyProcessLauncher();
+        var log = new RecordingLogSink();
+        var supervisor = new ProxySupervisor(launcher, "blindfold-proxy.exe", new[] { "serve" }, log);
+        supervisor.Start();
+        launcher.Process.HasExited = true;
+        launcher.Process.ExitCode = 1;
+        launcher.Process.StandardErrorText = "RuntimeError: refusing to start against a root OpenBao Transit token";
+
+        _ = supervisor.CurrentLiveness();
+
+        Assert.Contains(log.Lines, line => line.Contains("refusing to start: root Transit token outside dev mode"));
+        Assert.DoesNotContain(log.Lines, line => line.Contains("RuntimeError"));
+    }
+
+    /// <summary>
+    /// Issue #239: <c>CurrentLiveness()</c> is polled repeatedly by the tray's poll loop -- the
+    /// exit outcome must be logged exactly once, not once per poll.
+    /// </summary>
+    [Fact]
+    public void TheExitOutcomeIsLoggedExactlyOnceAcrossManyPolls()
+    {
+        var launcher = new FakeProxyProcessLauncher();
+        var log = new RecordingLogSink();
+        var supervisor = new ProxySupervisor(launcher, "blindfold-proxy.exe", new[] { "serve" }, log);
+        supervisor.Start();
+        launcher.Process.HasExited = true;
+        launcher.Process.ExitCode = 1;
+        launcher.Process.StandardErrorText = "port in use";
+
+        for (var i = 0; i < 5; i++)
+        {
+            _ = supervisor.CurrentLiveness();
+        }
+
+        Assert.Single(log.Lines, line => line.Contains("port in use"));
+    }
+
+    /// <summary>Issue #239: <c>Stop()</c> (Quit or Stop Proxy) is itself a diagnosable lifecycle event.</summary>
+    [Fact]
+    public void StopAppendsAStopRequestToTheLog()
+    {
+        var launcher = new FakeProxyProcessLauncher();
+        var log = new RecordingLogSink();
+        var supervisor = new ProxySupervisor(launcher, "blindfold-proxy.exe", new[] { "serve" }, log);
+        supervisor.Start();
+
+        supervisor.Stop();
+
+        Assert.Contains(log.Lines, line => line.Contains("stop requested"));
+    }
+
+    /// <summary>
+    /// Leak-audit (issue #239's own AC): stderr carrying a planted sentinel value standing in
+    /// for an entity/surrogate value must never reach the durable log file, end to end through
+    /// the real <see cref="FileSupervisorLogSink"/>, not just the in-memory recording double
+    /// the tests above use.
+    /// </summary>
+    [Fact]
+    public void Issue239LeakAuditNoPlantedSentinelSurvivesInTheRealLogFile()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"blindfold-supervisor-leak-audit-{Guid.NewGuid()}.log");
+        try
+        {
+            var fileSink = new FileSupervisorLogSink(path);
+            var launcher = new FakeProxyProcessLauncher();
+            var supervisor = new ProxySupervisor(launcher, "blindfold-proxy.exe", new[] { "serve" }, fileSink);
+
+            supervisor.Start();
+            launcher.Process.HasExited = true;
+            launcher.Process.ExitCode = 1;
+            launcher.Process.StandardErrorText =
+                "RuntimeError: refusing to start against a root OpenBao Transit token\n"
+                + "entity leak check: real person PLANTED-ENTITY-NAME mapped to surrogate PLANTED-SURROGATE-NAME";
+            _ = supervisor.CurrentLiveness();
+            supervisor.Stop();
+
+            var contents = File.ReadAllText(path);
+            Assert.NotEmpty(contents);
+            Assert.DoesNotContain("PLANTED-ENTITY-NAME", contents);
+            Assert.DoesNotContain("PLANTED-SURROGATE-NAME", contents);
+            Assert.DoesNotContain("RuntimeError", contents);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
 }
 
 /// <summary>

@@ -12,6 +12,17 @@ internal static class Program
     /// </summary>
     private const string SingleInstanceMutexName = "Blindfold.Tray.SingleInstance";
 
+    /// <summary>
+    /// The supervisor log's real, per-user location (issue #239, ADR-0046): the Windows
+    /// per-user-data equivalent of macOS's <c>~/Library/Logs/Blindfold/blindfold.log</c>. A
+    /// plain filesystem path, computed here in the tray shell exactly like
+    /// <see cref="SingleInstanceMutexName"/>'s scope above -- <c>Blindfold.Core</c>'s
+    /// <see cref="FileSupervisorLogSink"/> only ever takes an already-resolved path.
+    /// </summary>
+    internal static readonly string SupervisorLogPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "Blindfold", "Logs", "blindfold.log");
+
     [STAThread]
     private static int Main(string[] args)
     {
@@ -79,7 +90,7 @@ internal static class Program
             return 1;
         }
 
-        Application.Run(new TrayApplicationContext(proxyExePath));
+        Application.Run(new TrayApplicationContext(proxyExePath, new FileSupervisorLogSink(SupervisorLogPath)));
         return 0;
     }
 
@@ -102,7 +113,8 @@ internal static class Program
         var supervisor = new ProxySupervisor(
             new RealProxyProcessLauncher(),
             proxyExePath,
-            new[] { "serve", "--host", "127.0.0.1", "--port", "25463" });
+            new[] { "serve", "--host", "127.0.0.1", "--port", "25463" },
+            new FileSupervisorLogSink(SupervisorLogPath));
         var statusClient = new StatusClient("http://127.0.0.1:25463/v1/status", new RealStatusFetching());
 
         supervisor.Start();

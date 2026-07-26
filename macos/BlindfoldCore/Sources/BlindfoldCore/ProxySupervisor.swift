@@ -100,8 +100,10 @@ public final class ProxySupervisor: ProxySupervising, @unchecked Sendable {
     private let exePath: String
     private let args: [String]
     private let environmentProvider: @Sendable () -> [String: String]
+    private let logSink: SupervisorLogSink
     private var process: (any ProxyProcess)?
     private var everHealthy = false
+    private var hasLoggedExitOutcome = false
 
     /// `environmentProvider` is called fresh on every `start()` (issue #237, ADR-0044) --
     /// the supervisor holds a provider it calls, never a captured snapshot, so a value
@@ -111,22 +113,45 @@ public final class ProxySupervisor: ProxySupervising, @unchecked Sendable {
     /// return the fully-reduced child environment (`LaunchEnvironment.reduce`, ADR-0044) --
     /// this class never derives or reduces it itself, keeping it process-lifecycle
     /// plumbing only.
-    public init(launcher: ProxyProcessLaunching, exePath: String, args: [String], environmentProvider: @escaping @Sendable () -> [String: String]) {
+    ///
+    /// `logSink` (issue #239, ADR-0046) is the only I/O this class performs beyond the
+    /// `ProxyProcessLaunching` seam -- and even that is indirect, through the same kind of
+    /// injected seam. Every line handed to it is built from the fixed allowlist
+    /// `SupervisorLog.swift` documents (exe path, args, exit code, signal, the
+    /// already-scrubbed refusal reason): never an environment *value*, never raw
+    /// stdout/stderr. Defaults to `NullSupervisorLogSink` so every pre-existing
+    /// construction site/test is unaffected.
+    public init(
+        launcher: ProxyProcessLaunching,
+        exePath: String,
+        args: [String],
+        environmentProvider: @escaping @Sendable () -> [String: String],
+        logSink: SupervisorLogSink = NullSupervisorLogSink()
+    ) {
         self.launcher = launcher
         self.exePath = exePath
         self.args = args
         self.environmentProvider = environmentProvider
+        self.logSink = logSink
     }
 
     /// Convenience overload for callers with a fixed environment snapshot (existing
     /// lifecycle tests not concerned with re-composition) -- wraps it in a provider that
     /// always returns the same value. Defaults to empty.
-    public convenience init(launcher: ProxyProcessLaunching, exePath: String, args: [String], environment: [String: String] = [:]) {
-        self.init(launcher: launcher, exePath: exePath, args: args, environmentProvider: { environment })
+    public convenience init(
+        launcher: ProxyProcessLaunching,
+        exePath: String,
+        args: [String],
+        environment: [String: String] = [:],
+        logSink: SupervisorLogSink = NullSupervisorLogSink()
+    ) {
+        self.init(launcher: launcher, exePath: exePath, args: args, environmentProvider: { environment }, logSink: logSink)
     }
 
     public func start() {
         everHealthy = false
+        hasLoggedExitOutcome = false
+        logSink.append("spawn: exe=\(exePath) args=\(args.joined(separator: " "))")
         process = launcher.launch(exePath: exePath, args: args, environment: environmentProvider())
     }
 
@@ -137,6 +162,7 @@ public final class ProxySupervisor: ProxySupervising, @unchecked Sendable {
     }
 
     public func stop() {
+        logSink.append("stop requested")
         process?.kill()
     }
 
@@ -152,6 +178,7 @@ public final class ProxySupervisor: ProxySupervising, @unchecked Sendable {
             // process's own termination info -- never from stderr, which a signal kill
             // typically leaves empty -- before falling back to the text-based scrub.
             if let signal = process.terminationSignal {
+                logExitOutcomeOnce("terminated: signal=\(signal)")
                 return .refused(reason: "startup failed: proxy process terminated by signal \(signal) before completing startup")
             }
 
@@ -162,11 +189,21 @@ public final class ProxySupervisor: ProxySupervising, @unchecked Sendable {
             // so it's safe to surface unscrubbed here just like the signal number.
             let scrubbed = StartupRefusalReason.scrub(process.standardErrorText)
             guard scrubbed == StartupRefusalReason.genericReason else {
+                logExitOutcomeOnce("refused: \(scrubbed)")
                 return .refused(reason: scrubbed)
             }
+            logExitOutcomeOnce("exited: code=\(process.exitCode)")
             return .refused(reason: "startup failed: proxy process exited with code \(process.exitCode) before completing startup")
         }
 
         return everHealthy ? .running : .starting
+    }
+
+    /// `currentLiveness()` is polled repeatedly by the menu bar's poll loop -- this logs the
+    /// exit outcome exactly once per spawn (reset in `start()`), never once per poll.
+    private func logExitOutcomeOnce(_ line: String) {
+        guard !hasLoggedExitOutcome else { return }
+        hasLoggedExitOutcome = true
+        logSink.append(line)
     }
 }
