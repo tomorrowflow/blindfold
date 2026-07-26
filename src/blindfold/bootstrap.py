@@ -29,10 +29,10 @@ from .rbac import VALID_ROLES, RbacRegistry
 from .reidentify import InMemoryReIdentificationStore
 from .relationships import RelationshipStore
 from .store import VendoredSeedRepository, vendored_seed_repository
-from .transit import TransitClient
 
 if TYPE_CHECKING:
     from .mapping_cipher import MappingCipher
+    from .transit import TransitClient
 
 
 def bootstrap_admin(rbac: RbacRegistry, identity: str, workspace: str) -> None:
