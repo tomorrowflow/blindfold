@@ -277,6 +277,30 @@ def test_refuse_if_ambiguous_mapping_cipher_is_a_noop_with_neither_configured():
     refuse_if_ambiguous_mapping_cipher(settings)
 
 
+def test_refuse_if_ambiguous_mapping_cipher_names_the_store_directory_and_a_remedy():
+    from blindfold.config import resolve_store_dir
+
+    settings = Settings(openbao_token="s.transit-token", store_key="a-local-store-key")
+
+    with pytest.raises(AmbiguousMappingCipherError) as exc_info:
+        refuse_if_ambiguous_mapping_cipher(settings)
+    message = str(exc_info.value)
+    assert resolve_store_dir() in message
+    assert "re-run Setup" in message
+
+
+def test_refuse_if_ambiguous_mapping_cipher_message_carries_no_token_or_key():
+    token = "s.super-secret-root-token-value"
+    key = "a-very-secret-local-store-key-value"
+    settings = Settings(openbao_token=token, store_key=key)
+
+    with pytest.raises(AmbiguousMappingCipherError) as exc_info:
+        refuse_if_ambiguous_mapping_cipher(settings)
+    message = str(exc_info.value)
+    assert token not in message
+    assert key not in message
+
+
 # ---------------------------------------------------------------------------
 # 1c. refuse_if_legacy_l3_env_vars — ADR-0031 operator migration aid
 # ---------------------------------------------------------------------------
@@ -328,6 +352,17 @@ def test_refuse_if_malformed_store_key_blocks_a_wrong_length_key():
         refuse_if_malformed_store_key(settings)
 
 
+def test_refuse_if_malformed_store_key_message_carries_no_key_material():
+    import base64
+
+    malformed_key = base64.b64encode(b"too-short").decode()
+    settings = Settings(store_key=malformed_key)
+
+    with pytest.raises(MalformedStoreKeyError) as exc_info:
+        refuse_if_malformed_store_key(settings)
+    assert malformed_key not in str(exc_info.value)
+
+
 def test_refuse_if_malformed_store_key_allows_a_well_formed_key():
     import base64
 
@@ -340,6 +375,209 @@ def test_refuse_if_malformed_store_key_is_a_noop_with_no_store_key_configured():
     settings = Settings(store_key="")
 
     refuse_if_malformed_store_key(settings)
+
+
+def test_refuse_if_malformed_store_key_names_the_store_directory_and_a_remedy():
+    from blindfold.config import resolve_store_dir
+
+    settings = Settings(store_key="not-valid-base64!!!")
+
+    with pytest.raises(MalformedStoreKeyError) as exc_info:
+        refuse_if_malformed_store_key(settings)
+    message = str(exc_info.value)
+    assert resolve_store_dir() in message
+    assert "re-run Setup" in message
+
+
+# ---------------------------------------------------------------------------
+# 1e. refuse_if_undecryptable_store — ADR-0045 §6 startup guard, issue #232.
+# A store already persisted under a *different* mapping cipher is distinguishable
+# from a generically corrupt value via the bf:v1:/vault:v1: scheme-version prefix.
+# ---------------------------------------------------------------------------
+
+
+def _make_store_key_b64() -> str:
+    import base64
+    import os
+
+    return base64.b64encode(os.urandom(32)).decode()
+
+
+def test_refuse_if_undecryptable_store_blocks_a_store_written_by_the_other_cipher(tmp_path):
+    from blindfold.mapping_cipher import LocalKeyCipher
+    from blindfold.serve import UndecryptableStoreError, refuse_if_undecryptable_store
+    from blindfold.store.dialect import connect
+    from blindfold.store.entity_graph_store import PostgresEntityGraphStore
+
+    dsn = f"sqlite:///{tmp_path / 'store.sqlite3'}"
+    cipher = LocalKeyCipher(_make_store_key_b64())
+    store = PostgresEntityGraphStore(dsn, mapping_cipher=cipher)
+    store.create_workspace("ws", "Workspace")
+    store.add_entity(
+        kind="person", workspace="ws", canonical_name="Alice Example", variations=[],
+        surrogate="FakeName-001",
+    )
+    # Simulate a store actually written by the Transit cipher (vault:v1: prefix) --
+    # never a real value here, just the scheme prefix that makes this identifiable.
+    with connect(dsn) as conn:
+        conn.execute(
+            "UPDATE persons SET canonical_name_ciphertext = %s",
+            ("vault:v1:not-a-real-value",),
+        )
+        conn.commit()
+
+    settings = Settings(store_key=_make_store_key_b64(), database_url=dsn)
+
+    with pytest.raises(UndecryptableStoreError):
+        refuse_if_undecryptable_store(settings)
+
+
+def test_refuse_if_undecryptable_store_blocks_a_same_scheme_value_with_the_wrong_key(tmp_path):
+    from blindfold.mapping_cipher import LocalKeyCipher
+    from blindfold.serve import UndecryptableStoreError, refuse_if_undecryptable_store
+    from blindfold.store.entity_graph_store import PostgresEntityGraphStore
+
+    dsn = f"sqlite:///{tmp_path / 'store.sqlite3'}"
+    original_key = _make_store_key_b64()
+    store = PostgresEntityGraphStore(dsn, mapping_cipher=LocalKeyCipher(original_key))
+    store.create_workspace("ws", "Workspace")
+    store.add_entity(
+        kind="person", workspace="ws", canonical_name="Alice Example", variations=[],
+        surrogate="FakeName-001",
+    )
+
+    # Same bf:v1: scheme, but a Store key that never produced this ciphertext.
+    settings = Settings(store_key=_make_store_key_b64(), database_url=dsn)
+
+    with pytest.raises(UndecryptableStoreError) as exc_info:
+        refuse_if_undecryptable_store(settings)
+    assert original_key not in str(exc_info.value)
+
+
+def test_refuse_if_undecryptable_store_blocks_a_local_scheme_value_when_transit_is_configured(tmp_path):
+    from blindfold.mapping_cipher import LocalKeyCipher
+    from blindfold.serve import UndecryptableStoreError, refuse_if_undecryptable_store
+    from blindfold.store.entity_graph_store import PostgresEntityGraphStore
+
+    dsn = f"sqlite:///{tmp_path / 'store.sqlite3'}"
+    store = PostgresEntityGraphStore(dsn, mapping_cipher=LocalKeyCipher(_make_store_key_b64()))
+    store.create_workspace("ws", "Workspace")
+    store.add_entity(
+        kind="person", workspace="ws", canonical_name="Alice Example", variations=[],
+        surrogate="FakeName-001",
+    )
+
+    # No network round trip needed: a bf:v1: value is identifiable as Local-cipher
+    # ciphertext by its scheme prefix alone, before Transit would ever be consulted.
+    settings = Settings(openbao_token="s.transit-token", database_url=dsn)
+
+    with pytest.raises(UndecryptableStoreError):
+        refuse_if_undecryptable_store(settings)
+
+
+def test_refuse_if_undecryptable_store_is_a_noop_when_the_cipher_can_decrypt(tmp_path):
+    from blindfold.mapping_cipher import LocalKeyCipher
+    from blindfold.serve import refuse_if_undecryptable_store
+    from blindfold.store.entity_graph_store import PostgresEntityGraphStore
+
+    dsn = f"sqlite:///{tmp_path / 'store.sqlite3'}"
+    key = _make_store_key_b64()
+    store = PostgresEntityGraphStore(dsn, mapping_cipher=LocalKeyCipher(key))
+    store.create_workspace("ws", "Workspace")
+    store.add_entity(
+        kind="person", workspace="ws", canonical_name="Alice Example", variations=[],
+        surrogate="FakeName-001",
+    )
+
+    settings = Settings(store_key=key, database_url=dsn)
+
+    refuse_if_undecryptable_store(settings)  # must not raise
+
+
+def test_refuse_if_undecryptable_store_is_a_noop_with_an_empty_persons_table(tmp_path):
+    from blindfold.mapping_cipher import LocalKeyCipher
+    from blindfold.serve import refuse_if_undecryptable_store
+    from blindfold.store.entity_graph_store import PostgresEntityGraphStore
+
+    dsn = f"sqlite:///{tmp_path / 'store.sqlite3'}"
+    PostgresEntityGraphStore(dsn, mapping_cipher=LocalKeyCipher(_make_store_key_b64()))
+
+    settings = Settings(store_key=_make_store_key_b64(), database_url=dsn)
+
+    refuse_if_undecryptable_store(settings)  # must not raise -- nothing to sample yet
+
+
+def test_refuse_if_undecryptable_store_is_a_noop_with_no_persistent_store_configured():
+    from blindfold.serve import refuse_if_undecryptable_store
+
+    settings = Settings(store_key=_make_store_key_b64(), database_url="")
+
+    refuse_if_undecryptable_store(settings)  # must not raise -- ephemeral, nothing on disk
+
+
+def test_refuse_if_undecryptable_store_is_a_noop_with_no_mapping_cipher_configured(tmp_path):
+    from blindfold.serve import refuse_if_undecryptable_store
+
+    dsn = f"sqlite:///{tmp_path / 'store.sqlite3'}"
+    settings = Settings(openbao_token="", store_key="", database_url=dsn)
+
+    refuse_if_undecryptable_store(settings)  # must not raise -- persons stay ephemeral
+
+
+def test_refuse_if_undecryptable_store_names_the_store_directory_and_a_remedy(tmp_path):
+    from blindfold.mapping_cipher import LocalKeyCipher
+    from blindfold.serve import UndecryptableStoreError, refuse_if_undecryptable_store
+    from blindfold.store.dialect import connect
+    from blindfold.store.entity_graph_store import PostgresEntityGraphStore
+
+    store_path = tmp_path / "store.sqlite3"
+    dsn = f"sqlite:///{store_path}"
+    store = PostgresEntityGraphStore(dsn, mapping_cipher=LocalKeyCipher(_make_store_key_b64()))
+    store.create_workspace("ws", "Workspace")
+    store.add_entity(
+        kind="person", workspace="ws", canonical_name="Alice Example", variations=[],
+        surrogate="FakeName-001",
+    )
+    with connect(dsn) as conn:
+        conn.execute(
+            "UPDATE persons SET canonical_name_ciphertext = %s",
+            ("vault:v1:not-a-real-value",),
+        )
+        conn.commit()
+
+    settings = Settings(store_key=_make_store_key_b64(), database_url=dsn)
+
+    with pytest.raises(UndecryptableStoreError) as exc_info:
+        refuse_if_undecryptable_store(settings)
+    message = str(exc_info.value)
+    assert str(store_path) in message
+    assert "re-run Setup" in message
+
+
+def test_refuse_if_undecryptable_store_message_carries_no_key_or_real_value(tmp_path):
+    from blindfold.mapping_cipher import LocalKeyCipher
+    from blindfold.serve import UndecryptableStoreError, refuse_if_undecryptable_store
+    from blindfold.store.entity_graph_store import PostgresEntityGraphStore
+
+    dsn = f"sqlite:///{tmp_path / 'store.sqlite3'}"
+    real_name = "Alice Example"
+    writer_key = _make_store_key_b64()
+    store = PostgresEntityGraphStore(dsn, mapping_cipher=LocalKeyCipher(writer_key))
+    store.create_workspace("ws", "Workspace")
+    store.add_entity(
+        kind="person", workspace="ws", canonical_name=real_name, variations=[],
+        surrogate="FakeName-001",
+    )
+
+    reader_key = _make_store_key_b64()
+    settings = Settings(store_key=reader_key, database_url=dsn)
+
+    with pytest.raises(UndecryptableStoreError) as exc_info:
+        refuse_if_undecryptable_store(settings)
+    message = str(exc_info.value)
+    assert real_name not in message
+    assert writer_key not in message
+    assert reader_key not in message
 
 
 # ---------------------------------------------------------------------------
@@ -417,6 +655,40 @@ def test_run_server_refuses_a_malformed_store_key_before_starting_the_asgi_serve
     calls = []
 
     with pytest.raises(MalformedStoreKeyError):
+        run_server(
+            settings=settings,
+            runner=lambda app, **kwargs: calls.append((app, kwargs)),
+        )
+
+    assert calls == []
+
+
+def test_run_server_refuses_an_undecryptable_store_before_starting_the_asgi_server(tmp_path):
+    # ADR-0045 §6: a store already written by the other cipher refuses startup
+    # rather than the ASGI server ever accepting traffic against it.
+    from blindfold.mapping_cipher import LocalKeyCipher
+    from blindfold.serve import UndecryptableStoreError
+    from blindfold.store.dialect import connect
+    from blindfold.store.entity_graph_store import PostgresEntityGraphStore
+
+    dsn = f"sqlite:///{tmp_path / 'store.sqlite3'}"
+    store = PostgresEntityGraphStore(dsn, mapping_cipher=LocalKeyCipher(_make_store_key_b64()))
+    store.create_workspace("ws", "Workspace")
+    store.add_entity(
+        kind="person", workspace="ws", canonical_name="Alice Example", variations=[],
+        surrogate="FakeName-001",
+    )
+    with connect(dsn) as conn:
+        conn.execute(
+            "UPDATE persons SET canonical_name_ciphertext = %s",
+            ("vault:v1:not-a-real-value",),
+        )
+        conn.commit()
+
+    settings = Settings(store_key=_make_store_key_b64(), database_url=dsn)
+    calls = []
+
+    with pytest.raises(UndecryptableStoreError):
         run_server(
             settings=settings,
             runner=lambda app, **kwargs: calls.append((app, kwargs)),

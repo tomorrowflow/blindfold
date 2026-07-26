@@ -21,11 +21,23 @@ from urllib.parse import urlparse
 
 import uvicorn
 
-from .config import DEFAULT_HOST, DEFAULT_PORT, MAPPING_CIPHER_NONE, Settings, get_settings
+from cryptography.exceptions import InvalidTag
+
+from .config import (
+    DEFAULT_HOST,
+    DEFAULT_PORT,
+    MAPPING_CIPHER_LOCAL,
+    MAPPING_CIPHER_NONE,
+    MAPPING_CIPHER_TRANSIT,
+    Settings,
+    describe_store_location,
+    get_settings,
+)
 from .entity_graph import EntityGraph
 from .gliner_provisioning import is_gliner_model_ready
-from .mapping_cipher import InvalidStoreKeyError, LocalKeyCipher
+from .mapping_cipher import SCHEME_PREFIX, InvalidStoreKeyError, LocalKeyCipher
 from .ollama import is_cloud_model
+from .transit import CIPHERTEXT_PREFIX as TRANSIT_CIPHERTEXT_PREFIX
 from .transit import TransitClient
 
 logger = logging.getLogger(__name__)
@@ -96,6 +108,22 @@ class MalformedStoreKeyError(RuntimeError):
     never a silent fallback. The message never carries the key material, only
     the shape of the problem (:class:`~blindfold.mapping_cipher.InvalidStoreKeyError`'s
     own message, which is scrubbed the same way).
+    """
+
+
+class UndecryptableStoreError(RuntimeError):
+    """Raised when the configured mapping cipher cannot decrypt what a persistent
+    store already holds (ADR-0045 §6, issue #232) -- the key-loss path a lost or
+    rotated Store key / Transit token produces.
+
+    Distinct from :class:`MalformedStoreKeyError`, which is about the shape of the
+    ``BLINDFOLD_STORE_KEY`` env var itself, independent of what (if anything) is on
+    disk. The ``bf:v1:``/``vault:v1:`` scheme-version prefix (ADR-0045 §3) makes a
+    store written by the *other* cipher identifiable rather than a bare decrypt
+    failure, so the message names that case specifically when it applies, distinct
+    from a same-scheme value that is genuinely wrong-keyed or corrupted. Never
+    carries the ciphertext, key or token -- only the Store location and which
+    scheme (if known) wrote it.
     """
 
 
@@ -181,11 +209,12 @@ def refuse_if_ambiguous_mapping_cipher(settings: Settings | None = None) -> None
     """
     settings = settings or get_settings()
     if settings.openbao_token and settings.store_key:
+        location = describe_store_location(settings.database_url)
         raise AmbiguousMappingCipherError(
             "refusing to start: both BLINDFOLD_OPENBAO_TOKEN and BLINDFOLD_STORE_KEY "
             "are configured; a store can only ever be encrypted under one mapping "
-            "cipher. Unset whichever one this install does not intend to use "
-            "(ADR-0045 §4)."
+            f"cipher. Unset whichever one this install does not intend to use, or "
+            f"remove {location} and re-run Setup to start fresh (ADR-0045 §4)."
         )
 
 
@@ -205,10 +234,84 @@ def refuse_if_malformed_store_key(settings: Settings | None = None) -> None:
     try:
         LocalKeyCipher(settings.store_key)
     except InvalidStoreKeyError as exc:
+        location = describe_store_location(settings.database_url)
         raise MalformedStoreKeyError(
             f"refusing to start: BLINDFOLD_STORE_KEY is malformed ({exc}); it must "
-            "be exactly 32 bytes, base64-encoded (ADR-0045 §3)."
+            f"be exactly 32 bytes, base64-encoded. Reconfigure BLINDFOLD_STORE_KEY "
+            f"with a valid key, or remove {location} and re-run Setup to start "
+            "fresh (ADR-0045 §3)."
         ) from exc
+
+
+def refuse_if_undecryptable_store(
+    settings: Settings | None = None,
+    *,
+    entity_graph: EntityGraph | None = None,
+) -> None:
+    """Fail fast (ADR-0045 §6) if the configured mapping cipher cannot decrypt what a
+    persistent store already holds -- the key-loss path.
+
+    A no-op with no persistent store configured (nothing durable to be
+    undecryptable), no mapping cipher configured (persons stay ephemeral regardless
+    of what's on disk, issue #229), an empty persons table (nothing to sample yet),
+    or an ``entity_graph`` override supplied (the same test/embedding seam
+    :func:`run_server` already honors elsewhere -- an explicit in-memory graph
+    stands in for the real store, so there is nothing on disk to peek at). Samples
+    exactly one persisted ciphertext -- never a bulk read, per ADR-0045 §6's
+    rejection of any bulk real-value read path -- and checks it two ways: first by
+    its ``bf:v1:``/``vault:v1:`` scheme-version prefix (ADR-0045 §3), which
+    identifies a store written by the *other* cipher without needing to decrypt
+    anything; then, only for the Local key cipher (a local, no-network check), by
+    an actual decrypt attempt, which catches a same-scheme value that is
+    wrong-keyed or corrupted. The Transit cipher's own same-scheme case is not
+    probed here -- that would be a live network round trip in a startup guard,
+    and Transit already reports its own decrypt failures per request.
+    """
+    settings = settings or get_settings()
+    if entity_graph is not None:
+        return
+    if not settings.database_url:
+        return
+    cipher_choice = settings.mapping_cipher
+    if cipher_choice == MAPPING_CIPHER_NONE:
+        return
+
+    from .store.dialect import connect
+
+    with connect(settings.database_url) as conn:
+        row = conn.execute(
+            "SELECT canonical_name_ciphertext FROM persons LIMIT 1"
+        ).fetchone()
+    if row is None:
+        return
+    ciphertext = row[0]
+
+    if cipher_choice == MAPPING_CIPHER_LOCAL:
+        this_scheme, other_scheme_name = SCHEME_PREFIX, "OpenBao Transit"
+    else:
+        assert cipher_choice == MAPPING_CIPHER_TRANSIT
+        this_scheme, other_scheme_name = TRANSIT_CIPHERTEXT_PREFIX, "the Local key cipher"
+
+    location = describe_store_location(settings.database_url)
+    if not ciphertext.startswith(this_scheme):
+        raise UndecryptableStoreError(
+            f"refusing to start: the store at {location} cannot be decrypted with "
+            f"the configured cipher -- it was encrypted under {other_scheme_name} "
+            f"instead. Reconfigure to use {other_scheme_name}, or remove {location} "
+            "and re-run Setup to start fresh (ADR-0045 §6)."
+        )
+
+    if cipher_choice == MAPPING_CIPHER_LOCAL:
+        try:
+            LocalKeyCipher(settings.store_key).decrypt(ciphertext)
+        except (ValueError, InvalidTag) as exc:
+            raise UndecryptableStoreError(
+                f"refusing to start: the store at {location} cannot be decrypted "
+                "with the configured cipher; the Store key may be wrong or the "
+                f"data corrupted. Reconfigure BLINDFOLD_STORE_KEY with the correct "
+                f"key, or remove {location} and re-run Setup to start fresh "
+                "(ADR-0045 §6)."
+            ) from exc
 
 
 def _is_loopback_base_url(base_url: str) -> bool:
@@ -311,17 +414,19 @@ def run_server(
     Binds loopback by default (SEC-11); binding elsewhere is the caller's explicit
     opt-in via ``host``. Runs the ADR-0031 legacy-env-var guard, the SEC-2 root-token
     guard, the ADR-0045 §4 ambiguous-mapping-cipher guard, the ADR-0045 §3
-    malformed-Store-key guard, the ADR-0022 local-only-L3 guard (Ollama's ``:cloud``
-    tag), the ADR-0031 §3 local-only-L3 guard (oMLX's loopback-only base url), and
-    the ADR-0033 §2 local-only-L3 guard (GLiNER's readable-model-file check) before
-    starting the server so a misconfigured deploy never has the ASGI server accept
-    traffic in the first place.
+    malformed-Store-key guard, the ADR-0045 §6 undecryptable-store guard, the
+    ADR-0022 local-only-L3 guard (Ollama's ``:cloud`` tag), the ADR-0031 §3
+    local-only-L3 guard (oMLX's loopback-only base url), and the ADR-0033 §2
+    local-only-L3 guard (GLiNER's readable-model-file check) before starting the
+    server so a misconfigured deploy never has the ASGI server accept traffic in
+    the first place.
     """
     refuse_if_legacy_l3_env_vars()
     settings = settings or get_settings()
     refuse_if_root_token(settings, transit_client=transit_client)
     refuse_if_ambiguous_mapping_cipher(settings)
     refuse_if_malformed_store_key(settings)
+    refuse_if_undecryptable_store(settings, entity_graph=entity_graph)
     refuse_if_cloud_model(settings)
     refuse_if_omlx_non_loopback(settings)
     refuse_if_gliner_model_missing(settings)

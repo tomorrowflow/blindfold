@@ -185,6 +185,21 @@
       "expected_reason": "refusing to start: GLiNER model not provisioned"
     },
     {
+      "name": "ambiguousMappingCipherStderrScrubsToItsKnownSafeReason",
+      "raw_stderr": "AmbiguousMappingCipherError: refusing to start: both BLINDFOLD_OPENBAO_TOKEN and BLINDFOLD_STORE_KEY are configured; a store can only ever be encrypted under one mapping cipher. Unset whichever one this install does not intend to use, or remove /home/user/.local/share/blindfold/store and re-run Setup to start fresh (ADR-0045 §4).",
+      "expected_reason": "refusing to start: both a Transit token and a Store key are configured (ambiguous mapping cipher)"
+    },
+    {
+      "name": "malformedStoreKeyStderrScrubsToItsKnownSafeReason",
+      "raw_stderr": "MalformedStoreKeyError: refusing to start: BLINDFOLD_STORE_KEY is malformed (BLINDFOLD_STORE_KEY is not valid base64); it must be exactly 32 bytes, base64-encoded. Reconfigure BLINDFOLD_STORE_KEY with a valid key, or remove /home/user/.local/share/blindfold/store and re-run Setup to start fresh (ADR-0045 §3).",
+      "expected_reason": "refusing to start: BLINDFOLD_STORE_KEY is malformed"
+    },
+    {
+      "name": "undecryptableStoreStderrScrubsToItsKnownSafeReason",
+      "raw_stderr": "UndecryptableStoreError: refusing to start: the store at /home/user/.local/share/blindfold/store/blindfold.sqlite3 cannot be decrypted with the configured cipher -- it was encrypted under OpenBao Transit instead. Reconfigure to use OpenBao Transit, or remove /home/user/.local/share/blindfold/store/blindfold.sqlite3 and re-run Setup to start fresh (ADR-0045 §6).",
+      "expected_reason": "refusing to start: the store cannot be decrypted with the configured cipher"
+    },
+    {
       "name": "unrecognizedStderrScrubsToTheGenericReasonNeverASubstringOfTheRawText",
       "raw_stderr": "Traceback (most recent call last): File \"unexpected.py\", line 1, in <module>",
       "expected_reason": "startup failed"
