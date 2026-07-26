@@ -100,11 +100,19 @@ internal static class Program
     /// </summary>
     private static int RunSmokeLaunchFull(string proxyExePath)
     {
+        // Captured (rather than inlined into the constructor call) so the failure diagnostic
+        // below can report whether the tray itself believed it injected a Store key --
+        // disambiguating "StoreKeyEnvironment.Build() withheld the key" (a provisioning-side
+        // outcome, e.g. RefuseUndecryptableStore) from "the key was injected but the child still
+        // reports mapping_cipher=none" (an environment-propagation or Python-side issue). Never
+        // the key value itself -- only whether the entry is present (issue #234's own "never
+        // logged" AC covers this diagnostic too).
+        var launchEnvironment = StoreKeyEnvironment.Build();
         var supervisor = new ProxySupervisor(
             new RealProxyProcessLauncher(),
             proxyExePath,
             new[] { "serve", "--host", "127.0.0.1", "--port", "25463" },
-            StoreKeyEnvironment.Build());
+            launchEnvironment);
         var statusClient = new StatusClient("http://127.0.0.1:25463/v1/status", new RealStatusFetching());
 
         supervisor.Start();
@@ -182,10 +190,19 @@ internal static class Program
 
                     if (mappingCipher != "local")
                     {
+                        var keyWasInjected = launchEnvironment.ContainsKey(StoreKeyProvisioning.EnvironmentKey);
                         Console.Error.WriteLine(
                             "--smoke-launch-full: expected the tray-provisioned Store key to configure "
                             + $"the Local key cipher, but /v1/status reports mapping_cipher=\"{mappingCipher ?? "<unavailable>"}\" "
-                            + "(issue #234: the tray-spawned proxy must reach a cipher-configured state)");
+                            + "(issue #234: the tray-spawned proxy must reach a cipher-configured state). "
+                            + (keyWasInjected
+                                ? "StoreKeyEnvironment.Build() DID inject BLINDFOLD_STORE_KEY into the launch "
+                                  + "environment -- the gap is downstream of provisioning (environment propagation "
+                                  + "to the child, or the child not reading it)."
+                                : "StoreKeyEnvironment.Build() withheld BLINDFOLD_STORE_KEY entirely -- the gap is "
+                                  + "in provisioning itself (most likely StoreKeyProvisioning resolved to "
+                                  + "RefuseUndecryptableStore: no key held but a persistent store already exists "
+                                  + "at the default path)."));
                         return 1;
                     }
 
