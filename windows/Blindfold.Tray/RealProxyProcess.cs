@@ -95,6 +95,25 @@ internal sealed class RealProxyProcessLauncher : IProxyProcessLauncher
         // the freshly set entry. .NET's single-file publish runs the managed entry point in the same
         // OS process that was launched -- no bundle-extraction re-exec, unlike PyInstaller's onefile
         // bootloader -- so this is not a second onefile-style hop this diagnostic chain had missed.
+        //
+        // Hosted run 30197335980 (issue #234, against bcaf20b -- the first run to actually exercise
+        // 17569da/a95a715's ONE-HOP (Store key) assertion after its malformed-literal fix) reports the
+        // ONE-HOP (Store key) assertion PASSING: BLINDFOLD_STORE_KEY set at PowerShell scope, no tray
+        // involved, reaches config.mapping_cipher=="local" through this same frozen blindfold-proxy.exe.
+        // The TWO-HOP smoke-launch-full assertion on that same run still fails with mapping_cipher=="none",
+        // with launchEnvironment confirmed to hold the key (keyWasInjected==true) and both the immediate
+        // and nested cmd.exe environment-propagation probes -- run through this identical launcher seam --
+        // reporting the entry "present". Together this closes off the two remaining generic hypotheses this
+        // diagnostic chain had been narrowing between: "this launcher's env delivery doesn't reach *any*
+        // child on this runner image" (refuted -- cmd.exe sees it) and "blindfold-proxy.exe's onefile
+        // re-exec generically drops ambient env" (refuted -- the ONE-HOP launch of the identical binary
+        // reads it fine). What remains unexplained is specific to the (this launcher/tray.exe as parent) x
+        // (blindfold-proxy.exe's actual *compiled* onefile bootloader, not its source, as child) combination
+        // -- exactly the one variable 76cf619 already named as unreachable by inspection or by this sandbox.
+        // No further sandbox-executable hypothesis is known at this point; settling this needs either real
+        // Windows hardware/Process Monitor telemetry, or a maintainer decision to route around it (see
+        // issue #197's own precedent: this codebase has hit an env-propagation-class puzzle in this exact
+        // area once before and it was never actually root-caused, only worked around).
         foreach (var (key, value) in environment) Environment.SetEnvironmentVariable(key, value);
 
         var startInfo = new ProcessStartInfo(exePath)

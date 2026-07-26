@@ -227,6 +227,20 @@ internal static class Program
                         // image* still delivers a freshly merged entry to a grandchild, independent of
                         // PyInstaller entirely. Presence-only report, same "never logged" AC as every
                         // diagnostic here.
+                        //
+                        // Update (issue #234, hosted run 30197335980, against bcaf20b): both probes below
+                        // keep reporting "present" on the newest run too, AND platform-verify.yml's ONE-HOP
+                        // (Store key) assertion -- launching this identical frozen binary directly from
+                        // PowerShell with no tray involved -- now passes (mapping_cipher=="local") on the
+                        // same run. That rules out the last generic hypothesis this diagnostic chain had
+                        // left standing: blindfold-proxy.exe's onefile re-exec does *not* generically drop
+                        // ambient env (the ONE-HOP launch of the same binary reads it fine). The gap is
+                        // therefore specific to this launcher/tray.exe as parent paired with
+                        // blindfold-proxy.exe's actual compiled bootloader as child -- not reproducible by
+                        // any hypothesis this sandbox can execute or any source this sandbox can read (see
+                        // RealProxyProcessLauncher.Launch's matching note). Real Windows hardware/Process
+                        // Monitor telemetry, or a maintainer routing decision, is the load-bearing next step
+                        // now, not another guess from here.
                         ProbeEnvironmentPropagation(launchEnvironment);
                         return 1;
                     }
