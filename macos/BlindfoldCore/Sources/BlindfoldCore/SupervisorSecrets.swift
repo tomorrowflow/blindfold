@@ -16,6 +16,12 @@ public struct SupervisorSecrets: Equatable, Sendable {
     /// `removeValue`d rather than left stale in the store.
     private static let allKeys = [l3ApiKeyKey, openBaoTokenKey]
 
+    /// Whether this settings surface owns `key` (issue #226's one-shot `.env` import needs
+    /// to route a secret key to the secret store without duplicating this field list).
+    public static func isKnownKey(_ key: String) -> Bool {
+        allKeys.contains(key)
+    }
+
     public var l3ApiKey: String
     public var openBaoToken: String
 

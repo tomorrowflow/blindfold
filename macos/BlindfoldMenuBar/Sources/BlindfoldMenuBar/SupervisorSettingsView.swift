@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import BlindfoldCore
 
 /// The native settings surface (issue #221, ADR-0044): edits the launch environment
@@ -9,6 +10,12 @@ import BlindfoldCore
 /// are all `BlindfoldCore` calls.
 struct SupervisorSettingsView: View {
     @ObservedObject var model: SupervisorSettingsViewModel
+    @State private var isChoosingDotEnvFile = false
+    /// The explicit, distinct confirmation issue #226 requires before
+    /// `BLINDFOLD_DATABASE_URL` is imported -- separate from previewing the rest of the
+    /// file, since importing it is a deliberate choice to move off ADR-0043's SQLite
+    /// default, never a side effect of importing L3 settings.
+    @State private var confirmDatabaseURLImport = false
 
     /// `L3ProviderSelection.explicit`'s payload encoded as `L3Provider?` (`nil` ==
     /// `.automatic`) purely so SwiftUI's `Picker` has a `Hashable` selection to bind --
@@ -68,6 +75,21 @@ struct SupervisorSettingsView: View {
             Button("Save") {
                 model.save()
             }
+
+            // Issue #226, ADR-0044's migration path for `set -a; . ./.env`: a one-time
+            // copy into the launch environment, never a re-read on later launches -- this
+            // button is the only place a `.env` path is ever touched.
+            Section("Import from .env") {
+                Button("Choose .env file…") {
+                    isChoosingDotEnvFile = true
+                }
+                if let error = model.dotEnvImportError {
+                    Text(error).foregroundStyle(.red)
+                }
+                if let plan = model.dotEnvImportPlan {
+                    dotEnvImportPreview(plan)
+                }
+            }
         }
         .padding()
         .alert("Restart Blindfold?", isPresented: $model.pendingRestartConfirmation) {
@@ -75,6 +97,42 @@ struct SupervisorSettingsView: View {
             Button("Cancel", role: .cancel) { model.cancelRestart() }
         } message: {
             Text(model.restartNotice)
+        }
+        .fileImporter(isPresented: $isChoosingDotEnvFile, allowedContentTypes: [.text, .item]) { result in
+            confirmDatabaseURLImport = false
+            if case let .success(fileURL) = result {
+                model.previewDotEnvImport(fileURL: fileURL)
+            }
+        }
+    }
+
+    /// The preview issue #226 requires ("show what will change before applying it"):
+    /// every recognized key with its destination, unknown/legacy keys called out
+    /// separately, and `BLINDFOLD_DATABASE_URL` gated behind its own checkbox rather than
+    /// folded into the rest of the import.
+    @ViewBuilder
+    private func dotEnvImportPreview(_ plan: DotEnvImportPlan) -> some View {
+        ForEach(plan.entries, id: \.key) { entry in
+            Text("\(entry.key): \(entry.previousValue ?? "(unset)") → \(entry.newValue)")
+        }
+        ForEach(plan.unknownKeys, id: \.self) { key in
+            Text("\(key) is not a recognized Blindfold key -- skipped").foregroundStyle(.orange)
+        }
+        ForEach(plan.legacyKeys, id: \.self) { key in
+            Text("\(key) is a legacy variable -- flagged, not imported").foregroundStyle(.orange)
+        }
+        if let databaseURLValue = plan.databaseURLValue {
+            Toggle("Also import BLINDFOLD_DATABASE_URL (\(databaseURLValue)) -- moves this install off the SQLite default", isOn: $confirmDatabaseURLImport)
+        }
+        HStack {
+            Button("Apply import") {
+                model.applyDotEnvImport(importDatabaseURL: confirmDatabaseURLImport)
+                confirmDatabaseURLImport = false
+            }
+            Button("Cancel", role: .cancel) {
+                model.cancelDotEnvImport()
+                confirmDatabaseURLImport = false
+            }
         }
     }
 }
