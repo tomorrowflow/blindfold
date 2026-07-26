@@ -82,6 +82,12 @@ struct SupervisorSettingsView: View {
             SecureField("L3 API key", text: $model.secrets.l3ApiKey)
             SecureField("OpenBao token", text: $model.secrets.openBaoToken)
 
+            // Configured/not configured only (issue #233, ADR-0045 §7) -- deliberately no
+            // reveal, copy or export affordance here, unlike the two SecureFields above:
+            // this key is supervisor-generated, never user-entered, and ADR-0045 §7
+            // rejected key escrow outright.
+            Text("Store key: \(model.storeKeyConfigured ? "configured" : "not configured")")
+
             // Advisory only (ADR-0044): never disables Save. The proxy's own startup
             // guards remain the authoritative gate -- this is early feedback on the
             // three locally-decidable rules, nothing more.
