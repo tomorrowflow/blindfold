@@ -74,9 +74,9 @@ public enum ProviderDiscovery {
 
     public static func discoverOmlx(apiKey: String, prober: ProviderProbing) async -> ProviderDiscoveryResult {
         let url = URL(string: "\(omlxBaseURL)/v1/models")!
+        let outcome: ProviderDiscoveryOutcome
         do {
             let response = try await prober.probe(url: url, headers: bearerAuthHeaders(apiKey), timeoutSeconds: probeTimeoutSeconds)
-            let outcome: ProviderDiscoveryOutcome
             switch response.statusCode {
             case 200:
                 outcome = .running(models: parseOmlxModels(response.body))
@@ -85,10 +85,10 @@ public enum ProviderDiscovery {
             default:
                 outcome = .notRunning
             }
-            return ProviderDiscoveryResult(provider: .omlx, baseURL: omlxBaseURL, outcome: outcome)
         } catch {
-            return ProviderDiscoveryResult(provider: .omlx, baseURL: omlxBaseURL, outcome: .notRunning)
+            outcome = .notRunning
         }
+        return ProviderDiscoveryResult(provider: .omlx, baseURL: omlxBaseURL, outcome: outcome)
     }
 
     private struct OmlxModelsResponse: Decodable {
