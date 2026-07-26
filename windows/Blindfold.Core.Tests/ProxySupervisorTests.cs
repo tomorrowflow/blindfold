@@ -176,6 +176,28 @@ public class StartupRefusalReasonTests
     }
 
     /// <summary>
+    /// Issue #238: the upgrade path every pre-#229/#230 install hits -- one named reason
+    /// covers all five ciphertext-only tables (persons/terms/person_variations/
+    /// term_variations/org_units), matching the shared golden vector
+    /// (fixtures/supervisor-golden-vectors.json's "populatedPlaintextStoreStderr...") and
+    /// the Swift ProxySupervisor.swift branch so the two cores can't drift.
+    /// </summary>
+    [Fact]
+    public void PopulatedPlaintextStoreStderrScrubsToItsKnownSafeReason()
+    {
+        var reason = StartupRefusalReason.Scrub(
+            "PopulatedPlaintextStoreError: refusing to start: the persons table at "
+            + "'/home/user/.local/share/blindfold/store/blindfold.sqlite3' contains rows "
+            + "under the old plaintext schema (ADR-0045 §6). No encrypt-in-place migration "
+            + "is provided -- remove the Store directory and re-run Setup to create a fresh "
+            + "ciphertext-only store.");
+
+        Assert.Equal(
+            "refusing to start: the store contains rows under an old plaintext schema (upgrade required)",
+            reason);
+    }
+
+    /// <summary>
     /// An unrecognized exit (a bare traceback, an OS-locale-dependent message) must never be
     /// echoed verbatim -- fail-closed to a generic reason rather than trusting raw stderr.
     /// </summary>

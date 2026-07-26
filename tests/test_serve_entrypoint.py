@@ -581,6 +581,163 @@ def test_refuse_if_undecryptable_store_message_carries_no_key_or_real_value(tmp_
 
 
 # ---------------------------------------------------------------------------
+# 1b. refuse_if_populated_plaintext_store — ADR-0045 §6 upgrade-path startup guard
+#     (issue #238): the same populated-plaintext-schema refusal
+#     ciphertext_migration.check_and_migrate_ciphertext_schema already raises during
+#     store construction, promoted to a named guard in the refuse_if_* family instead
+#     of an unhandled exception escaping from inside store construction.
+# ---------------------------------------------------------------------------
+
+
+def _write_legacy_plaintext_persons_store(tmp_path, *, canonical_name: str = "Alice Example"):
+    """A store built against the pre-#229 schema: persons.canonical_name is a plaintext
+    NOT NULL column, populated with one row -- exactly what every pre-#229/#230 install
+    has on disk (issue #238's own reproduction)."""
+    import sqlite3
+
+    db_file = tmp_path / "old_store.sqlite3"
+    con = sqlite3.connect(str(db_file))
+    con.execute("""
+        CREATE TABLE workspaces (
+            id   INTEGER PRIMARY KEY,
+            slug TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL
+        )
+    """)
+    con.execute("""
+        CREATE TABLE persons (
+            id             INTEGER PRIMARY KEY,
+            workspace_id   INTEGER NOT NULL REFERENCES workspaces(id),
+            canonical_name TEXT NOT NULL,
+            UNIQUE (workspace_id, canonical_name)
+        )
+    """)
+    con.execute("INSERT INTO workspaces (slug, name) VALUES ('ws', 'Workspace')")
+    con.execute(
+        "INSERT INTO persons (workspace_id, canonical_name) VALUES (1, ?)", (canonical_name,)
+    )
+    con.commit()
+    # A real install's store was itself created through blindfold.store.dialect.connect(),
+    # which sets journal_mode=WAL on first open (rewriting the file header once, issue
+    # #238's own byte-identical regression test needs this baseline pre-established --
+    # otherwise the guard's *own* connect() call would be the one flipping WAL on, and a
+    # naive before/after md5 comparison would blame the refusal for a header change that
+    # has nothing to do with it).
+    con.execute("PRAGMA journal_mode=WAL")
+    con.close()
+    return db_file
+
+
+def test_refuse_if_populated_plaintext_store_blocks_a_legacy_store_with_plaintext_rows(tmp_path):
+    from blindfold.serve import PopulatedPlaintextStoreError, refuse_if_populated_plaintext_store
+
+    db_file = _write_legacy_plaintext_persons_store(tmp_path)
+    settings = Settings(database_url=f"sqlite:///{db_file}")
+
+    with pytest.raises(PopulatedPlaintextStoreError):
+        refuse_if_populated_plaintext_store(settings)
+
+
+def test_refuse_if_populated_plaintext_store_is_a_noop_with_an_entity_graph_override(tmp_path):
+    from blindfold.serve import refuse_if_populated_plaintext_store
+
+    db_file = _write_legacy_plaintext_persons_store(tmp_path)
+    settings = Settings(database_url=f"sqlite:///{db_file}")
+    override = EntityGraph()
+
+    # An override stands in for the real store (same seam run_server honors elsewhere)
+    # -- the populated legacy store on disk is never even opened, let alone refused.
+    result = refuse_if_populated_plaintext_store(settings, entity_graph=override)
+    assert result is override
+
+
+def test_refuse_if_populated_plaintext_store_is_a_noop_with_a_fresh_schema_store(tmp_path):
+    from blindfold.mapping_cipher import LocalKeyCipher
+    from blindfold.serve import refuse_if_populated_plaintext_store
+
+    dsn = f"sqlite:///{tmp_path / 'store.sqlite3'}"
+    settings = Settings(store_key=_make_store_key_b64(), database_url=dsn)
+
+    refuse_if_populated_plaintext_store(settings)  # must not raise -- new schema, no legacy column
+
+
+def test_refuse_if_populated_plaintext_store_names_the_store_directory_and_a_remedy(tmp_path):
+    from blindfold.serve import PopulatedPlaintextStoreError, refuse_if_populated_plaintext_store
+
+    db_file = _write_legacy_plaintext_persons_store(tmp_path)
+    settings = Settings(database_url=f"sqlite:///{db_file}")
+
+    with pytest.raises(PopulatedPlaintextStoreError) as exc_info:
+        refuse_if_populated_plaintext_store(settings)
+    message = str(exc_info.value)
+    assert str(db_file) in message
+    assert "re-run Setup" in message
+
+
+def test_refuse_if_populated_plaintext_store_message_carries_no_real_value(tmp_path):
+    from blindfold.serve import PopulatedPlaintextStoreError, refuse_if_populated_plaintext_store
+
+    real_name = "Alice Example"
+    db_file = _write_legacy_plaintext_persons_store(tmp_path, canonical_name=real_name)
+    settings = Settings(database_url=f"sqlite:///{db_file}")
+
+    with pytest.raises(PopulatedPlaintextStoreError) as exc_info:
+        refuse_if_populated_plaintext_store(settings)
+    assert real_name not in str(exc_info.value)
+
+
+def test_refuse_if_populated_plaintext_store_leaves_the_store_byte_identical(tmp_path):
+    """AC "regression test: the refusal leaves the store byte-identical" -- a refused
+    startup must never mutate the on-disk file, unlike the empty-table case which
+    performs a real rename/create/drop rebuild.
+
+    Starts from a fully modern (all-tables-migrated) store -- so apply_sqlite_migrations'
+    own idempotent CREATE TABLE IF NOT EXISTS / ADD COLUMN IF NOT EXISTS statements are
+    all no-ops on reopen -- and downgrades only ``persons`` to the old plaintext schema
+    by hand, isolating the persons-check's own refusal path (issue #238's own
+    reproduction) as the one thing under test.
+    """
+    import hashlib
+    import sqlite3
+
+    from blindfold.mapping_cipher import LocalKeyCipher
+    from blindfold.serve import PopulatedPlaintextStoreError, refuse_if_populated_plaintext_store
+    from blindfold.store.entity_graph_store import PostgresEntityGraphStore
+
+    dsn = f"sqlite:///{tmp_path / 'store.sqlite3'}"
+    PostgresEntityGraphStore(dsn, mapping_cipher=LocalKeyCipher(_make_store_key_b64()))
+
+    con = sqlite3.connect(str(tmp_path / "store.sqlite3"))
+    con.execute("PRAGMA foreign_keys=OFF")
+    con.execute("PRAGMA legacy_alter_table=ON")
+    con.execute("ALTER TABLE persons RENAME TO _persons_new")
+    con.execute("""
+        CREATE TABLE persons (
+            id             INTEGER PRIMARY KEY,
+            workspace_id   INTEGER NOT NULL REFERENCES workspaces(id),
+            canonical_name TEXT NOT NULL,
+            UNIQUE (workspace_id, canonical_name)
+        )
+    """)
+    con.execute("INSERT INTO persons (workspace_id, canonical_name) VALUES (1, 'Alice Example')")
+    con.execute("DROP TABLE _persons_new")
+    con.execute("PRAGMA legacy_alter_table=OFF")
+    con.execute("PRAGMA foreign_keys=ON")
+    con.commit()
+    con.close()
+
+    db_file = tmp_path / "store.sqlite3"
+    before = hashlib.md5(db_file.read_bytes()).hexdigest()
+
+    settings = Settings(database_url=dsn)
+    with pytest.raises(PopulatedPlaintextStoreError):
+        refuse_if_populated_plaintext_store(settings)
+
+    after = hashlib.md5(db_file.read_bytes()).hexdigest()
+    assert after == before
+
+
+# ---------------------------------------------------------------------------
 # 2. run_server — wires the guard + the bundled ASGI server (SEC-11 loopback default)
 # ---------------------------------------------------------------------------
 
@@ -689,6 +846,26 @@ def test_run_server_refuses_an_undecryptable_store_before_starting_the_asgi_serv
     calls = []
 
     with pytest.raises(UndecryptableStoreError):
+        run_server(
+            settings=settings,
+            runner=lambda app, **kwargs: calls.append((app, kwargs)),
+        )
+
+    assert calls == []
+
+
+def test_run_server_refuses_a_populated_plaintext_store_before_starting_the_asgi_server(tmp_path):
+    # ADR-0045 §6, issue #238: the upgrade path every pre-#229/#230 install hits --
+    # promoted to a named guard so it joins the same clean-refusal contract as the
+    # rest of the ADR-0045 startup guards, rather than an unhandled exception from
+    # inside store construction.
+    from blindfold.serve import PopulatedPlaintextStoreError
+
+    db_file = _write_legacy_plaintext_persons_store(tmp_path)
+    settings = Settings(database_url=f"sqlite:///{db_file}")
+    calls = []
+
+    with pytest.raises(PopulatedPlaintextStoreError):
         run_server(
             settings=settings,
             runner=lambda app, **kwargs: calls.append((app, kwargs)),

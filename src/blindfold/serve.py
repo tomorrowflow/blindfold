@@ -127,6 +127,22 @@ class UndecryptableStoreError(RuntimeError):
     """
 
 
+class PopulatedPlaintextStoreError(RuntimeError):
+    """Raised when a ciphertext-only table already holds rows under its old plaintext
+    schema (ADR-0045 §6) -- the refusal every pre-#229/#230 install's Store hits on
+    upgrade (issue #238).
+
+    The underlying check
+    (:func:`~blindfold.store.ciphertext_migration.check_and_migrate_ciphertext_schema`)
+    already runs during store construction and already raises a scrubbed, actionable
+    message naming the Store directory plus the remedy -- this class only gives that
+    refusal a name in the ``refuse_if_*`` guard family (and the shared
+    ``fixtures/supervisor-golden-vectors.json`` vocabulary) instead of letting it escape
+    as an unhandled exception from inside store construction. Message text passes
+    through verbatim; never carries a real value.
+    """
+
+
 class LegacyEnvVarError(RuntimeError):
     """Raised when a pre-ADR-0031 ``BLINDFOLD_OLLAMA_*`` env var is still set.
 
@@ -314,6 +330,43 @@ def refuse_if_undecryptable_store(
             ) from exc
 
 
+def refuse_if_populated_plaintext_store(
+    settings: Settings | None = None,
+    *,
+    entity_graph: EntityGraph | None = None,
+) -> EntityGraph:
+    """Fail fast (ADR-0045 §6) if any ciphertext-only table already holds rows under
+    its old plaintext schema -- the refusal every pre-#229/#230 install's Store hits
+    on upgrade (issue #238).
+
+    A no-op returning the override with an ``entity_graph`` supplied (the same
+    test/embedding seam the other guards honor -- nothing on disk to check). Otherwise
+    constructs the real backend-dispatched store
+    (:func:`_entity_graph_for_startup_check`), whose construction already runs
+    :func:`~blindfold.store.ciphertext_migration.check_and_migrate_ciphertext_schema`
+    against all five ciphertext-only tables (persons, terms, person_variations,
+    term_variations, org_units) and already raises a scrubbed, actionable
+    :class:`~blindfold.store.ciphertext_migration.PopulatedPlaintextColumnError` naming
+    the Store directory plus the remedy when any of them is populated under the old
+    schema. This guard's only job is to catch that and re-raise it as
+    :class:`PopulatedPlaintextStoreError`, joining the same clean-refusal contract as
+    the rest of the ``refuse_if_*`` family instead of letting it escape as an
+    unhandled exception from inside store construction. Returns the constructed store
+    so :func:`run_server` doesn't need to construct it a second time for its own
+    empty-store check.
+    """
+    if entity_graph is not None:
+        return entity_graph
+    settings = settings or get_settings()
+
+    from .store.ciphertext_migration import PopulatedPlaintextColumnError
+
+    try:
+        return _entity_graph_for_startup_check(settings)
+    except PopulatedPlaintextColumnError as exc:
+        raise PopulatedPlaintextStoreError(str(exc)) from exc
+
+
 def _is_loopback_base_url(base_url: str) -> bool:
     hostname = urlparse(base_url).hostname or ""
     if hostname.lower() == "localhost":
@@ -415,11 +468,12 @@ def run_server(
     opt-in via ``host``. Runs the ADR-0031 legacy-env-var guard, the SEC-2 root-token
     guard, the ADR-0045 §4 ambiguous-mapping-cipher guard, the ADR-0045 §3
     malformed-Store-key guard, the ADR-0045 §6 undecryptable-store guard, the
-    ADR-0022 local-only-L3 guard (Ollama's ``:cloud`` tag), the ADR-0031 §3
-    local-only-L3 guard (oMLX's loopback-only base url), and the ADR-0033 §2
-    local-only-L3 guard (GLiNER's readable-model-file check) before starting the
-    server so a misconfigured deploy never has the ASGI server accept traffic in
-    the first place.
+    ADR-0045 §6 populated-plaintext-store guard (issue #238 -- the upgrade path every
+    pre-#229/#230 install hits), the ADR-0022 local-only-L3 guard (Ollama's ``:cloud``
+    tag), the ADR-0031 §3 local-only-L3 guard (oMLX's loopback-only base url), and the
+    ADR-0033 §2 local-only-L3 guard (GLiNER's readable-model-file check) before
+    starting the server so a misconfigured deploy never has the ASGI server accept
+    traffic in the first place.
     """
     refuse_if_legacy_l3_env_vars()
     settings = settings or get_settings()
@@ -427,6 +481,11 @@ def run_server(
     refuse_if_ambiguous_mapping_cipher(settings)
     refuse_if_malformed_store_key(settings)
     refuse_if_undecryptable_store(settings, entity_graph=entity_graph)
+    # Reused below for the empty-store detection: refuse_if_populated_plaintext_store
+    # already constructs the backend-dispatched store as part of its own check, so
+    # run_server doesn't pay for a second construction (and a second migration pass)
+    # just to answer "is the store empty?".
+    store = refuse_if_populated_plaintext_store(settings, entity_graph=entity_graph)
     refuse_if_cloud_model(settings)
     refuse_if_omlx_non_loopback(settings)
     refuse_if_gliner_model_missing(settings)
@@ -442,7 +501,6 @@ def run_server(
     # Empty-store detection (issue #106, Setup slice 3/5): points a first-run
     # operator at Setup, or otherwise names the management UI -- either way the
     # line carries only a URL, never entity values or other sensitive data.
-    store = entity_graph if entity_graph is not None else _entity_graph_for_startup_check(settings)
     if store.is_empty():
         url = _console_management_url("/ui/setup", settings)
         logger.info("blindfold: first run — no workspace yet. Open %s to finish setup.", url)
