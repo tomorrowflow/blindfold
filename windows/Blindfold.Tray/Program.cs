@@ -204,19 +204,29 @@ internal static class Program
                                   + "RefuseUndecryptableStore: no key held but a persistent store already exists "
                                   + "at the default path)."));
 
-                        // A prior hosted run (issue #234) confirmed keyWasInjected == true here, narrowing
-                        // the gap to "environment propagation to the child, or the child not reading it" --
-                        // but config.get_settings()'s BLINDFOLD_STORE_KEY read is a plain os.environ.get with
-                        // no other gate (checked by inspection), so a present-but-unread env var isn't
-                        // possible on the Python side; the child's os.environ must genuinely lack the entry.
-                        // That leaves ProcessStartInfo.Environment -> CreateProcess's own delivery to this
-                        // specific child unconfirmed: blindfold-proxy.exe is a frozen PyInstaller onefile
-                        // binary, whose bootloader may re-exec itself as a second process before Python ever
-                        // runs (a mechanism this launcher never has to account for otherwise). Probing with a
-                        // plain cmd.exe child through the exact same IProxyProcessLauncher seam disambiguates
-                        // "ProcessStartInfo.Environment doesn't reach any child on this runner image" from
-                        // "it's specific to the frozen onefile child's own re-exec" -- without guessing at a
-                        // fix for either. Presence-only report, same "never logged" AC as every diagnostic here.
+                        // A prior hosted run (issue #234, run 30193073606) confirmed keyWasInjected == true
+                        // here AND that the cmd.exe probe below reports the entry "present" to an immediate
+                        // child through this exact launcher seam -- ruling out "ProcessStartInfo.Environment
+                        // doesn't reach any child on this runner image" as the cause. That, plus
+                        // config.get_settings()'s BLINDFOLD_STORE_KEY read being a plain os.environ.get with
+                        // no other gate (checked by inspection, so a present-but-unread env var isn't possible
+                        // Python-side), narrowed suspicion onto blindfold-proxy.exe's PyInstaller onefile
+                        // bootloader re-exec specifically. Reading that bootloader's actual v6.21.0 source
+                        // (the pinned freeze-group version -- github.com/pyinstaller/pyinstaller/blob/v6.21.0/
+                        // bootloader/src/pyi_utils_win32.c) argues against that too: its onefile child spawn
+                        // calls CreateProcessW(..., lpEnvironment: NULL, ...) -- a plain "inherit everything"
+                        // re-exec, no filtering or rebuilding of the block. ProcessEnvironmentPropagationTests'
+                        // new nested-shell test (Blindfold.Core.Tests, this cycle) confirms on this Linux
+                        // sandbox that a freshly merged entry *does* survive an equivalent two-hop chain (an
+                        // outer shell re-execing an independent inner shell) via plain .NET Process --
+                        // together, neither of the two hypotheses this diagnostic was built to distinguish now
+                        // has supporting evidence. ProbeEnvironmentPropagation below is extended with a nested
+                        // cmd.exe probe (the Windows analog of the new grandchild test) to check the one
+                        // variant those two pieces of evidence don't cover: whether a nested spawn
+                        // specifically through Win32 CreateProcess (not POSIX fork/exec) on *this runner
+                        // image* still delivers a freshly merged entry to a grandchild, independent of
+                        // PyInstaller entirely. Presence-only report, same "never logged" AC as every
+                        // diagnostic here.
                         ProbeEnvironmentPropagation(launchEnvironment);
                         return 1;
                     }
@@ -248,12 +258,15 @@ internal static class Program
     /// above (issue #234): launches a plain <c>cmd.exe</c> through the exact same
     /// <see cref="IProxyProcessLauncher"/> seam <see cref="RunSmokeLaunchFull"/> uses for the real
     /// proxy, with the identical launch environment, and asks it to report (never print)
-    /// whether it can see <c>BLINDFOLD_STORE_KEY</c>. "present" narrows the gap to something
-    /// specific to the frozen PyInstaller onefile child (its bootloader may re-exec itself as a
-    /// second process before Python ever runs); "absent" points at
-    /// <c>ProcessStartInfo.Environment</c>/<c>CreateProcess</c> delivery itself on this runner
-    /// image, for *any* child launched this way -- either way, real evidence for the next
-    /// iteration instead of another guess.
+    /// whether it can see <c>BLINDFOLD_STORE_KEY</c>. Then runs
+    /// <see cref="ProbeNestedEnvironmentPropagation"/> the same way, one hop deeper. "present" at
+    /// the immediate-child level narrows the gap away from ".NET's launch-environment merge
+    /// doesn't reach any child on this runner image" (confirmed by run 30193073606); "present" at
+    /// the nested level would further narrow it away from "no Win32 CreateProcess chain on this
+    /// runner image delivers a freshly merged entry past one hop", leaving PyInstaller's own
+    /// compiled bootloader -- unreachable by inspection or by this sandbox (its source shows a
+    /// plain inheriting re-exec, but the compiled binary on this exact runner is the only thing
+    /// that can actually confirm it) -- as the last unruled-out candidate.
     /// </summary>
     private static void ProbeEnvironmentPropagation(IReadOnlyDictionary<string, string> launchEnvironment)
     {
@@ -272,5 +285,44 @@ internal static class Program
             ? "--smoke-launch-full: environment-propagation probe (cmd.exe, same launch seam) reports "
               + $"BLINDFOLD_STORE_KEY is \"{probe.StandardErrorText.Trim()}\" to a plain child process."
             : "--smoke-launch-full: environment-propagation probe (cmd.exe) never exited within 5s -- inconclusive.");
+
+        ProbeNestedEnvironmentPropagation(launchEnvironment);
+    }
+
+    /// <summary>
+    /// The nested-spawn counterpart to <see cref="ProbeEnvironmentPropagation"/> (issue #234,
+    /// continuing past e716552): launches an outer <c>cmd.exe</c> through the exact same launcher
+    /// seam, which itself launches an independent inner <c>cmd.exe</c> (its own child, not handed
+    /// the environment dictionary directly by this launcher) to report presence -- the Win32
+    /// <c>CreateProcess</c> analog of <c>ProcessEnvironmentPropagationTests
+    /// .FreshlyMergedEnvironmentEntryReachesAGrandchildProcess</c> (Blindfold.Core.Tests, this
+    /// cycle), which confirms the equivalent POSIX fork/exec chain preserves a freshly merged
+    /// entry on this Linux sandbox. Distinguishes "no nested Win32 CreateProcess chain on this
+    /// runner image delivers a freshly merged entry past one hop" (a generic, non-PyInstaller-
+    /// specific finding) from "it's specific to blindfold-proxy.exe's own compiled bootloader" --
+    /// without guessing at a fix for either. Presence-only report, never the value.
+    /// </summary>
+    private static void ProbeNestedEnvironmentPropagation(IReadOnlyDictionary<string, string> launchEnvironment)
+    {
+        var probe = new RealProxyProcessLauncher().Launch(
+            "cmd.exe",
+            new[]
+            {
+                "/c",
+                "cmd.exe /c if defined BLINDFOLD_STORE_KEY (echo present 1>&2) else (echo absent 1>&2)",
+            },
+            launchEnvironment);
+
+        var deadline = DateTime.UtcNow.AddSeconds(5);
+        while (!probe.HasExited && DateTime.UtcNow < deadline)
+        {
+            Thread.Sleep(100);
+        }
+
+        Console.Error.WriteLine(probe.HasExited
+            ? "--smoke-launch-full: nested environment-propagation probe (cmd.exe spawning cmd.exe, "
+              + $"same launch seam) reports BLINDFOLD_STORE_KEY is \"{probe.StandardErrorText.Trim()}\" "
+              + "to a grandchild process."
+            : "--smoke-launch-full: nested environment-propagation probe never exited within 5s -- inconclusive.");
     }
 }

@@ -51,4 +51,51 @@ public class ProcessEnvironmentPropagationTests
         Assert.Equal(0, process.ExitCode);
         Assert.Equal("a-generated-key", stdout);
     }
+
+    /// <summary>
+    /// Extends the above by one more hop (issue #234, continuing past e716552): the hosted
+    /// windows-latest gate's own TWO-HOP failure is a *nested* spawn -- .NET (Blindfold.Tray)
+    /// spawns blindfold-proxy.exe, whose PyInstaller onefile bootloader (per its actual v6.21.0
+    /// source, read directly from the pinned dependency at
+    /// github.com/pyinstaller/pyinstaller/blob/v6.21.0/bootloader/src/pyi_utils_win32.c)
+    /// re-execs itself as a second process via <c>CreateProcessW(..., lpEnvironment: NULL, ...)</c>
+    /// -- i.e. a plain "inherit everything" re-exec, no filtering or rebuilding of the environment
+    /// block, the same mechanism proven to deliver a freshly merged entry in the single-hop test
+    /// above. That source reading, plus the hosted run's own <c>cmd.exe</c> probe
+    /// (<c>ProbeEnvironmentPropagation</c>, 6342427) reporting the entry "present" to an immediate
+    /// child, together argue *against* "the onefile child re-exec drops the entry" as a mechanism
+    /// -- but neither is a nested-spawn test. This one is: it recreates a two-hop chain with the
+    /// exact same merge-onto-inherited-copy pattern, entirely with plain shells, to check whether
+    /// a *grandchild* (not just an immediate child) still sees a freshly merged entry when the
+    /// intermediate hop does its own independent re-exec/inheritance rather than being handed the
+    /// dictionary directly. Passing narrows the remaining gap further: away from "any nested
+    /// CreateProcess-equivalent chain loses a freshly merged entry" (a generic, non-PyInstaller-
+    /// specific mechanism this test would have caught) and back onto something genuinely specific
+    /// to Windows/this runner image/PyInstaller's compiled bootloader that this sandbox has no way
+    /// to execute.
+    /// </summary>
+    [Fact]
+    public void FreshlyMergedEnvironmentEntryReachesAGrandchildProcess()
+    {
+        var startInfo = new ProcessStartInfo("/bin/sh")
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            CreateNoWindow = true,
+        };
+        startInfo.ArgumentList.Add("-c");
+        // The outer shell re-execs a second, independent shell (its own child, not handed the
+        // environment dictionary directly) to print the value -- a genuine two-hop chain.
+        startInfo.ArgumentList.Add("/bin/sh -c 'printf \"%s\" \"$BLINDFOLD_STORE_KEY\"'");
+
+        startInfo.Environment["BLINDFOLD_STORE_KEY"] = "a-generated-key";
+
+        using var process = Process.Start(startInfo);
+        Assert.NotNull(process);
+        var stdout = process!.StandardOutput.ReadToEnd();
+        process.WaitForExit();
+
+        Assert.Equal(0, process.ExitCode);
+        Assert.Equal("a-generated-key", stdout);
+    }
 }
