@@ -200,6 +200,11 @@
       "expected_reason": "refusing to start: the store cannot be decrypted with the configured cipher"
     },
     {
+      "name": "populatedPlaintextStoreStderrScrubsToItsKnownSafeReason",
+      "raw_stderr": "PopulatedPlaintextStoreError: refusing to start: the persons table at '/home/user/.local/share/blindfold/store/blindfold.sqlite3' contains rows under the old plaintext schema (ADR-0045 §6). No encrypt-in-place migration is provided -- remove the Store directory and re-run Setup to create a fresh ciphertext-only store.",
+      "expected_reason": "refusing to start: the store contains rows under an old plaintext schema (upgrade required)"
+    },
+    {
       "name": "unrecognizedStderrScrubsToTheGenericReasonNeverASubstringOfTheRawText",
       "raw_stderr": "Traceback (most recent call last): File \"unexpected.py\", line 1, in <module>",
       "expected_reason": "startup failed"

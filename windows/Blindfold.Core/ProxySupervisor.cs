@@ -57,6 +57,16 @@ public static class StartupRefusalReason
             return "port in use";
         }
 
+        // Issue #238: the upgrade path every pre-#229/#230 install hits -- one named
+        // reason covers all five ciphertext-only tables (persons/terms/person_variations/
+        // term_variations/org_units), matching ciphertext_migration.py's own choice to
+        // raise the same phrasing ("old plaintext schema") for whichever table tripped
+        // it, and the Swift ProxySupervisor.swift branch so the two cores can't drift.
+        if (rawStandardErrorText.Contains("old plaintext schema", StringComparison.OrdinalIgnoreCase))
+        {
+            return "refusing to start: the store contains rows under an old plaintext schema (upgrade required)";
+        }
+
         return "startup failed";
     }
 }

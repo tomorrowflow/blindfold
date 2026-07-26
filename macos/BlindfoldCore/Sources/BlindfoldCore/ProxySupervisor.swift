@@ -80,6 +80,13 @@ public enum StartupRefusalReason {
         if lowered.contains("cannot be decrypted with the configured cipher") {
             return "refusing to start: the store cannot be decrypted with the configured cipher"
         }
+        // Issue #238: the upgrade path every pre-#229/#230 install hits -- one named
+        // reason covers all five ciphertext-only tables (persons/terms/person_variations/
+        // term_variations/org_units), matching ciphertext_migration.py's own choice to
+        // raise the same phrasing ("old plaintext schema") for whichever table tripped it.
+        if lowered.contains("old plaintext schema") {
+            return "refusing to start: the store contains rows under an old plaintext schema (upgrade required)"
+        }
         return genericReason
     }
 }
