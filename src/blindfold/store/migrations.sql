@@ -8,12 +8,16 @@
 --
 -- Leak-audit clause G:
 --   * persons.canonical_name_ciphertext / canonical_name_blind_index: ASSERTED
---     (issue #229, ADR-0045 §5) -- persons are ciphertext-only as of this slice;
---     the legacy plaintext canonical_name column has been removed from the schema.
---   * terms.canonical_name, variation value columns: N/A THIS SLICE -- these
---     remain plaintext per ADR-0045's "tracer then extend" deferral; their
---     ciphertext migration is a follow-up slice.
---   * org_units.name: N/A THIS SLICE, same deferral.
+--     (issue #229, ADR-0045 §5) -- persons are ciphertext-only.
+--   * terms.canonical_name_ciphertext / canonical_name_blind_index,
+--     person_variations.value_ciphertext / value_blind_index,
+--     term_variations.value_ciphertext / value_blind_index: ASSERTED (issue #230,
+--     ADR-0045 §5) -- ciphertext-only, extending the persons tracer.
+--   * org_units.name_ciphertext / name_blind_index: ASSERTED (issue #230) -- ADR-0008's
+--     migration block missed org_units entirely; this slice creates the columns (not a
+--     conversion) and moves the name-lookup + role-assignment hydrate onto the blind
+--     index, which is load-bearing here (not merely available) since the store performs
+--     an equality lookup by name when resolving/upserting org units.
 
 -- The unit of team access (RBAC), disambiguation context, and audit scope (ADR-0007).
 CREATE TABLE IF NOT EXISTS workspaces (
@@ -27,7 +31,7 @@ CREATE TABLE IF NOT EXISTS workspaces (
 -- equality lookups without decrypting.  The UNIQUE constraint moves to the blind
 -- index so idempotent upsert (deterministic HMAC, same input -> same index) is
 -- preserved.  The legacy plaintext canonical_name column was removed; a store
--- built against the old schema is refused at startup by persons_migration.py
+-- built against the old schema is refused at startup by ciphertext_migration.py
 -- (populated rows) or migrated silently (zero rows) -- see ADR-0045 §6.
 CREATE TABLE IF NOT EXISTS persons (
     id                         SERIAL PRIMARY KEY,
@@ -38,20 +42,27 @@ CREATE TABLE IF NOT EXISTS persons (
 );
 
 -- Coreference variations ("Martin", "Bach", ...) of a person (ADR-0004).
+-- Ciphertext-only (ADR-0045 §5, issue #230): value is mapping-cipher ciphertext; the
+-- blind index enables equality lookups and carries the UNIQUE constraint.
 CREATE TABLE IF NOT EXISTS person_variations (
-    id        SERIAL PRIMARY KEY,
-    person_id INTEGER NOT NULL REFERENCES persons (id) ON DELETE CASCADE,
-    value     TEXT NOT NULL,
-    UNIQUE (person_id, value)
+    id                SERIAL PRIMARY KEY,
+    person_id         INTEGER NOT NULL REFERENCES persons (id) ON DELETE CASCADE,
+    value_ciphertext  TEXT NOT NULL,
+    value_blind_index TEXT NOT NULL,
+    UNIQUE (person_id, value_blind_index)
 );
 
--- Org hierarchy: self-referential parent_id (ADR-0004).
+-- Org hierarchy: self-referential parent_id (ADR-0004). Ciphertext-only (issue #230,
+-- ADR-0008's missed table): name is mapping-cipher ciphertext; the blind index enables
+-- equality lookups and carries the UNIQUE constraint -- load-bearing here, since org-unit
+-- resolution/upsert and the role-assignment hydrate look org units up by name.
 CREATE TABLE IF NOT EXISTS org_units (
-    id           SERIAL PRIMARY KEY,
-    workspace_id INTEGER NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
-    name         TEXT NOT NULL,
-    parent_id    INTEGER REFERENCES org_units (id) ON DELETE SET NULL,
-    UNIQUE (workspace_id, name)
+    id               SERIAL PRIMARY KEY,
+    workspace_id     INTEGER NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
+    name_ciphertext  TEXT NOT NULL,
+    name_blind_index TEXT NOT NULL,
+    parent_id        INTEGER REFERENCES org_units (id) ON DELETE SET NULL,
+    UNIQUE (workspace_id, name_blind_index)
 );
 
 -- Generic relationship edges between any two referents (person/term/org_unit).
@@ -76,19 +87,23 @@ CREATE TABLE IF NOT EXISTS role_assignments (
 );
 
 -- Canonical non-person term referents (project names, codewords, ...).
+-- Ciphertext-only (ADR-0045 §5, issue #230), mirroring persons (issue #229).
 CREATE TABLE IF NOT EXISTS terms (
-    id             SERIAL PRIMARY KEY,
-    workspace_id   INTEGER NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
-    canonical_name TEXT NOT NULL,
-    UNIQUE (workspace_id, canonical_name)
+    id                         SERIAL PRIMARY KEY,
+    workspace_id               INTEGER NOT NULL REFERENCES workspaces (id) ON DELETE CASCADE,
+    canonical_name_ciphertext  TEXT NOT NULL,
+    canonical_name_blind_index TEXT NOT NULL,
+    UNIQUE (workspace_id, canonical_name_blind_index)
 );
 
--- Coreference variations of a term.
+-- Coreference variations of a term. Ciphertext-only (issue #230), mirroring
+-- person_variations.
 CREATE TABLE IF NOT EXISTS term_variations (
-    id      SERIAL PRIMARY KEY,
-    term_id INTEGER NOT NULL REFERENCES terms (id) ON DELETE CASCADE,
-    value   TEXT NOT NULL,
-    UNIQUE (term_id, value)
+    id                SERIAL PRIMARY KEY,
+    term_id           INTEGER NOT NULL REFERENCES terms (id) ON DELETE CASCADE,
+    value_ciphertext  TEXT NOT NULL,
+    value_blind_index TEXT NOT NULL,
+    UNIQUE (term_id, value_blind_index)
 );
 
 -- Surrogate registry: exactly ONE canonical surrogate per real referent, per workspace
@@ -119,20 +134,6 @@ CREATE TABLE IF NOT EXISTS retired_surrogates (
     surrogate     TEXT NOT NULL,
     UNIQUE (workspace_id, referent_kind, referent_id, surrogate)
 );
-
--- Mapping-cipher ciphertext + blind-index columns for non-person real-value
--- columns (ADR-0008 / issue #10, extended by ADR-0045 §5 / issue #229).
--- persons.canonical_name_{ciphertext,blind_index} are now part of the CREATE
--- TABLE above (NOT NULL, no plaintext fallback).  The variation-value and term
--- columns below remain nullable additive columns for the deferred follow-up slice.
-ALTER TABLE person_variations ADD COLUMN IF NOT EXISTS value_ciphertext TEXT;
-ALTER TABLE person_variations ADD COLUMN IF NOT EXISTS value_blind_index TEXT;
-
-ALTER TABLE terms ADD COLUMN IF NOT EXISTS canonical_name_ciphertext TEXT;
-ALTER TABLE terms ADD COLUMN IF NOT EXISTS canonical_name_blind_index TEXT;
-
-ALTER TABLE term_variations ADD COLUMN IF NOT EXISTS value_ciphertext TEXT;
-ALTER TABLE term_variations ADD COLUMN IF NOT EXISTS value_blind_index TEXT;
 
 -- RBAC role grants (ADR-0028, issue #105 / Setup slice 2/5): per-identity,
 -- per-workspace role assignments, persisted so RbacRegistry.grant() survives a

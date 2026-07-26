@@ -6,10 +6,10 @@ test_entity_graph_postgres.py. Docker-gated; skip when Docker unavailable.
 
 Leak-audit clauses:
 - A/B/C/D/E — N/A: no proxy request path touched.
-- G (mapping secrecy) — ASSERTED for the persons kind (issue #229, ADR-0045 §5):
-  canonical names are stored as mapping-cipher ciphertext (a LocalKeyCipher stub here,
-  since this file only needs a working cipher, not Transit specifically -- the seam is
-  the point). Terms remain plaintext (deferred follow-up slice).
+- G (mapping secrecy) — ASSERTED for the persons AND terms kinds (issue #229/#230,
+  ADR-0045 §5): canonical names are stored as mapping-cipher ciphertext (a
+  LocalKeyCipher stub here, since this file only needs a working cipher, not Transit
+  specifically -- the seam is the point).
 - F (fail-closed/access control) — unaffected: _require_role gates are untouched.
 - Verify: no canonical_name value is written to a log line or error response.
 

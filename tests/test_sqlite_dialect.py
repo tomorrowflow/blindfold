@@ -63,9 +63,11 @@ def test_sqlite_on_delete_cascade_removes_dependent_rows(tmp_path):
             "SELECT id FROM persons WHERE canonical_name_blind_index = %s",
             ("bf:v1:dummy_blind_index_for_alice",),
         ).fetchone()[0]
+        # Schema as of issue #230: person_variations has ciphertext-only columns too.
         conn.execute(
-            "INSERT INTO person_variations (person_id, value) VALUES (%s, %s)",
-            (person_id, "Al"),
+            "INSERT INTO person_variations (person_id, value_ciphertext, value_blind_index) "
+            "VALUES (%s, %s, %s)",
+            (person_id, "bf:v1:dummy_ciphertext_for_al", "bf:v1:dummy_blind_index_for_al"),
         )
         conn.commit()
 

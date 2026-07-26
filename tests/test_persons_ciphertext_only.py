@@ -1,7 +1,8 @@
 """Persons ciphertext-only columns tracer (issue #229, ADR-0045 §5/§6).
 
-Scope: persons only. Terms, org_units, and variation value columns remain
-plaintext (deferred follow-up slice per ADR-0045's "tracer then extend" framing).
+Scope: persons only, the tracer bullet ADR-0045's "tracer then extend" framing named.
+Terms, org_units, and both variation value columns are extended to ciphertext-only by
+issue #230 -- see test_ciphertext_only_extended.py.
 
 Leak-audit clause analysis:
 - G (mapping secrecy): asserted in T3 -- no real person name appears anywhere in
@@ -156,7 +157,7 @@ def test_refuse_migration_when_persons_table_has_plaintext_rows(tmp_path):
     import sqlite3
 
     from blindfold.mapping_cipher import LocalKeyCipher
-    from blindfold.store.persons_migration import PopulatedPlaintextPersonsError
+    from blindfold.store.ciphertext_migration import PopulatedPlaintextPersonsError
 
     # Build an old-schema SQLite file manually.
     db_file = tmp_path / "old_store.sqlite3"
@@ -253,15 +254,17 @@ def test_empty_old_schema_persons_table_migrates_idempotently(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# T6 -- AC6: with no mapping cipher configured, persons are in-memory and
-# ephemeral (never plaintext on disk), while terms still persist normally.
+# T6 -- AC6: with no mapping cipher configured, persons AND terms are in-memory
+# and ephemeral (never plaintext on disk). Extended by issue #230: terms are
+# ciphertext-only now too, so they can no longer persist without a cipher either
+# -- both kinds share the same entities_fallback graph.
 # ---------------------------------------------------------------------------
 
 
 def test_persons_ephemeral_when_no_mapping_cipher(tmp_path):
-    """With no cipher, persons never reach the SQLite file (no cipher → no DB
-    write for persons).  After a simulated restart (new store instance, no
-    persons_fallback singleton), persons are gone; terms persist as before.
+    """With no cipher, neither persons nor terms ever reach the SQLite file (no
+    cipher → no DB write for either kind, issue #230). After a simulated restart
+    (new store instance, no entities_fallback singleton), both are gone.
     """
     from blindfold.entity_graph import EntityGraph
     from blindfold.store.entity_graph_store import PostgresEntityGraphStore
@@ -269,20 +272,23 @@ def test_persons_ephemeral_when_no_mapping_cipher(tmp_path):
     db_file = tmp_path / "store.sqlite3"
     dsn = f"sqlite:///{db_file}"
 
-    # Process-scoped in-memory fallback for persons (no cipher).
-    persons_graph = EntityGraph()
-    store = PostgresEntityGraphStore(dsn, mapping_cipher=None, persons_fallback=persons_graph)
+    # Process-scoped in-memory fallback for persons/terms (no cipher).
+    entities_graph = EntityGraph()
+    store = PostgresEntityGraphStore(dsn, mapping_cipher=None, entities_fallback=entities_graph)
     store.create_workspace("ws", "Workspace")
     store.add_entity("person", "ws", "Alice Example", surrogate="FakeName-001")
-    # Terms persist normally even without a cipher.
+    # Terms are ciphertext-only too now (issue #230): no cipher means ephemeral,
+    # exactly like persons.
     store.add_entity("term", "ws", "Project Aurora", surrogate="Project Wren")
 
-    # In-process: person is accessible via the fallback.
+    # In-process: both are accessible via the fallback.
     entities_in_process = store.list_entities("ws")
     person_names = {e.canonical_name for e in entities_in_process if e.kind == "person"}
+    term_names = {e.canonical_name for e in entities_in_process if e.kind == "term"}
     assert "Alice Example" in person_names
+    assert "Project Aurora" in term_names
 
-    # After restart (new store, no fallback): persons gone, term survives.
+    # After restart (new store, no fallback): both are gone.
     store2 = PostgresEntityGraphStore(dsn, mapping_cipher=None)  # no fallback
     entities_after_restart = store2.list_entities("ws")
     person_names_after = {e.canonical_name for e in entities_after_restart if e.kind == "person"}
@@ -291,13 +297,16 @@ def test_persons_ephemeral_when_no_mapping_cipher(tmp_path):
     assert "Alice Example" not in person_names_after, (
         "persons must be ephemeral (gone after restart) when no cipher is configured"
     )
-    assert "Project Aurora" in term_names_after, (
-        "terms must still persist when no cipher is configured"
+    assert "Project Aurora" not in term_names_after, (
+        "terms must be ephemeral (gone after restart) when no cipher is configured (issue #230)"
     )
 
-    # Clause G (for the no-cipher case): the SQLite file must not contain the
-    # real person name -- persons are not written to disk at all.
+    # Clause G (for the no-cipher case): the SQLite file must not contain either
+    # real value -- neither kind is written to disk at all.
     raw_content = db_file.read_bytes().decode("latin-1", errors="replace")
     assert "Alice Example" not in raw_content, (
         "real person name must never appear in SQLite file, even when no cipher is configured"
+    )
+    assert "Project Aurora" not in raw_content, (
+        "real term name must never appear in SQLite file, even when no cipher is configured"
     )

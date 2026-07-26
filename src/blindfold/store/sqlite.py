@@ -10,11 +10,12 @@ schema that :class:`~blindfold.store.entity_graph_store.PostgresEntityGraphStore
 already writes on a ``sqlite:///`` DSN, so the hermetic seed round-trip and the
 persisted SQLite graph agree on every surrogate.
 
-Mapping cipher (ADR-0045 §5, issue #229): persons are now ciphertext-only in the DB.
-Pass ``mapping_cipher`` (or the backward-compat ``transit`` alias) to decrypt persons
-from ``canonical_name_ciphertext`` and optionally decrypt terms/variations from their
-optional ciphertext columns. Without a cipher, persons are absent from the DB (they
-are ephemeral when no cipher is configured) so only terms/variations are returned.
+Mapping cipher (ADR-0045 §5, issue #229/#230): persons, terms, and both variation
+tables are ciphertext-only in the DB -- a cipher is required to read ANY of them.
+Pass ``mapping_cipher`` (or the backward-compat ``transit`` alias) to decrypt every
+real value. Without a cipher, persons and terms are both absent from the DB (they are
+ephemeral when no cipher is configured, issue #230 extends this from persons to
+terms) so ``seeded_pairs()`` returns nothing.
 """
 
 from __future__ import annotations
@@ -27,55 +28,30 @@ if TYPE_CHECKING:
     from blindfold.mapping_cipher import MappingCipher
     from blindfold.transit import TransitClient
 
-# Plaintext path (no cipher): terms and term_variations only.
-# Persons are absent from the DB when no cipher was configured (they are ephemeral,
-# ADR-0045 §5/§8, issue #229 AC6); the ``canonical_name`` column no longer exists.
-_SEEDED_PAIRS_SQL = """
-SELECT t.canonical_name AS real, s.surrogate AS surrogate
-  FROM terms t
-  JOIN surrogates s
-    ON s.workspace_id = t.workspace_id
-   AND s.referent_kind = 'term' AND s.referent_id = t.id
-UNION ALL
-SELECT tv.value AS real, s.surrogate AS surrogate
-  FROM term_variations tv
-  JOIN terms t ON t.id = tv.term_id
-  JOIN surrogates s
-    ON s.workspace_id = t.workspace_id
-   AND s.referent_kind = 'term' AND s.referent_id = t.id
-"""
-
-# Mapping-cipher path: persons via canonical_name_ciphertext (NOT NULL, always decrypt);
-# person variations via plaintext value (variations stay plaintext, issue #229 scope);
-# terms via COALESCE(canonical_name_ciphertext, canonical_name) so this query works
-# whether or not the optional terms ciphertext column was populated;
-# term_variations likewise via COALESCE(value_ciphertext, value).
-# The is_ct column (0/1) signals whether the value must be decrypted.
+# Ciphertext-only: every real-value column (persons, terms, and both variation
+# tables) requires a cipher to read at all -- there is no plaintext fallback path
+# any more (issue #230 extends issue #229's persons-only ciphertext-only schema).
 _SEEDED_PAIRS_CIPHER_SQL = """
-SELECT p.canonical_name_ciphertext AS val, 1 AS is_ct, s.surrogate AS surrogate
+SELECT p.canonical_name_ciphertext AS val, s.surrogate AS surrogate
   FROM persons p
   JOIN surrogates s
     ON s.workspace_id = p.workspace_id
    AND s.referent_kind = 'person' AND s.referent_id = p.id
 UNION ALL
-SELECT pv.value AS val, 0 AS is_ct, s.surrogate AS surrogate
+SELECT pv.value_ciphertext AS val, s.surrogate AS surrogate
   FROM person_variations pv
   JOIN persons p ON p.id = pv.person_id
   JOIN surrogates s
     ON s.workspace_id = p.workspace_id
    AND s.referent_kind = 'person' AND s.referent_id = p.id
 UNION ALL
-SELECT COALESCE(t.canonical_name_ciphertext, t.canonical_name) AS val,
-       CASE WHEN t.canonical_name_ciphertext IS NOT NULL THEN 1 ELSE 0 END AS is_ct,
-       s.surrogate AS surrogate
+SELECT t.canonical_name_ciphertext AS val, s.surrogate AS surrogate
   FROM terms t
   JOIN surrogates s
     ON s.workspace_id = t.workspace_id
    AND s.referent_kind = 'term' AND s.referent_id = t.id
 UNION ALL
-SELECT COALESCE(tv.value_ciphertext, tv.value) AS val,
-       CASE WHEN tv.value_ciphertext IS NOT NULL THEN 1 ELSE 0 END AS is_ct,
-       s.surrogate AS surrogate
+SELECT tv.value_ciphertext AS val, s.surrogate AS surrogate
   FROM term_variations tv
   JOIN terms t ON t.id = tv.term_id
   JOIN surrogates s
@@ -88,12 +64,12 @@ class SQLiteSeedRepository:
     """Entity-graph repository over a SQLite ``sqlite:///`` DSN.
 
     Pass ``mapping_cipher`` (or the backward-compat ``transit`` alias) to decrypt
-    persons from their ciphertext-only column and optionally decrypt terms/variations
-    when their optional ciphertext columns are populated (ADR-0045 §5, issue #229).
+    every real value -- persons, terms, and both variation tables are ciphertext-only
+    (ADR-0045 §5, issue #229/#230).
 
-    Without a cipher only terms/variations are returned (persons are ephemeral when no
-    cipher is configured and are therefore absent from the DB -- clause G is honoured by
-    design, not by assertion, for that path).
+    Without a cipher, ``seeded_pairs()`` returns nothing: persons and terms are both
+    ephemeral when no cipher is configured and are therefore absent from the DB --
+    clause G is honoured by design, not by assertion, for that path.
 
     Synchronous throughout, per ADR-0043 §3: this is the SQLite counterpart of the
     ETL's async ``seeded_pairs()`` read, not an async driver.
@@ -111,12 +87,8 @@ class SQLiteSeedRepository:
         self._cipher = mapping_cipher or transit
 
     def seeded_pairs(self) -> list[tuple[str, str]]:
+        if self._cipher is None:
+            return []
         with connect(self._dsn) as conn:
-            if self._cipher is not None:
-                rows = conn.execute(_SEEDED_PAIRS_CIPHER_SQL).fetchall()
-                return [
-                    (self._cipher.decrypt(val) if is_ct else val, surrogate)
-                    for val, is_ct, surrogate in rows
-                ]
-            rows = conn.execute(_SEEDED_PAIRS_SQL).fetchall()
-            return [(row[0], row[1]) for row in rows]
+            rows = conn.execute(_SEEDED_PAIRS_CIPHER_SQL).fetchall()
+        return [(self._cipher.decrypt(val), surrogate) for val, surrogate in rows]

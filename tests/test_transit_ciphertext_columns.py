@@ -146,6 +146,48 @@ async def test_migration_adds_ciphertext_columns_to_terms(pg_dsn):
     assert "canonical_name_blind_index" in cols
 
 
+async def test_migration_adds_ciphertext_columns_to_term_variations(pg_dsn):
+    import asyncpg
+
+    from blindfold.store.etl import apply_migrations
+
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await apply_migrations(conn)
+        rows = await conn.fetch(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = 'term_variations'"
+        )
+        cols = {r["column_name"] for r in rows}
+    finally:
+        await conn.close()
+
+    assert "value_ciphertext" in cols
+    assert "value_blind_index" in cols
+
+
+async def test_migration_adds_ciphertext_columns_to_org_units(pg_dsn):
+    """ADR-0008's missed table (issue #230): org_units gets ciphertext + blind-index
+    columns for the first time -- there is no prior nullable version to promote."""
+    import asyncpg
+
+    from blindfold.store.etl import apply_migrations
+
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        await apply_migrations(conn)
+        rows = await conn.fetch(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_schema = 'public' AND table_name = 'org_units'"
+        )
+        cols = {r["column_name"] for r in rows}
+    finally:
+        await conn.close()
+
+    assert "name_ciphertext" in cols
+    assert "name_blind_index" in cols
+
+
 # ---------------------------------------------------------------------------
 # 2. ETL populates ciphertext columns (Transit stubbed at network boundary)
 # ---------------------------------------------------------------------------
@@ -210,6 +252,37 @@ async def test_blind_index_enables_equality_lookup_by_real_value(pg_dsn):
     # No plaintext canonical_name column exists any more (ADR-0045 §5, issue #229) --
     # the blind index found the row without decrypting; decrypt to confirm the match.
     assert transit.decrypt(row["canonical_name_ciphertext"]) == "Stefan Wegner"
+
+
+async def test_org_unit_blind_index_enables_equality_lookup_by_real_name(pg_dsn):
+    """org_units (issue #230, ADR-0008's missed table): the equality lookup by real
+    name is load-bearing here (not merely available) -- org-unit resolution/upsert
+    and the role-assignment hydrate have no other way to find an existing row.
+    """
+    import asyncpg
+
+    from blindfold.store._seed import load_vendored_seed
+    from blindfold.store.etl import run_etl_with_transit
+
+    transit = _make_stub_transit()
+    await run_etl_with_transit(pg_dsn, transit)
+    seed = load_vendored_seed()
+    an_org_unit = seed["org_units"][0]["name"]
+
+    expected_blind_index = transit.blind_index(an_org_unit)
+
+    conn = await asyncpg.connect(pg_dsn)
+    try:
+        row = await conn.fetchrow(
+            "SELECT name_ciphertext FROM org_units WHERE name_blind_index = $1",
+            expected_blind_index,
+        )
+    finally:
+        await conn.close()
+
+    assert row is not None
+    assert transit.decrypt(row["name_ciphertext"]) == an_org_unit
+    assert row["name_ciphertext"] != an_org_unit
 
 
 # ---------------------------------------------------------------------------

@@ -9,11 +9,11 @@ Leak-audit clauses exercised:
 - E-stable / idempotent mint: re-running the ETL keeps the SAME surrogate per referent and
   adds no duplicate rows.
 - A precondition: a surrogate is never the real entity value.
-Persons (ADR-0045 §5, issue #229): the ciphertext-only schema means the plain ``run_etl``
-path no longer inserts persons at all (no plaintext column to insert into) -- tests that
-need persons use ``run_etl_with_transit`` with a stubbed Transit client, mirroring
-test_transit_ciphertext_columns.py's network-boundary stub. G mapping-secrecy is ASSERTED
-for persons via that path; terms/org_units remain the deferred plaintext case (N/A here).
+Every real-value table (persons, terms, both variation tables, org_units) is
+ciphertext-only (ADR-0045 §5, issue #229/#230): the plain ``run_etl`` path no longer
+inserts anything beyond the workspace row (no plaintext column left for any of them) --
+every test below uses ``run_etl_with_transit`` with a stubbed Transit client. G
+mapping-secrecy is ASSERTED for all five real-value column groups via that path.
 """
 
 from __future__ import annotations
@@ -144,15 +144,19 @@ async def test_etl_populates_persons_variations_org_units_and_terms(pg_dsn):
             "SELECT id FROM persons WHERE canonical_name_blind_index = $1",
             transit.blind_index("Martin Bach"),
         )
+        # No plaintext value column exists any more (issue #230) -- look up the
+        # variation by its blind index too.
         variation_exists = await conn.fetchval(
-            "SELECT count(*) FROM person_variations WHERE person_id = $1 AND value = $2",
+            "SELECT count(*) FROM person_variations WHERE person_id = $1 AND value_blind_index = $2",
             bach_id,
-            "Bach",
+            transit.blind_index("Bach"),
         )
+        # org_units.name is ciphertext-only now (issue #230) -- look the child up by
+        # its blind index, then decrypt the joined parent's name_ciphertext to confirm.
         child_parent = await conn.fetchrow(
-            "SELECT c.name AS child, p.name AS parent FROM org_units c "
-            "JOIN org_units p ON p.id = c.parent_id WHERE c.name = $1",
-            "Board of Directors",
+            "SELECT p.name_ciphertext AS parent_ciphertext FROM org_units c "
+            "JOIN org_units p ON p.id = c.parent_id WHERE c.name_blind_index = $1",
+            transit.blind_index("Board of Directors"),
         )
     finally:
         await conn.close()
@@ -163,7 +167,7 @@ async def test_etl_populates_persons_variations_org_units_and_terms(pg_dsn):
     assert bach_id is not None
     assert variation_exists == 1
     # The self-referential parent_id resolved to the seeded parent org.
-    assert child_parent["parent"] == "Voltwerk"
+    assert transit.decrypt(child_parent["parent_ciphertext"]) == "Voltwerk"
 
 
 async def test_etl_mints_one_surrogate_per_referent_never_equal_to_the_real_value(pg_dsn):

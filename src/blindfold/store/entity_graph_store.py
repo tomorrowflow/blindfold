@@ -27,12 +27,15 @@ so their raw integer IDs can collide.  We compound them into a string:
 EntityRecord.entity_id is always this composite string; Postgres writes split it
 back into (kind, row_id) to locate the right table row.
 
-Mapping cipher (ADR-0045 §5, issue #229): the ``mapping_cipher`` constructor arg is
-required to persist or hydrate person entities from the DB.  Without a cipher,
-person entities are ephemeral -- they live in an optional ``persons_fallback``
-EntityGraph (a process-scoped in-memory singleton supplied by ``app.py``) and are
-never written to the DB.  Terms, org_units, RBAC, and all surrogate-space tables are
-unaffected (they persist normally regardless of cipher presence).
+Mapping cipher (ADR-0045 §5, issue #229/#230): the ``mapping_cipher`` constructor arg
+is required to persist or hydrate person AND term entities from the DB, plus org-unit
+names referenced by role assignments -- every real-value column is ciphertext-only
+(issue #230 extends the persons tracer to terms, both variation tables, and org_units,
+ADR-0008's table it had missed entirely). Without a cipher, persons/terms/role
+assignments are ephemeral -- they live in an optional ``entities_fallback`` EntityGraph
+(a process-scoped in-memory singleton supplied by ``app.py``) and are never written to
+the DB. RBAC and all surrogate-space tables are unaffected (they persist normally
+regardless of cipher presence).
 
 Leak-audit note: this store emits no log lines, and no canonical_name or variation
 value is ever placed in an error response -- the only interpolated identifiers are
@@ -81,11 +84,15 @@ class PostgresEntityGraphStore:
     persists the resulting state.  No persistent connection is held between calls
     (per-call open/close keeps the store stateless across process restarts).
 
-    ``mapping_cipher`` (ADR-0045 §5, issue #229): when provided, person canonical
-    names are stored as mapping-cipher ciphertext (``encrypt``/``blind_index``) and
-    decrypted on hydrate (``decrypt``).  When ``None``, persons are not written to
-    the DB -- they live in ``persons_fallback`` (an in-process singleton) and are
-    ephemeral across restarts.  See the module docstring for the full rationale.
+    ``mapping_cipher`` (ADR-0045 §5, issue #229/#230): when provided, person and term
+    canonical names (plus their variations, and org-unit names for role assignments)
+    are stored as mapping-cipher ciphertext (``encrypt``/``blind_index``) and decrypted
+    on hydrate (``decrypt``).  When ``None``, every real-value kind is ciphertext-only
+    in the DB and therefore cannot be written at all -- persons and terms are not
+    written to the DB and instead live in ``entities_fallback`` (an in-process
+    singleton) and are ephemeral across restarts; role assignments (which require an
+    org_unit row, also ciphertext-only) fall back the same way.  See the module
+    docstring for the full rationale.
 
     The seam contract: call ``cipher.encrypt(value)`` / ``cipher.decrypt(ct)`` with
     NO ``context=`` kwarg -- both ``LocalKeyCipher`` and ``TransitClient`` accept the
@@ -98,11 +105,11 @@ class PostgresEntityGraphStore:
         database_url: str,
         *,
         mapping_cipher: "MappingCipher | None" = None,
-        persons_fallback: EntityGraph | None = None,
+        entities_fallback: EntityGraph | None = None,
     ) -> None:
         self._dsn = database_url
         self._mapping_cipher = mapping_cipher
-        self._persons_fallback = persons_fallback
+        self._entities_fallback = entities_fallback
         self._ensure_schema()
 
     # ------------------------------------------------------------------
@@ -110,18 +117,19 @@ class PostgresEntityGraphStore:
     # ------------------------------------------------------------------
 
     def _ensure_schema(self) -> None:
-        """Apply migrations (idempotent) and check the persons legacy-schema guard."""
-        from .persons_migration import check_and_migrate_persons_schema
+        """Apply migrations (idempotent) and check the ciphertext legacy-schema guard."""
+        from .ciphertext_migration import check_and_migrate_ciphertext_schema
 
         with connect(self._dsn) as conn:
             if is_sqlite(self._dsn):
                 apply_sqlite_migrations(conn, _MIGRATIONS_SQL_SQLITE)
             else:
                 conn.execute(_MIGRATIONS_SQL)
-            # After applying the base migrations, check whether the persons table
-            # still carries the old plaintext canonical_name column and refuse or
-            # migrate as appropriate (ADR-0045 §6, persons_migration.py).
-            check_and_migrate_persons_schema(conn, self._dsn)
+            # After applying the base migrations, check whether any of the five
+            # ciphertext-only tables (persons, terms, person_variations,
+            # term_variations, org_units) still carries its old plaintext column and
+            # refuse or migrate as appropriate (ADR-0045 §6, ciphertext_migration.py).
+            check_and_migrate_ciphertext_schema(conn, self._dsn)
             conn.commit()
 
     # ------------------------------------------------------------------
@@ -188,7 +196,7 @@ class PostgresEntityGraphStore:
 
         # Load persons -- only possible when a mapping cipher is present (the DB
         # column is ciphertext-only NOT NULL; without a cipher there is nothing
-        # to decrypt, and persons live in persons_fallback instead).
+        # to decrypt, and persons live in entities_fallback instead).
         if self._mapping_cipher is not None:
             persons = conn.execute(
                 "SELECT id, canonical_name_ciphertext FROM persons WHERE workspace_id = %s",
@@ -199,9 +207,9 @@ class PostgresEntityGraphStore:
                 # Seam note: call decrypt with positional arg only -- no context= kwarg.
                 canonical_name = self._mapping_cipher.decrypt(ciphertext)
                 variations = [
-                    r[0]
+                    self._mapping_cipher.decrypt(r[0])
                     for r in conn.execute(
-                        "SELECT value FROM person_variations WHERE person_id = %s",
+                        "SELECT value_ciphertext FROM person_variations WHERE person_id = %s",
                         (row_id,),
                     ).fetchall()
                 ]
@@ -237,49 +245,53 @@ class PostgresEntityGraphStore:
                 )
                 pg_to_eid[("person", row_id)] = eid
 
-        # Load terms.
-        terms = conn.execute(
-            "SELECT id, canonical_name FROM terms WHERE workspace_id = %s",
-            (ws_id,),
-        ).fetchall()
-        for row in terms:
-            row_id, canonical_name = row
-            variations = [
-                r[0]
-                for r in conn.execute(
-                    "SELECT value FROM term_variations WHERE term_id = %s",
-                    (row_id,),
-                ).fetchall()
-            ]
-            active_surrogate = ""
-            surr_row = conn.execute(
-                "SELECT surrogate FROM surrogates "
-                "WHERE workspace_id = %s AND referent_kind = 'term' AND referent_id = %s",
-                (ws_id, row_id),
-            ).fetchone()
-            if surr_row:
-                active_surrogate = surr_row[0]
-
-            retired = [
-                r[0]
-                for r in conn.execute(
-                    "SELECT surrogate FROM retired_surrogates "
+        # Load terms -- ciphertext-only (issue #230), same cipher-gated shape as
+        # persons: without a cipher there is nothing to decrypt, and terms live in
+        # entities_fallback instead.
+        if self._mapping_cipher is not None:
+            terms = conn.execute(
+                "SELECT id, canonical_name_ciphertext FROM terms WHERE workspace_id = %s",
+                (ws_id,),
+            ).fetchall()
+            for row in terms:
+                row_id, ciphertext = row
+                canonical_name = self._mapping_cipher.decrypt(ciphertext)
+                variations = [
+                    self._mapping_cipher.decrypt(r[0])
+                    for r in conn.execute(
+                        "SELECT value_ciphertext FROM term_variations WHERE term_id = %s",
+                        (row_id,),
+                    ).fetchall()
+                ]
+                active_surrogate = ""
+                surr_row = conn.execute(
+                    "SELECT surrogate FROM surrogates "
                     "WHERE workspace_id = %s AND referent_kind = 'term' AND referent_id = %s",
                     (ws_id, row_id),
-                ).fetchall()
-            ]
+                ).fetchone()
+                if surr_row:
+                    active_surrogate = surr_row[0]
 
-            eid = _entity_id("term", row_id)
-            graph._entities[eid] = EntityRecord(
-                entity_id=eid,
-                kind="term",
-                workspace=workspace,
-                canonical_name=canonical_name,
-                variations=variations,
-                active_surrogate=active_surrogate,
-                retired_surrogates=retired,
-            )
-            pg_to_eid[("term", row_id)] = eid
+                retired = [
+                    r[0]
+                    for r in conn.execute(
+                        "SELECT surrogate FROM retired_surrogates "
+                        "WHERE workspace_id = %s AND referent_kind = 'term' AND referent_id = %s",
+                        (ws_id, row_id),
+                    ).fetchall()
+                ]
+
+                eid = _entity_id("term", row_id)
+                graph._entities[eid] = EntityRecord(
+                    entity_id=eid,
+                    kind="term",
+                    workspace=workspace,
+                    canonical_name=canonical_name,
+                    variations=variations,
+                    active_surrogate=active_surrogate,
+                    retired_surrogates=retired,
+                )
+                pg_to_eid[("term", row_id)] = eid
 
         # Load relationships.
         rels = conn.execute(
@@ -303,28 +315,33 @@ class PostgresEntityGraphStore:
                 )
             )
 
-        # Load role assignments (person → org_unit_name via org_units.name).
-        role_rows = conn.execute(
-            "SELECT ra.person_id, ou.name, ra.role "
-            "FROM role_assignments ra "
-            "JOIN org_units ou ON ou.id = ra.org_unit_id "
-            "WHERE ra.person_id IN ("
-            "  SELECT id FROM persons WHERE workspace_id = %s"
-            ")",
-            (ws_id,),
-        ).fetchall()
-        for person_pg_id, org_unit_name, role in role_rows:
-            person_eid = pg_to_eid.get(("person", person_pg_id))
-            if person_eid is None:
-                continue
-            graph._role_assignments.add(
-                RoleAssignmentRecord(
-                    workspace=workspace,
-                    person_id=person_eid,
-                    org_unit_name=org_unit_name,
-                    role=role,
+        # Load role assignments (person → org_unit_name, via org_units.name_ciphertext,
+        # issue #230 -- org_units is ciphertext-only, so the hydrate must decrypt).
+        # Cipher-gated like persons/terms above: without a cipher neither persons nor
+        # org_units were ever written to the DB, so there is nothing to join here.
+        if self._mapping_cipher is not None:
+            role_rows = conn.execute(
+                "SELECT ra.person_id, ou.name_ciphertext, ra.role "
+                "FROM role_assignments ra "
+                "JOIN org_units ou ON ou.id = ra.org_unit_id "
+                "WHERE ra.person_id IN ("
+                "  SELECT id FROM persons WHERE workspace_id = %s"
+                ")",
+                (ws_id,),
+            ).fetchall()
+            for person_pg_id, org_unit_name_ciphertext, role in role_rows:
+                person_eid = pg_to_eid.get(("person", person_pg_id))
+                if person_eid is None:
+                    continue
+                org_unit_name = self._mapping_cipher.decrypt(org_unit_name_ciphertext)
+                graph._role_assignments.add(
+                    RoleAssignmentRecord(
+                        workspace=workspace,
+                        person_id=person_eid,
+                        org_unit_name=org_unit_name,
+                        role=role,
+                    )
                 )
-            )
 
         return graph, ws_id
 
@@ -356,31 +373,43 @@ class PostgresEntityGraphStore:
                 "RETURNING id",
                 (ws_id, ciphertext, blind_index),
             ).fetchone()[0]
-            # Upsert variations.
+            # Upsert variations -- ciphertext-only (issue #230).
             conn.execute(
                 "DELETE FROM person_variations WHERE person_id = %s", (row_id,)
             )
             for v in entity.variations:
+                v_ciphertext = self._mapping_cipher.encrypt(v)
+                v_blind_index = self._mapping_cipher.blind_index(v)
                 conn.execute(
-                    "INSERT INTO person_variations (person_id, value) VALUES (%s, %s) "
-                    "ON CONFLICT (person_id, value) DO NOTHING",
-                    (row_id, v),
+                    "INSERT INTO person_variations "
+                    "(person_id, value_ciphertext, value_blind_index) VALUES (%s, %s, %s) "
+                    "ON CONFLICT (person_id, value_blind_index) DO NOTHING",
+                    (row_id, v_ciphertext, v_blind_index),
                 )
         elif kind == "term":
+            # Ciphertext-only (issue #230), mirroring persons exactly.
+            ciphertext = self._mapping_cipher.encrypt(canonical)
+            blind_index = self._mapping_cipher.blind_index(canonical)
             row_id = conn.execute(
-                "INSERT INTO terms (workspace_id, canonical_name) VALUES (%s, %s) "
-                "ON CONFLICT (workspace_id, canonical_name) DO UPDATE "
-                "SET canonical_name = EXCLUDED.canonical_name RETURNING id",
-                (ws_id, canonical),
+                "INSERT INTO terms "
+                "(workspace_id, canonical_name_ciphertext, canonical_name_blind_index) "
+                "VALUES (%s, %s, %s) "
+                "ON CONFLICT (workspace_id, canonical_name_blind_index) DO UPDATE "
+                "SET canonical_name_ciphertext = EXCLUDED.canonical_name_ciphertext "
+                "RETURNING id",
+                (ws_id, ciphertext, blind_index),
             ).fetchone()[0]
             conn.execute(
                 "DELETE FROM term_variations WHERE term_id = %s", (row_id,)
             )
             for v in entity.variations:
+                v_ciphertext = self._mapping_cipher.encrypt(v)
+                v_blind_index = self._mapping_cipher.blind_index(v)
                 conn.execute(
-                    "INSERT INTO term_variations (term_id, value) VALUES (%s, %s) "
-                    "ON CONFLICT (term_id, value) DO NOTHING",
-                    (row_id, v),
+                    "INSERT INTO term_variations "
+                    "(term_id, value_ciphertext, value_blind_index) VALUES (%s, %s, %s) "
+                    "ON CONFLICT (term_id, value_blind_index) DO NOTHING",
+                    (row_id, v_ciphertext, v_blind_index),
                 )
         else:
             raise ValueError(f"unsupported entity kind: {kind!r}")
@@ -463,15 +492,17 @@ class PostgresEntityGraphStore:
     ) -> EntityRecord:
         """Add an entity to the workspace; persist to the DB when a cipher is available.
 
-        For persons with no mapping cipher: delegates to ``persons_fallback`` (if
-        provided) so the entity exists in-process but is not written to disk.  A
-        process restart with no cipher and no fallback loses these persons -- that is
-        the documented ephemeral contract (ADR-0045 §8, issue #229 AC6).
+        With no mapping cipher: delegates to ``entities_fallback`` (if provided) so the
+        entity exists in-process but is not written to disk -- every real-value kind
+        (person or term) is ciphertext-only in the DB now (issue #230), so there is no
+        plaintext column left to write to without one.  A process restart with no
+        cipher and no fallback loses these entities -- that is the documented ephemeral
+        contract (ADR-0045 §8, issue #229 AC6, extended to terms by issue #230).
         """
-        # Ephemeral-person short-circuit: no cipher → delegate to the in-memory
-        # fallback and never open a DB connection for this entity.
-        if kind == "person" and self._mapping_cipher is None:
-            fb = self._persons_fallback if self._persons_fallback is not None else EntityGraph()
+        # Ephemeral short-circuit: no cipher → delegate to the in-memory fallback and
+        # never open a DB connection for this entity.
+        if self._mapping_cipher is None:
+            fb = self._entities_fallback if self._entities_fallback is not None else EntityGraph()
             return fb.add_entity(kind, workspace, canonical_name, variations or [], surrogate)
 
         with connect(self._dsn) as conn:
@@ -514,10 +545,10 @@ class PostgresEntityGraphStore:
     def get_by_canonical(
         self, workspace: str, kind: str, canonical_name: str
     ) -> EntityRecord | None:
-        # Ephemeral-person short-circuit.
-        if kind == "person" and self._mapping_cipher is None:
-            if self._persons_fallback is not None:
-                return self._persons_fallback.get_by_canonical(workspace, kind, canonical_name)
+        # Ephemeral short-circuit: no cipher, no DB read.
+        if self._mapping_cipher is None:
+            if self._entities_fallback is not None:
+                return self._entities_fallback.get_by_canonical(workspace, kind, canonical_name)
             return None
         with connect(self._dsn) as conn:
             graph, _ = self._hydrate(conn, workspace)
@@ -529,14 +560,15 @@ class PostgresEntityGraphStore:
         return graph.get_by_id(entity_id, workspace)
 
     def list_entities(self, workspace: str) -> list[EntityRecord]:
+        # No cipher: neither persons nor terms were ever loaded into the DB (issue
+        # #230) -- everything lives in the fallback graph instead.
+        if self._mapping_cipher is None:
+            if self._entities_fallback is not None:
+                return self._entities_fallback.list_entities(workspace)
+            return []
         with connect(self._dsn) as conn:
             graph, _ = self._hydrate(conn, workspace)
-        entities = graph.list_entities(workspace)
-        # When no cipher: persons were not loaded from DB; merge from fallback.
-        if self._mapping_cipher is None and self._persons_fallback is not None:
-            fallback_persons = self._persons_fallback.list_entities(workspace)
-            entities = fallback_persons + [e for e in entities if e.kind != "person"]
-        return entities
+        return graph.list_entities(workspace)
 
     def search_by_real_name(self, workspace: str, query: str) -> list[EntityRecord]:
         with connect(self._dsn) as conn:
@@ -578,21 +610,40 @@ class PostgresEntityGraphStore:
         org_unit_name: str,
         role: str,
     ) -> None:
-        """Add a role assignment.  The org_unit is looked up by name; auto-created if absent."""
+        """Add a role assignment.  The org_unit is resolved/created via its blind
+        index (issue #230: org_units.name is ciphertext-only, so an equality lookup
+        by real name must go through the blind index -- load-bearing here, not merely
+        available, since org-unit resolution has no other way to find an existing row).
+
+        With no mapping cipher: delegates to ``entities_fallback`` (org_units have no
+        row of their own in the in-memory EntityGraph -- a role assignment there is
+        just a plain ``org_unit_name`` string, so no cipher is needed to hold it).
+        """
+        if self._mapping_cipher is None:
+            if self._entities_fallback is not None:
+                self._entities_fallback.add_role_assignment(
+                    workspace, person_id, org_unit_name, role
+                )
+            return
+
         with connect(self._dsn) as conn:
             ws_id = self._require_workspace_id(conn, workspace)
 
-            # Resolve or create the org_unit row.
+            # Resolve or create the org_unit row via its blind index.
+            blind_index = self._mapping_cipher.blind_index(org_unit_name)
             ou_row = conn.execute(
-                "SELECT id FROM org_units WHERE workspace_id = %s AND name = %s",
-                (ws_id, org_unit_name),
+                "SELECT id FROM org_units WHERE workspace_id = %s AND name_blind_index = %s",
+                (ws_id, blind_index),
             ).fetchone()
             if ou_row is None:
+                ciphertext = self._mapping_cipher.encrypt(org_unit_name)
                 ou_id = conn.execute(
-                    "INSERT INTO org_units (workspace_id, name) VALUES (%s, %s) "
-                    "ON CONFLICT (workspace_id, name) DO UPDATE SET name = EXCLUDED.name "
+                    "INSERT INTO org_units (workspace_id, name_ciphertext, name_blind_index) "
+                    "VALUES (%s, %s, %s) "
+                    "ON CONFLICT (workspace_id, name_blind_index) DO UPDATE "
+                    "SET name_ciphertext = EXCLUDED.name_ciphertext "
                     "RETURNING id",
-                    (ws_id, org_unit_name),
+                    (ws_id, ciphertext, blind_index),
                 ).fetchone()[0]
             else:
                 ou_id = ou_row[0]
@@ -612,6 +663,10 @@ class PostgresEntityGraphStore:
     def list_role_assignments(
         self, person_id: str, workspace: str
     ) -> list[RoleAssignmentRecord]:
+        if self._mapping_cipher is None:
+            if self._entities_fallback is not None:
+                return self._entities_fallback.list_role_assignments(person_id, workspace)
+            return []
         with connect(self._dsn) as conn:
             graph, _ = self._hydrate(conn, workspace)
         return graph.list_role_assignments(person_id, workspace)

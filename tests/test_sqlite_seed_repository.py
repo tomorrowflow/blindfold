@@ -73,35 +73,6 @@ def _make_stub_transit():
     )
 
 
-def _write_ciphertext_columns(dsn: str, transit) -> None:
-    """Synchronously encrypt every real-value column for terms/variations via Transit.
-
-    Persons are now encrypted at insert time by PostgresEntityGraphStore (issue #229,
-    ADR-0045 §5) -- skip the persons table here (canonical_name column is gone).
-    Only terms and variations need the optional ciphertext columns written; this is
-    test scaffolding only (production SQLite Transit-write wiring is out of scope for
-    this slice / issue #10).
-    """
-    from blindfold.store.dialect import connect
-
-    with connect(dsn) as conn:
-        for table, col, ct_col in (
-            # persons: canonical_name_ciphertext is set at INSERT time (issue #229);
-            # skip persons here -- reading persons.canonical_name would fail (column removed).
-            ("terms", "canonical_name", "canonical_name_ciphertext"),
-            ("person_variations", "value", "value_ciphertext"),
-            ("term_variations", "value", "value_ciphertext"),
-        ):
-            rows = conn.execute(f"SELECT id, {col} FROM {table}").fetchall()
-            for row_id, value in rows:
-                ciphertext = transit.encrypt(value)
-                conn.execute(
-                    f"UPDATE {table} SET {ct_col} = %s WHERE id = %s",
-                    (ciphertext, row_id),
-                )
-        conn.commit()
-
-
 def _seed_sqlite_from_vendored(dsn: str, mapping_cipher=None) -> str:
     """Populate a fresh sqlite:/// DSN with the vendored seed via the entity-graph
     store seam (issue #200), the same path production uses -- NOT a new SQLite ETL.
@@ -127,9 +98,8 @@ def _seed_sqlite_from_vendored(dsn: str, mapping_cipher=None) -> str:
 def test_sqlite_repository_seeded_pairs_match_the_vendored_seam(tmp_path):
     """Seeded pairs from the SQLite store match the in-process vendored repository.
 
-    Persons are now ciphertext-only (issue #229): a LocalKeyCipher is used to seed
-    and read persons.  The SQLiteSeedRepository's COALESCE path returns all pairs
-    (persons decrypted from ciphertext, terms from plaintext canonical_name).
+    Persons, terms, and both variation tables are ciphertext-only (issue #229/#230):
+    a LocalKeyCipher is used to seed and read every real value.
     """
     from blindfold.mapping_cipher import LocalKeyCipher
     from blindfold.store import vendored_seed_repository
@@ -157,9 +127,9 @@ def test_sqlite_repository_seeded_pairs_match_the_vendored_seam(tmp_path):
 def test_sqlite_repository_with_transit_decrypts_ciphertext_columns(tmp_path):
     """Transit-backed read decrypts all ciphertext columns and yields the same pairs.
 
-    Persons are seeded via Transit (cipher at insert time), terms/variations via
-    _write_ciphertext_columns (the optional ciphertext columns).  The SQLiteSeedRepository
-    COALESCE path decrypts all encrypted rows and passes through plaintext rows unchanged.
+    Every real value (persons, terms, both variation tables) is encrypted at insert
+    time through the Transit stub used as the mapping cipher (issue #229/#230) -- the
+    SQLiteSeedRepository decrypts them all on read.
     """
     from blindfold.store import vendored_seed_repository
     from blindfold.store.sqlite import SQLiteSeedRepository
@@ -167,10 +137,7 @@ def test_sqlite_repository_with_transit_decrypts_ciphertext_columns(tmp_path):
     dsn = f"sqlite:///{tmp_path / 'entity_graph.sqlite3'}"
 
     transit = _make_stub_transit()
-    # Seed persons with Transit as the mapping cipher (persons go to DB as ciphertext).
     _seed_sqlite_from_vendored(dsn, mapping_cipher=transit)
-    # Write terms/variations ciphertext (optional columns, COALESCE falls back to plaintext).
-    _write_ciphertext_columns(dsn, transit)
 
     db_pairs = set(SQLiteSeedRepository(dsn, transit=transit).seeded_pairs())
     vendored_pairs = set(vendored_seed_repository().seeded_pairs())
