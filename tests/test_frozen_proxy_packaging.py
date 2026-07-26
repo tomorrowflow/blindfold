@@ -24,11 +24,15 @@ property.
 
 from __future__ import annotations
 
+import base64
+import json
+import os
 import pathlib
 import socket
 import subprocess
 import sys
 import time
+import urllib.request
 
 import pytest
 
@@ -122,6 +126,56 @@ def test_frozen_binary_serves_vendored_ui_dist_shell(frozen_proxy_binary: pathli
             f"http://127.0.0.1:{port}/ui/assets/{asset_name}", timeout=5
         ) as resp:
             assert resp.status == 200
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+
+
+def test_frozen_binary_reaches_local_mapping_cipher_with_store_key_env(
+    frozen_proxy_binary: pathlib.Path,
+) -> None:
+    """issue #234: the hosted windows-latest platform-verify gate's TWO-HOP
+    smoke launch (tray spawns the frozen ``blindfold-proxy.exe`` onefile
+    binary with ``BLINDFOLD_STORE_KEY`` injected into its launch environment,
+    ``StoreKeyEnvironment.Build()``/``RealProxyProcessLauncher``, Program.cs)
+    keeps reporting ``mapping_cipher == "none"`` instead of ``"local"`` --
+    i.e. the frozen child never sees the key. Prior cycles (620102b, 6342427)
+    ruled out every C#/Python seam by inspection and landed on two remaining
+    hypotheses, both Windows-CreateProcess-specific and untestable in this
+    Linux sandbox.
+
+    This test closes a *third* possibility this sandbox CAN check: that
+    PyInstaller's onefile bootloader itself (the ``ONEFILE`` extract-then-
+    re-exec-itself dance every platform's onefile build shares, not the
+    Windows-specific CreateProcess plumbing around it) drops a freshly
+    injected env var before Python ever sees it. Same shape as the existing
+    ``test_frozen_binary_refuses_cloud_l3_model_with_scrubbed_stderr`` above
+    (a minimal, non-inherited env dict passed straight to ``subprocess.Popen``,
+    exactly how the C# launcher hands a fresh dict to ``Process.Start``) --
+    swapped to assert successful propagation of ``BLINDFOLD_STORE_KEY``
+    through to ``settings.mapping_cipher`` via ``GET /v1/status`` instead of
+    a refusal-path env var. A pass here rules out the onefile bootloader
+    mechanism generally, narrowing the remaining gap to something
+    Windows/CreateProcess-specific -- exactly the two hypotheses
+    ProbeEnvironmentPropagation (Program.cs) already targets.
+    """
+    port = _free_port()
+    env = _toolchain_free_env()
+    env["BLINDFOLD_STORE_KEY"] = base64.b64encode(os.urandom(32)).decode()
+    proc = subprocess.Popen(
+        [str(frozen_proxy_binary), "serve", "--port", str(port)],
+        env=env,
+        cwd=str(REPO_ROOT.parent),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        _wait_for_port(port)
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/status", timeout=5) as resp:
+            assert resp.status == 200
+            payload = json.loads(resp.read().decode("utf-8"))
+        assert payload["config"]["mapping_cipher"] == "local"
     finally:
         proc.terminate()
         proc.wait(timeout=5)
