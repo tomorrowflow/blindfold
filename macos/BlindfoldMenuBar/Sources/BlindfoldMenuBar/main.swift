@@ -73,10 +73,13 @@ private func provisionStoreKeyIfNeeded() {
 /// Reduces the real ambient environment plus the launch environment store's held
 /// `BLINDFOLD_*` values, merged with the secrets store's held values (including the Store
 /// key, issue #233), into the child's actual environment (ADR-0044) -- the one place both
-/// supervisor-construction sites (the real app and `--smoke-launch-full`) build the value
-/// `ProxySupervisor` hands verbatim to the launcher. Secrets are held in their own store
-/// (never `launchEnvironmentStore`) but still reach the child as ordinary `BLINDFOLD_*`
-/// values once merged in here.
+/// supervisor-construction sites (the real app and `--smoke-launch-full`) pass as
+/// `ProxySupervisor`'s `environmentProvider`, so it is called fresh on every `start()`
+/// (issue #237), never once at construction. That is what makes a Settings save or a
+/// `.env` import (both landing in `launchEnvironmentStore`/`secretsStore` after the
+/// supervisor already exists) reach the *next* spawned child instead of only a fresh app
+/// launch. Secrets are held in their own store (never `launchEnvironmentStore`) but still
+/// reach the child as ordinary `BLINDFOLD_*` values once merged in here.
 func childEnvironment() -> [String: String] {
     provisionStoreKeyIfNeeded()
     var heldValues = launchEnvironmentStore.values()
@@ -137,7 +140,7 @@ func runSmokeLaunchFull() async -> Int32 {
         launcher: RealProxyProcessLauncher(),
         exePath: located.exePath,
         args: located.args,
-        environment: childEnvironment()
+        environmentProvider: childEnvironment
     )
 
     let statusClient: StatusClient

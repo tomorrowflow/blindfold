@@ -29,7 +29,7 @@ struct BlindfoldMenuBarApp: App {
             launcher: RealProxyProcessLauncher(),
             exePath: located.exePath,
             args: located.args,
-            environment: childEnvironment()
+            environmentProvider: childEnvironment
         )
         let statusModel = StatusPollingModel(supervisor: supervisor)
         _model = StateObject(wrappedValue: statusModel)

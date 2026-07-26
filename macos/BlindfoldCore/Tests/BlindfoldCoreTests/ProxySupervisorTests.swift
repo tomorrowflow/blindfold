@@ -101,6 +101,73 @@ private final class FakeProxyProcessLauncher: ProxyProcessLaunching, @unchecked 
     #expect(launcher.launches[0].environment == ["BLINDFOLD_L3_MODEL": "llama3.2", "PATH": "/usr/bin"])
 }
 
+/// A mutable box (leak-audit's own seam-stub pattern for shared mutable state a
+/// `@Sendable` closure reads, mirroring `FakeProxyProcessLauncher` above) standing in for
+/// `main.swift`'s `LaunchEnvironmentStore`/`SecretsStore` -- a Settings save or a `.env`
+/// import (issue #237) mutates the held values *after* the supervisor already exists.
+private final class MutableEnvironmentSource: @unchecked Sendable {
+    var values: [String: String]
+    init(_ values: [String: String]) { self.values = values }
+}
+
+/// Same box idiom as `MutableEnvironmentSource`, for a plain call counter.
+private final class InvocationCounter: @unchecked Sendable {
+    var count = 0
+}
+
+/// Issue #237's root-cause fix: the child environment was composed once, at supervisor
+/// construction, then held immutably -- so a value written to the launch environment or
+/// secrets store *after* construction (a Settings save, a `.env` import) could never reach
+/// a *later* `start()`, only a whole fresh app launch. The supervisor must hold a provider
+/// it calls fresh on every `start()`, never a captured snapshot (ADR-0044).
+@Test func startReadsTheEnvironmentProviderFreshOnEverySpawnNotJustAtConstruction() {
+    let launcher = FakeProxyProcessLauncher()
+    let heldValues = MutableEnvironmentSource(["BLINDFOLD_L3_MODEL": "llama3.2"])
+    let supervisor = ProxySupervisor(
+        launcher: launcher,
+        exePath: "blindfold-proxy",
+        args: ["serve"],
+        environmentProvider: { heldValues.values }
+    )
+
+    supervisor.start()
+    // Stands in for a Settings save or a .env import landing between two start() calls
+    // (issue #237's exact AC 1/2/3 shape) -- mutating the store, not the supervisor.
+    heldValues.values["BLINDFOLD_L3_MODEL"] = "llama3.3"
+    supervisor.stop()
+    supervisor.start()
+
+    #expect(launcher.launches.count == 2)
+    #expect(launcher.launches[0].environment == ["BLINDFOLD_L3_MODEL": "llama3.2"])
+    #expect(launcher.launches[1].environment == ["BLINDFOLD_L3_MODEL": "llama3.3"])
+}
+
+/// Issue #237 AC "`provisionStoreKeyIfNeeded()` still runs exactly once per spawn" --
+/// generalized to the seam this core actually owns: the provider closure (which wraps
+/// `provisionStoreKeyIfNeeded()` in `main.swift`) must be called exactly once per `start()`
+/// call, never memoized across spawns and never invoked more than once for a single spawn
+/// (which would risk a caller like `provisionStoreKeyIfNeeded` observing a race with
+/// itself).
+@Test func environmentProviderIsCalledExactlyOncePerStartCall() {
+    let launcher = FakeProxyProcessLauncher()
+    let invocations = InvocationCounter()
+    let supervisor = ProxySupervisor(
+        launcher: launcher,
+        exePath: "blindfold-proxy",
+        args: ["serve"],
+        environmentProvider: {
+            invocations.count += 1
+            return [:]
+        }
+    )
+
+    supervisor.start()
+    supervisor.stop()
+    supervisor.start()
+
+    #expect(invocations.count == 2)
+}
+
 /// Once a `/v1/status` poll has succeeded, a still-running child is `running`
 /// (ADR-0041) — the caller (the menu bar's poll loop) is the one who calls
 /// `ProxySupervisor.notifyHealthy`; the supervisor never polls status itself.

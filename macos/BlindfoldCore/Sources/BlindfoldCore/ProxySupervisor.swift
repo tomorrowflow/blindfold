@@ -92,24 +92,35 @@ public final class ProxySupervisor: ProxySupervising, @unchecked Sendable {
     private let launcher: ProxyProcessLaunching
     private let exePath: String
     private let args: [String]
-    private let environment: [String: String]
+    private let environmentProvider: @Sendable () -> [String: String]
     private var process: (any ProxyProcess)?
     private var everHealthy = false
 
-    /// `environment` is the already-reduced child environment (`LaunchEnvironment.reduce`,
-    /// ADR-0044) -- the supervisor hands it to the launcher verbatim on every `start()` and
-    /// never derives or reduces it itself, keeping this class process-lifecycle plumbing
-    /// only. Defaults to empty for callers (existing lifecycle tests) not concerned with it.
-    public init(launcher: ProxyProcessLaunching, exePath: String, args: [String], environment: [String: String] = [:]) {
+    /// `environmentProvider` is called fresh on every `start()` (issue #237, ADR-0044) --
+    /// the supervisor holds a provider it calls, never a captured snapshot, so a value
+    /// written to the launch environment/secrets store *after* the supervisor is
+    /// constructed (a Settings save, a `.env` import) still reaches the *next* spawned
+    /// child rather than only a fresh app launch. The provider is expected to already
+    /// return the fully-reduced child environment (`LaunchEnvironment.reduce`, ADR-0044) --
+    /// this class never derives or reduces it itself, keeping it process-lifecycle
+    /// plumbing only.
+    public init(launcher: ProxyProcessLaunching, exePath: String, args: [String], environmentProvider: @escaping @Sendable () -> [String: String]) {
         self.launcher = launcher
         self.exePath = exePath
         self.args = args
-        self.environment = environment
+        self.environmentProvider = environmentProvider
+    }
+
+    /// Convenience overload for callers with a fixed environment snapshot (existing
+    /// lifecycle tests not concerned with re-composition) -- wraps it in a provider that
+    /// always returns the same value. Defaults to empty.
+    public convenience init(launcher: ProxyProcessLaunching, exePath: String, args: [String], environment: [String: String] = [:]) {
+        self.init(launcher: launcher, exePath: exePath, args: args, environmentProvider: { environment })
     }
 
     public func start() {
         everHealthy = false
-        process = launcher.launch(exePath: exePath, args: args, environment: environment)
+        process = launcher.launch(exePath: exePath, args: args, environment: environmentProvider())
     }
 
     /// Tells the supervisor a `/v1/status` poll succeeded — called by the menu bar's
