@@ -114,6 +114,18 @@ internal sealed class RealProxyProcessLauncher : IProxyProcessLauncher
         // Windows hardware/Process Monitor telemetry, or a maintainer decision to route around it (see
         // issue #197's own precedent: this codebase has hit an env-propagation-class puzzle in this exact
         // area once before and it was never actually root-caused, only worked around).
+        //
+        // Update (issue #234, this cycle): searched for a known PyInstaller Windows-onefile
+        // bootloader bug matching this exact shape (a GUI-subsystem/.NET single-file parent's
+        // ambient-inherited env not reaching the onefile child) -- PyInstaller's own internal
+        // bookkeeping env vars (_PYI_PARENT_PROCESS_LEVEL, _PYI_APPLICATION_HOME_DIR,
+        // _PYI_ARCHIVE_FILE, _PYI_SPLASH_IPC) are unrelated (they mark the bootloader's own
+        // process-level/re-exec state, not user env), and the one documented cross-platform env-
+        // inheritance gap (macOS not passing DYLD_LIBRARY_PATH to subprocesses, a SIP-driven
+        // dynamic-linker restriction) doesn't apply to Windows or to plain os.environ reads. No
+        // matching GitHub issue found either. This rules out "a known, already-fixed-elsewhere
+        // PyInstaller bug" as the explanation -- it does not narrow the gap further; the
+        // conclusion above (real Windows telemetry or a maintainer routing decision) stands.
         foreach (var (key, value) in environment) Environment.SetEnvironmentVariable(key, value);
 
         var startInfo = new ProcessStartInfo(exePath)

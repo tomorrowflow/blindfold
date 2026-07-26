@@ -241,6 +241,10 @@ internal static class Program
                         // RealProxyProcessLauncher.Launch's matching note). Real Windows hardware/Process
                         // Monitor telemetry, or a maintainer routing decision, is the load-bearing next step
                         // now, not another guess from here.
+                        //
+                        // Update (issue #234, this cycle): a web search for a known PyInstaller Windows-
+                        // onefile bug matching this shape found nothing -- see RealProxyProcessLauncher
+                        // .Launch's matching note. Negative evidence, not a fix; the conclusion above stands.
                         ProbeEnvironmentPropagation(launchEnvironment);
                         return 1;
                     }
