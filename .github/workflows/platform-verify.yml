@@ -402,7 +402,18 @@ jobs:
             # on this issue has been diagnosing.
             $storeKeyStdout = "tray-app/publish/onehop-storekey-stdout.log"
             $storeKeyStderr = "tray-app/publish/onehop-storekey-stderr.log"
-            $env:BLINDFOLD_STORE_KEY = "smoke-test-one-hop-store-key-0123456789abcdef"
+            # Must be valid base64 decoding to exactly 32 bytes (mapping_cipher._decode_store_key,
+            # ADR-0045 §3) -- the prior literal here ("smoke-test-one-hop-store-key-0123456789abcdef")
+            # contains hyphens, which base64.b64decode(..., validate=True) rejects outright
+            # (binascii.Error: "Only base64 data is allowed"). serve.py's refuse_if_malformed_store_key
+            # runs at startup before this assertion's poll loop ever gets a chance to observe
+            # mapping_cipher, so the prior literal would have made blindfold-proxy.exe refuse to
+            # start (fail-closed) and exit non-zero -- failing this assertion for an unrelated
+            # reason (a malformed test fixture) instead of actually isolating the ONE-HOP Store-key
+            # path this assertion exists to test (issue #234). Caught by inspection before this
+            # assertion's first hosted run: `smoke-test-one-hop-store-key-32b` (32 bytes) encodes to
+            # the base64 literal below.
+            $env:BLINDFOLD_STORE_KEY = "c21va2UtdGVzdC1vbmUtaG9wLXN0b3JlLWtleS0zMmI="
             $env:BLINDFOLD_DATABASE_URL = "memory://"
             $storeKeyHop = Start-Process -FilePath "tray-app/publish/blindfold-proxy.exe" `
               -ArgumentList "serve", "--host", "127.0.0.1", "--port", "25466" `
