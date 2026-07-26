@@ -13,12 +13,16 @@ calls -- ``_require_role`` stays the single gate, unchanged.
 
 Issue #104 (Setup slice 1/5): the entity-graph seeding half (``seed_entity_graph``)
 is now **opt-in** rather than automatic.  The two operations that remain automatic
-at startup are transit-gated re-identify-store seeding and identity-gated
-bootstrap-admin.  The entity-graph seeding is preserved as a standalone callable
-(``seed_entity_graph_from_vendored_seed``) for future opt-in Sample data (#108).
+at startup are re-identify-store seeding -- gated on an active mapping cipher
+(Transit or the Local key cipher, ADR-0045 §2/§4, issue #231; not Transit
+specifically) -- and identity-gated bootstrap-admin.  The entity-graph seeding is
+preserved as a standalone callable (``seed_entity_graph_from_vendored_seed``) for
+future opt-in Sample data (#108).
 """
 
 from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 from .entity_graph import EntityGraph
 from .rbac import VALID_ROLES, RbacRegistry
@@ -26,6 +30,9 @@ from .reidentify import InMemoryReIdentificationStore
 from .relationships import RelationshipStore
 from .store import VendoredSeedRepository, vendored_seed_repository
 from .transit import TransitClient
+
+if TYPE_CHECKING:
+    from .mapping_cipher import MappingCipher
 
 
 def bootstrap_admin(rbac: RbacRegistry, identity: str, workspace: str) -> None:
@@ -66,7 +73,8 @@ def bootstrap_from_vendored_seed(
     relationship_store: RelationshipStore,
     reidentify_store: InMemoryReIdentificationStore,
     rbac: RbacRegistry,
-    transit: TransitClient | None,
+    transit: "TransitClient | None" = None,
+    mapping_cipher: "MappingCipher | None" = None,
     bootstrap_admin_identity: str,
     workspace: str | None = None,
     repo: VendoredSeedRepository | None = None,
@@ -77,11 +85,17 @@ def bootstrap_from_vendored_seed(
     - When ``seed_entity_graph=True`` (default, for backward compatibility), the
       entity graph (and relationship store) are seeded -- no network dependency,
       so org-graph/entity-list render the seeded workspace immediately.
-    - The re-identify store is seeded only when ``transit`` is configured (Transit
-      encrypt is a network call); without it, Reveal is unavailable regardless of
-      seeding, so skipping is not a degradation.
+    - The re-identify store is seeded only when a mapping cipher is active
+      (ADR-0045 §2/§4, issue #231) -- encrypt is either a network call (Transit)
+      or a local AES-GCM seal (the Local key cipher); without either, Reveal is
+      unavailable regardless of seeding, so skipping is not a degradation.
     - The bootstrap admin is granted only when ``bootstrap_admin_identity`` is set
       (``BLINDFOLD_BOOTSTRAP_ADMIN``); an empty value grants nothing.
+
+    ``mapping_cipher`` is the preferred parameter; ``transit`` is kept as a
+    backward-compat alias (mirroring ``store/sqlite.py``'s
+    ``mapping_cipher or transit`` convention) so existing callers passing a
+    ``TransitClient`` via ``transit=`` keep working unchanged.
 
     Issue #104: app.py's startup call now passes ``seed_entity_graph=False`` so the
     Postgres store becomes the live entity-graph source.  The parameter is kept for
@@ -89,12 +103,13 @@ def bootstrap_from_vendored_seed(
     """
     repo = repo or vendored_seed_repository()
     workspace = workspace or repo.workspace_slug()
+    cipher = mapping_cipher or transit
 
     if seed_entity_graph:
         repo.seed_entity_graph(entity_graph, relationship_store, workspace=workspace)
 
-    if transit is not None:
-        repo.seed_reidentify_store(reidentify_store, transit, workspace=workspace)
+    if cipher is not None:
+        repo.seed_reidentify_store(reidentify_store, cipher, workspace=workspace)
 
     if bootstrap_admin_identity:
         bootstrap_admin(rbac, bootstrap_admin_identity, workspace)

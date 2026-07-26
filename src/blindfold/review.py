@@ -28,6 +28,7 @@ from .policy import DEFAULT_WORKSPACE
 from .store._mint import collides_with_known_entity
 
 if TYPE_CHECKING:
+    from .mapping_cipher import MappingCipher
     from .transit import TransitClient
 
 # Plausible fake names used to mint **provisional** surrogates. Kept disjoint from
@@ -135,19 +136,26 @@ class ReviewInbox:
     twice across requests does NOT create a duplicate inbox item (the provisional
     surrogate is also reused via the mapping — clause E-stable).
 
-    Optionally persisted (``store`` + ``transit``, ADR-0037 / issue #169) as a
-    durable real-value surface: ``real``/``context`` reach the store only as
-    Transit ciphertext (plus a blind index for ``real``, for dedup without
-    decrypting), never plaintext. Persistence requires BOTH a store and a
-    Transit client (graceful degradation, issue #149) — with either missing,
-    this stays the plain in-memory/ephemeral inbox, byte-identical to before
-    this slice.
+    Optionally persisted (``store`` + a mapping cipher, ADR-0037 / issue #169,
+    generalized from Transit-only by ADR-0045 §2/§4 / issue #231) as a durable
+    real-value surface: ``real``/``context`` reach the store only as
+    mapping-cipher ciphertext (plus a blind index for ``real``, for dedup
+    without decrypting), never plaintext. Persistence requires BOTH a store and
+    an active mapping cipher -- Transit or the Local key cipher (graceful
+    degradation, issue #149) — with either missing, this stays the plain
+    in-memory/ephemeral inbox, byte-identical to before this slice.
+
+    ``mapping_cipher`` is the preferred constructor parameter; ``transit`` is
+    kept as a backward-compat alias (mirroring ``store/sqlite.py``'s
+    ``mapping_cipher or transit`` convention) so existing callers passing a
+    ``TransitClient`` via ``transit=`` keep working unchanged.
     """
 
     def __init__(
         self,
         store: "ReviewInboxStore | None" = None,
         transit: "TransitClient | None" = None,
+        mapping_cipher: "MappingCipher | None" = None,
     ) -> None:
         self._items: dict[str, ReviewItem] = {}
         # real -> id lookup, so re-encountering the same novel value reuses the
@@ -167,23 +175,26 @@ class ReviewInbox:
         # person-pool cursor.
         self._pool_positions: dict[str, int] = {}
         self._store = store
-        self._transit = transit
+        self._cipher = mapping_cipher or transit
 
     def _persistent(self) -> bool:
-        return self._store is not None and self._transit is not None
+        return self._store is not None and self._cipher is not None
 
     def attach_store(
-        self, store: "ReviewInboxStore", transit: "TransitClient | None"
+        self, store: "ReviewInboxStore", mapping_cipher: "MappingCipher | None"
     ) -> None:
         """Wire persistence into an already-constructed inbox and hydrate every
         previously-persisted item + pool cursor (ADR-0037, issue #169).
 
         Call once, e.g. at process startup, when both dependencies are (or become)
-        available. A no-op for hydration when ``transit`` isn't configured too
-        (issue #149 graceful degradation) — a store alone can't decrypt.
+        available. A no-op for hydration when ``mapping_cipher`` isn't configured
+        too (issue #149 graceful degradation) — a store alone can't decrypt.
+        ``mapping_cipher`` accepts either a ``TransitClient`` or a
+        ``LocalKeyCipher`` (ADR-0045 §2/§4, issue #231) -- both satisfy the same
+        ``encrypt``/``decrypt``/``blind_index`` seam.
         """
         self._store = store
-        self._transit = transit
+        self._cipher = mapping_cipher
         if not self._persistent():
             return
         for row in store.list_rows():
@@ -196,8 +207,8 @@ class ReviewInbox:
                 entity_type,
                 workspace,
             ) = row
-            real = transit.decrypt(real_ciphertext)
-            context = transit.decrypt(context_ciphertext)
+            real = self._cipher.decrypt(real_ciphertext)
+            context = self._cipher.decrypt(context_ciphertext)
             item = ReviewItem(
                 id=item_id,
                 real=real,
@@ -281,17 +292,18 @@ class ReviewInbox:
         return item
 
     def _persist_item(self, item: ReviewItem, pool_key: str, next_position: int) -> None:
-        """Write ``item`` through the store seam as Transit ciphertext (ADR-0037).
+        """Write ``item`` through the store seam as mapping-cipher ciphertext
+        (ADR-0037, generalized from Transit-only by ADR-0045 §2/§4 / issue #231).
 
         Only ``real`` (+ its blind index) and ``context`` are encrypted;
         ``provisional_surrogate``/``entity_type``/``workspace`` are never real
         values, so they are written plaintext, matching the store's own column
         shapes (workspace: issue #171).
         """
-        assert self._store is not None and self._transit is not None
-        real_ciphertext = self._transit.encrypt(item.real)
-        real_blind_index = self._transit.blind_index(item.real)
-        context_ciphertext = self._transit.encrypt(item.context)
+        assert self._store is not None and self._cipher is not None
+        real_ciphertext = self._cipher.encrypt(item.real)
+        real_blind_index = self._cipher.blind_index(item.real)
+        context_ciphertext = self._cipher.encrypt(item.context)
         self._store.upsert_row(
             item.id,
             real_ciphertext,

@@ -15,7 +15,9 @@ an identity NOT bootstrapped is still refused.
 
 from __future__ import annotations
 
+import base64
 import json
+import os
 
 import httpx
 import pytest
@@ -29,6 +31,10 @@ from blindfold.reidentify import InMemoryReIdentificationStore
 from blindfold.relationships import RelationshipStore
 from blindfold.store import vendored_seed_repository
 from blindfold.transit import TransitClient
+
+
+def _make_store_key() -> str:
+    return base64.b64encode(os.urandom(32)).decode()
 
 
 def _make_client() -> httpx.AsyncClient:
@@ -155,3 +161,31 @@ async def test_bootstrap_from_vendored_seed_seeds_reidentify_store_when_transit_
     ciphertext = await reidentify_store.surrogate_to_ciphertext(surrogate, "default")
     assert ciphertext is not None
     assert transit.decrypt(ciphertext) == "Martin Bach"
+
+
+@pytest.mark.anyio
+async def test_bootstrap_from_vendored_seed_seeds_reidentify_store_under_the_local_cipher():
+    """ADR-0045 §4/§5, issue #231: the re-identify mapping's seeding must go
+    through whichever mapping cipher is active, not just Transit -- a fresh
+    install configured with BLINDFOLD_STORE_KEY (no Transit token at all) must
+    still get a resolvable re-identify store from the vendored seed.
+    """
+    from blindfold.mapping_cipher import LocalKeyCipher
+
+    reidentify_store = InMemoryReIdentificationStore()
+    cipher = LocalKeyCipher(_make_store_key())
+
+    bootstrap_from_vendored_seed(
+        entity_graph=EntityGraph(),
+        relationship_store=RelationshipStore(),
+        reidentify_store=reidentify_store,
+        rbac=RbacRegistry(),
+        mapping_cipher=cipher,
+        bootstrap_admin_identity="",
+    )
+
+    pairs = dict(vendored_seed_repository().seeded_pairs())
+    surrogate = pairs["Martin Bach"]
+    ciphertext = await reidentify_store.surrogate_to_ciphertext(surrogate, "default")
+    assert ciphertext is not None
+    assert cipher.decrypt(ciphertext) == "Martin Bach"

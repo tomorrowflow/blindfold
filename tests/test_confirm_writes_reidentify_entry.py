@@ -32,6 +32,7 @@ from blindfold.app import (
     app,
     get_entity_graph,
     get_mapping,
+    get_mapping_cipher,
     get_reidentify_store,
     get_review_inbox,
     get_transit_client,
@@ -119,6 +120,7 @@ async def test_confirm_lets_an_authorized_re_identifier_reveal_the_confirmed_ref
     app.dependency_overrides[get_mapping] = lambda: mapping
     app.dependency_overrides[get_reidentify_store] = lambda: reidentify_store
     app.dependency_overrides[get_transit_client] = lambda: transit
+    app.dependency_overrides[get_mapping_cipher] = lambda: transit
     app.dependency_overrides[get_rbac] = lambda: rbac
     app.dependency_overrides[get_audit_log] = lambda: audit_log
     try:
@@ -166,6 +168,7 @@ async def test_confirm_writes_a_workspace_scoped_entry_not_visible_from_another_
     app.dependency_overrides[get_mapping] = lambda: mapping
     app.dependency_overrides[get_reidentify_store] = lambda: reidentify_store
     app.dependency_overrides[get_transit_client] = lambda: transit
+    app.dependency_overrides[get_mapping_cipher] = lambda: transit
     app.dependency_overrides[get_rbac] = lambda: rbac
     app.dependency_overrides[get_audit_log] = lambda: audit_log
     try:
@@ -199,6 +202,7 @@ async def test_confirm_succeeds_and_writes_nothing_when_transit_is_unconfigured(
     app.dependency_overrides[get_mapping] = lambda: mapping
     app.dependency_overrides[get_reidentify_store] = lambda: reidentify_store
     app.dependency_overrides[get_transit_client] = lambda: None
+    app.dependency_overrides[get_mapping_cipher] = lambda: None
     try:
         async with _make_client() as client:
             confirm_resp = await client.post(
@@ -242,6 +246,7 @@ async def test_reconfirming_the_same_real_value_does_not_error_and_reveal_still_
     app.dependency_overrides[get_mapping] = lambda: mapping
     app.dependency_overrides[get_reidentify_store] = lambda: reidentify_store
     app.dependency_overrides[get_transit_client] = lambda: transit
+    app.dependency_overrides[get_mapping_cipher] = lambda: transit
     app.dependency_overrides[get_rbac] = lambda: rbac
     app.dependency_overrides[get_audit_log] = lambda: audit_log
     try:
@@ -302,6 +307,7 @@ async def test_confirm_writes_only_ciphertext_to_a_recording_double_store():
     app.dependency_overrides[get_mapping] = lambda: mapping
     app.dependency_overrides[get_reidentify_store] = lambda: reidentify_store
     app.dependency_overrides[get_transit_client] = lambda: transit
+    app.dependency_overrides[get_mapping_cipher] = lambda: transit
     try:
         async with _make_client() as client:
             resp = await client.post(
@@ -318,3 +324,46 @@ async def test_confirm_writes_only_ciphertext_to_a_recording_double_store():
     # Only Transit ciphertext ever reaches the store -- never the real value.
     assert ciphertext != "Astrid Voss"
     assert transit.decrypt(ciphertext) == "Astrid Voss"
+
+
+@pytest.mark.anyio
+async def test_confirm_writes_the_reidentify_entry_under_the_local_cipher_with_no_transit():
+    """ADR-0045 §2/§4, issue #231: confirm's re-identify write must go through
+    whichever mapping cipher is active, not just Transit -- a workspace running
+    under BLINDFOLD_STORE_KEY alone (Transit unconfigured) must still get a
+    resolvable re-identify entry when a candidate is confirmed.
+    """
+    import base64
+    import os
+
+    from blindfold.mapping_cipher import LocalKeyCipher
+
+    inbox = ReviewInbox()
+    item = inbox.upsert(
+        "Astrid Voss", context="Brief Astrid Voss tomorrow.", workspace="acme"
+    )
+    entity_graph = EntityGraph()
+    mapping = SurrogateMapping.from_pairs([])
+    reidentify_store = InMemoryReIdentificationStore()
+    cipher = LocalKeyCipher(base64.b64encode(os.urandom(32)).decode())
+
+    app.dependency_overrides[get_review_inbox] = lambda: inbox
+    app.dependency_overrides[get_entity_graph] = lambda: entity_graph
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_reidentify_store] = lambda: reidentify_store
+    app.dependency_overrides[get_transit_client] = lambda: None
+    app.dependency_overrides[get_mapping_cipher] = lambda: cipher
+    try:
+        async with _make_client() as client:
+            resp = await client.post(
+                f"/v1/management/review-inbox/{item.id}/confirm"
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    ciphertext = await reidentify_store.surrogate_to_ciphertext(
+        item.provisional_surrogate, "acme"
+    )
+    assert ciphertext is not None
+    assert cipher.decrypt(ciphertext) == "Astrid Voss"

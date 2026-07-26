@@ -290,6 +290,7 @@ def _override_confirm_reveal_deps(app, fx):
         get_audit_log,
         get_entity_graph,
         get_mapping,
+        get_mapping_cipher,
         get_rbac,
         get_reidentify_store,
         get_review_inbox,
@@ -300,7 +301,12 @@ def _override_confirm_reveal_deps(app, fx):
     app.dependency_overrides[get_entity_graph] = lambda: fx["entity_graph"]
     app.dependency_overrides[get_mapping] = lambda: fx["mapping"]
     app.dependency_overrides[get_reidentify_store] = lambda: fx["reidentify_store"]
+    # get_transit_client still gates Reveal (the read/decrypt side, out of issue
+    # #231's write-path scope); get_mapping_cipher gates confirm's re-identify
+    # WRITE (ADR-0045 §2/§4) -- both point at the same Transit stub here so the
+    # write (confirm) and read (reveal) sides round-trip through one cipher.
     app.dependency_overrides[get_transit_client] = lambda: fx["transit"]
+    app.dependency_overrides[get_mapping_cipher] = lambda: fx["transit"]
     app.dependency_overrides[get_rbac] = lambda: fx["rbac"]
     app.dependency_overrides[get_audit_log] = lambda: fx["audit_log"]
 

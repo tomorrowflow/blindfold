@@ -134,6 +134,32 @@ def test_upsert_is_a_no_op_persistence_wise_when_store_is_none():
     assert item.real == "Klaus"
 
 
+def test_upsert_persists_real_and_context_through_the_local_cipher():
+    """ADR-0045 §2/§4, issue #231: the review inbox's real-value/context writes
+    must go through whichever mapping cipher is active, not just Transit -- a
+    workspace running under BLINDFOLD_STORE_KEY alone must still get a durable,
+    encrypted review inbox.
+    """
+    import base64
+    import os
+
+    from blindfold.mapping_cipher import LocalKeyCipher
+
+    store = _RecordingReviewInboxStore()
+    cipher = LocalKeyCipher(base64.b64encode(os.urandom(32)).decode())
+    inbox = ReviewInbox(store=store, mapping_cipher=cipher)
+
+    inbox.upsert("Helga Krause", context="Please brief Helga Krause tomorrow.")
+
+    (real_ciphertext, real_blind_index, context_ciphertext, *_rest) = next(
+        iter(store.rows.values())
+    )
+    assert real_ciphertext != "Helga Krause"
+    assert cipher.decrypt(real_ciphertext) == "Helga Krause"
+    assert real_blind_index == cipher.blind_index("Helga Krause")
+    assert cipher.decrypt(context_ciphertext) == "Please brief Helga Krause tomorrow."
+
+
 def test_upsert_is_a_no_op_persistence_wise_when_transit_is_none():
     # Both Postgres AND Transit must be configured to persist (ADR-0037) --
     # a store with no transit must not crash and must not persist.

@@ -337,3 +337,68 @@ def test_full_entity_graph_round_trips_and_leaks_no_real_value_of_any_kind(tmp_p
     assert "FakeName-001" in raw_content
     assert "FakeTerm-001" in raw_content
 
+
+# ---------------------------------------------------------------------------
+# T5 -- issue #231 AC5: importing a Seed bundle (plaintext JSON by design,
+# CONTEXT.md's "Seed bundle") through the mapping cipher must never leave a
+# bundle-carried real value in plaintext on disk -- neither the entity graph
+# nor the re-identify store it also seeds.
+# ---------------------------------------------------------------------------
+
+
+def test_importing_a_seed_bundle_under_the_local_cipher_leaks_no_real_value(tmp_path):
+    from blindfold.mapping_cipher import LocalKeyCipher
+    from blindfold.reidentify import InMemoryReIdentificationStore
+    from blindfold.store.entity_graph_store import PostgresEntityGraphStore
+    from blindfold.store.reidentify_store import PostgresReIdentificationStore
+    from blindfold.store.repository import VendoredSeedRepository
+
+    cipher = LocalKeyCipher(_make_store_key())
+    db_file = tmp_path / "store.sqlite3"
+    dsn = f"sqlite:///{db_file}"
+
+    entity_graph = PostgresEntityGraphStore(dsn, mapping_cipher=cipher)
+    reidentify_store = PostgresReIdentificationStore(dsn)
+    entity_graph.create_workspace("acme", "Acme Corp")
+
+    bundle = {
+        "workspace": {"slug": "acme", "name": "Acme Corp"},
+        "persons": [
+            {"canonical_name": "Jane Doe", "variations": ["Jane"]},
+        ],
+        "terms": [
+            {"canonical_name": "Project Zenith", "variations": []},
+        ],
+    }
+    repo = VendoredSeedRepository(bundle)
+    repo.seed_entity_graph(entity_graph, workspace="acme")
+    repo.seed_reidentify_store(reidentify_store, cipher, workspace="acme")
+
+    # The bundle's real values must round-trip through the entity graph...
+    entities = entity_graph.list_entities("acme")
+    names = {e.canonical_name for e in entities}
+    assert names == {"Jane Doe", "Project Zenith"}
+
+    # ...and the re-identify store (a SEPARATE table in the SAME SQLite file).
+    jane = next(e for e in entities if e.canonical_name == "Jane Doe")
+    ciphertext = await_or_call(
+        reidentify_store.surrogate_to_ciphertext, jane.active_surrogate, "acme"
+    )
+    assert ciphertext is not None
+    assert cipher.decrypt(ciphertext) == "Jane Doe"
+
+    # Leak-audit clause G: no bundle-carried real value anywhere in the raw file.
+    raw_content = db_file.read_bytes().decode("latin-1", errors="replace")
+    for real_value in ("Jane Doe", "Jane", "Project Zenith"):
+        assert real_value not in raw_content, (
+            f"real value {real_value!r} found in SQLite file -- clause G violated"
+        )
+
+
+def await_or_call(coro_func, *args, **kwargs):
+    """Run an async store method from a sync test without pytest-anyio machinery
+    (this file's other tests are all synchronous, issue #229/#230 convention)."""
+    import asyncio
+
+    return asyncio.run(coro_func(*args, **kwargs))
+

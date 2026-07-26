@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 
 import httpx
 import pytest
@@ -32,6 +33,7 @@ import pytest
 from blindfold.app import (
     app,
     get_entity_graph,
+    get_mapping_cipher,
     get_rbac,
     get_reidentify_store,
     get_relationship_store,
@@ -53,6 +55,10 @@ def _make_client() -> httpx.AsyncClient:
 
 def _b64(s: str) -> str:
     return base64.b64encode(s.encode()).decode()
+
+
+def _make_store_key() -> str:
+    return base64.b64encode(os.urandom(32)).decode()
 
 
 def _recording_transit() -> TransitClient:
@@ -86,6 +92,7 @@ def _override(
     relationship_store: RelationshipStore | None = None,
     reidentify_store: InMemoryReIdentificationStore | None = None,
     transit: TransitClient | None = None,
+    mapping_cipher: object | None = None,
 ) -> None:
     app.dependency_overrides[get_entity_graph] = lambda: entity_graph
     app.dependency_overrides[get_rbac] = lambda: rbac
@@ -95,7 +102,15 @@ def _override(
     app.dependency_overrides[get_reidentify_store] = lambda: (
         reidentify_store if reidentify_store is not None else InMemoryReIdentificationStore()
     )
+    # get_transit_client still gates Reveal (the read/decrypt side, out of this
+    # issue's write-path scope); get_mapping_cipher gates the seed endpoint's
+    # re-identify-store WRITE (ADR-0045 §2/§4, issue #231) -- defaults to the same
+    # `transit` stub so existing Transit-only tests keep exercising both sides with
+    # one object, unless a caller passes a distinct `mapping_cipher` (e.g. Local).
     app.dependency_overrides[get_transit_client] = lambda: transit
+    app.dependency_overrides[get_mapping_cipher] = lambda: (
+        mapping_cipher if mapping_cipher is not None else transit
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -341,3 +356,52 @@ async def test_seed_succeeds_without_transit_configured_but_skips_reidentify_see
     surrogate = entities[0].active_surrogate
     ciphertext = await reidentify_store.surrogate_to_ciphertext(surrogate, "acme")
     assert ciphertext is None
+
+
+# ---------------------------------------------------------------------------
+# 7. The re-identify-store seed also works under the Local key cipher, not just
+#    Transit (ADR-0045 §2/§4, issue #231) -- a fresh install configured with
+#    BLINDFOLD_STORE_KEY alone (no Transit token) must not have Import silently
+#    skip the re-identify-store write.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_import_seeds_the_reidentify_store_under_the_local_cipher():
+    from blindfold.mapping_cipher import LocalKeyCipher
+
+    graph = EntityGraph()
+    graph.create_workspace("acme", "Acme Corp")
+    rbac = RbacRegistry()
+    rbac.grant("alice", "acme", "admin")
+    reidentify_store = InMemoryReIdentificationStore()
+    cipher = LocalKeyCipher(_make_store_key())
+    _override(
+        entity_graph=graph,
+        rbac=rbac,
+        reidentify_store=reidentify_store,
+        mapping_cipher=cipher,
+    )
+
+    bundle = {
+        "workspace": {"slug": "acme", "name": "Acme Corp"},
+        "persons": [{"canonical_name": "Jane Doe", "variations": []}],
+        "terms": [],
+    }
+
+    try:
+        async with _make_client() as client:
+            resp = await client.post(
+                "/v1/management/workspaces/acme/seed",
+                json={"bundle": bundle},
+                headers={"x-blindfold-identity": "alice"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    entities = graph.list_entities("acme")
+    surrogate = entities[0].active_surrogate
+    ciphertext = await reidentify_store.surrogate_to_ciphertext(surrogate, "acme")
+    assert ciphertext is not None
+    assert cipher.decrypt(ciphertext) == "Jane Doe"

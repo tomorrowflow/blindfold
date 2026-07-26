@@ -706,8 +706,10 @@ def get_review_inbox_store() -> "PostgresReviewInboxStore | None":
     where ``database_url`` is falsy (the ``memory://`` sentinel; unset now defaults
     to a durable SQLite store, ADR-0043 §1/issue #204). ``None`` is the signal
     ``hydrate_review_inbox_from_store`` uses to skip persistence entirely --
-    persisting the review inbox also requires Transit (``get_transit_client()``),
-    so this getter alone is not the full gate (issue #149 graceful degradation).
+    persisting the review inbox also requires an active mapping cipher
+    (``get_mapping_cipher()``, ADR-0045 §2/§4, issue #231 -- Transit or the
+    Local key cipher), so this getter alone is not the full gate (issue #149
+    graceful degradation).
     """
     database_url = get_settings().database_url
     if not database_url:
@@ -721,19 +723,21 @@ def get_review_inbox_store() -> "PostgresReviewInboxStore | None":
 def hydrate_review_inbox_from_store(
     inbox: ReviewInbox,
     store: "PostgresReviewInboxStore | None",
-    transit: TransitClient | None,
+    mapping_cipher,
 ) -> None:
     """Wire persistence into ``inbox`` and hydrate every previously-persisted
     item + pool cursor (ADR-0037, issue #169) -- acceptance criteria 1/3.
 
     Called once at startup, after the vendored-seed/allowlist bootstrap. A no-op
-    when ``store`` or ``transit`` is ``None`` (issue #149 graceful degradation):
-    persistence requires BOTH Postgres (to store) and Transit (to encrypt), so the
-    in-memory/ephemeral default stays byte-identical to before this slice.
+    when ``store`` or ``mapping_cipher`` is ``None`` (issue #149 graceful
+    degradation): persistence requires BOTH Postgres (to store) and an active
+    mapping cipher (Transit or Local, ADR-0045 §2/§4, issue #231 -- generalized
+    from Transit-only) to encrypt, so the in-memory/ephemeral default stays
+    byte-identical to before this slice.
     """
-    if store is None or transit is None:
+    if store is None or mapping_cipher is None:
         return
-    inbox.attach_store(store, transit)
+    inbox.attach_store(store, mapping_cipher)
 
 
 def get_reidentify_store() -> ReIdentificationStore:
@@ -842,8 +846,9 @@ def get_transit_client() -> TransitClient | None:
     return None
 
 
-# Startup bootstrap (ADR-0012, issue #43 / UX-1 — updated by issue #104, #105):
-#   - Re-identify-store seeding: runs only when Transit is configured (network call).
+# Startup bootstrap (ADR-0012, issue #43 / UX-1 — updated by issue #104, #105, #231):
+#   - Re-identify-store seeding: runs only when a mapping cipher (Transit or Local
+#     key, ADR-0045 §2/§4) is active.
 #   - Bootstrap-admin RBAC grant: runs only when BLINDFOLD_BOOTSTRAP_ADMIN is set.
 # Entity-graph seeding is NOT automatic anymore (issue #104): the entity graph is now
 # served by the Postgres-backed store; a blank workspace is the correct out-of-box state
@@ -859,7 +864,7 @@ bootstrap_from_vendored_seed(
     relationship_store=_relationship_store,
     reidentify_store=get_reidentify_store(),
     rbac=get_rbac(),
-    transit=get_transit_client(),
+    mapping_cipher=get_mapping_cipher(),
     bootstrap_admin_identity=get_settings().bootstrap_admin_identity,
     seed_entity_graph=False,
 )
@@ -876,10 +881,12 @@ hydrate_allowlist_from_store(_allowlist, get_allowlist_store())
 # Persisted review-inbox hydration (ADR-0037, issue #169, acceptance criteria
 # 1/3): unions every item + per-pool mint cursor persisted before this restart
 # into `_review_inbox` above, via the same lazy Postgres-or-None seam
-# (get_review_inbox_store) plus Transit (get_transit_client) -- a no-op unless
-# BOTH are configured (acceptance criterion 6, #149 graceful degradation).
+# (get_review_inbox_store) plus the active mapping cipher (get_mapping_cipher,
+# ADR-0045 §2/§4, issue #231 -- Transit or the Local key cipher, not Transit
+# specifically) -- a no-op unless BOTH are configured (acceptance criterion 6,
+# #149 graceful degradation).
 hydrate_review_inbox_from_store(
-    _review_inbox, get_review_inbox_store(), get_transit_client()
+    _review_inbox, get_review_inbox_store(), get_mapping_cipher()
 )
 
 
@@ -1628,7 +1635,7 @@ async def confirm_review_item(
     mapping: SurrogateMapping = Depends(get_mapping),
     entity_graph: EntityGraph = Depends(get_entity_graph),
     reidentify_store: ReIdentificationStore = Depends(get_reidentify_store),
-    transit: TransitClient | None = Depends(get_transit_client),
+    mapping_cipher=Depends(get_mapping_cipher),
 ) -> dict:
     """Confirm a candidate as a real entity → grows the entity graph (ADR-0010).
 
@@ -1643,14 +1650,15 @@ async def confirm_review_item(
     present as an entity of the mapped kind in that workspace is not duplicated.
 
     Also writes a ``ReIdentificationStore`` entry, keyed
-    ``(provisional_surrogate, item.workspace)`` -> Transit-encrypted ``item.real``
-    (issue #172) — without this write a confirmed referent grew the entity graph
-    but Reveal (``GET /v1/management/surrogate/{surrogate}/real``) still 404'd
+    ``(provisional_surrogate, item.workspace)`` -> mapping-cipher-encrypted
+    ``item.real`` (issue #172, generalized from Transit-only in issue #231) --
+    without this write a confirmed referent grew the entity graph but Reveal
+    (``GET /v1/management/surrogate/{surrogate}/real``) still 404'd
     ``not-found``, since that endpoint reads only the ``ReIdentificationStore``,
-    never ``EntityGraph``/``SurrogateMapping``. Skipped when Transit is
-    unconfigured (issue #149 graceful degradation, mirroring ``seed_workspace``'s
-    own transit-gated seed): confirm must still succeed, and only ciphertext is
-    ever written, never a plaintext fallback.
+    never ``EntityGraph``/``SurrogateMapping``. Skipped when no mapping cipher
+    (Transit or Local) is configured (issue #149 graceful degradation, mirroring
+    ``seed_workspace``'s own cipher-gated seed): confirm must still succeed, and
+    only ciphertext is ever written, never a plaintext fallback.
     """
     item = inbox.get(item_id)
     if item is None:
@@ -1661,8 +1669,8 @@ async def confirm_review_item(
         entity_graph.add_entity(
             kind, item.workspace, item.real, surrogate=item.provisional_surrogate
         )
-    if transit is not None:
-        ciphertext = transit.encrypt(item.real)
+    if mapping_cipher is not None:
+        ciphertext = mapping_cipher.encrypt(item.real)
         reidentify_store.seed(item.provisional_surrogate, item.workspace, ciphertext)
     inbox.remove(item_id)
     return {
@@ -2151,7 +2159,7 @@ async def seed_workspace(
     entity_graph: EntityGraph = Depends(get_entity_graph),
     relationship_store: RelationshipStore = Depends(get_relationship_store),
     reidentify_store: ReIdentificationStore = Depends(get_reidentify_store),
-    transit: TransitClient | None = Depends(get_transit_client),
+    mapping_cipher=Depends(get_mapping_cipher),
     rbac: RbacRegistry = Depends(get_rbac),
 ) -> dict:
     """Populate a workspace's entity graph from a Seed bundle (issue #108, Setup
@@ -2172,18 +2180,22 @@ async def seed_workspace(
     Gated by the ``admin`` role on ``slug`` (same convention as ``merge_entities``) --
     the Setup creator already holds it from creating the workspace (issue #107).
 
-    Also seeds the re-identify store when Transit is configured, so re-identify
-    resolves for the imported entities without a separate ETL pass (mirrors
-    ``bootstrap_from_vendored_seed``'s transit-gated behavior) -- persisted through
-    the same Postgres-backed stores issue #105 wired up, so it survives a restart.
+    Also seeds the re-identify store through whichever mapping cipher is active
+    (ADR-0045 §2/§4, issue #231 -- Transit or the Local key cipher, not Transit
+    specifically), so re-identify resolves for the imported entities without a
+    separate ETL pass (mirrors ``bootstrap_from_vendored_seed``'s cipher-gated
+    behavior) -- persisted through the same Postgres-backed stores issue #105
+    wired up, so it survives a restart. A bundle import with no cipher configured
+    still populates the entity graph (ciphertext-only, never plaintext -- issue
+    #229/#230) but skips the re-identify-store write, same as no seeding at all.
     """
     _require_role(request, slug, "admin", rbac)
 
     bundle = body.get("bundle")
     repo = VendoredSeedRepository(bundle) if bundle else vendored_seed_repository()
     repo.seed_entity_graph(entity_graph, relationship_store, workspace=slug)
-    if transit is not None:
-        repo.seed_reidentify_store(reidentify_store, transit, workspace=slug)
+    if mapping_cipher is not None:
+        repo.seed_reidentify_store(reidentify_store, mapping_cipher, workspace=slug)
 
     return {"workspace": slug, "seeded": True}
 

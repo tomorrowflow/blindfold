@@ -13,14 +13,16 @@ of a hardcoded dict. Two implementations share the ``seeded_pairs()`` seam:
 from __future__ import annotations
 
 from collections.abc import Iterator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from ..entity_graph import EntityGraph
 from ..reidentify import InMemoryReIdentificationStore
 from ..relationships import CONTROLLED_VOCABULARY, RelationshipStore
-from ..transit import TransitClient
 from ._mint import mint_surrogates
 from ._seed import load_vendored_seed
+
+if TYPE_CHECKING:
+    from ..mapping_cipher import MappingCipher
 
 # Orientation the bulk-import bundle enforces per controlled relation (issue #127).
 # Scoped to THIS bundle shape only (persons/terms -- ADR-0013's structural org_unit
@@ -234,7 +236,7 @@ class VendoredSeedRepository:
     def seed_reidentify_store(
         self,
         store: InMemoryReIdentificationStore,
-        transit: TransitClient,
+        cipher: "MappingCipher",
         workspace: str | None = None,
     ) -> None:
         """Populate ``store`` with (surrogate, workspace) -> ciphertext for every
@@ -242,10 +244,15 @@ class VendoredSeedRepository:
         Postgres/ETL population path (issue #43 / UX-1). The canonical name is the
         real value re-identified; variations do not get their own store entry since
         they share their referent's surrogate and real value.
+
+        ``cipher`` is the active mapping cipher (ADR-0045 §2, issue #231) --
+        ``TransitClient`` and ``LocalKeyCipher`` both satisfy the same
+        ``encrypt``/``decrypt``/``blind_index`` seam, so this seeds identically
+        under either.
         """
         workspace = workspace or self.workspace_slug()
         for _kind, surrogate, referent in self._seeded_referents():
-            ciphertext = transit.encrypt(referent["canonical_name"])
+            ciphertext = cipher.encrypt(referent["canonical_name"])
             store.seed(surrogate, workspace, ciphertext)
 
 
