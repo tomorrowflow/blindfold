@@ -33,6 +33,12 @@ public struct SupervisorSettings: Equatable, Sendable {
     /// automatic/empty gets `removeValue`d rather than left stale in the store.
     private static let allKeys = [l3ProviderKey, l3BaseURLKey, l3ModelKey, l3InnerProviderKey, openBaoAddrKey]
 
+    /// Whether this settings surface owns `key` (issue #226's one-shot `.env` import needs
+    /// to classify an imported key without duplicating this field list).
+    public static func isKnownKey(_ key: String) -> Bool {
+        allKeys.contains(key)
+    }
+
     public var l3Provider: L3ProviderSelection
     public var l3BaseURL: String
     public var l3Model: String

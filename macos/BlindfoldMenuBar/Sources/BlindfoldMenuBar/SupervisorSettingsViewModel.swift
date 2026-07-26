@@ -22,6 +22,14 @@ final class SupervisorSettingsViewModel: ObservableObject {
     /// discovered model only edits `settings`, same as typing one by hand, so it still
     /// takes an explicit `save()` to reach the launch environment.
     @Published var discoveryResults: [ProviderDiscoveryResult] = []
+    /// Non-nil while a `.env` one-shot import (issue #226) is previewed but not yet
+    /// applied -- "show what will change before applying it". The view renders this,
+    /// never re-derives what an import would do.
+    @Published var dotEnvImportPlan: DotEnvImportPlan?
+    /// Set when reading or parsing the chosen file failed (issue #226's "malformed or
+    /// unreadable file fails cleanly" AC) -- never the underlying error's own text, since
+    /// this settings surface never logs or displays a `.env` file's contents.
+    @Published var dotEnvImportError: String?
 
     private let store: LaunchEnvironmentStore
     private let secretsStore: SecretsStoring
@@ -94,5 +102,42 @@ final class SupervisorSettingsViewModel: ObservableObject {
     private func restartProxy() {
         supervisor.stop()
         supervisor.start()
+    }
+
+    /// Reads and classifies a chosen `.env` file into a preview (issue #226) -- never
+    /// writes anything. The file itself is read exactly once, right here, and no path is
+    /// retained afterward: nothing in this class or `BlindfoldCore` remembers it as a
+    /// source to re-read on a later launch.
+    func previewDotEnvImport(fileURL: URL) {
+        var currentValues = store.values()
+        for key in [SupervisorSecrets.l3ApiKeyKey, SupervisorSecrets.openBaoTokenKey] {
+            if let heldSecret = secretsStore.value(for: key) {
+                currentValues[key] = heldSecret
+            }
+        }
+        do {
+            let fileValues = try DotEnvImport.readFileValues(contentsOf: fileURL)
+            dotEnvImportPlan = DotEnvImport.plan(fileValues: fileValues, currentValues: currentValues)
+            dotEnvImportError = nil
+        } catch {
+            dotEnvImportPlan = nil
+            dotEnvImportError = "Could not import this file -- check it's a readable .env file and try again."
+        }
+    }
+
+    /// Applies the previewed plan (issue #226): `BLINDFOLD_DATABASE_URL` is written only
+    /// when `importDatabaseURL` is `true`, the distinct confirmation the issue requires
+    /// beyond previewing the rest of the file. Reloads the edit buffer from the stores so
+    /// the form reflects the import immediately, same as a fresh launch would.
+    func applyDotEnvImport(importDatabaseURL: Bool) {
+        guard let plan = dotEnvImportPlan else { return }
+        DotEnvImport.apply(plan, importDatabaseURL: importDatabaseURL, into: store, secretsStore: secretsStore)
+        settings = SupervisorSettings.load(from: store.values())
+        secrets = SupervisorSecrets.load(from: secretsStore)
+        dotEnvImportPlan = nil
+    }
+
+    func cancelDotEnvImport() {
+        dotEnvImportPlan = nil
     }
 }
