@@ -17,11 +17,17 @@ final class SupervisorSettingsViewModel: ObservableObject {
     /// Non-nil while the hybrid restart rule is asking the user to confirm (ADR-0044:
     /// the proxy is healthy, so a silent restart would be a surprise outage).
     @Published var pendingRestartConfirmation = false
+    /// The most recent probe of the conventional local Ollama/oMLX endpoints (issue
+    /// #225) -- a convenience the surface offers, never authoritative: selecting a
+    /// discovered model only edits `settings`, same as typing one by hand, so it still
+    /// takes an explicit `save()` to reach the launch environment.
+    @Published var discoveryResults: [ProviderDiscoveryResult] = []
 
     private let store: LaunchEnvironmentStore
     private let secretsStore: SecretsStoring
     private let supervisor: ProxySupervising
     private let currentAppState: () -> AppState
+    private let prober: ProviderProbing
 
     var restartNotice: String { SupervisorSettingsRestart.restartNotice }
 
@@ -37,14 +43,29 @@ final class SupervisorSettingsViewModel: ObservableObject {
         store: LaunchEnvironmentStore,
         secretsStore: SecretsStoring,
         supervisor: ProxySupervising,
-        currentAppState: @escaping () -> AppState
+        currentAppState: @escaping () -> AppState,
+        prober: ProviderProbing = URLSessionProviderProber()
     ) {
         self.store = store
         self.secretsStore = secretsStore
         self.supervisor = supervisor
         self.currentAppState = currentAppState
+        self.prober = prober
         self.settings = SupervisorSettings.load(from: store.values())
         self.secrets = SupervisorSecrets.load(from: secretsStore)
+    }
+
+    /// Probes the conventional local endpoints (issue #225) -- never mutates `settings`
+    /// or `secrets` itself, only publishes what responded for the view to offer.
+    func discoverProviders() async {
+        discoveryResults = await ProviderDiscovery.discoverAll(omlxApiKey: secrets.l3ApiKey, prober: prober)
+    }
+
+    /// Selecting a discovered model writes its provider/base URL/model tag into the
+    /// edit buffer (issue #225's own AC) -- exactly like typing them in by hand, so it
+    /// still takes the existing `save()` to reach the launch environment.
+    func selectDiscoveredModel(_ result: ProviderDiscoveryResult, model: String) {
+        settings = result.applying(model: model, to: settings)
     }
 
     /// Persists the edited fields, then applies the hybrid restart rule (ADR-0044):

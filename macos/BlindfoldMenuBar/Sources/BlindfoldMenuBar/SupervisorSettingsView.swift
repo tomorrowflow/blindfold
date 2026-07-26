@@ -37,6 +37,24 @@ struct SupervisorSettingsView: View {
             TextField("L3 base URL", text: $model.settings.l3BaseURL)
             TextField("L3 model", text: $model.settings.l3Model)
 
+            // Issue #225: a convenience alongside the manual fields above, never a
+            // replacement for them -- hand entry (an air-gapped machine, a non-standard
+            // port) keeps working exactly as it does today regardless of what discovery
+            // finds.
+            Section("Discovered providers") {
+                if model.discoveryResults.isEmpty {
+                    Text("No local Ollama or oMLX server detected yet.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(Array(model.discoveryResults.enumerated()), id: \.offset) { _, result in
+                        discoveryRow(for: result)
+                    }
+                }
+                Button("Probe for local providers") {
+                    Task { await model.discoverProviders() }
+                }
+            }
+
             // Only meaningful once the provider resolves to gliner (per BlindfoldCore's
             // own field doc) -- hidden rather than shown-but-inert otherwise.
             if case .explicit(.gliner) = model.settings.l3Provider {
@@ -75,6 +93,28 @@ struct SupervisorSettingsView: View {
             Button("Cancel", role: .cancel) { model.cancelRestart() }
         } message: {
             Text(model.restartNotice)
+        }
+    }
+
+    /// One provider's discovery outcome (issue #225's own AC list): "neither running"
+    /// says so plainly, an unauthenticated oMLX is reported as needing a key (not as
+    /// absent), and a running provider lists its models as selectable model tags -- no
+    /// outcome here ever reads or displays the API key itself.
+    @ViewBuilder
+    private func discoveryRow(for result: ProviderDiscoveryResult) -> some View {
+        switch result.outcome {
+        case .notRunning:
+            Text("\(result.provider.rawValue): not running")
+                .foregroundStyle(.secondary)
+        case .needsApiKey:
+            Text("\(result.provider.rawValue): found a server, needs an API key")
+                .foregroundStyle(.orange)
+        case let .running(models):
+            ForEach(models, id: \.self) { modelTag in
+                Button("\(result.provider.rawValue): \(modelTag)") {
+                    model.selectDiscoveredModel(result, model: modelTag)
+                }
+            }
         }
     }
 }
