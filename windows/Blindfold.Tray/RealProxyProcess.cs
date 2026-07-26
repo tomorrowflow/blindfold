@@ -65,10 +65,17 @@ internal sealed class RealProxyProcessLauncher : IProxyProcessLauncher
         // UseShellExecute=false makes the child inherit this process's environment block by
         // default, so a real deployment where the user has BLINDFOLD_* set in their environment
         // before launching the tray propagates to the proxy without any explicit copy. (An earlier
-        // explicit env-copy here, added chasing issue #197's CI smoke failure, was a no-op: the
-        // single-file WinExe host simply didn't have the vars to copy. The smoke test no longer
-        // requires the tray-spawned proxy to reach Protected -- see Program.cs RunSmokeLaunchFull
-        // and platform-verify.yml's one-hop Protected assertion.)
+        // explicit env-copy here, added chasing issue #197's CI smoke failure, was a no-op: per
+        // a1ce4f2's own diagnosis, that loss was one hop further upstream -- PowerShell's
+        // Start-Process not delivering ambient env into blindfold.exe itself -- not this
+        // tray-to-proxy spawn, so copying here had nothing to fix. The smoke test no longer
+        // requires the tray-spawned proxy to reach Protected for THAT reason -- see Program.cs
+        // RunSmokeLaunchFull and platform-verify.yml's one-hop Protected assertion. It does,
+        // however, now require BLINDFOLD_STORE_KEY specifically to cross exactly this hop
+        // (issue #234, ADR-0045 §7/§9): unlike the ambient L3 vars, the Store key never crosses
+        // the PowerShell-to-WinExe hop at all -- it is minted inside this process by
+        // StoreKeyEnvironment.Build() and merged into `environment` below, so #197's
+        // upstream-hop diagnosis doesn't apply to it one way or the other.)
         var startInfo = new ProcessStartInfo(exePath)
         {
             UseShellExecute = false,

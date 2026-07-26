@@ -267,6 +267,18 @@ internal static class Program
     /// compiled bootloader -- unreachable by inspection or by this sandbox (its source shows a
     /// plain inheriting re-exec, but the compiled binary on this exact runner is the only thing
     /// that can actually confirm it) -- as the last unruled-out candidate.
+    ///
+    /// This is a different hop from the one issue #197 diagnosed (a1ce4f2/71f0d5c, predating
+    /// ADR-0044): that failure was PowerShell's Start-Process not delivering *ambient* env into
+    /// blindfold.exe itself, one hop upstream of this launcher seam entirely, and was never
+    /// actually fixed -- only worked around by dropping the smoke test's Protected requirement.
+    /// BLINDFOLD_STORE_KEY never crosses that upstream hop (it's minted inside blindfold.exe by
+    /// StoreKeyEnvironment.Build(), not inherited from PowerShell), so #197's finding neither
+    /// confirms nor rules out anything about *this* hop -- it does mean this codebase has hit
+    /// "Windows env propagation to a spawned child is unreliable" once before and never actually
+    /// root-caused it, which is why real hardware (or Process Monitor / a debug build against a
+    /// real windows-latest runner) is now the load-bearing next step rather than a fourth guess
+    /// diagnosable from Linux.
     /// </summary>
     private static void ProbeEnvironmentPropagation(IReadOnlyDictionary<string, string> launchEnvironment)
     {
