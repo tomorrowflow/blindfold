@@ -25,7 +25,7 @@ from cryptography.hazmat.primitives import hashes, hmac
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
-_PREFIX = "bf:v1:"
+SCHEME_PREFIX = "bf:v1:"
 _STORE_KEY_LENGTH_BYTES = 32
 _NONCE_LENGTH_BYTES = 12  # 96 bits (ADR-0045 §3)
 _HKDF_INFO_ENCRYPTION = b"blindfold-mapping-cipher-encryption-v1"
@@ -105,7 +105,7 @@ class LocalKeyCipher:
         nonce = os.urandom(_NONCE_LENGTH_BYTES)
         aesgcm = AESGCM(self._encryption_key)
         sealed = aesgcm.encrypt(nonce, plaintext.encode("utf-8"), context.encode("utf-8"))
-        return _PREFIX + base64.b64encode(nonce + sealed).decode("ascii")
+        return SCHEME_PREFIX + base64.b64encode(nonce + sealed).decode("ascii")
 
     def decrypt(self, ciphertext: str, *, context: str = "") -> str:
         """Decrypt a ``bf:v1:``-prefixed ciphertext produced by :meth:`encrypt`.
@@ -114,9 +114,9 @@ class LocalKeyCipher:
         doesn't match the value passed to :meth:`encrypt` -- including a
         ciphertext relocated to a different table/column.
         """
-        if not ciphertext.startswith(_PREFIX):
+        if not ciphertext.startswith(SCHEME_PREFIX):
             raise InvalidTag("ciphertext does not carry the bf:v1: scheme prefix")
-        raw = base64.b64decode(ciphertext[len(_PREFIX) :])
+        raw = base64.b64decode(ciphertext[len(SCHEME_PREFIX) :])
         nonce, sealed = raw[:_NONCE_LENGTH_BYTES], raw[_NONCE_LENGTH_BYTES:]
         aesgcm = AESGCM(self._encryption_key)
         plaintext = aesgcm.decrypt(nonce, sealed, context.encode("utf-8"))
@@ -131,4 +131,4 @@ class LocalKeyCipher:
         """
         h = hmac.HMAC(self._index_key, hashes.SHA256())
         h.update(value.encode("utf-8"))
-        return _PREFIX + h.finalize().hex()
+        return SCHEME_PREFIX + h.finalize().hex()

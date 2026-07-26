@@ -331,6 +331,24 @@ def resolve_database_url() -> str:
     return raw
 
 
+_SQLITE_DSN_PREFIX = "sqlite:///"
+
+
+def describe_store_location(database_url: str) -> str:
+    """A scrubbed, actionable name for where a store lives, for startup-refusal
+    messages (ADR-0045 §3/§4/§6, issue #232): the concrete SQLite file path, "the
+    configured database" for Postgres (never the DSN itself, which may carry a
+    password), or the **Store directory** (:func:`resolve_store_dir`) when no
+    persistence is configured at all -- still the actionable location an operator
+    would point Setup at.
+    """
+    if not database_url:
+        return resolve_store_dir()
+    if database_url.startswith(_SQLITE_DSN_PREFIX):
+        return database_url[len(_SQLITE_DSN_PREFIX):]
+    return "the configured database"
+
+
 def raw_l3_gliner_model_path_override() -> str:
     """The raw ``BLINDFOLD_L3_GLINER_MODEL_PATH`` override, unresolved against the
     Data directory (ADR-0034 §3, issue #150).

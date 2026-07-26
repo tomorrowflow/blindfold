@@ -65,6 +65,21 @@ public enum StartupRefusalReason {
         if lowered.contains("gliner") {
             return "refusing to start: GLiNER model not provisioned"
         }
+        // These three (issue #232, ADR-0045 §4/§3/§6) name the three named startup
+        // refusals a lost/misconfigured mapping cipher produces -- which secret is
+        // configured and which Store directory is affected, never the secret or
+        // any real value itself. Naming them precisely costs nothing in privacy:
+        // they are configuration facts, not entity values, same reasoning as #223's
+        // three branches above.
+        if lowered.contains("only ever be encrypted under one mapping cipher") {
+            return "refusing to start: both a Transit token and a Store key are configured (ambiguous mapping cipher)"
+        }
+        if lowered.contains("must be exactly 32 bytes, base64-encoded") {
+            return "refusing to start: BLINDFOLD_STORE_KEY is malformed"
+        }
+        if lowered.contains("cannot be decrypted with the configured cipher") {
+            return "refusing to start: the store cannot be decrypted with the configured cipher"
+        }
         return genericReason
     }
 }
