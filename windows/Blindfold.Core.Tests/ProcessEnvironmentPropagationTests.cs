@@ -147,4 +147,59 @@ public class ProcessEnvironmentPropagationTests
             Environment.SetEnvironmentVariable("BLINDFOLD_STORE_KEY", null);
         }
     }
+
+    /// <summary>
+    /// Narrows a leak-audit exposure the fix above (2fff155) introduced: setting the Store key
+    /// via <c>Environment.SetEnvironmentVariable</c> on the tray's own process, with nothing ever
+    /// clearing it, leaves the secret sitting in the tray process's ambient environment block for
+    /// its entire remaining lifetime -- not just in the launch-environment dictionary's heap
+    /// allocation the way the prior <c>startInfo.Environment</c>-only mechanism did. A standard/
+    /// mini crash dump of the tray process (the kind Windows Error Reporting actually collects and
+    /// shares, as opposed to a full-memory dump) captures the process environment block by
+    /// default, so this widens AC "the key is never written to a log, a crash dump, or plain
+    /// config" rather than merely being neutral.
+    ///
+    /// <c>CreateProcess</c> copies the parent's environment block into the child synchronously,
+    /// during process creation -- by the time <c>Process.Start</c> returns, the child already has
+    /// its own copy, and nothing the parent does to its own environment afterward can reach back
+    /// into an already-spawned child. This test proves that on this sandbox: it sets the entry,
+    /// starts a child that reads it only after a short delay (so the child is still running when
+    /// the parent clears its own copy), clears the parent's copy immediately after
+    /// <c>Process.Start</c> returns, and asserts both that the parent's own environment no longer
+    /// carries the value and that the already-spawned child still received it. Confirms
+    /// <see cref="RealProxyProcessLauncher"/> can safely clear the entry in a <c>finally</c> right
+    /// after <c>Process.Start</c>, narrowing the ambient-exposure window to the single call.
+    /// </summary>
+    [Fact]
+    public void ClearingTheEnvironmentVariableImmediatelyAfterStartDoesNotAffectTheAlreadySpawnedChild()
+    {
+        Environment.SetEnvironmentVariable("BLINDFOLD_STORE_KEY", "a-generated-key");
+        try
+        {
+            var startInfo = new ProcessStartInfo("/bin/sh")
+            {
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                CreateNoWindow = true,
+            };
+            startInfo.ArgumentList.Add("-c");
+            startInfo.ArgumentList.Add("sleep 0.2; printf '%s' \"$BLINDFOLD_STORE_KEY\"");
+
+            using var process = Process.Start(startInfo);
+            Assert.NotNull(process);
+
+            Environment.SetEnvironmentVariable("BLINDFOLD_STORE_KEY", null);
+            Assert.Null(Environment.GetEnvironmentVariable("BLINDFOLD_STORE_KEY"));
+
+            var stdout = process!.StandardOutput.ReadToEnd();
+            process.WaitForExit();
+
+            Assert.Equal(0, process.ExitCode);
+            Assert.Equal("a-generated-key", stdout);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("BLINDFOLD_STORE_KEY", null);
+        }
+    }
 }

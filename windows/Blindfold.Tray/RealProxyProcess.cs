@@ -101,5 +101,19 @@ internal sealed class RealProxyProcessLauncher : IProxyProcessLauncher
         {
             return new FailedProxyLaunch(ex.Message);
         }
+        finally
+        {
+            // CreateProcess copies this process's environment block into the child synchronously,
+            // during process creation -- by the time Process.Start returns (success or failure),
+            // any child that was going to inherit these entries already has its own copy, and
+            // clearing them here can't reach back into it (proven on this sandbox by
+            // ClearingTheEnvironmentVariableImmediatelyAfterStartDoesNotAffectTheAlreadySpawnedChild,
+            // Blindfold.Core.Tests). Narrows the Store key's exposure in the tray's own ambient
+            // environment to just this call, instead of the tray's entire remaining lifetime --
+            // a standard/mini crash dump of the tray process captures its environment block by
+            // default, so leaving these entries set would widen AC "the key is never written to a
+            // log, a crash dump, or plain config" (issue #234).
+            foreach (var key in environment.Keys) Environment.SetEnvironmentVariable(key, null);
+        }
     }
 }
