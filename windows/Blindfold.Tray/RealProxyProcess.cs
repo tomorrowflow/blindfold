@@ -80,6 +80,21 @@ internal sealed class RealProxyProcessLauncher : IProxyProcessLauncher
         // CreateProcess) without finding a fix. Switching this launcher onto the one mechanism
         // already proven end-to-end on real Windows removes that difference, rather than adding a
         // seventh diagnostic probe with no way to execute it from this sandbox.
+        //
+        // One more candidate this cycle ruled out (issue #234, continuing past a95a715): whether
+        // blindfold.exe itself -- Blindfold.Tray.csproj is SelfContained=true/PublishSingleFile=true,
+        // the same onefile-shaped packaging as blindfold-proxy.exe -- re-execs itself as a second
+        // process the way PyInstaller's onefile bootloader does, which would put this
+        // SetEnvironmentVariable call in a short-lived "unpacker" process distinct from whichever
+        // process actually calls CreateProcess for the child. Verified empirically in this sandbox
+        // (win-x64 can't run here, but the SelfContained+PublishSingleFile mechanism is RID-agnostic):
+        // a minimal console app published with the identical SelfContained/PublishSingleFile settings
+        // for linux-arm64, run directly (not via a backgrounding compound shell command, which
+        // introduces its own confounding subshell fork), reports Environment.ProcessId equal to the
+        // PID the launching shell observed, and a child it spawns after SetEnvironmentVariable sees
+        // the freshly set entry. .NET's single-file publish runs the managed entry point in the same
+        // OS process that was launched -- no bundle-extraction re-exec, unlike PyInstaller's onefile
+        // bootloader -- so this is not a second onefile-style hop this diagnostic chain had missed.
         foreach (var (key, value) in environment) Environment.SetEnvironmentVariable(key, value);
 
         var startInfo = new ProcessStartInfo(exePath)
