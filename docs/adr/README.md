@@ -46,5 +46,6 @@ Vocabulary follows [`../../CONTEXT.md`](../../CONTEXT.md).
 | [0033](0033-l3-candidate-precision-positional-case-heuristic-and-gliner-cascade.md) | L3 candidate precision — positional case heuristic and GLiNER cascade adjudicator | Proposed |
 | [0035](0035-processing-trace-local-ephemeral-scrubbed.md) | Processing trace — local, ephemeral, scrubbed per-exchange record | Accepted |
 | [0036](0036-component-restore-bounded-closed-world-sub-token.md) | Component restore — bounded, closed-world sub-token restore | Accepted |
+| [0047](0047-diagnostic-session-exchange-capture-and-replay.md) | Diagnostic session — source-only exchange capture and replay | Accepted |
 
 New ADRs: copy [`0000-template.md`](0000-template.md), take the next number.

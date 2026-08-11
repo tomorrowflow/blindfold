@@ -354,6 +354,28 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   request-path exchanges): this is process-lifecycle-only and the one durable thing "Open
   Logs" points at. Never the child proxy's raw stdout/stderr — that stream is a separate,
   unaudited, out-of-scope concern (ADR-0046).
+- **Diagnostic session** (ADR-0047) — the **proxy** run from a source checkout with the
+  `blindfold_devtools` extra installed, so it can write **Exchange captures**. The one
+  context in which real payload content is written down, and deliberately **not a mode**:
+  there is no flag, no build variant and no artifact — the diagnostic code lives in a
+  sibling top-level package no `blindfold.*` module imports, so it is unreachable from the
+  frozen entry point and physically absent from every release binary (asserted by a gate
+  with a positive control). Refuses to run against a **shared** store or **Transit**, on
+  every entry point. _Avoid_: **dev mode**, **debug mode**, diagnostic build (there is no
+  build) — a single boolean that "unlocks debugging" is the shape this term exists to
+  replace, and `BLINDFOLD_DEV_MODE` was retired to `BLINDFOLD_ALLOW_ROOT_TRANSIT_TOKEN`
+  precisely so no such flag could grow back under its old name.
+- **Exchange capture** (ADR-0047) — the artifact a **Diagnostic session** writes: one
+  JSONL file per exchange, hops nested, covering the whole **round trip** (real inbound,
+  blindfolded outbound, provider response, restored response). Two sections of different
+  provenance — `observed` (witnessed, including `ExchangeSession.injected`'s full
+  surrogate↔real pair table) and `reconstructed` (offsets, catching pass, L3 verdicts,
+  produced by replaying through `blindfold explain`) — whose **disagreement is itself the
+  signal**. Holds real values in plaintext by definition, opt-in by a named directory,
+  count-bounded. The deliberate opposite of the **Processing trace**: same field
+  vocabulary, separate schema, and it exists only where the Processing trace's scrubbing
+  refusal does not apply because no shipped code is involved. _Avoid_: payload diff, dump,
+  trace (that is the Processing trace).
 
 ## Key invariants
 
@@ -386,6 +408,14 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   loopback-only base-url check (plain oMLX has no remote-routing feature of its own, so
   loopback is sufficient there) — a future provider must re-derive its own local-only
   story, not assume either check transfers.
+- **No diagnostic code ships.** The ability to see real payload content exists only in a
+  **Diagnostic session** run from source; every release artifact is asserted to contain no
+  `blindfold_devtools` module — and the assertion carries a **positive control** (a canary
+  build the same check must fail on), because a green absence check proves nothing unless
+  it has been shown to go red. Corollary: the request path gains **no** branch, flag or
+  observer seam for diagnostics. Over-redaction is a quality bug and an un-blindfolded
+  entity is a privacy bug; a shipped `if dev:` is neither, it is the erosion that produces
+  both later (ADR-0047).
 
 ## Controlled vocabulary
 
