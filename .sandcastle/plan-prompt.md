@@ -49,6 +49,25 @@ mark it blocked) if it:
   contract itself is in question. These must never be auto-worked; a code agent cannot be
   trusted to weaken a privacy property.
 
+## Never re-plan an issue that keeps failing the same way
+
+Some issues cannot be finished from this sandbox at all — their acceptance criteria need real
+hardware, a hosted runner, a credential, a browser, or a human scope decision. Retrying one is
+not neutral: it spends a full implement + review + gate cycle to arrive at the same refusal.
+
+An issue whose maintainer comments include **gate-strike** entries has already been blocked
+from merge that many times. Read the strike comments and the cycle notes before selecting it:
+
+- **Skip it** if the strikes all name the same failing gate for the same reason and nothing in
+  the issue has changed since — no amended body, no new maintainer comment, no new evidence in
+  the latest cycle notes. Repeating it produces another identical failure. Do not mark it
+  blocked; just leave it out.
+- **Select it** if the picture has actually moved: the body was amended, a maintainer commented,
+  the scope was cut, or the last cycle's notes identify a concrete next step it did not get to.
+
+The orchestrator hands a repeatedly-blocked issue to a human on its own (it drops `Sandcastle`
+and adds `ready-for-human`), so this is a fast path, not the only safeguard.
+
 For each unblocked issue, assign a branch name using the exact format `sandcastle/issue-{id}` (no slug or other suffix). This must be deterministic so that re-planning the same issue always produces the same branch name and accumulated progress is preserved.
 
 # OUTPUT
@@ -59,6 +78,14 @@ Output your plan as a JSON object wrapped in `<plan>` tags:
 {"issues": [{"id": "42", "title": "Fix auth bug", "branch": "sandcastle/issue-42"}]}
 </plan>
 
-Include only unblocked issues. If every issue is blocked, include the single highest-priority candidate (the one with the fewest or weakest dependencies).
+Include only unblocked issues. If every issue is blocked **by a dependency on another open
+issue**, include the single highest-priority candidate (the one with the fewest or weakest
+dependencies) — that breaks a dependency deadlock where nothing would otherwise start.
+
+That deadlock-breaker does **not** apply to the two exclusions above. Never fall back to an
+issue you skipped for being HITL or for repeatedly failing the same way — those are not
+dependency deadlocks, and selecting one anyway is exactly how a stuck issue gets re-picked
+every iteration until the run ends. If the only remaining candidates are those, emit an empty
+plan and let the run exit cleanly.
 
 Always emit the `<plan>` tags, even when there is nothing to do. If there are no issues to work on at all, output `<plan>{"issues": []}</plan>` so the run can exit cleanly.

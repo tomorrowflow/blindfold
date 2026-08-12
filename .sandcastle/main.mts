@@ -26,7 +26,7 @@ import * as sandcastle from "@ai-hero/sandcastle";
 import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
 import { z } from "zod";
 import { execSync, execFileSync } from "node:child_process";
-import { existsSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 
 // The planner emits its plan as JSON inside <plan> tags; Output.object extracts
@@ -46,6 +46,31 @@ const planSchema = z.object({
 // Maximum number of plan→execute→merge cycles before stopping.
 // Raise this if your backlog is large; lower it for a quick smoke-test run.
 const MAX_ITERATIONS = 10;
+
+// The GIVE-UP PATH: how many times one issue may be blocked from merge before
+// the loop stops re-picking it and hands it to a human.
+//
+// Why this exists: a blocked issue keeps its commits and gets retried next
+// cycle, which is the RIGHT default for a transient failure (a flaky suite, a
+// half-finished implementer). But it has no terminal case — and when an issue's
+// acceptance criteria cannot be satisfied from this sandbox at all, "retry next
+// cycle" becomes an infinite loop. `plan-prompt.md` re-queries the open
+// `Sandcastle` issues every iteration and has no reason to skip a blocked one;
+// worse, when it is the ONLY candidate its own deadlock-breaker fallback
+// ("if every issue is blocked, include the single highest-priority candidate")
+// guarantees it gets picked again. Both gates then refuse it again — correctly.
+//
+// Issue #234 is the precedent: 10 iterations, 5 red hosted platform-verify runs,
+// 8 commits that changed nothing but comments, and no route out. The AC required
+// hosted-Windows behavior no Linux sandbox can reproduce, so no amount of
+// retrying could ever clear the gate.
+//
+// After this many strikes the issue is escalated (Sandcastle → ready-for-human)
+// so the loop moves on. Nothing is lost: commits stay on the branch, the strikes
+// stay on the issue as a comment trail, and a human re-adds `Sandcastle` once the
+// scope or the blocker changes. Strike count lives in the issue's comments, so it
+// survives across runs like every other piece of sandcastle state.
+const MAX_GATE_STRIKES = 3;
 
 // ---------------------------------------------------------------------------
 // Per-role models
@@ -348,6 +373,195 @@ function closeIssue(id: string, comment: string): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// The give-up path (host-side)
+//
+// State lives in the issue's comment trail — same reason every other lifecycle
+// event does: it survives across runs, and a human can read and reset it.
+// ---------------------------------------------------------------------------
+
+// Every comment body on an issue, or [] on any error. Host-side; the one place
+// that shells out for comment bodies so the strike counter and the handoff
+// collector share a single code path.
+//
+// Emitted as a JSON array and parsed, NOT as newline-delimited `-q .comments[].body`:
+// comment bodies are multi-line, so splitting the raw output on newlines would
+// shred one comment into many fragments. The strike counter would survive that
+// (its marker sits on its own line), but `priorHandoffContext` would return only
+// the marker lines and silently drop every note body it exists to carry.
+function issueCommentBodies(id: string): string[] {
+  if (!REPO) return [];
+  try {
+    const out = execFileSync(
+      "gh",
+      ["issue", "view", id, "--repo", REPO, "--json", "comments", "-q", "[.comments[].body]"],
+      { encoding: "utf8", maxBuffer: 32 * 1024 * 1024 },
+    );
+    const parsed: unknown = JSON.parse(out);
+    return Array.isArray(parsed) ? parsed.filter((b): b is string => typeof b === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+const GATE_STRIKE_MARKER = "sandcastle:gate-strike:";
+
+// How many times this issue has already been blocked from merge. Counts the
+// strike markers rather than the `sandcastle:blocked:*` ones, which dedupe by
+// FAILING GATE (by design — so a reviewer→platform change of reason still
+// surfaces) and therefore saturate at a handful no matter how long the loop
+// spins. Strikes are numbered, so they accumulate one per blocked cycle.
+function gateStrikes(id: string): number {
+  return issueCommentBodies(id).filter((b) => b.includes(GATE_STRIKE_MARKER)).length;
+}
+
+// Record one strike and return the new total. Numbered marker → `postOnce`
+// dedupes a *replayed* strike (same number, e.g. a re-run of the same cycle)
+// while still letting genuine successive strikes accumulate.
+function recordGateStrike(id: string, branch: string, why: string): number {
+  const next = gateStrikes(id) + 1;
+  postOnce(
+    id,
+    `${GATE_STRIKE_MARKER}${next}`,
+    `⛔ **Gate strike ${next}/${MAX_GATE_STRIKES}** — \`${branch}\` was blocked from merge: ${why}.\n\n` +
+      (next < MAX_GATE_STRIKES
+        ? `Commits stay on the branch and the next cycle will retry. After ` +
+          `${MAX_GATE_STRIKES} strikes sandcastle stops re-picking this issue and hands it to a human, ` +
+          `so a genuinely unsatisfiable acceptance criterion can't spin the loop indefinitely.`
+        : `That is the last strike — escalating to a human now.`),
+  );
+  return next;
+}
+
+// Stop the loop from re-picking this issue: drop `Sandcastle` (the pickup label —
+// `plan-prompt.md` filters the open-issue list on it, and `sandcastleLabeledByTrusted`
+// enforces it host-side) and `ready-for-agent`, add `ready-for-human` (the
+// authoritative HITL signal the planner already honors).
+//
+// Deliberately NOT a close and NOT a branch reap: the work is unfinished, the
+// commits are the most valuable artifact of the strikes that got here, and the
+// diagnosis in the comment trail is what a human needs to route it. A human
+// re-adds `Sandcastle` once the scope or the blocker actually changes.
+function escalateToHuman(id: string, branch: string, why: string): void {
+  if (!REPO) return;
+  console.warn(
+    `  🚦 ${id} (${branch}) hit ${MAX_GATE_STRIKES} gate strikes — escalating to a human ` +
+      `(Sandcastle → ready-for-human). The loop will stop re-picking it.`,
+  );
+  try {
+    execFileSync(
+      "gh",
+      [
+        "issue", "edit", id, "--repo", REPO,
+        "--add-label", "ready-for-human",
+        "--remove-label", "Sandcastle",
+        "--remove-label", "ready-for-agent",
+      ],
+      { stdio: "ignore" },
+    );
+  } catch (err) {
+    console.warn(`  (issue #${id} escalation label swap failed, continuing: ${err})`);
+  }
+  postOnce(
+    id,
+    `sandcastle:escalated`,
+    `🚦 **Handed to a human after ${MAX_GATE_STRIKES} gate strikes.**\n\n` +
+      `Last failure: ${why}.\n\n` +
+      `Sandcastle has stopped re-picking this issue: \`Sandcastle\` and \`ready-for-agent\` removed, ` +
+      `\`ready-for-human\` added. **Nothing was discarded** — the commits are still on ` +
+      `\`${branch}\`, and the gate-strike comments above record what failed each cycle.\n\n` +
+      `Three strikes usually means one of:\n\n` +
+      `- an acceptance criterion this sandbox **cannot** satisfy (needs real hardware, a hosted ` +
+      `runner, a credential, or a browser) — split it out to its own \`ready-for-human\` issue and ` +
+      `descope it here;\n` +
+      `- a gate refusing a change it is **right** to refuse (a leak-audit clause or an ADR is in ` +
+      `question) — that is a human decision by design; or\n` +
+      `- an under-specified brief the implementer keeps re-interpreting.\n\n` +
+      `Re-add \`Sandcastle\` once the scope or the blocker has actually changed. Re-adding it ` +
+      `without changing either will simply spend three more strikes.`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Agent handoff notes (host-side)
+//
+// Agents inside the sandbox CANNOT write to the issue tracker: the sandbox PAT
+// has no `issues:write`, so every `gh issue comment` there fails with "Resource
+// not accessible by personal access token". The prompts nevertheless used to
+// tell agents to "leave a comment on the issue" on a FAIL — so every cycle
+// composed a careful status report, watched it 403, and dropped it. The next
+// cycle then re-derived the same findings from commit messages alone. Issue #234
+// wrote essentially the same diagnosis eight times that way.
+//
+// Fix: the agent emits its notes in a <handoff-notes> block in its final
+// message; the host lifts them out of the run's stdout and posts them. Same
+// division of labour as every other issue mutation here (main.mts:~236) —
+// the host has the credentials, so the host writes.
+//
+// Note on the alternative: granting the sandbox PAT `issues:write` would ALSO
+// fix the 403, but it is strictly worse. Sandbox comments would be authored by
+// the same account `TRUSTED_MAINTAINERS` lists, so agent-written text would
+// arrive at the next agent laundered as maintainer instruction — defeating the
+// SC-3 prompt-injection guard. Keep the write on the host, and keep the notes
+// clearly labelled as agent-authored (see `priorHandoffContext`).
+// ---------------------------------------------------------------------------
+
+const HANDOFF_MARKER = "sandcastle:handoff:";
+
+// Cap: enough for a real status report, small enough that a runaway agent can't
+// paste an entire transcript into the issue.
+const HANDOFF_MAX_CHARS = 8000;
+
+// Lift the agent's notes out of a run's combined stdout. Takes the LAST match:
+// agent output is appended as the run proceeds, so the final block is the
+// agent's closing summary (and any earlier echo of the prompt's own instructions
+// loses to it).
+function extractHandoff(stdout: string): string | null {
+  const matches = [...stdout.matchAll(/<handoff-notes>([\s\S]*?)<\/handoff-notes>/g)];
+  const last = matches.at(-1)?.[1]?.trim();
+  if (!last) return null;
+  return last.length > HANDOFF_MAX_CHARS
+    ? `${last.slice(0, HANDOFF_MAX_CHARS)}\n\n_…truncated by the host at ${HANDOFF_MAX_CHARS} characters._`
+    : last;
+}
+
+// Post one role's handoff notes for this cycle. Numbered per role so successive
+// cycles accumulate instead of deduping into one. Best-effort + fail-open, like
+// every other reporting call here.
+function postHandoff(id: string, role: string, stdout: string): void {
+  if (!REPO) return;
+  const notes = extractHandoff(stdout);
+  if (!notes) return;
+  const n =
+    issueCommentBodies(id).filter((b) => b.includes(`${HANDOFF_MARKER}${role}:`)).length + 1;
+  postOnce(
+    id,
+    `${HANDOFF_MARKER}${role}:${n}`,
+    `🗒️ **${role} notes — cycle ${n}** (posted by the host; the sandbox PAT cannot write issues)\n\n` +
+      `${notes}`,
+  );
+}
+
+// Prior cycles' handoff notes, for the implementer's prompt.
+//
+// Fed in SEPARATELY from `trustedCommentContext`, and explicitly labelled
+// agent-authored, because that is exactly what they are. They are evidence to
+// build on ("this was already ruled out"), never instructions — an agent must
+// not be able to steer a later cycle by writing itself an order. The SC-3
+// guard's whole point is that only a human's words are authoritative.
+//
+// Deliberately NOT given to the reviewer: it is the independent gate, and
+// seeding it with the implementer's own account of the work would compromise
+// that independence. Its notes are posted for the human and the next implementer.
+function priorHandoffContext(id: string): string {
+  const notes = issueCommentBodies(id).filter((b) => b.includes(HANDOFF_MARKER));
+  if (notes.length === 0) return "";
+  return notes
+    .map((b) => b.replace(/<!--[\s\S]*?-->/g, "").trim())
+    .filter(Boolean)
+    .join("\n\n---\n\n");
+}
+
 // How many commits `branch` is ahead of the target. This is the TRUE "is there
 // work?" signal — unlike the merge gate's current-run commit count, it counts
 // commits a prior run already left on the branch. Host-side; 0 on any error.
@@ -377,18 +591,47 @@ function sleep(ms: number): Promise<void> {
   return new Promise((res) => setTimeout(res, ms));
 }
 
+// Every OTHER gate in this loop is an agent in a sandbox, and the sandbox runner
+// writes that agent's log to traceLogPath() — which is what the role's trace pane
+// tails. The platform gate has no agent: it's the host-side `gh run list` poll
+// below. Nothing would ever write its log, so its pane sat empty for the entire
+// wait and read as a stalled/broken gate. Write the poll's own progress there so
+// the pane behaves like every other role's.
+//
+// Returns an appender. Observability is never a gate: a filesystem error here is
+// swallowed, never propagated into the pass/fail decision.
+function openPlatformVerifyTrace(branch: string): (line: string) => void {
+  const path = traceLogPath(branch, "platform-verify");
+  const write = (line: string): void => {
+    try {
+      appendFileSync(path, `${new Date().toISOString()}  ${line}\n`);
+    } catch {
+      /* a trace pane must never fail a run */
+    }
+  };
+  try {
+    writeFileSync(path, ""); // fresh file per gate run, not an append across runs
+  } catch {
+    /* as above */
+  }
+  return write;
+}
+
 // Push `branch`'s head to origin so platform-verify.yml's `on: push` trigger fires.
 // Sandcastle branches otherwise live only in the local shared .git (main.mts never
 // touches origin for any other gate) — this is the one exception, and only for
 // branches that already cleared every in-sandbox gate. Fail-closed: any push error
 // (auth, network, non-fast-forward) returns false rather than guessing the run exists.
-function pushBranchToOrigin(branch: string): boolean {
+function pushBranchToOrigin(branch: string, trace: (line: string) => void = () => {}): boolean {
   if (!REPO) return false;
   try {
+    trace(`pushing ${branch} to origin (triggers ${PLATFORM_VERIFY_WORKFLOW} on: push)`);
     execFileSync("git", ["push", "origin", `${branch}:${branch}`], { stdio: "ignore" });
+    trace("push ok");
     return true;
   } catch (err) {
     console.warn(`  (push of ${branch} to origin failed — platform-verify gate fails closed: ${err})`);
+    trace(`push FAILED — gate fails closed: ${err}`);
     return false;
   }
 }
@@ -397,16 +640,25 @@ function pushBranchToOrigin(branch: string): boolean {
 // `gh run list` until it completes or PLATFORM_VERIFY_TIMEOUT_MS elapses. Fail-closed
 // throughout: a `gh` error, a timeout, or a run that never appears all resolve to
 // "failure" rather than silently clearing the gate on ambiguity.
-async function awaitPlatformVerify(branch: string): Promise<"success" | "failure"> {
+async function awaitPlatformVerify(
+  branch: string,
+  trace: (line: string) => void = () => {},
+): Promise<"success" | "failure"> {
   if (!REPO) return "failure";
   let headSha: string;
   try {
     headSha = execFileSync("git", ["rev-parse", branch], { encoding: "utf8" }).trim();
   } catch {
+    trace(`could not resolve ${branch}'s head SHA — gate fails closed`);
     return "failure"; // can't resolve the SHA we just pushed → fail closed
   }
+  trace(`awaiting ${PLATFORM_VERIFY_WORKFLOW} for ${headSha}`);
+  trace(
+    `polling every ${PLATFORM_VERIFY_POLL_MS / 1000}s, timeout ${PLATFORM_VERIFY_TIMEOUT_MS / 60_000}min (timeout ⇒ failure)`,
+  );
 
   const deadline = Date.now() + PLATFORM_VERIFY_TIMEOUT_MS;
+  let announcedUrl = false;
   while (Date.now() < deadline) {
     try {
       const out = execFileSync(
@@ -419,7 +671,7 @@ async function awaitPlatformVerify(branch: string): Promise<"success" | "failure
           "--workflow",
           PLATFORM_VERIFY_WORKFLOW,
           "--json",
-          "headSha,status,conclusion",
+          "headSha,status,conclusion,url",
           "--limit",
           "20",
         ],
@@ -429,19 +681,32 @@ async function awaitPlatformVerify(branch: string): Promise<"success" | "failure
         headSha: string;
         status: string;
         conclusion: string | null;
+        url: string;
       }[];
       const run = runs.find((r) => r.headSha === headSha);
+      if (!run) {
+        trace("no run for this SHA yet (workflow not queued)");
+      } else {
+        if (!announcedUrl) {
+          trace(`run: ${run.url}`);
+          announcedUrl = true;
+        }
+        trace(`status=${run.status} conclusion=${run.conclusion ?? "-"}`);
+      }
       if (run && run.status === "completed") {
+        trace(run.conclusion === "success" ? "GATE PASS" : `GATE FAIL (${run.conclusion})`);
         return run.conclusion === "success" ? "success" : "failure";
       }
     } catch (err) {
       console.warn(`  (gh run list failed while awaiting platform-verify for ${branch}, retrying: ${err})`);
+      trace(`gh run list failed, retrying: ${err}`);
     }
     await sleep(PLATFORM_VERIFY_POLL_MS);
   }
   console.warn(
     `  (platform-verify timed out for ${branch} after ${PLATFORM_VERIFY_TIMEOUT_MS}ms — fail-closed)`,
   );
+  trace(`TIMED OUT after ${PLATFORM_VERIFY_TIMEOUT_MS / 60_000}min — gate fails closed`);
   return "failure";
 }
 
@@ -536,6 +801,14 @@ function worktreeIdForBranch(branch: string): string | null {
   return encodeURIComponent(path.endsWith("/") ? path : path + "/");
 }
 
+// The file a trace pane tails for a given role. Agent roles get this written for
+// them by the sandbox runner; host-side roles have to write it themselves (see
+// openPlatformVerifyTrace) — either way the path convention lives here, once.
+function traceLogPath(branch: string, role: string): string {
+  const slug = branch.replace(/\//g, "-");
+  return join(REPO_ROOT, ".sandcastle", "logs", `${slug}-${role}.log`);
+}
+
 function openTracePane(branch: string, role: string): void {
   if (!supacodeSession()) return;
   const key = `${branch}|${role}`;
@@ -546,7 +819,7 @@ function openTracePane(branch: string, role: string): void {
 
   const slug = branch.replace(/\//g, "-");
   const title = `${role} @ ${slug}`;
-  const logPath = join(REPO_ROOT, ".sandcastle", "logs", `${slug}-${role}.log`);
+  const logPath = traceLogPath(branch, role);
   // Single-quote for the surface's shell; the values are safe, but be defensive.
   const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
   // Set the tab title via an OSC-2 escape (Supacode/ghostty honor it). The escapes
@@ -943,7 +1216,19 @@ function trustedCommentContext(id: string): string {
     }
   }
 
-  const trusted = comments.filter((c) => TRUSTED_MAINTAINERS.includes(c.author));
+  // Drop sandcastle's OWN comments before presenting the rest as maintainer
+  // guidance. They are posted host-side under the maintainer's account, so by
+  // author alone they look like a human's words — but they are lifecycle
+  // bookkeeping (picked-up / blocked / gate-strike) and, for handoff notes,
+  // AGENT-authored text. Passing either as "trusted maintainer" guidance would
+  // launder it into instruction, which is precisely what SC-3 exists to prevent.
+  // Handoff notes still reach the implementer — via `priorHandoffContext`, in
+  // their own clearly-labelled, non-authoritative block.
+  const harnessAuthored = (body: string) => /<!--\s*sandcastle:/.test(body);
+
+  const trusted = comments.filter(
+    (c) => TRUSTED_MAINTAINERS.includes(c.author) && !harnessAuthored(c.body),
+  );
   if (trusted.length === 0) return "";
   return trusted
     .map((c) => `### Comment by @${c.author} (trusted maintainer)\n\n${c.body}`)
@@ -1118,6 +1403,11 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       // told to use this block and NOT to self-fetch raw `--comments`.
       const trustedComments = trustedCommentContext(issue.id);
 
+      // What earlier cycles already established, so this one builds on it instead
+      // of re-deriving it. Separate from `trustedComments` on purpose — these are
+      // agent-authored evidence, not maintainer instruction.
+      const priorHandoffs = priorHandoffContext(issue.id);
+
       try {
         // Run the implementer. `completionSignal` is the matched promise string
         // (default `<promise>COMPLETE</promise>`) or undefined if it never fired
@@ -1134,10 +1424,17 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
             BRANCH: issue.branch,
             TRUSTED_COMMENTS:
               trustedComments || "(no comments from a trusted maintainer)",
+            PRIOR_HANDOFFS:
+              priorHandoffs || "(no notes from an earlier cycle — this is the first)",
           },
         });
 
         const implementerComplete = implement.completionSignal !== undefined;
+
+        // Persist this cycle's findings to the issue while the host still has
+        // them. Done unconditionally (not just on a FAIL): a cycle that finished
+        // may still have recorded what it ruled out along the way.
+        postHandoff(issue.id, "implementer", implement.stdout);
 
         // Does the branch carry work to gate? Count commits ahead of the TARGET,
         // not just this run's commits. A branch finished in a PRIOR run still
@@ -1205,6 +1502,12 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         });
 
         const reviewerComplete = review.completionSignal !== undefined;
+
+        // The reviewer's verdict is the single most valuable thing to persist on a
+        // FAIL: it names the failing clause and the smallest concrete fix, and it
+        // is exactly what used to be lost to the 403. The next implementer reads
+        // it via PRIOR_HANDOFFS; a human reads it on the issue.
+        postHandoff(issue.id, "reviewer", review.stdout);
 
         // Lifecycle → GitHub: the independent privacy/correctness reviewer
         // attested the change clean. (A FAIL stays silent here and surfaces as
@@ -1296,12 +1599,16 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
               `🖥️ **Platform gate** is now operating — pushing \`${issue.branch}\` to origin and ` +
                 `awaiting the hosted GitHub Actions platform-verify run (${jobs}).`,
             );
+            // Open the trace file BEFORE the pane, so `tail -F` has this run's
+            // output from its first line rather than an empty file.
+            const trace = openPlatformVerifyTrace(issue.branch);
+            trace(`platform gate for ${issue.branch} — hosted jobs: ${jobs}`);
             openTracePane(issue.branch, "platform-verify");
 
-            if (!pushBranchToOrigin(issue.branch)) {
+            if (!pushBranchToOrigin(issue.branch, trace)) {
               platformVerifyComplete = false;
             } else {
-              const conclusion = await awaitPlatformVerify(issue.branch);
+              const conclusion = await awaitPlatformVerify(issue.branch, trace);
               platformVerifyComplete = conclusion === "success";
             }
 
@@ -1410,6 +1717,12 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       `⛔ **Merge gate blocked** \`${issue.branch}\`: ${why}.\n\n` +
         `Commits are kept on the branch for the next cycle or a human — sandcastle never merges by default.`,
     );
+
+    // Give-up path: retrying is right for a transient failure, but without a
+    // terminal case an unsatisfiable AC spins the loop forever (issue #234).
+    if (recordGateStrike(issue.id, issue.branch, why) >= MAX_GATE_STRIKES) {
+      escalateToHuman(issue.id, issue.branch, why);
+    }
   }
 
   const completedBranches = completedIssues.map((i) => i.branch);
@@ -1529,6 +1842,11 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           `The branch commits are kept and nothing was closed or reaped — sandcastle never ` +
           `blesses an unaudited merge result (fail-closed, finding SC-1).`,
       );
+      // Same give-up path as the per-branch gate: a merge result that cannot be
+      // audited clean will not become auditable by being retried indefinitely.
+      if (recordGateStrike(issue.id, issue.branch, why) >= MAX_GATE_STRIKES) {
+        escalateToHuman(issue.id, issue.branch, why);
+      }
     }
     continue;
   }

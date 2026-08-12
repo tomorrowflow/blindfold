@@ -53,14 +53,14 @@ green suite with a missing or weakened leak-audit assertion is a **FAIL**, not a
    fail-closed — never anonymize/mask/redact).
 
 > **Note — no browser here.** This sandbox is headless; you cannot drive the management SPA.
-> If the change touches the SPA (ADR-0011), say so in the issue comment and flag that it
+> If the change touches the SPA (ADR-0011), say so in your handoff notes and flag that it
 > needs human browser-verification after merge — do not pass SPA-observable behavior blind.
 
 # EXECUTION
 
 - If the privacy gate or correctness check **fails**: do **not** apply cosmetic edits and do
-  **not** mark complete. Leave a comment on the issue stating the failing clause + the
-  smallest concrete fix, so the next implement iteration (or a human) addresses it. A
+  **not** mark complete. State the failing clause + the smallest concrete fix in your handoff
+  notes (see below), so the next implement iteration (or a human) addresses it. A
   leak-audit/ADR-level failure is a **human decision** — never edit a leak-audit assertion to
   make it pass.
 - If the change is correct and leak-clean: apply any behavior-preserving clarity
@@ -86,8 +86,8 @@ green suite with a missing or weakened leak-audit assertion is a **FAIL**, not a
   ```
 
   A failing native-core test is a gate **FAIL** exactly like a failing Python test or a
-  leak-audit gap: do not attest, do not apply cosmetic edits on top. Comment on the issue
-  naming the failing suite (Swift/`BlindfoldCore` or C#/`Blindfold.Core`) and the failing
+  leak-audit gap: do not attest, do not apply cosmetic edits on top. In your handoff notes,
+  name the failing suite (Swift/`BlindfoldCore` or C#/`Blindfold.Core`) and the failing
   test so the next iteration routes to the right owner — the `macos` or `windows`
   SUSPECTED-OWNER role in `.claude/agents/verify.md`'s taxonomy, not `backend`.
 
@@ -104,5 +104,30 @@ green suite with a missing or weakened leak-audit assertion is a **FAIL**, not a
   stayed green.
 
   Commit describing the refinements. If the code is already clean, do nothing.
+
+# HANDOFF NOTES
+
+**Do not run `gh issue comment` / `gh issue edit` / `gh issue close`.** This sandbox's token
+has no `issues:write`; every such call fails with "Resource not accessible by personal access
+token". Your verdict is the most valuable thing to persist on a FAIL — do not lose it to a 403.
+
+End your final message with a `<handoff-notes>` block. The orchestrator lifts it out host-side
+and posts it to the issue, where the next implement cycle reads it back. Emit it on a PASS too:
+
+<handoff-notes>
+**Verdict:** PASS | FAIL, per gate (privacy/leak-audit, correctness, suites).
+**Leak audit:** which clauses hold, which are N/A and why, which fail.
+**Failing clause + smallest concrete fix:** the routable part — be specific enough that the
+next cycle can act on it without re-deriving your reasoning.
+**Suspected owner:** which role/area the repair belongs to (e.g. `backend`, `macos`,
+`windows`, hosted platform-verify), so the next cycle routes rather than guesses.
+**Unexecuted coverage:** anything this sandbox could not actually run (Docker/Postgres,
+browser, OS shells) that a green suite must not be read as covering.
+**Needs a human:** any leak-audit/ADR-level decision, or anything structurally unverifiable
+here. If a previous cycle already failed this way for the same reason, say that plainly — a
+repeatedly-blocked issue is handed to a human, and your notes are what they route from.
+</handoff-notes>
+
+Keep it tight — findings, not narration. It is capped at 8000 characters host-side.
 
 Once the change is verified correct, leak-clean, and tidy, output <promise>COMPLETE</promise>.
