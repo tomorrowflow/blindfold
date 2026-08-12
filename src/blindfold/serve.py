@@ -3,12 +3,12 @@
 ``blindfold serve`` (see ``__main__.py``) starts the FastAPI app (``blindfold.app:app``)
 under a bundled ASGI server, bound to loopback by default (SEC-11 — the interceptor is
 always local/single-owner), refusing to start against a root OpenBao Transit token
-outside an explicit dev-mode opt-in (SEC-2 — root bypasses the blindfold-proxy/-human/
--admin policy separation the store's RBAC depends on, ADR-0008), and refusing to run L3
-against a remotely-executing (``:cloud``) Ollama model with **no override** (ADR-0022 —
-the adjudicator-egress boundary carries un-blindfolded candidate spans, so sending them
-off-device categorically defeats the product; unlike SEC-2's dev-mode escape hatch,
-there is no opt-in here).
+without the explicit ``BLINDFOLD_ALLOW_ROOT_TRANSIT_TOKEN`` opt-in (SEC-2 — root bypasses
+the blindfold-proxy/-human/-admin policy separation the store's RBAC depends on,
+ADR-0008), and refusing to run L3 against a remotely-executing (``:cloud``) Ollama model
+with **no override** (ADR-0022 — the adjudicator-egress boundary carries un-blindfolded
+candidate spans, so sending them off-device categorically defeats the product; unlike
+SEC-2's root-token escape hatch, there is no opt-in here).
 """
 
 from __future__ import annotations
@@ -46,7 +46,12 @@ APP_TARGET = "blindfold.app:app"
 
 
 class DevModeRequiredError(RuntimeError):
-    """Raised when startup is configured with a root Transit token outside dev mode."""
+    """Raised when startup is configured with a root Transit token with no opt-in.
+
+    The opt-in is ``BLINDFOLD_ALLOW_ROOT_TRANSIT_TOKEN`` (``Settings.allow_root_transit_token``,
+    ADR-0047 §13); the class keeps its historical name (it predates the rename) since
+    nothing in the identifier itself names the retired ``BLINDFOLD_DEV_MODE`` var.
+    """
 
 
 class LocalOnlyModelRequiredError(RuntimeError):
@@ -170,19 +175,36 @@ def refuse_if_legacy_l3_env_vars() -> None:
             )
 
 
+def refuse_if_legacy_root_token_opt_in_env_var() -> None:
+    """Fail fast (ADR-0047 §13) if the retired ``BLINDFOLD_DEV_MODE`` is still set.
+
+    Hard cut, not an alias: ``BLINDFOLD_DEV_MODE`` meant exactly one thing --
+    permit startup against a root Transit token -- and that is now
+    ``BLINDFOLD_ALLOW_ROOT_TRANSIT_TOKEN`` (``refuse_if_root_token``). A second
+    "dev mode" flag must never re-accrete under the old name, so any value here
+    (including ``"0"``) is refused rather than interpreted.
+    """
+    if "BLINDFOLD_DEV_MODE" in os.environ:
+        raise LegacyEnvVarError(
+            "BLINDFOLD_DEV_MODE is no longer read (ADR-0047 §13 retired it by hard "
+            "cut); rename it to BLINDFOLD_ALLOW_ROOT_TRANSIT_TOKEN."
+        )
+
+
 def refuse_if_root_token(
     settings: Settings | None = None,
     *,
     transit_client: TransitClient | None = None,
 ) -> None:
-    """Fail fast (SEC-2) if ``settings`` names a root Transit token and dev mode is off.
+    """Fail fast (SEC-2) if ``settings`` names a root Transit token with no opt-in.
 
-    No-op when no Transit token is configured, or when ``settings.dev_mode`` is the
-    explicit opt-in. ``transit_client`` is a test seam; production wiring builds one
-    from ``settings`` on demand (no client held when there is nothing to check).
+    No-op when no Transit token is configured, or when
+    ``settings.allow_root_transit_token`` is the explicit opt-in. ``transit_client``
+    is a test seam; production wiring builds one from ``settings`` on demand (no
+    client held when there is nothing to check).
     """
     settings = settings or get_settings()
-    if not settings.openbao_token or settings.dev_mode:
+    if not settings.openbao_token or settings.allow_root_transit_token:
         return
     client = transit_client or TransitClient(
         addr=settings.openbao_addr, token=settings.openbao_token
@@ -190,8 +212,8 @@ def refuse_if_root_token(
     if client.is_root_token():
         raise DevModeRequiredError(
             "refusing to start against a root OpenBao Transit token; use a scoped "
-            "blindfold-proxy token (ADR-0008), or set BLINDFOLD_DEV_MODE=1 to "
-            "explicitly opt into dev mode."
+            "blindfold-proxy token (ADR-0008), or set "
+            "BLINDFOLD_ALLOW_ROOT_TRANSIT_TOKEN=1 to explicitly opt in."
         )
 
 
@@ -465,17 +487,25 @@ def run_server(
     """Run the Blindfold ASGI app (``blindfold serve``).
 
     Binds loopback by default (SEC-11); binding elsewhere is the caller's explicit
-    opt-in via ``host``. Runs the ADR-0031 legacy-env-var guard, the SEC-2 root-token
-    guard, the ADR-0045 §4 ambiguous-mapping-cipher guard, the ADR-0045 §3
-    malformed-Store-key guard, the ADR-0045 §6 undecryptable-store guard, the
-    ADR-0045 §6 populated-plaintext-store guard (issue #238 -- the upgrade path every
+    opt-in via ``host``. Runs the ADR-0031 legacy-env-var guard, the ADR-0047 §13
+    legacy-``BLINDFOLD_DEV_MODE``-env-var guard, the SEC-2 root-token guard, the
+    ADR-0045 §4 ambiguous-mapping-cipher guard, the ADR-0045 §3 malformed-Store-key
+    guard, the ADR-0045 §6 undecryptable-store guard, the ADR-0045 §6
+    populated-plaintext-store guard (issue #238 -- the upgrade path every
     pre-#229/#230 install hits), the ADR-0022 local-only-L3 guard (Ollama's ``:cloud``
     tag), the ADR-0031 §3 local-only-L3 guard (oMLX's loopback-only base url), and the
     ADR-0033 §2 local-only-L3 guard (GLiNER's readable-model-file check) before
     starting the server so a misconfigured deploy never has the ASGI server accept
     traffic in the first place.
     """
+    # This refusal is deliberately absent from fixtures/supervisor-golden-vectors.json
+    # (issue #250). Per ADR-0044 the supervisor is sole author of the child's launch
+    # environment and strips every ambient BLINDFOLD_* var before spawning, so a
+    # supervisor-launched proxy can never carry a stale BLINDFOLD_DEV_MODE through to
+    # here -- this refusal is reachable only from a terminal `blindfold serve` run.
+    # Do not "fix" this omission by adding a scrub-reason entry for it.
     refuse_if_legacy_l3_env_vars()
+    refuse_if_legacy_root_token_opt_in_env_var()
     settings = settings or get_settings()
     refuse_if_root_token(settings, transit_client=transit_client)
     refuse_if_ambiguous_mapping_cipher(settings)
