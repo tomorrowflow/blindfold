@@ -16,6 +16,7 @@ surrogate or hash -- never plaintext -- in any finding, mirroring
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
@@ -68,7 +69,7 @@ class LeakCheckResult:
         )
 
 
-def leak_check(records, mapping: SurrogateMapping) -> LeakCheckResult:
+def leak_check(records: Iterable, mapping: SurrogateMapping) -> LeakCheckResult:
     """Scan every observed ``OutboundRecord`` payload in ``records`` for a real value
     in the footer's ``injected`` pair table or in ``mapping.real_values()`` (the
     entity graph, read-only). Returns a result even when clean -- absence of output

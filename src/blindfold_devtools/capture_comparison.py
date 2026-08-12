@@ -79,7 +79,9 @@ def _reconstructed_surrogates(records: Iterable) -> frozenset[str]:
     return frozenset(surrogates)
 
 
-def compare(records, *, graph_entities: Iterable[Entity]) -> tuple[Divergence, ...]:
+def compare(
+    records: Iterable, *, graph_entities: Iterable[Entity]
+) -> tuple[Divergence, ...]:
     """Compare an Exchange capture's observed and reconstructed sections and
     classify every divergent surrogate on the severity ladder (``defect`` >
     ``expected`` > ``unknown`` -- ``leak`` is the offline leak check's own,
