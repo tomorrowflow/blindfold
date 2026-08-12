@@ -14,7 +14,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from .capture import STATUS_IN_FLIGHT, STATUS_TRUNCATED, FooterRecord, HeaderRecord, read_capture
+from .capture import (
+    STATUS_IN_FLIGHT,
+    STATUS_TRUNCATED,
+    CaptureFile,
+    FooterRecord,
+    HeaderRecord,
+    read_capture,
+)
 from .capture_directory import CAPTURE_SUFFIX
 
 _EXCERPT_MAX_LEN = 80
@@ -62,7 +69,7 @@ class CaptureSummary:
     excerpt: str
 
 
-def _summarize(capture_id: str, capture) -> CaptureSummary:
+def _summarize(capture_id: str, capture: CaptureFile) -> CaptureSummary:
     header = next((r for r in capture.records if isinstance(r, HeaderRecord)), None)
     footer = next((r for r in capture.records if isinstance(r, FooterRecord)), None)
 
