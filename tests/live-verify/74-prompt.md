@@ -19,7 +19,7 @@ directory), then paste everything between the rules into a client pointed at the
 ---
 
 Read the engagement brief at
-<BRIEF-PATH>/74-engagement-brief.md
+tests/live-verify/74-engagement-brief.md
 
 Then investigate how this repo's store layer actually persists and shares the mapping:
 1. Read CONTEXT.md's Store/Mapping/Workspace glossary entries and skim docs/DESIGN.md's backend-stack note.
