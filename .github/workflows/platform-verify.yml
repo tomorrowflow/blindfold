@@ -96,6 +96,26 @@ jobs:
           uv sync --group freeze
           uv run pyinstaller packaging/blindfold-proxy.spec --distpath dist --workpath build -y
 
+      # ADR-0047 §12 checks 2-4 (issue #252): the absence gate. Runs in this same job,
+      # right after the freeze and before assemble/codesign -- a gate in a different job
+      # than the freeze could be green while the artifact it never inspected is dirty.
+      # Checks 1-2 (binary containment + frozen importability) against the real release
+      # binary; hard fail on any hit, no warn-and-continue path.
+      - name: Absence gate -- release binary (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: uv run python packaging/absence_gate.py release dist/blindfold-proxy
+
+      # Check 3, the positive control: a green absence check proves nothing unless the
+      # same check has been shown to go red. Builds a canary with
+      # hiddenimports=["blindfold_devtools"] and a second canary smuggling
+      # blindfold_devtools/__init__.py through datas (the vector an excludes entry could
+      # never reach), and fails the job if checks 1-2 do NOT catch both.
+      - name: Absence gate -- positive control canaries (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: uv run python packaging/absence_gate.py canaries packaging/blindfold-proxy.spec absence-gate-canaries
+
       - name: Assemble BlindfoldMenuBar.app
         if: runner.os == 'macOS'
         shell: bash
@@ -219,6 +239,26 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: ./windows/packaging/freeze.ps1
+
+      # ADR-0047 §12 checks 2-4 (issue #252): the absence gate, same job as the freeze,
+      # before assemble (the portable-folder step below) -- see the macOS steps above
+      # for the full rationale, identical here since both platforms freeze from the same
+      # shared packaging/blindfold-proxy.spec.
+      - name: Absence gate -- release binary (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          uv run python packaging/absence_gate.py release dist/blindfold-proxy.exe
+          if ($LASTEXITCODE -ne 0) { throw "absence gate: release binary check failed" }
+
+      - name: Absence gate -- positive control canaries (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          uv run python packaging/absence_gate.py canaries packaging/blindfold-proxy.spec absence-gate-canaries
+          if ($LASTEXITCODE -ne 0) { throw "absence gate: positive control canaries failed" }
 
       - name: Smoke-launch blindfold-proxy.exe (Windows)
         if: runner.os == 'Windows'
