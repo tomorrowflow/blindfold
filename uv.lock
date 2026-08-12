@@ -110,6 +110,9 @@ dev = [
     { name = "pytest" },
     { name = "testcontainers" },
 ]
+devtools = [
+    { name = "rich" },
+]
 freeze = [
     { name = "pyinstaller" },
 ]
@@ -136,7 +139,8 @@ dev = [
     { name = "pytest", specifier = ">=8" },
     { name = "testcontainers", specifier = ">=4.14.2" },
 ]
-freeze = [{ name = "pyinstaller", specifier = ">=6.21" }]
+devtools = [{ name = "rich", specifier = ">=13.7" }]
+freeze = [{ name = "pyinstaller", specifier = "==6.21.0" }]
 
 [[package]]
 name = "certifi"

@@ -40,7 +40,15 @@ dev = [
 # runtime dependency of `blindfold serve` — kept out of `dev` so an ordinary
 # test run never needs it installed.
 freeze = [
-    "pyinstaller>=6.21",
+    "pyinstaller==6.21.0",
+]
+# ADR-0047 §2: blindfold_devtools' own runtime deps (rich, for the Diagnostic session's
+# `captures`/`explain` rendering). Deliberately its own group, not `dev` and not `freeze` —
+# it is a source-run-only capability, not a test-suite or freeze-time dependency, and it
+# must never reach the wheel or the frozen binary (see [tool.hatch.build.targets.wheel]
+# below and packaging/blindfold-proxy.spec's excludes comment).
+devtools = [
+    "rich>=13.7",
 ]
 
 [build-system]

@@ -46,6 +46,14 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
+    # ADR-0047 §12: kept empty deliberately, not tightened to exclude blindfold_devtools.
+    # blindfold_devtools is already unreachable from this entry point's import graph (it is
+    # a sibling package no blindfold.* module imports -- see src/blindfold_devtools/__init__.py
+    # and tests/test_devtools_absence.py's static check), so an excludes entry would add no
+    # defence today. Worse, if a future regression made it reachable, an excludes entry would
+    # turn that regression into a *clean* binary that passes every absence check and ships,
+    # failing only as a runtime ImportError in a user's hands -- instead of failing the build,
+    # which is what happens with excludes left empty.
     excludes=[],
     noarchive=False,
     optimize=0,
