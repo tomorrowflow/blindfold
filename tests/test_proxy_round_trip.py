@@ -229,3 +229,31 @@ async def test_proxy_forwards_client_auth_token_upstream():
         app.dependency_overrides.clear()
 
     assert recorded[0].headers.get("x-api-key") == "secret-token"
+
+
+@pytest.mark.anyio
+async def test_proxy_forwards_anthropic_beta_upstream():
+    # Issue #264 (Connect page): Claude Code's subscription path (ANTHROPIC_BASE_URL
+    # with no credential variable) depends on the gateway forwarding the OAuth
+    # capability carried in anthropic-beta, or the upstream 401s. This is a
+    # regression guard for the claim the Connect page's copy makes, not new
+    # forwarding behavior -- _FORWARDED_HEADERS already includes it.
+    scripted_response = {"content": [{"type": "text", "text": "ok"}]}
+    recorded: list[httpx.Request] = []
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(
+        scripted_response, recorded
+    )
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            await client.post(
+                "/v1/messages",
+                json={"model": "m", "messages": [{"role": "user", "content": "hi"}]},
+                headers={"anthropic-beta": "oauth-2025-04-20"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert recorded[0].headers.get("anthropic-beta") == "oauth-2025-04-20"

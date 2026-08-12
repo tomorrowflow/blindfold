@@ -1326,6 +1326,12 @@ async def status(
             # "none") -- the SPA pairs this with has_persistent_store to decide
             # whether to surface the "real values persisted unencrypted" banner.
             "mapping_cipher": settings.mapping_cipher,
+            # Issue #264: the actual bind, same source as _management_url's own
+            # deep link (ADR-0027) -- the Connect page's client-config snippets
+            # read these rather than hardcoding 25463, so a non-default --port
+            # still renders a copy-pasteable, correct snippet.
+            "host": settings.host,
+            "port": settings.port,
         },
     }
 

@@ -40,4 +40,8 @@ export {
   // Entity list actions polish (issue #175)
   Pencil,
   Merge,
+  // Connect page (issue #264)
+  PlugZap,
+  Copy,
+  ExternalLink,
 } from "lucide-react";

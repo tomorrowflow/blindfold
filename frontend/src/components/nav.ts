@@ -8,6 +8,7 @@ import {
   Activity,
   ShieldCheck,
   Settings,
+  PlugZap,
 } from "./icons";
 
 export type NavItem = {
@@ -23,8 +24,14 @@ export type NavItem = {
 // account-level views. Paths are the new shell's own — distinct from the
 // legacy embedded routes (/ui/review-inbox, /ui/org-graph, /ui/entity-list),
 // which stay untouched until their own migration issues (#97/#98/#99).
+//
+// Connect (issue #264) sits right after Home: it's needed before the app has
+// done anything (point a client at the proxy), so it can't be buried as a
+// Settings tab a first-time user never finds -- and users return here for a
+// second machine or a new tool, not just at first run.
 export const PRIMARY_NAV: NavItem[] = [
   { label: "Home", path: "/status", icon: House },
+  { label: "Connect", path: "/connect", icon: PlugZap },
   { label: "Entity list", path: "/entities", icon: Users },
   { label: "Graph editor", path: "/graph", icon: Share2 },
   { label: "Review inbox", path: "/inbox", icon: Inbox },

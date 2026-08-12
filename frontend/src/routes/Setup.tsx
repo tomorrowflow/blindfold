@@ -30,7 +30,7 @@
 // unlike Sample data's silent success.
 
 import { useEffect, useState, type FormEvent } from "react";
-import { useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { useWorkspace } from "../components/WorkspaceContext";
 import { createWorkspace, loadSampleData, provisionGliner } from "../lib/setupApi";
 
@@ -50,6 +50,10 @@ export function Setup() {
   const [restartNeeded, setRestartNeeded] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [createdSlug, setCreatedSlug] = useState<string | null>(null);
+  // Issue #264's Connect entry point: the terminal "you're set up" step, shown
+  // once the workspace is ready to use (whether or not restartNeeded's own
+  // screen ran first) -- non-null holds the slug just entered.
+  const [readyToConnect, setReadyToConnect] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -77,7 +81,7 @@ export function Setup() {
     const workspaces = await refresh();
     const created = workspaces.find((w) => w.slug === slug);
     if (created) setActiveWorkspace(created);
-    navigate("/entities", { replace: true });
+    setReadyToConnect(slug);
   }
 
   async function handleSubmit(e: FormEvent) {
@@ -124,6 +128,28 @@ export function Setup() {
     }
 
     await enterWorkspace(slug);
+  }
+
+  if (readyToConnect) {
+    return (
+      <div className="bf-card">
+        <h1>Setup</h1>
+        <p data-testid="setup-ready-message">You're set up — now point a tool at it.</p>
+        <div className="bf-setup-ready-actions">
+          <Link to="/connect" className="bf-btn-primary" data-testid="setup-connect-cta">
+            Connect a tool
+          </Link>
+          <button
+            type="button"
+            className="bf-btn-secondary"
+            data-testid="setup-skip-connect"
+            onClick={() => navigate("/entities", { replace: true })}
+          >
+            Skip for now
+          </button>
+        </div>
+      </div>
+    );
   }
 
   if (restartNeeded && createdSlug) {

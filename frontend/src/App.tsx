@@ -10,6 +10,7 @@ import { ProcessingTrace } from "./routes/ProcessingTrace";
 import { Access } from "./routes/Access";
 import { Settings } from "./routes/Settings";
 import { Setup } from "./routes/Setup";
+import { Connect } from "./routes/Connect";
 
 export function App() {
   return (
@@ -20,6 +21,7 @@ export function App() {
             root there so both resolve to the same active nav state. */}
         <Route index element={<Navigate to="/status" replace />} />
         <Route path="status" element={<Home />} />
+        <Route path="connect" element={<Connect />} />
         <Route path="entities" element={<EntityList />} />
         <Route path="graph" element={<GraphEditor />} />
         <Route path="inbox" element={<ReviewInbox />} />

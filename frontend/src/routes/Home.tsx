@@ -10,6 +10,7 @@ import { DependencyCard } from "../components/DependencyCard";
 import { RecentBlocksTable } from "../components/RecentBlocksTable";
 import { ConfigCard } from "../components/ConfigCard";
 import { ReviewInboxCard } from "../components/ReviewInboxCard";
+import { ConnectCard } from "../components/ConnectCard";
 import { useWorkspace } from "../components/WorkspaceContext";
 import { DEPENDENCY_ORDER, type StatusResponse } from "../lib/status";
 
@@ -104,6 +105,7 @@ export function Home() {
           recent={status.blocks.recent}
         />
         <div className="bf-status-rail">
+          <ConnectCard />
           <ReviewInboxCard pending={status.review_inbox.pending} />
           <ConfigCard config={status.config} />
         </div>

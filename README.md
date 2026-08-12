@@ -187,16 +187,12 @@ spec built on Linux is what `tests/test_frozen_proxy_packaging.py` exercises in-
 
 ## Usability
 
-**Point your tool at the proxy — a ~2-line change, no app rewrite:**
-
-```bash
-# Claude Code
-export ANTHROPIC_BASE_URL=http://localhost:25463
-export ANTHROPIC_AUTH_TOKEN=…
-
-# Any OpenAI-SDK client
-export OPENAI_BASE_URL=http://localhost:25463/v1
-```
+**Point your tool at the proxy — a ~2-line change, no app rewrite.** The management
+app's **Connect** page (issue #264, sidebar entry, `/ui/connect`) has copy-to-clipboard
+snippets for Claude Code and any OpenAI-SDK client, generated from your actual bind
+host/port and active workspace — Claude Code's subscription-vs-credential auth paths,
+the egress carve-outs that bypass the proxy, and Codex's current lack of support are
+all documented there rather than here.
 
 From there it's transparent — you keep prompting and reading in real names. The system
 works in the background:

@@ -45,6 +45,10 @@ export type StatusResponse = {
     // with has_persistent_store to decide whether real values are being
     // persisted unencrypted.
     mapping_cipher: "transit" | "none";
+    // Issue #264: the actual bind (same source as the server's own _management_url
+    // deep link, ADR-0027) -- Connect reads these instead of hardcoding 25463.
+    host: string;
+    port: number;
   };
 };
 

@@ -61,6 +61,8 @@ async def test_status_endpoint_returns_the_settled_contract_shape():
         "fail_closed_policy",
         "has_persistent_store",
         "mapping_cipher",
+        "host",
+        "port",
     }
 
 
@@ -95,6 +97,27 @@ async def test_status_reports_empty_store_false_once_an_entity_exists():
     # The empty-store signal is a boolean only -- the real canonical_name must never
     # surface on this ungated, loopback-only endpoint (issue #106 AC).
     assert "Martin Bach" not in str(body)
+
+
+@pytest.mark.anyio
+async def test_status_config_reports_the_actual_bind_host_and_port():
+    # Issue #264: the Connect page's copy-paste snippets read host/port from this
+    # payload rather than hardcoding 25463 -- a proxy started with --port must show
+    # its real port. Mirrors _management_url's own settings.host/settings.port source
+    # (ADR-0027) rather than inventing a second one.
+    from blindfold.config import Settings, get_settings
+
+    app.dependency_overrides[get_settings] = lambda: Settings(host="127.0.0.1", port=25465)
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://proxy.test") as client:
+            resp = await client.get("/v1/status")
+    finally:
+        app.dependency_overrides.clear()
+
+    body = resp.json()
+    assert body["config"]["host"] == "127.0.0.1"
+    assert body["config"]["port"] == 25465
 
 
 class _FakeProbe:
@@ -341,6 +364,8 @@ async def test_config_never_carries_the_openbao_token_or_any_secret(monkeypatch)
         "fail_closed_policy",
         "has_persistent_store",
         "mapping_cipher",
+        "host",
+        "port",
     }
     assert secret_token not in str(body)
 

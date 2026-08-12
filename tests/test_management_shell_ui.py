@@ -57,6 +57,7 @@ async def test_ui_bare_path_serves_the_shell_bundle():
         "/ui/audit",
         "/ui/access",
         "/ui/settings",
+        "/ui/connect",
     ],
 )
 async def test_every_new_shell_route_falls_back_to_the_spa_index(path: str):
@@ -107,4 +108,20 @@ async def test_legacy_review_inbox_route_is_retired_and_falls_back_to_the_shell(
     async with _client() as client:
         resp = await client.get("/ui/review-inbox")
     assert resp.status_code == 200
+
+
+@pytest.mark.anyio
+async def test_ui_connect_never_templates_a_secret_into_the_served_shell(monkeypatch):
+    # Issue #264 AC: the Connect page renders no secret and no entity content. The
+    # shell this endpoint hands back is the same static index.html for every route
+    # (client-side routing takes it from there) — this asserts the serving seam
+    # itself never templates a secret in, mirroring
+    # test_config_never_carries_the_openbao_token_or_any_secret's monkeypatch at the
+    # /v1/status layer.
+    secret_token = "s.super-secret-transit-token"
+    monkeypatch.setenv("BLINDFOLD_OPENBAO_TOKEN", secret_token)
+    async with _client() as client:
+        resp = await client.get("/ui/connect")
+    assert resp.status_code == 200
+    assert secret_token not in resp.text
     assert 'id="bf-shell-root"' in resp.text
