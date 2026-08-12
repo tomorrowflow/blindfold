@@ -26,7 +26,15 @@ public interface IProxyProcess
 /// </summary>
 public interface IProxyProcessLauncher
 {
-    IProxyProcess Launch(string exePath, IReadOnlyList<string> args);
+    /// <summary>
+    /// <paramref name="environment"/> (issue #234, ADR-0044/ADR-0045 §9) is the exact child
+    /// environment to launch with -- e.g. the injected Store key alongside whatever
+    /// <c>BLINDFOLD_*</c> values the caller already holds. Empty means "no explicit
+    /// injection" -- the real launcher still lets the child inherit this process's ambient
+    /// environment by default (see <c>RealProxyProcessLauncher</c>), so an empty dictionary
+    /// here is not the same as "no environment at all".
+    /// </summary>
+    IProxyProcess Launch(string exePath, IReadOnlyList<string> args, IReadOnlyDictionary<string, string> environment);
 }
 
 /// <summary>
@@ -67,6 +75,46 @@ public static class StartupRefusalReason
             return "refusing to start: the store contains rows under an old plaintext schema (upgrade required)";
         }
 
+        // These three (issue #223, ported to this core in #234) name a stale env var, a
+        // rejected model choice, and a missing model directory -- configuration facts, not
+        // entity values, so naming them specifically costs nothing in privacy.
+        if (rawStandardErrorText.Contains("no longer read", StringComparison.OrdinalIgnoreCase))
+        {
+            return "refusing to start: legacy BLINDFOLD_OLLAMA_* variable set (renamed under ADR-0031)";
+        }
+
+        if (rawStandardErrorText.Contains("remotely-executing", StringComparison.OrdinalIgnoreCase))
+        {
+            return "refusing to start: L3 model must run locally, not a remote/cloud model";
+        }
+
+        if (rawStandardErrorText.Contains("gliner", StringComparison.OrdinalIgnoreCase))
+        {
+            return "refusing to start: GLiNER model not provisioned";
+        }
+
+        // These three (issue #232, ADR-0045 §4/§3/§6, ported to this core in #234) name the
+        // three named startup refusals a lost/misconfigured mapping cipher produces -- which
+        // secret is configured and which Store directory is affected, never the secret or any
+        // real value itself.
+        if (rawStandardErrorText.Contains(
+            "only ever be encrypted under one mapping cipher", StringComparison.OrdinalIgnoreCase))
+        {
+            return "refusing to start: both a Transit token and a Store key are configured (ambiguous mapping cipher)";
+        }
+
+        if (rawStandardErrorText.Contains(
+            "must be exactly 32 bytes, base64-encoded", StringComparison.OrdinalIgnoreCase))
+        {
+            return "refusing to start: BLINDFOLD_STORE_KEY is malformed";
+        }
+
+        if (rawStandardErrorText.Contains(
+            "cannot be decrypted with the configured cipher", StringComparison.OrdinalIgnoreCase))
+        {
+            return "refusing to start: the store cannot be decrypted with the configured cipher";
+        }
+
         return "startup failed";
     }
 }
@@ -79,10 +127,14 @@ public static class StartupRefusalReason
 /// </summary>
 public sealed class ProxySupervisor
 {
+    private static readonly IReadOnlyDictionary<string, string> EmptyEnvironment =
+        new Dictionary<string, string>();
+
     private readonly IProxyProcessLauncher _launcher;
     private readonly string _exePath;
     private readonly IReadOnlyList<string> _args;
     private readonly ISupervisorLogSink _logSink;
+    private readonly IReadOnlyDictionary<string, string> _environment;
     private IProxyProcess? _process;
     private bool _everHealthy;
     private bool _hasLoggedExitOutcome;
@@ -97,10 +149,28 @@ public sealed class ProxySupervisor
     /// pre-existing construction site/test is unaffected.
     /// </summary>
     public ProxySupervisor(IProxyProcessLauncher launcher, string exePath, IReadOnlyList<string> args, ISupervisorLogSink? logSink = null)
+        : this(launcher, exePath, args, EmptyEnvironment, logSink)
+    {
+    }
+
+    /// <summary>
+    /// <paramref name="environment"/> (issue #234, ADR-0044/ADR-0045 §7/§9) is the exact child
+    /// environment <see cref="Start"/> hands to the launcher -- e.g. the generated Store key.
+    /// A distinct overload (rather than a second optional parameter alongside <c>logSink</c>)
+    /// because <paramref name="environment"/> is required here, which keeps this overload and
+    /// the <c>logSink</c>-only one above unambiguous at every call site.
+    /// </summary>
+    public ProxySupervisor(
+        IProxyProcessLauncher launcher,
+        string exePath,
+        IReadOnlyList<string> args,
+        IReadOnlyDictionary<string, string> environment,
+        ISupervisorLogSink? logSink = null)
     {
         _launcher = launcher;
         _exePath = exePath;
         _args = args;
+        _environment = environment;
         _logSink = logSink ?? new NullSupervisorLogSink();
     }
 
@@ -109,7 +179,7 @@ public sealed class ProxySupervisor
         _everHealthy = false;
         _hasLoggedExitOutcome = false;
         _logSink.Append($"spawn: exe={_exePath} args={string.Join(" ", _args)}");
-        _process = _launcher.Launch(_exePath, _args);
+        _process = _launcher.Launch(_exePath, _args, _environment);
     }
 
     /// <summary>

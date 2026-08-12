@@ -42,6 +42,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             new RealProxyProcessLauncher(),
             proxyExePath,
             new[] { "serve", "--host", ProxyHost, "--port", ProxyPort.ToString() },
+            StoreKeyEnvironment.Build(),
             logSink ?? new NullSupervisorLogSink());
         _statusClient = new StatusClient($"{ProxyBaseUrl}/v1/status", new RealStatusFetching());
         _unprotectedControl = new RealUnprotectedModeControl(ProxyBaseUrl);

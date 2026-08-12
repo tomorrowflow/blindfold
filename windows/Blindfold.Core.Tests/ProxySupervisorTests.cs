@@ -21,11 +21,11 @@ internal sealed class FakeProxyProcess : IProxyProcess
 internal sealed class FakeProxyProcessLauncher : IProxyProcessLauncher
 {
     public FakeProxyProcess Process { get; } = new();
-    public List<(string ExePath, IReadOnlyList<string> Args)> Launches { get; } = new();
+    public List<(string ExePath, IReadOnlyList<string> Args, IReadOnlyDictionary<string, string> Environment)> Launches { get; } = new();
 
-    public IProxyProcess Launch(string exePath, IReadOnlyList<string> args)
+    public IProxyProcess Launch(string exePath, IReadOnlyList<string> args, IReadOnlyDictionary<string, string> environment)
     {
-        Launches.Add((exePath, args));
+        Launches.Add((exePath, args, environment));
         return Process;
     }
 }
@@ -61,9 +61,28 @@ public class ProxySupervisorTests
         supervisor.Start();
 
         Assert.Equal(ProxyLiveness.Starting(), supervisor.CurrentLiveness());
-        var (exePath, args) = launcher.Launches.Single();
+        var (exePath, args, _) = launcher.Launches.Single();
         Assert.Equal("blindfold-proxy.exe", exePath);
         Assert.Equal(new[] { "serve" }, args);
+    }
+
+    /// <summary>
+    /// AC "the tray generates and persists a Store key ... and injects it into the spawned
+    /// proxy" (issue #234, ADR-0045 §7/§9): the supervisor passes whatever environment it was
+    /// constructed with straight through to the launcher, unmodified -- the same seam Swift's
+    /// <c>ProxySupervisor</c> already exposes (issue #219/#233).
+    /// </summary>
+    [Fact]
+    public void StartPassesTheConstructedEnvironmentThroughToTheLauncher()
+    {
+        var launcher = new FakeProxyProcessLauncher();
+        var environment = new Dictionary<string, string> { ["BLINDFOLD_STORE_KEY"] = "a-generated-key" };
+        var supervisor = new ProxySupervisor(launcher, "blindfold-proxy.exe", new[] { "serve" }, environment);
+
+        supervisor.Start();
+
+        var (_, _, launchedEnvironment) = launcher.Launches.Single();
+        Assert.Equal("a-generated-key", launchedEnvironment["BLINDFOLD_STORE_KEY"]);
     }
 
     /// <summary>
@@ -168,8 +187,8 @@ public class ProxySupervisorTests
 
     /// <summary>
     /// Issue #239: a spawn attempt must be appended to the log -- the exe path and args, never
-    /// an environment value (this constructor doesn't even accept an environment yet -- a
-    /// pre-existing, separately-tracked gap, so there is nothing to leak here by construction).
+    /// an environment value (this overload's environment defaults to empty, so there is
+    /// nothing to leak here by construction).
     /// </summary>
     [Fact]
     public void StartAppendsASpawnAttemptToTheLog()
@@ -326,5 +345,26 @@ public class StartupRefusalReasonTests
 
         Assert.Equal("startup failed", reason);
         Assert.DoesNotContain("unexpected.py", reason);
+    }
+
+    /// <summary>
+    /// The startup-refusal scrub categories (issues #212/#223/#232/#234, ADR-0041/ADR-0045) --
+    /// the shared golden-vector fixture both BlindfoldCore (Swift) and this core assert
+    /// against, so the two cores can't silently drift on what a user is told about a refusal.
+    /// Extends this core's scrub function with the cipher-related categories issue #232 added
+    /// to Swift (ambiguous mapping cipher, malformed Store key, undecryptable store) plus the
+    /// three issue #223 already added there (legacy env var, cloud model, GLiNER missing) --
+    /// this core never had any of the six, so issue #234's own AC ("cipher-related refusal
+    /// reasons surface in the tray with the same specificity as on macOS, driven by the shared
+    /// golden vectors") is the point at which this core catches up to parity in one pass.
+    /// </summary>
+    public static IEnumerable<object[]> RefusalScrubGoldenVectors() =>
+        GoldenVectorFixture.Load().RefusalScrubCases.Select(vector => new object[] { vector });
+
+    [Theory]
+    [MemberData(nameof(RefusalScrubGoldenVectors))]
+    public void RefusalScrubMatchesGoldenVector(GoldenVectorFixture.RefusalScrubCase vector)
+    {
+        Assert.Equal(vector.ExpectedReason, StartupRefusalReason.Scrub(vector.RawStderr));
     }
 }

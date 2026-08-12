@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Windows.Forms;
 using Blindfold.Core;
 
@@ -110,10 +111,12 @@ internal static class Program
     /// </summary>
     private static int RunSmokeLaunchFull(string proxyExePath)
     {
+        var launchEnvironment = StoreKeyEnvironment.Build();
         var supervisor = new ProxySupervisor(
             new RealProxyProcessLauncher(),
             proxyExePath,
             new[] { "serve", "--host", "127.0.0.1", "--port", "25463" },
+            launchEnvironment,
             new FileSupervisorLogSink(SupervisorLogPath));
         var statusClient = new StatusClient("http://127.0.0.1:25463/v1/status", new RealStatusFetching());
 
@@ -159,7 +162,51 @@ internal static class Program
                 // that capability is asserted one-hop in platform-verify.yml, not here.
                 if (state.Kind is AppStateKind.Protected or AppStateKind.Degraded)
                 {
+                    // Confirms whether the tray-provisioned Store key (StoreKeyEnvironment.Build()
+                    // above) configured the Local key cipher in the tray-spawned proxy --
+                    // config.mapping_cipher reports "local" once BLINDFOLD_STORE_KEY is read (src/
+                    // blindfold/app.py's status route), "none" otherwise. A raw fetch, not
+                    // StatusClient/StatusPayload: that decode is deliberately narrow (state/
+                    // unprotected_mode/dependency counts only, no config field), and mapping_cipher
+                    // is a cipher *name*, not a secret -- safe to read and report, same as src/
+                    // blindfold/app.py already logs it openly.
+                    //
+                    // Non-blocking (issue #234's Scope decision, 2026-07-26): a hosted windows-latest
+                    // gap between this TWO-HOP path and the ONE-HOP (Store key) assertion (which
+                    // passes) is tracked at #236, not here -- see that issue for the diagnostic
+                    // record. mapping_cipher=="none" is the ADR-0045 §12 interim plaintext-at-rest
+                    // posture, not entity egress, so warning rather than failing here does not
+                    // weaken the leak-audit property.
+                    string? mappingCipher = null;
+                    try
+                    {
+                        var rawStatusJson = new RealStatusFetching()
+                            .FetchStatusAsync(statusClient.BaseUrl)
+                            .GetAwaiter()
+                            .GetResult();
+                        using var document = JsonDocument.Parse(rawStatusJson);
+                        mappingCipher = document.RootElement
+                            .GetProperty("config")
+                            .GetProperty("mapping_cipher")
+                            .GetString();
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.Error.WriteLine(
+                            "--smoke-launch-full: failed to confirm the mapping cipher: " + ex.Message);
+                    }
+
                     supervisor.Stop();
+
+                    if (mappingCipher != "local")
+                    {
+                        Console.Error.WriteLine(
+                            "--smoke-launch-full: WARNING: expected the tray-provisioned Store key to "
+                            + "configure the Local key cipher, but /v1/status reports mapping_cipher="
+                            + $"\"{mappingCipher ?? "<unavailable>"}\". Known gap, tracked at #236 -- "
+                            + "non-blocking per issue #234's Scope decision.");
+                    }
+
                     return 0;
                 }
             }

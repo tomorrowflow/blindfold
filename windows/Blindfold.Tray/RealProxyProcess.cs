@@ -60,15 +60,22 @@ internal sealed class FailedProxyLaunch : IProxyProcess
 /// </summary>
 internal sealed class RealProxyProcessLauncher : IProxyProcessLauncher
 {
-    public IProxyProcess Launch(string exePath, IReadOnlyList<string> args)
+    public IProxyProcess Launch(string exePath, IReadOnlyList<string> args, IReadOnlyDictionary<string, string> environment)
     {
-        // UseShellExecute=false makes the child inherit this process's environment block by
-        // default, so a real deployment where the user has BLINDFOLD_* set in their environment
-        // before launching the tray propagates to the proxy without any explicit copy. (An earlier
-        // explicit env-copy here, added chasing issue #197's CI smoke failure, was a no-op: the
-        // single-file WinExe host simply didn't have the vars to copy. The smoke test no longer
-        // requires the tray-spawned proxy to reach Protected -- see Program.cs RunSmokeLaunchFull
-        // and platform-verify.yml's one-hop Protected assertion.)
+        // Set on THIS (tray) process's own environment -- never on startInfo.Environment (issue
+        // #234). Touching ProcessStartInfo.Environment at all, even once, makes .NET build a full
+        // explicit environment block and pass it to CreateProcess instead of the OS-native
+        // lpEnvironment=NULL ("inherit my own block verbatim") every other launch here otherwise
+        // gets -- the ambient-inheritance mechanism platform-verify.yml's ONE-HOP (L3)/(Store key)
+        // assertions prove survives blindfold-proxy.exe's onefile re-exec on real Windows.
+        //
+        // The TWO-HOP path (this launcher spawning blindfold-proxy.exe) still does not reach
+        // config.mapping_cipher=="local" on hosted windows-latest despite this mechanism, even
+        // though the identical launch environment demonstrably reaches a plain child process. That
+        // gap is tracked at #236, not here -- see it for the full diagnostic record (issue #234's
+        // Scope decision, 2026-07-26).
+        foreach (var (key, value) in environment) Environment.SetEnvironmentVariable(key, value);
+
         var startInfo = new ProcessStartInfo(exePath)
         {
             UseShellExecute = false,
@@ -87,6 +94,20 @@ internal sealed class RealProxyProcessLauncher : IProxyProcessLauncher
         catch (Win32Exception ex)
         {
             return new FailedProxyLaunch(ex.Message);
+        }
+        finally
+        {
+            // CreateProcess copies this process's environment block into the child synchronously,
+            // during process creation -- by the time Process.Start returns (success or failure),
+            // any child that was going to inherit these entries already has its own copy, and
+            // clearing them here can't reach back into it (proven on this sandbox by
+            // ClearingTheEnvironmentVariableImmediatelyAfterStartDoesNotAffectTheAlreadySpawnedChild,
+            // Blindfold.Core.Tests). Narrows the Store key's exposure in the tray's own ambient
+            // environment to just this call, instead of the tray's entire remaining lifetime --
+            // a standard/mini crash dump of the tray process captures its environment block by
+            // default, so leaving these entries set would widen AC "the key is never written to a
+            // log, a crash dump, or plain config" (issue #234).
+            foreach (var key in environment.Keys) Environment.SetEnvironmentVariable(key, null);
         }
     }
 }
