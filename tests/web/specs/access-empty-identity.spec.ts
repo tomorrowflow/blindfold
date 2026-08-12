@@ -21,6 +21,11 @@ test.describe("access shell — anonymous founding grant renders no phantom row"
     await page.goto("/ui/setup");
     await page.getByTestId("setup-workspace-name").fill("Acme Corp");
     await page.getByTestId("setup-create-btn").click();
+    // Issue #264: creating a workspace lands on Setup's ready-to-connect step
+    // first now, not directly on the entity list -- skip it, this test's own
+    // concern is the Access view's phantom-row rendering, not that new step.
+    await expect(page.getByTestId("setup-ready-message")).toBeVisible();
+    await page.getByTestId("setup-skip-connect").click();
     await expect(page).toHaveURL(/\/ui\/entities$/);
 
     await page.goto("/ui/access");

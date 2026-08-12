@@ -9,6 +9,7 @@ import { test, expect } from "./fixtures";
 const SHELL_ROUTES = [
   "/ui/",
   "/ui/status",
+  "/ui/connect",
   "/ui/entities",
   "/ui/graph",
   "/ui/inbox",

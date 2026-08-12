@@ -7,6 +7,7 @@ import { test, expect } from "./fixtures";
 
 const NAV_LABELS = [
   "Home",
+  "Connect",
   "Entity list",
   "Graph editor",
   "Review inbox",
@@ -16,7 +17,7 @@ const NAV_LABELS = [
 ];
 
 test.describe("management shell", () => {
-  test("sidebar renders all seven destinations and routes switch on click", async ({ page }) => {
+  test("sidebar renders all eight destinations and routes switch on click", async ({ page }) => {
     await page.goto("/ui/");
     // Scoped to the sidebar landmark, not the whole page: issue #110's Home/Status
     // review-inbox rail card also renders a "Review inbox" link (its own "Open

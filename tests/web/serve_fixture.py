@@ -65,6 +65,18 @@ if os.environ.get("BLINDFOLD_FIXTURE_PERSISTENT_STORE") == "1":
     )
 os.environ.setdefault("BLINDFOLD_DATABASE_URL", "memory://")
 
+# Issue #264: mirror this fixture's own bind address into BLINDFOLD_HOST/
+# BLINDFOLD_PORT so GET /v1/status's config.host/config.port -- which the Connect
+# page's snippets render verbatim -- reflect where this fixture actually listens,
+# the same way a real `blindfold serve --port N` invocation keeps settings.host/
+# settings.port in lockstep with the real bind (config.py). Left unset, every
+# instance would report the compiled-in default (127.0.0.1:25463) instead, which
+# collides with Connect.tsx's own hardcoded fallback constant -- making a real
+# fetch and a silent fallback-to-default bug look identical in the DOM. Must be
+# set before `blindfold.app` is imported (its module-level get_settings() call).
+os.environ.setdefault("BLINDFOLD_HOST", "127.0.0.1")
+os.environ.setdefault("BLINDFOLD_PORT", os.environ.get("BLINDFOLD_FIXTURE_PORT", "8951"))
+
 
 def _start_stub_openbao_server() -> str:
     """A minimal loopback-only HTTP stub answering Transit's encrypt/decrypt shape.

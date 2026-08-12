@@ -74,12 +74,20 @@ test.describe("Setup — empty-store forced redirect", () => {
 });
 
 test.describe("Setup — create first workspace", () => {
-  test("creating a workspace (Load sample data left unticked) grants the creator every canonical role and lands in that workspace's empty entity list", async ({
+  test("creating a workspace (Load sample data left unticked) grants the creator every canonical role and, once Setup's ready-to-connect step is skipped, lands in that workspace's empty entity list", async ({
     operatorPage,
   }) => {
     await operatorPage.goto("/ui/setup");
     await operatorPage.getByTestId("setup-workspace-name").fill("Acme Corp");
     await operatorPage.getByTestId("setup-create-btn").click();
+
+    // Issue #264: creating a workspace no longer redirects straight to the entity
+    // list -- it lands on the ready-to-connect terminal step first (see the
+    // "Setup — ready to connect" describe block below for its own two CTAs).
+    // Skip it here since this test's own concern is the founding-grant + landing
+    // page, not the new step itself.
+    await expect(operatorPage.getByTestId("setup-ready-message")).toBeVisible();
+    await operatorPage.getByTestId("setup-skip-connect").click();
 
     await expect(operatorPage).toHaveURL(/\/ui\/entities$/);
     await expect(operatorPage.locator("h1")).toContainText("Entity list");
@@ -118,5 +126,47 @@ test.describe("Setup — create first workspace", () => {
     await operatorPage.goto("/ui/setup");
     await expect(operatorPage).toHaveURL(/\/ui\/setup$/);
     await expect(operatorPage.locator("h1")).toContainText("Setup");
+  });
+});
+
+test.describe("Setup — ready to connect (issue #264)", () => {
+  // readyToConnect is client-side-only React state (reset on every fresh mount of
+  // Setup), so each test below creates its own new workspace to reach the screen
+  // again -- creating an additional workspace on an already-non-empty store is
+  // ungated (POST /v1/management/workspaces docstring: no role check, it just
+  // skips the founding-admin self-grant), so this is safe to repeat.
+
+  test("the ready-to-connect screen shows both CTAs and doesn't auto-navigate", async ({
+    operatorPage,
+  }) => {
+    await operatorPage.goto("/ui/setup");
+    await operatorPage.getByTestId("setup-workspace-name").fill("Umbrella Corp");
+    await operatorPage.getByTestId("setup-create-btn").click();
+
+    await expect(operatorPage.getByTestId("setup-ready-message")).toHaveText(
+      "You're set up — now point a tool at it."
+    );
+    await expect(operatorPage).toHaveURL(/\/ui\/setup$/);
+    await expect(operatorPage.getByTestId("setup-connect-cta")).toHaveAttribute(
+      "href",
+      "/ui/connect"
+    );
+    await expect(operatorPage.getByTestId("setup-skip-connect")).toBeVisible();
+  });
+
+  test("the Connect a tool CTA navigates to /connect", async ({ operatorPage }) => {
+    await operatorPage.goto("/ui/setup");
+    await operatorPage.getByTestId("setup-workspace-name").fill("Stark Industries");
+    await operatorPage.getByTestId("setup-create-btn").click();
+    await operatorPage.getByTestId("setup-connect-cta").click();
+    await expect(operatorPage).toHaveURL(/\/ui\/connect$/);
+  });
+
+  test("the Skip for now CTA navigates to /entities", async ({ operatorPage }) => {
+    await operatorPage.goto("/ui/setup");
+    await operatorPage.getByTestId("setup-workspace-name").fill("Wayne Enterprises");
+    await operatorPage.getByTestId("setup-create-btn").click();
+    await operatorPage.getByTestId("setup-skip-connect").click();
+    await expect(operatorPage).toHaveURL(/\/ui\/entities$/);
   });
 });

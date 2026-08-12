@@ -44,6 +44,12 @@ test.describe("Setup — create with Load sample data checked", () => {
     await page.getByTestId("setup-sample-checkbox").check();
     await page.getByTestId("setup-create-btn").click();
 
+    // Issue #264: creating a workspace lands on Setup's ready-to-connect step
+    // first now, not directly on the entity list -- skip it, this test's own
+    // concern is Sample data's pre-populate behavior, not that new step.
+    await expect(page.getByTestId("setup-ready-message")).toBeVisible();
+    await page.getByTestId("setup-skip-connect").click();
+
     await expect(page).toHaveURL(/\/ui\/entities$/);
     await expect(page.locator("h1")).toContainText("Entity list");
     // Pre-populated: the empty-state populate surface must NOT be showing.
@@ -116,6 +122,11 @@ test.describe("Entity list — Import a Seed bundle (persistent populate surface
     await page.goto("/ui/setup");
     await page.getByTestId("setup-workspace-name").fill("Acme Import");
     await page.getByTestId("setup-create-btn").click();
+    // Issue #264: creating a workspace lands on Setup's ready-to-connect step
+    // first now, not directly on the entity list -- skip it, this test's own
+    // concern is the Import surface's persistence, not that new step.
+    await expect(page.getByTestId("setup-ready-message")).toBeVisible();
+    await page.getByTestId("setup-skip-connect").click();
     await expect(page).toHaveURL(/\/ui\/entities$/);
     await expect(page.getByTestId("entity-list-empty-state")).toBeVisible();
 

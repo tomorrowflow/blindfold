@@ -107,6 +107,20 @@ test.describe("Protected state", () => {
     );
   });
 
+  test("Connect rail card sits first in the rail and links to /connect (issue #264)", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto("/ui/status");
+    const card = alicePage.getByTestId("home-connect-card");
+    await expect(card).toBeVisible();
+    await expect(card).toHaveAttribute("href", "/ui/connect");
+    await expect(card.getByTestId("home-connect-card-icon")).toBeVisible();
+    await expect(card.getByTestId("home-connect-card-link-row")).toContainText("Open Connect");
+
+    const railCards = alicePage.locator(".bf-status-rail > a, .bf-status-rail > div");
+    await expect(railCards.first()).toHaveAttribute("data-testid", "home-connect-card");
+  });
+
   test("review inbox rail card links to the review inbox", async ({ alicePage }) => {
     await alicePage.goto("/ui/status");
     const card = alicePage.getByTestId("review-inbox-card");
@@ -133,6 +147,13 @@ test.describe("Protected state", () => {
 
   test("no cloud model name ever appears in L3 copy", async ({ alicePage }) => {
     await alicePage.goto("/ui/status");
+    // Issue #264's Connect rail card legitimately names "Claude Code" -- a
+    // supported client tool, unrelated to this invariant's actual concern (the
+    // L3 adjudicator's own copy/config must never surface a cloud model name).
+    // Excise that one card before scanning body text rather than weakening the
+    // check: everything else on the page (banner, dependency cards, config card)
+    // stays covered.
+    await alicePage.getByTestId("home-connect-card").evaluate((el) => el.remove());
     const body = await alicePage.locator("body").innerText();
     expect(body.toLowerCase()).not.toContain("claude");
     expect(body.toLowerCase()).not.toContain("sonnet");
