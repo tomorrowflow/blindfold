@@ -54,14 +54,14 @@ def test_settings_bootstrap_admin_identity_defaults_to_empty_string(monkeypatch)
     assert get_settings().bootstrap_admin_identity == ""
 
 
-def test_settings_dev_mode_defaults_false(monkeypatch):
-    monkeypatch.delenv("BLINDFOLD_DEV_MODE", raising=False)
-    assert get_settings().dev_mode is False
+def test_settings_allow_root_transit_token_defaults_false(monkeypatch):
+    monkeypatch.delenv("BLINDFOLD_ALLOW_ROOT_TRANSIT_TOKEN", raising=False)
+    assert get_settings().allow_root_transit_token is False
 
 
-def test_settings_dev_mode_is_overridable_via_env(monkeypatch):
-    monkeypatch.setenv("BLINDFOLD_DEV_MODE", "1")
-    assert get_settings().dev_mode is True
+def test_settings_allow_root_transit_token_is_overridable_via_env(monkeypatch):
+    monkeypatch.setenv("BLINDFOLD_ALLOW_ROOT_TRANSIT_TOKEN", "1")
+    assert get_settings().allow_root_transit_token is True
 
 
 def test_settings_l3_base_url_defaults_to_localhost(monkeypatch):

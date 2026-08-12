@@ -27,6 +27,7 @@ from blindfold.serve import (
     refuse_if_ambiguous_mapping_cipher,
     refuse_if_cloud_model,
     refuse_if_gliner_model_missing,
+    refuse_if_legacy_root_token_opt_in_env_var,
     refuse_if_legacy_l3_env_vars,
     refuse_if_malformed_store_key,
     refuse_if_omlx_non_loopback,
@@ -48,27 +49,27 @@ class _StubTransitClient:
 # ---------------------------------------------------------------------------
 
 
-def test_refuse_if_root_token_blocks_a_root_token_outside_dev_mode():
-    settings = Settings(openbao_token="dev-root-token", dev_mode=False)
+def test_refuse_if_root_token_blocks_a_root_token_without_the_opt_in():
+    settings = Settings(openbao_token="dev-root-token", allow_root_transit_token=False)
 
     with pytest.raises(DevModeRequiredError):
         refuse_if_root_token(settings, transit_client=_StubTransitClient(root=True))
 
 
-def test_refuse_if_root_token_allows_a_root_token_in_explicit_dev_mode():
-    settings = Settings(openbao_token="dev-root-token", dev_mode=True)
+def test_refuse_if_root_token_allows_a_root_token_with_the_opt_in():
+    settings = Settings(openbao_token="dev-root-token", allow_root_transit_token=True)
 
     refuse_if_root_token(settings, transit_client=_StubTransitClient(root=True))
 
 
-def test_refuse_if_root_token_allows_a_scoped_token_outside_dev_mode():
-    settings = Settings(openbao_token="blindfold-proxy-token", dev_mode=False)
+def test_refuse_if_root_token_allows_a_scoped_token_without_the_opt_in():
+    settings = Settings(openbao_token="blindfold-proxy-token", allow_root_transit_token=False)
 
     refuse_if_root_token(settings, transit_client=_StubTransitClient(root=False))
 
 
 def test_refuse_if_root_token_is_a_noop_with_no_transit_token_configured():
-    settings = Settings(openbao_token="", dev_mode=False)
+    settings = Settings(openbao_token="", allow_root_transit_token=False)
 
     # No transit_client seam passed either — a real TransitClient must never be
     # constructed (and no network call made) when there's nothing configured to check.
@@ -79,9 +80,18 @@ def test_refuse_if_root_token_is_a_noop_when_the_local_cipher_is_active():
     # ADR-0045 §2, issue #228: the root-token guard is conditional on the Transit
     # cipher being active -- a Store key alone (the Local key cipher) has no token
     # concept, so this stays a no-op regardless of what a real client would report.
-    settings = Settings(openbao_token="", store_key="a-local-store-key", dev_mode=False)
+    settings = Settings(openbao_token="", store_key="a-local-store-key", allow_root_transit_token=False)
 
     refuse_if_root_token(settings)
+
+
+def test_refuse_if_root_token_message_names_the_opt_in_variable():
+    # ADR-0047 §13, issue #250: BLINDFOLD_DEV_MODE is retired by hard cut -- the
+    # refusal must point the operator at its replacement, not the old name.
+    settings = Settings(openbao_token="dev-root-token", allow_root_transit_token=False)
+
+    with pytest.raises(DevModeRequiredError, match="BLINDFOLD_ALLOW_ROOT_TRANSIT_TOKEN"):
+        refuse_if_root_token(settings, transit_client=_StubTransitClient(root=True))
 
 
 # ---------------------------------------------------------------------------
@@ -327,6 +337,24 @@ def test_refuse_if_legacy_l3_env_vars_is_a_noop_with_neither_old_name_set(monkey
     monkeypatch.delenv("BLINDFOLD_OLLAMA_MODEL", raising=False)
 
     refuse_if_legacy_l3_env_vars()
+
+
+# ---------------------------------------------------------------------------
+# 1c-bis. refuse_if_legacy_root_token_opt_in_env_var — ADR-0047 §13 hard cut, issue #250
+# ---------------------------------------------------------------------------
+
+
+def test_refuse_if_legacy_root_token_opt_in_env_var_blocks_the_old_name_set_to_anything(monkeypatch):
+    monkeypatch.setenv("BLINDFOLD_DEV_MODE", "0")
+
+    with pytest.raises(LegacyEnvVarError, match="BLINDFOLD_ALLOW_ROOT_TRANSIT_TOKEN"):
+        refuse_if_legacy_root_token_opt_in_env_var()
+
+
+def test_refuse_if_legacy_root_token_opt_in_env_var_is_a_noop_with_the_old_name_unset(monkeypatch):
+    monkeypatch.delenv("BLINDFOLD_DEV_MODE", raising=False)
+
+    refuse_if_legacy_root_token_opt_in_env_var()
 
 
 # ---------------------------------------------------------------------------
@@ -775,8 +803,24 @@ def test_run_server_refuses_a_legacy_l3_env_var_before_starting_the_asgi_server(
     assert calls == []
 
 
+def test_run_server_refuses_the_legacy_dev_mode_env_var_before_starting_the_asgi_server(
+    monkeypatch,
+):
+    monkeypatch.setenv("BLINDFOLD_DEV_MODE", "1")
+    settings = Settings(upstream_base_url="http://shared.test")
+    calls = []
+
+    with pytest.raises(LegacyEnvVarError, match="BLINDFOLD_ALLOW_ROOT_TRANSIT_TOKEN"):
+        run_server(
+            settings=settings,
+            runner=lambda app, **kwargs: calls.append((app, kwargs)),
+        )
+
+    assert calls == []
+
+
 def test_run_server_refuses_a_root_token_before_starting_the_asgi_server():
-    settings = Settings(openbao_token="dev-root-token", dev_mode=False)
+    settings = Settings(openbao_token="dev-root-token", allow_root_transit_token=False)
     calls = []
 
     with pytest.raises(DevModeRequiredError):

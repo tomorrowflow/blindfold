@@ -26,9 +26,12 @@ Bootstrap admin (issue #43 / UX-1):
                               workspace at startup, so a fresh single-user install
                               isn't RBAC-locked-out of its own workspace.
 
-Dev mode (SEC-2 / issue #44):
-  BLINDFOLD_DEV_MODE       — explicit opt-in that lets ``blindfold serve`` start
-                             against a root Transit token; refused otherwise.
+Root Transit token opt-in (SEC-2 / issue #44, ADR-0047 §13):
+  BLINDFOLD_ALLOW_ROOT_TRANSIT_TOKEN — explicit opt-in that lets ``blindfold serve``
+                             start against a root Transit token; refused otherwise.
+                             Replaces ``BLINDFOLD_DEV_MODE`` (hard cut, no alias) --
+                             a startup that still sets the old name is refused by
+                             name, see ``serve.refuse_if_legacy_root_token_opt_in_env_var``.
 
 Dedicated OpenAI upstream (transport sliver of #37 / issue #76):
   BLINDFOLD_OPENAI_UPSTREAM_BASE_URL — where ``POST /v1/chat/completions`` egresses.
@@ -174,7 +177,7 @@ class Settings:
     openbao_token: str = ""
     store_key: str = ""
     bootstrap_admin_identity: str = ""
-    dev_mode: bool = False
+    allow_root_transit_token: bool = False
     l3_base_url: str = DEFAULT_L3_BASE_URL
     l3_model: str = ""
     l3_provider: str = DEFAULT_L3_PROVIDER
@@ -389,7 +392,10 @@ def get_settings() -> Settings:
         openbao_token=os.environ.get("BLINDFOLD_OPENBAO_TOKEN", ""),
         store_key=os.environ.get("BLINDFOLD_STORE_KEY", ""),
         bootstrap_admin_identity=os.environ.get("BLINDFOLD_BOOTSTRAP_ADMIN", ""),
-        dev_mode=os.environ.get("BLINDFOLD_DEV_MODE", "") not in ("", "0", "false", "False"),
+        allow_root_transit_token=os.environ.get(
+            "BLINDFOLD_ALLOW_ROOT_TRANSIT_TOKEN", ""
+        )
+        not in ("", "0", "false", "False"),
         l3_base_url=os.environ.get("BLINDFOLD_L3_BASE_URL", DEFAULT_L3_BASE_URL),
         l3_model=os.environ.get("BLINDFOLD_L3_MODEL", ""),
         l3_provider=l3_provider,

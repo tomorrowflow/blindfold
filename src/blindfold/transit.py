@@ -79,9 +79,9 @@ class TransitClient:
         """Self-lookup the configured token; True iff it carries the ``root`` policy.
 
         Used by the startup guard (SEC-2, issue #44): the proxy refuses to run against
-        a root Transit token outside an explicit dev-mode opt-in, since root bypasses
-        every policy (blindfold-proxy/-human/-admin) the store's RBAC separation
-        depends on.
+        a root Transit token without the explicit ``BLINDFOLD_ALLOW_ROOT_TRANSIT_TOKEN``
+        opt-in (ADR-0047 §13), since root bypasses every policy
+        (blindfold-proxy/-human/-admin) the store's RBAC separation depends on.
         """
         resp = self._http.get(
             f"{self._addr}/v1/auth/token/lookup-self",

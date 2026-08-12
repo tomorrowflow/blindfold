@@ -135,9 +135,10 @@ uv run blindfold serve
 
 Never hand the running proxy the OpenBao **root** token (the `dev-root-token` the
 bootstrap script uses to set up keys/policies) — `blindfold serve` refuses to start
-against a root Transit token (SEC-2) unless you explicitly set `BLINDFOLD_DEV_MODE=1`,
-since root bypasses the `blindfold-proxy`/`-human`/`-admin` policy separation the store's
-RBAC depends on. Mint a scoped token as shown above instead.
+against a root Transit token (SEC-2) unless you explicitly set
+`BLINDFOLD_ALLOW_ROOT_TRANSIT_TOKEN=1`, since root bypasses the
+`blindfold-proxy`/`-human`/`-admin` policy separation the store's RBAC depends on. Mint a
+scoped token as shown above instead.
 
 ---
 
