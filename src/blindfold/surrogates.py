@@ -16,10 +16,32 @@ Transit-backed mapping secrecy (leak-audit clause G) are out of scope (issues #3
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 
 from .detection import Entity
 from .store._mint import collides_with_known_entity, next_replacement_surrogate
+
+_RESERVED_NAMESPACE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^pii-user-\d+@blindfold\.invalid$"),
+    re.compile(r"^\+1-555-\d+$"),
+    re.compile(r"^XX99 0000 0000 0000 0000 \d+$"),
+    re.compile(r"^ID-RESERVED-\d+$"),
+    re.compile(r"^PII-RESERVED-.+-\d+$"),
+)
+
+
+def is_reserved_namespace_surrogate(surrogate: str) -> bool:
+    """True if ``surrogate``'s string shape alone identifies it as one of
+    :func:`_mint_pii_surrogate`'s reserved-namespace forms -- an L1 PII mint,
+    recognizable without looking it up in any mapping.
+
+    The structural fact ADR-0047 §9 / issue #256's offline capture comparison
+    derives its ``expected`` (PII counter-position) classification from, instead
+    of a curated exception list: these five shapes are exactly (and only) what
+    :func:`_mint_pii_surrogate` can produce.
+    """
+    return any(pattern.match(surrogate) for pattern in _RESERVED_NAMESPACE_PATTERNS)
 
 
 def _mint_pii_surrogate(kind: str, index: int) -> str:
