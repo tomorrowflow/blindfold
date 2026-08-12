@@ -54,6 +54,19 @@ def ping_ollama(
 # cold-load figure, not a tuned SLO -- ADR-0022 sets no latency budget for this call.
 DEFAULT_ADJUDICATOR_TIMEOUT_SECONDS = 30.0
 
+# Issue #259 (#249 Finding 1): the adjudicator's verdict must not depend on a draw --
+# the same candidate span was observed protected on 6 runs in 10 and dismissed on 4
+# against the local oMLX adjudicator, with sampling left at the provider's default
+# (Ollama's own default temperature is 0.8; neither client sent any sampling
+# parameter at all). Single-sourced here since l3_openai_compat.py imports both
+# constants unchanged -- the two wire formats differ (top-level for the OpenAI-
+# compatible body, nested under `options` for Ollama's native one), so a shared
+# constant is the honest seam, not a shared dict literal. This does not make L3
+# reproducible on its own (#249 Finding 2: a verdict still moves with batch position
+# and batch size) -- it only removes sampling as a second source of variance.
+ADJUDICATOR_TEMPERATURE = 0
+ADJUDICATOR_SEED = 0
+
 _PROMPT_TEMPLATE = (
     "You are adjudicating whether a flagged span of text names a real-world entity "
     "that must be protected: a SPECIFIC, private or sensitive real person, "
@@ -196,6 +209,10 @@ class OllamaAdjudicator:
                 "prompt": prompt,
                 "stream": False,
                 "format": "json",
+                "options": {
+                    "temperature": ADJUDICATOR_TEMPERATURE,
+                    "seed": ADJUDICATOR_SEED,
+                },
             },
         )
         response.raise_for_status()
@@ -221,6 +238,10 @@ class OllamaAdjudicator:
                 "prompt": prompt,
                 "stream": False,
                 "format": "json",
+                "options": {
+                    "temperature": ADJUDICATOR_TEMPERATURE,
+                    "seed": ADJUDICATOR_SEED,
+                },
             },
         )
         response.raise_for_status()
