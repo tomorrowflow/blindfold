@@ -21,7 +21,13 @@ import json
 import httpx
 
 from .l3 import CandidateSpan, L3Adjudication
-from .ollama import _PROMPT_TEMPLATE, _build_batch_prompt, _parse_batch_verdicts
+from .ollama import (
+    ADJUDICATOR_SEED,
+    ADJUDICATOR_TEMPERATURE,
+    _PROMPT_TEMPLATE,
+    _build_batch_prompt,
+    _parse_batch_verdicts,
+)
 from .status import DependencyHealth
 
 # Issue #92: /v1/status's l3 dependency probe -- a lightweight local-daemon liveness
@@ -101,6 +107,8 @@ class OpenAICompatibleAdjudicator:
                 "model": self._model,
                 "messages": [{"role": "user", "content": prompt}],
                 "response_format": {"type": "json_object"},
+                "temperature": ADJUDICATOR_TEMPERATURE,
+                "seed": ADJUDICATOR_SEED,
             },
             headers=_bearer_auth_headers(self._api_key),
         )
@@ -125,6 +133,8 @@ class OpenAICompatibleAdjudicator:
                 "model": self._model,
                 "messages": [{"role": "user", "content": prompt}],
                 "response_format": {"type": "json_object"},
+                "temperature": ADJUDICATOR_TEMPERATURE,
+                "seed": ADJUDICATOR_SEED,
             },
             headers=_bearer_auth_headers(self._api_key),
         )

@@ -157,6 +157,42 @@ def test_adjudicator_batch_prompt_rejects_common_capitalized_nouns_used_generica
     assert "index" in lowered or "design" in lowered or "transit" in lowered or "artifacts" in lowered or "tool" in lowered
 
 
+def test_ollama_adjudicator_pins_sampling_to_temperature_zero_and_a_fixed_seed():
+    # Issue #259 (#249 Finding 1): an unpinned adjudicator verdict is a coin weighted
+    # by the model, not a decision -- the same candidate protected on 6 runs in 10 and
+    # dismissed on 4 against the local oMLX adjudicator. Ollama's own default
+    # temperature is 0.8 (the client previously sent no `options` block at all), so
+    # this must be an explicit `options: {temperature: 0, seed: <fixed>}`, not an
+    # inherited default.
+    from blindfold.ollama import ADJUDICATOR_SEED, ADJUDICATOR_TEMPERATURE
+
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["request"] = request
+        return httpx.Response(
+            200, json={"response": json.dumps({"is_entity": True})}
+        )
+
+    http = httpx.Client(
+        base_url="http://localhost:11434", transport=httpx.MockTransport(handler)
+    )
+    adjudicator = OllamaAdjudicator(
+        base_url="http://localhost:11434", model="llama3.1", http=http
+    )
+    candidate = CandidateSpan(
+        text="Quentin", start=13, end=20, context="Please brief Quentin tomorrow."
+    )
+
+    adjudicator.adjudicate(candidate)
+
+    sent = json.loads(captured["request"].content.decode("utf-8"))
+    assert sent["options"] == {
+        "temperature": ADJUDICATOR_TEMPERATURE,
+        "seed": ADJUDICATOR_SEED,
+    }
+
+
 def test_ollama_adjudicator_rejects_a_non_entity_candidate():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -321,6 +357,45 @@ def test_ollama_adjudicator_batch_sends_one_call_for_n_candidates():
     assert "Bash" in sent["prompt"]
     assert "Please brief Quentin." in sent["prompt"]
     assert "Run the Bash script." in sent["prompt"]
+
+
+def test_ollama_adjudicator_batch_pins_sampling_to_temperature_zero_and_a_fixed_seed():
+    # Issue #259: the batch call site is a separate literal from the single-candidate
+    # one and must carry the same pinned options -- this is exactly the kind of
+    # drift the issue calls out (four call sites across two modules).
+    from blindfold.ollama import ADJUDICATOR_SEED, ADJUDICATOR_TEMPERATURE
+
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["request"] = request
+        return httpx.Response(
+            200,
+            json={
+                "response": json.dumps(
+                    {"verdicts": [{"is_entity": True}, {"is_entity": False}]}
+                )
+            },
+        )
+
+    http = httpx.Client(
+        base_url="http://localhost:11434", transport=httpx.MockTransport(handler)
+    )
+    adjudicator = OllamaAdjudicator(
+        base_url="http://localhost:11434", model="llama3.1", http=http
+    )
+    candidates = [
+        CandidateSpan(text="Quentin", start=0, end=7, context="Please brief Quentin."),
+        CandidateSpan(text="Bash", start=0, end=4, context="Run the Bash script."),
+    ]
+
+    adjudicator.adjudicate_batch(candidates)
+
+    sent = json.loads(captured["request"].content.decode("utf-8"))
+    assert sent["options"] == {
+        "temperature": ADJUDICATOR_TEMPERATURE,
+        "seed": ADJUDICATOR_SEED,
+    }
 
 
 def test_ollama_adjudicator_batch_tolerates_a_short_verdict_array():

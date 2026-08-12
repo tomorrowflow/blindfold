@@ -60,6 +60,44 @@ def test_openai_compatible_adjudicator_sends_the_candidate_and_context_and_confi
     assert candidate.context in prompt
 
 
+def test_openai_compatible_adjudicator_pins_sampling_to_temperature_zero_and_a_fixed_seed():
+    # Issue #259 (#249 Finding 1): same rationale as OllamaAdjudicator's sibling
+    # test -- an unpinned verdict is a coin weighted by the model. The OpenAI-
+    # compatible wire shape is top-level (not nested under `options`, unlike
+    # Ollama's native body), but the pinned values themselves are the same
+    # single-sourced constants from ollama.py.
+    from blindfold.ollama import ADJUDICATOR_SEED, ADJUDICATOR_TEMPERATURE
+
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["request"] = request
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"content": json.dumps({"is_entity": True})}}
+                ]
+            },
+        )
+
+    http = httpx.Client(
+        base_url="http://localhost:8080", transport=httpx.MockTransport(handler)
+    )
+    adjudicator = OpenAICompatibleAdjudicator(
+        base_url="http://localhost:8080", model="qwen2.5-7b-mlx", http=http
+    )
+    candidate = CandidateSpan(
+        text="Quentin", start=13, end=20, context="Please brief Quentin tomorrow."
+    )
+
+    adjudicator.adjudicate(candidate)
+
+    sent = json.loads(captured["request"].content.decode("utf-8"))
+    assert sent["temperature"] == ADJUDICATOR_TEMPERATURE
+    assert sent["seed"] == ADJUDICATOR_SEED
+
+
 def test_openai_compatible_adjudicator_sends_a_bearer_token_when_an_api_key_is_configured():
     # ADR-0031 follow-up (issue #130): a stock oMLX install requires an API key by
     # default (auth.skip_api_key_verification: false) and 401s without one.
@@ -290,6 +328,53 @@ def test_openai_compatible_adjudicator_batch_sends_one_call_for_n_candidates():
     assert "Bash" in prompt
     assert "Please brief Quentin." in prompt
     assert "Run the Bash script." in prompt
+
+
+def test_openai_compatible_adjudicator_batch_pins_sampling_to_temperature_zero_and_a_fixed_seed():
+    # Issue #259: the batch call site is a separate literal from the single-candidate
+    # one and must carry the same pinned values.
+    from blindfold.ollama import ADJUDICATOR_SEED, ADJUDICATOR_TEMPERATURE
+
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["request"] = request
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": json.dumps(
+                                {
+                                    "verdicts": [
+                                        {"is_entity": True},
+                                        {"is_entity": False},
+                                    ]
+                                }
+                            )
+                        }
+                    }
+                ]
+            },
+        )
+
+    http = httpx.Client(
+        base_url="http://localhost:8080", transport=httpx.MockTransport(handler)
+    )
+    adjudicator = OpenAICompatibleAdjudicator(
+        base_url="http://localhost:8080", model="qwen2.5-7b-mlx", http=http
+    )
+    candidates = [
+        CandidateSpan(text="Quentin", start=0, end=7, context="Please brief Quentin."),
+        CandidateSpan(text="Bash", start=0, end=4, context="Run the Bash script."),
+    ]
+
+    adjudicator.adjudicate_batch(candidates)
+
+    sent = json.loads(captured["request"].content.decode("utf-8"))
+    assert sent["temperature"] == ADJUDICATOR_TEMPERATURE
+    assert sent["seed"] == ADJUDICATOR_SEED
 
 
 def test_openai_compatible_adjudicator_batch_sends_a_bearer_token_when_configured():
