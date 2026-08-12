@@ -44,17 +44,6 @@ def _load(module_name: str, filename: str):
     return module
 
 
-absence_check = _load("blindfold_absence_check", "absence_check.py")
-absence_gate = _load("blindfold_absence_gate", "absence_gate.py")
-
-_module_hit = absence_check._module_hit
-_path_hit = absence_check._path_hit
-
-MODULE = "blindfold_devtools"
-REPO_ROOT = _PACKAGING_DIR.parent
-SPEC_PATH = _PACKAGING_DIR / "blindfold-proxy.spec"
-
-
 def _pyinstaller_available() -> bool:
     try:
         import PyInstaller  # noqa: F401
@@ -67,6 +56,26 @@ pytestmark = pytest.mark.skipif(
     not _pyinstaller_available(),
     reason="PyInstaller not installed -- run `uv sync --group freeze` to build the frozen proxy",
 )
+
+# `pytest.mark.skipif` only skips test *execution*, not module collection -- and
+# absence_gate.py itself loads absence_check.py (which imports PyInstaller) at module
+# scope. Gate the loads on the same check so collection doesn't hard-fail when
+# PyInstaller isn't installed (the ordinary `uv run pytest` case, per the `freeze`
+# group's comment in pyproject.toml); the skipif above then reports a clean skip.
+if _pyinstaller_available():
+    absence_check = _load("blindfold_absence_check", "absence_check.py")
+    absence_gate = _load("blindfold_absence_gate", "absence_gate.py")
+    _module_hit = absence_check._module_hit
+    _path_hit = absence_check._path_hit
+    _FORBIDDEN_MODULES = absence_gate.FORBIDDEN_MODULES
+else:
+    absence_check = absence_gate = None
+    _module_hit = _path_hit = None
+    _FORBIDDEN_MODULES = ()
+
+MODULE = "blindfold_devtools"
+REPO_ROOT = _PACKAGING_DIR.parent
+SPEC_PATH = _PACKAGING_DIR / "blindfold-proxy.spec"
 
 
 # --- Layer 1 matcher: pure logic, no binary needed.
@@ -163,12 +172,12 @@ def _run_assert_module_absent(binary: pathlib.Path, module: str) -> int:
     return result.returncode
 
 
-@pytest.mark.parametrize("module", absence_gate.FORBIDDEN_MODULES)
+@pytest.mark.parametrize("module", _FORBIDDEN_MODULES)
 def test_release_binary_contains_no_forbidden_module(release_binary: pathlib.Path, module: str) -> None:
     assert absence_check.find_hits(str(release_binary), module) == []
 
 
-@pytest.mark.parametrize("module", absence_gate.FORBIDDEN_MODULES)
+@pytest.mark.parametrize("module", _FORBIDDEN_MODULES)
 def test_release_binary_reports_forbidden_module_unimportable(
     release_binary: pathlib.Path, module: str
 ) -> None:
