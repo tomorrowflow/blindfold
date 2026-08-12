@@ -43,3 +43,6 @@ graphify-out/
 
 # Local scratch input dir (dev-only test fixtures)
 input/
+
+# Config to use for claude code tests
+claude_environment
