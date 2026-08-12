@@ -29,6 +29,12 @@ graphify-out/
 /build/
 /dist/
 
+# Assembled macOS .app bundle (the platform-verify.yml assemble step's output
+# path, ADR-0039) -- a local build artifact like /build/ and /dist/. Ignored so
+# a locally assembled bundle is never committed, and never sits untracked in a
+# worktree the Sandcastle harness resets.
+/menu-bar-app/
+
 # macOS
 .DS_Store
 
