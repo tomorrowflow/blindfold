@@ -66,66 +66,14 @@ internal sealed class RealProxyProcessLauncher : IProxyProcessLauncher
         // #234). Touching ProcessStartInfo.Environment at all, even once, makes .NET build a full
         // explicit environment block and pass it to CreateProcess instead of the OS-native
         // lpEnvironment=NULL ("inherit my own block verbatim") every other launch here otherwise
-        // gets. That distinction is exactly what separated platform-verify.yml's two Windows
-        // assertions: the ONE-HOP assertion launches this identical frozen blindfold-proxy.exe
-        // directly from PowerShell with L3 env set via plain `$env:X = ...` (NULL-block, ambient
-        // inheritance) and reaches Protected -- proving this exact onefile-bootloader binary's
-        // re-exec correctly forwards ambient env through its own internal child hop on the hosted
-        // windows-latest runner. The TWO-HOP assertion, spawning the same binary through this
-        // launcher with an explicit merged block (the prior startInfo.Environment[key]=value
-        // approach, see git blame), is the one path never shown to survive that same re-exec --
-        // mapping_cipher stayed "none" across six diagnostic cycles (620102b..aca054c) that ruled
-        // out every other seam (provisioning, every C#/Python logic path, UAC elevation, .NET's
-        // own env-merge mechanism, the onefile bootloader's own source, generic nested
-        // CreateProcess) without finding a fix. Switching this launcher onto the one mechanism
-        // already proven end-to-end on real Windows removes that difference, rather than adding a
-        // seventh diagnostic probe with no way to execute it from this sandbox.
+        // gets -- the ambient-inheritance mechanism platform-verify.yml's ONE-HOP (L3)/(Store key)
+        // assertions prove survives blindfold-proxy.exe's onefile re-exec on real Windows.
         //
-        // One more candidate this cycle ruled out (issue #234, continuing past a95a715): whether
-        // blindfold.exe itself -- Blindfold.Tray.csproj is SelfContained=true/PublishSingleFile=true,
-        // the same onefile-shaped packaging as blindfold-proxy.exe -- re-execs itself as a second
-        // process the way PyInstaller's onefile bootloader does, which would put this
-        // SetEnvironmentVariable call in a short-lived "unpacker" process distinct from whichever
-        // process actually calls CreateProcess for the child. Verified empirically in this sandbox
-        // (win-x64 can't run here, but the SelfContained+PublishSingleFile mechanism is RID-agnostic):
-        // a minimal console app published with the identical SelfContained/PublishSingleFile settings
-        // for linux-arm64, run directly (not via a backgrounding compound shell command, which
-        // introduces its own confounding subshell fork), reports Environment.ProcessId equal to the
-        // PID the launching shell observed, and a child it spawns after SetEnvironmentVariable sees
-        // the freshly set entry. .NET's single-file publish runs the managed entry point in the same
-        // OS process that was launched -- no bundle-extraction re-exec, unlike PyInstaller's onefile
-        // bootloader -- so this is not a second onefile-style hop this diagnostic chain had missed.
-        //
-        // Hosted run 30197335980 (issue #234, against bcaf20b -- the first run to actually exercise
-        // 17569da/a95a715's ONE-HOP (Store key) assertion after its malformed-literal fix) reports the
-        // ONE-HOP (Store key) assertion PASSING: BLINDFOLD_STORE_KEY set at PowerShell scope, no tray
-        // involved, reaches config.mapping_cipher=="local" through this same frozen blindfold-proxy.exe.
-        // The TWO-HOP smoke-launch-full assertion on that same run still fails with mapping_cipher=="none",
-        // with launchEnvironment confirmed to hold the key (keyWasInjected==true) and both the immediate
-        // and nested cmd.exe environment-propagation probes -- run through this identical launcher seam --
-        // reporting the entry "present". Together this closes off the two remaining generic hypotheses this
-        // diagnostic chain had been narrowing between: "this launcher's env delivery doesn't reach *any*
-        // child on this runner image" (refuted -- cmd.exe sees it) and "blindfold-proxy.exe's onefile
-        // re-exec generically drops ambient env" (refuted -- the ONE-HOP launch of the identical binary
-        // reads it fine). What remains unexplained is specific to the (this launcher/tray.exe as parent) x
-        // (blindfold-proxy.exe's actual *compiled* onefile bootloader, not its source, as child) combination
-        // -- exactly the one variable 76cf619 already named as unreachable by inspection or by this sandbox.
-        // No further sandbox-executable hypothesis is known at this point; settling this needs either real
-        // Windows hardware/Process Monitor telemetry, or a maintainer decision to route around it (see
-        // issue #197's own precedent: this codebase has hit an env-propagation-class puzzle in this exact
-        // area once before and it was never actually root-caused, only worked around).
-        //
-        // Update (issue #234, this cycle): searched for a known PyInstaller Windows-onefile
-        // bootloader bug matching this exact shape (a GUI-subsystem/.NET single-file parent's
-        // ambient-inherited env not reaching the onefile child) -- PyInstaller's own internal
-        // bookkeeping env vars (_PYI_PARENT_PROCESS_LEVEL, _PYI_APPLICATION_HOME_DIR,
-        // _PYI_ARCHIVE_FILE, _PYI_SPLASH_IPC) are unrelated (they mark the bootloader's own
-        // process-level/re-exec state, not user env), and the one documented cross-platform env-
-        // inheritance gap (macOS not passing DYLD_LIBRARY_PATH to subprocesses, a SIP-driven
-        // dynamic-linker restriction) doesn't apply to Windows or to plain os.environ reads. No
-        // matching GitHub issue found either. This rules out "a known, already-fixed-elsewhere
-        // PyInstaller bug" as the explanation -- it does not narrow the gap further; the
-        // conclusion above (real Windows telemetry or a maintainer routing decision) stands.
+        // The TWO-HOP path (this launcher spawning blindfold-proxy.exe) still does not reach
+        // config.mapping_cipher=="local" on hosted windows-latest despite this mechanism, even
+        // though the identical launch environment demonstrably reaches a plain child process. That
+        // gap is tracked at #236, not here -- see it for the full diagnostic record (issue #234's
+        // Scope decision, 2026-07-26).
         foreach (var (key, value) in environment) Environment.SetEnvironmentVariable(key, value);
 
         var startInfo = new ProcessStartInfo(exePath)

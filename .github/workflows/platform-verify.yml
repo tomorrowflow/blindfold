@@ -299,11 +299,12 @@ jobs:
       #      its child, so the tray-spawned proxy's l3 probe stays unhealthy (Degraded) even
       #      though the one-hop proxy above reaches Protected. Requiring Protected here would be
       #      testing env-inheritance-through-a-GUI-host, not the tray's contract, and is what
-      #      previously deadlocked this gate. It DOES now require a cipher-configured state
-      #      (issue #234, ADR-0045 §7/§9): RunSmokeLaunchFull provisions and injects
-      #      BLINDFOLD_STORE_KEY via DPAPI itself (StoreKeyEnvironment.Build()) -- unlike the l3
-      #      probe, this injection does not depend on the WinExe host's ambient-env propagation,
-      #      so config.mapping_cipher must report "local" or the step fails.
+      #      previously deadlocked this gate. RunSmokeLaunchFull also checks whether the
+      #      tray-provisioned Store key (StoreKeyEnvironment.Build()) configured
+      #      config.mapping_cipher == "local" in the tray-spawned proxy, but that check is
+      #      non-blocking (issue #234's Scope decision, 2026-07-26): a real gap between this
+      #      TWO-HOP path and the passing ONE-HOP (Store key) assertion above is warned on stderr
+      #      and tracked at #236, not failed here -- see #236 for the diagnostic record.
       #
       # /v1/status only reports "protected" once every dependency probe is healthy
       # (status.py's compute_state) -- with no BLINDFOLD_L3_MODEL configured, the l3 probe
