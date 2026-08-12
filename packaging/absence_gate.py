@@ -29,7 +29,6 @@ import sys
 
 _HERE = pathlib.Path(__file__).resolve().parent
 REPO_ROOT = _HERE.parent
-DEFAULT_SPEC_PATH = _HERE / "blindfold-proxy.spec"
 
 _absence_check_spec = importlib.util.spec_from_file_location(
     "blindfold_absence_check", _HERE / "absence_check.py"
