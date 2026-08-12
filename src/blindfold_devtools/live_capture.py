@@ -143,10 +143,14 @@ class _CapturingUpstreamClient:
             OutboundRecord(section=SECTION_OBSERVED, ts=_now_iso(), payload=payload)
         )
 
-    async def send_messages(self, payload, headers):
+    async def _send_buffered(self, inner_send, payload, headers):
+        """Tee a non-streaming send: record the blindfolded outbound, time the
+        upstream call, and record the whole buffered response as a single
+        provider chunk. ``send_messages``/``send_chat_completions`` differ only
+        in which inner method they forward to."""
         self._record_outbound(payload)
         start = time.monotonic()
-        response = await self._inner.send_messages(payload, headers)
+        response = await inner_send(payload, headers)
         self._ctx.upstream_duration_ms = (time.monotonic() - start) * 1000
         self._ctx.writer.write(
             ProviderChunkRecord(
@@ -156,18 +160,11 @@ class _CapturingUpstreamClient:
         )
         return response
 
+    async def send_messages(self, payload, headers):
+        return await self._send_buffered(self._inner.send_messages, payload, headers)
+
     async def send_chat_completions(self, payload, headers):
-        self._record_outbound(payload)
-        start = time.monotonic()
-        response = await self._inner.send_chat_completions(payload, headers)
-        self._ctx.upstream_duration_ms = (time.monotonic() - start) * 1000
-        self._ctx.writer.write(
-            ProviderChunkRecord(
-                section=SECTION_OBSERVED, ts=_now_iso(), sequence=0,
-                chunk=json.dumps(response),
-            )
-        )
-        return response
+        return await self._send_buffered(self._inner.send_chat_completions, payload, headers)
 
     async def open_stream(self, payload, headers):
         self._record_outbound(payload)
