@@ -1,0 +1,71 @@
+{
+  "_provenance": {
+    "dataset": "Blindfold Sample Data (vendored_seed.json)",
+    "dataset_url": "src/blindfold/store/vendored_seed.json",
+    "license": "Internal fictional demo data shipped with Blindfold, not third-party PII (ADR-0012/ADR-0013) -- safe to redistribute and to reference in a committed test fixture.",
+    "pinned_reference": "as committed in this repository; verified against source_file_sha256 below by test_assertive_shipped_corpus_has_complete_provenance",
+    "source_file": "src/blindfold/store/vendored_seed.json",
+    "source_file_sha256": "d839842cd2c8f22d0e6fcd56bf12c589d622125b60636c68f97fd0ceaf1804ae",
+    "record_count": 3,
+    "selection_methodology": "Hand-authored must/must_not records built directly on entities and non-entities vendored_seed.json already documents, so no new judgment call about what's sensitive is made in this fixture: `must` entries reuse `persons`/`terms` entries (blindfold targets per ADR-0013); `must_not` entries reuse ADR-0013's own curation notes on what was explicitly excluded from the entity graph (org_units are structure, never blindfolded) plus a near-miss token that shares no L2 surface form with any seeded variation (token-boundary guard, not a curated exception). One record adds a real L1 PII must entry (RFC 2606 .example email, unrelated to any seeded entity so the L1 regex path -- not L2 -- is what's under test) and its own must_not (a bare digit run without the '+' _PHONE_RE requires). One record's must entry is tagged layer L3 (a novel org name, deliberately not seeded anywhere) to exercise the L1/L2-only gating skip -- CI has no local adjudicator, and #260/ADR-0048 hold that even a wired one wouldn't be reproducible yet."
+  },
+  "records": [
+    {
+      "id": "sample_data_person_and_l1_email",
+      "text": "Please make sure Martin approves the budget and send the confirmation to alex.doe@example.com. Note that Sam has a Bachelor's degree in mechanical engineering, and the on-call pager is 555-0142.",
+      "must": [
+        {"value": "Martin", "layer": "L2", "kind": "person"},
+        {"value": "alex.doe@example.com", "layer": "L1", "kind": "email"}
+      ],
+      "must_not": [
+        {"value": "Bachelor", "layer": "L2", "kind": "term", "note": "token-boundary near-miss of the seeded variation 'Bach' -- must not over-redact on a substring match"},
+        {"value": "555-0142", "layer": "L1", "kind": "phone", "note": "no leading '+' -- _PHONE_RE requires one; a bare NANPA-shaped digit run must not be minted as PII"}
+      ]
+    },
+    {
+      "id": "sample_data_term_across_hops_and_org_unit_must_not",
+      "payload": {
+        "model": "claude-3-5-sonnet",
+        "system": "You help draft internal communications for Enervia.",
+        "messages": [
+          {"role": "user", "content": "Summarize the roadmap update for Enervia."},
+          {
+            "role": "assistant",
+            "content": [
+              {
+                "type": "tool_use",
+                "id": "call_1",
+                "name": "lookup_team_load",
+                "input": {"note": "Engineering has 12 open tickets this sprint."}
+              }
+            ]
+          },
+          {
+            "role": "user",
+            "content": [
+              {
+                "type": "tool_result",
+                "tool_use_id": "call_1",
+                "content": "Engineering has 12 open tickets this sprint."
+              }
+            ]
+          }
+        ]
+      },
+      "must": [
+        {"value": "Enervia", "layer": "L2", "kind": "term"}
+      ],
+      "must_not": [
+        {"value": "Engineering", "layer": "L2", "kind": "org_unit", "note": "org_units are structure, never blindfolded (ADR-0013) -- must hold across every hop kind, including a tool_use JSON argument and a tool_result block, not just plain text"}
+      ]
+    },
+    {
+      "id": "novel_entity_requires_l3_and_is_gated",
+      "text": "Flag any mention of Solstice Analytics for review before this goes out.",
+      "must": [
+        {"value": "Solstice Analytics", "layer": "L3", "kind": "org", "note": "novel org, deliberately not seeded anywhere -- requires L3 adjudication; must skip in an L1/L2-only gating run rather than fail or silently pass"}
+      ],
+      "must_not": []
+    }
+  ]
+}
