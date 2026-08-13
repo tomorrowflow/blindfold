@@ -9,10 +9,28 @@ BLINDFOLD_EXCHANGE_CAPTURE_DIR, the shared-store refusal).
 
 import io
 
-from blindfold.detection import Entity
-from blindfold.surrogates import SurrogateMapping
-from blindfold_devtools.capture import SECTION_OBSERVED, CaptureWriter, FooterRecord, HeaderRecord
-from blindfold_devtools.cli import main, run
+import pytest
+
+# blindfold_devtools.cli imports rich at module scope, and rich lives only in the
+# `devtools` dependency group (ADR-0047 §2: source-run-only, never the wheel or the
+# frozen binary) -- a default `uv sync` uninstalls it. Without this guard the
+# unconditional import below raises ModuleNotFoundError during *collection*, which
+# Interrupts the whole pytest session: the canonical `uv run pytest` exits 2 with
+# zero tests run, so every leak-audit assertion in the repo silently never executes.
+# Mirrors the "PyInstaller not installed" skip in test_absence_gate.py -- a skip here
+# means these CLI tests have not run, not that they passed; `uv run --group devtools
+# pytest` exercises them.
+pytest.importorskip("rich")
+
+from blindfold.detection import Entity  # noqa: E402
+from blindfold.surrogates import SurrogateMapping  # noqa: E402
+from blindfold_devtools.capture import (  # noqa: E402
+    SECTION_OBSERVED,
+    CaptureWriter,
+    FooterRecord,
+    HeaderRecord,
+)
+from blindfold_devtools.cli import main, run  # noqa: E402
 
 
 def _write_header_only(path, *, capture_id: str) -> None:
