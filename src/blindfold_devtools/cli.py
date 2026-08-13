@@ -171,7 +171,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     mapping = SurrogateMapping.from_pairs(vendored_seed_repository().seeded_pairs())
     return run(
-        list(argv) if argv is not None else sys.argv[1:],
+        argv,
         capture_dir=Path(devtools_settings.exchange_capture_dir),
         mapping=mapping,
         graph_entities=mapping.entities(),
