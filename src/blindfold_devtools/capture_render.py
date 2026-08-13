@@ -17,6 +17,7 @@ from blindfold.surrogates import SurrogateMapping
 from .capture import SECTION_RECONSTRUCTED, DetectionRecord, FooterRecord, HeaderRecord
 from .capture_comparison import SEVERITY_DEFECT, compare
 from .capture_directory import CAPTURE_SUFFIX
+from .hop_text import hop_texts
 from .leak_check import leak_check
 
 
@@ -42,33 +43,6 @@ def resolve_capture(directory: Path, capture_id: str | None, *, last: bool = Fal
     if not path.exists():
         raise CaptureNotFoundError(f"no capture {capture_id!r} found in {directory}")
     return path
-
-
-def _content_text(content) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        return " ".join(
-            block.get("text", "")
-            for block in content
-            if isinstance(block, dict) and block.get("type") == "text"
-        )
-    return ""
-
-
-def _hop_texts(inbound_payload: dict) -> list[tuple[str, str]]:
-    """``[(hop_kind, text), ...]`` for each hop in the header's inbound payload --
-    system first (if present), then one per message -- mirroring
-    :func:`blindfold.engine.blindfold_payload`'s own hop enumeration."""
-    hops = []
-    system = inbound_payload.get("system")
-    if system is not None:
-        hops.append(("system", system if isinstance(system, str) else _content_text(system)))
-    for message in inbound_payload.get("messages", []) or []:
-        role = message.get("role") if isinstance(message, dict) else None
-        text = _content_text(message.get("content")) if isinstance(message, dict) else ""
-        hops.append((role or "user", text))
-    return hops
 
 
 def _annotate_known_strings(text: str, injected: dict[str, str]) -> str:
@@ -121,7 +95,7 @@ def render_capture(
     lines.append(f"capture {capture_id}: {header.endpoint if header is not None else '?'}")
 
     if header is not None:
-        for hop_index, (hop_kind, text) in enumerate(_hop_texts(header.inbound_payload)):
+        for hop_index, (hop_kind, text) in enumerate(hop_texts(header.inbound_payload)):
             annotated = _annotate_known_strings(text, footer.injected)
             lines.append(f"hop {hop_index} ({hop_kind}): {annotated}")
             for record in records:
@@ -138,10 +112,18 @@ def render_capture(
                         f"offset=({start}, {end})): {text[start:end]!r}"
                     )
 
+    reconstructed_detections = [
+        r for r in records if isinstance(r, DetectionRecord) and r.section == SECTION_RECONSTRUCTED
+    ]
+
     lines.append("summary:")
     lines.append(f"  outcome: {footer.outcome}")
     lines.append(f"  detected: {len(footer.injected)} value(s) injected")
     lines.append(f"  {leak_result.summary()}")
+    if reconstructed_detections and not any(r.l3_wired for r in reconstructed_detections):
+        lines.append(
+            "  note: L1/L2-only -- no L3 adjudicator was configured for this replay"
+        )
     if divergences:
         for divergence in divergences:
             lines.append(
