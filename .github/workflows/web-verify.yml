@@ -16,7 +16,7 @@
 # every run, with nothing OS-specific to gate. Folding it into platform-verify's matrix would
 # conflate two unrelated pass/fail semantics under one job name.
 #
-# Runs on every push/PR to main, not path-filtered: unlike platform-verify.yml's macos/**+
+# Runs on every push/PR, not path-filtered: unlike platform-verify.yml's macos/**+
 # windows/** scoping (native-shell code that literally cannot regress this suite),
 # tests/web/'s fixture (`serve_fixture.py`) drives the *whole* management ASGI app
 # (`blindfold.app:app`) through the real HTTP surface -- entity graph, RBAC, review inbox,
@@ -25,6 +25,14 @@
 # The repo has no equivalent path-filtered gate for `uv run pytest` either (it runs
 # unconditionally in the Sandcastle AFK loop's own `verify` step) -- this mirrors that: "the
 # way a red pytest does" means unconditional, not path-scoped.
+#
+# `push` carries no `branches:` restriction (issue #275) -- Sandcastle's merge gate
+# (`.sandcastle/main.mts`) pushes a feature branch straight to origin and polls this
+# workflow's conclusion for that branch's exact head SHA, mirroring platform-verify.yml's
+# own unrestricted push trigger. Scoping this to `branches: [main]` (the original #273
+# shape) meant a feature-branch push never fired a run at all, so main.mts's SHA-based
+# poll could never see anything but "no run found" -- an unmet gate forever, not the
+# fail-open-on-success / fail-closed-on-red behavior the gate exists to provide.
 #
 # Browser provisioning: `npx playwright install --with-deps chromium` on the stock
 # ubuntu-latest runner -- `--with-deps` apt-installs Chromium's system libraries first, which
@@ -42,8 +50,7 @@
 name: web-verify
 
 "on":
-  push:
-    branches: [main]
+  push: {}
   pull_request: {}
   workflow_dispatch: {}
 

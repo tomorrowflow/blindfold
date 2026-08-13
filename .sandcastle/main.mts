@@ -28,6 +28,7 @@ import { z } from "zod";
 import { execSync, execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { awaitWorkflowConclusion, type WorkflowRun } from "./workflow-gate.mts";
 
 // The planner emits its plan as JSON inside <plan> tags; Output.object extracts
 // and validates it against this schema. We use Zod here, but any Standard
@@ -195,6 +196,10 @@ const ASGI_APP = "blindfold.app:app";
 // committed build output (what the server actually serves), and the shell router.
 const SPA_PATHS = ["frontend/", "src/blindfold/ui_dist/", "src/blindfold/ui.py"];
 const SPA_EXISTS = existsSync(SPA_SHELL);
+// The hosted CI workflow gating the committed tests/web/ Playwright suite (issue
+// #273/#275). Declared up here (rather than alongside its timeout/poll constants
+// further down) because the console.log just below needs it.
+const WEB_VERIFY_WORKFLOW = "web-verify.yml";
 
 // A branch needs the browser gate only if the SPA exists AND this branch's diff
 // touches SPA-observable code. Deterministic + host-side (the branch commits are
@@ -218,6 +223,12 @@ console.log(
   SPA_EXISTS
     ? `Browser gate ACTIVE: SPA-touching branches must also pass web-verify (${SPA_PATHS.join(", ")}).`
     : `Browser gate inert: no built SPA shell at ${SPA_SHELL} (ADR-0011/0026) — web-verify is skipped.`,
+);
+console.log(
+  SPA_EXISTS
+    ? `Web-verify workflow gate ACTIVE (issue #275): SPA-touching branches must also pass the hosted ` +
+      `${WEB_VERIFY_WORKFLOW} GitHub Actions run for their exact head SHA before merge.`
+    : `Web-verify workflow gate inert: no built SPA shell at ${SPA_SHELL} — ${WEB_VERIFY_WORKFLOW} gate is skipped.`,
 );
 
 // The native platform shells (ADR-0039/0040 macOS, ADR-0041 Windows). Unlike the SPA
@@ -302,6 +313,7 @@ const SANDCASTLE_LABELS = [
   ["running-implementer", "FBCA04", "Sandcastle implementer is working this issue now"],
   ["running-reviewer", "FBCA04", "Sandcastle reviewer is auditing this issue now"],
   ["running-web-verify", "FBCA04", "Sandcastle browser gate is verifying this issue now"],
+  ["running-web-verify-workflow", "FBCA04", "Sandcastle is awaiting the hosted web-verify run for this issue"],
   ["running-platform-verify", "FBCA04", "Sandcastle is awaiting the hosted platform-verify run for this issue"],
   ["blocked", "B60205", "Sandcastle merge gate withheld — needs a human"],
   ["merged", "0E8A16", "Sandcastle merged this branch into the target"],
@@ -600,21 +612,28 @@ const PLATFORM_VERIFY_TIMEOUT_MS = 30 * 60_000; // 30 min
 const PLATFORM_VERIFY_POLL_MS = 20_000; // 20 sec
 const PLATFORM_VERIFY_WORKFLOW = "platform-verify.yml";
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((res) => setTimeout(res, ms));
-}
+// web-verify.yml's own timeout/poll (WEB_VERIFY_WORKFLOW is declared up near
+// SPA_PATHS, above) — the full committed tests/web/ Playwright suite (215
+// specs, issue #273), regression-gating the SPA the same way platform-verify.yml
+// regression-gates the native shells. Lighter than a macOS/Windows
+// build+smoke-launch (no OS provisioning, ubuntu-latest + a Chromium install),
+// so a shorter timeout than platform-verify's.
+const WEB_VERIFY_WORKFLOW_TIMEOUT_MS = 20 * 60_000; // 20 min
+const WEB_VERIFY_WORKFLOW_POLL_MS = 15_000; // 15 sec
 
 // Every OTHER gate in this loop is an agent in a sandbox, and the sandbox runner
 // writes that agent's log to traceLogPath() — which is what the role's trace pane
-// tails. The platform gate has no agent: it's the host-side `gh run list` poll
-// below. Nothing would ever write its log, so its pane sat empty for the entire
-// wait and read as a stalled/broken gate. Write the poll's own progress there so
-// the pane behaves like every other role's.
+// tails. The hosted-workflow gates (platform-verify, web-verify) have no agent:
+// they're the host-side `gh run list` polls below. Nothing would ever write
+// their log, so the pane sat empty for the entire wait and read as a
+// stalled/broken gate. Write the poll's own progress there so the pane behaves
+// like every other role's. Shared by both hosted-workflow gates, keyed by
+// `role` ("platform-verify" / "web-verify-workflow").
 //
 // Returns an appender. Observability is never a gate: a filesystem error here is
 // swallowed, never propagated into the pass/fail decision.
-function openPlatformVerifyTrace(branch: string): (line: string) => void {
-  const path = traceLogPath(branch, "platform-verify");
+function openHostGateTrace(branch: string, role: string): (line: string) => void {
+  const path = traceLogPath(branch, role);
   const write = (line: string): void => {
     try {
       appendFileSync(path, `${new Date().toISOString()}  ${line}\n`);
@@ -630,97 +649,88 @@ function openPlatformVerifyTrace(branch: string): (line: string) => void {
   return write;
 }
 
-// Push `branch`'s head to origin so platform-verify.yml's `on: push` trigger fires.
-// Sandcastle branches otherwise live only in the local shared .git (main.mts never
-// touches origin for any other gate) — this is the one exception, and only for
-// branches that already cleared every in-sandbox gate. Fail-closed: any push error
-// (auth, network, non-fast-forward) returns false rather than guessing the run exists.
+// Push `branch`'s head to origin so a hosted workflow's `on: push` trigger fires
+// (platform-verify.yml, ADR-0042; web-verify.yml, issue #275 — both trigger on
+// push with no branch restriction, matching this). Sandcastle branches otherwise
+// live only in the local shared .git (main.mts never touches origin for any
+// in-sandbox gate) — this is the exception, shared by both hosted gates, and
+// only for branches that already cleared every in-sandbox gate. Fail-closed: any
+// push error (auth, network, non-fast-forward) returns false rather than
+// guessing the run exists. Idempotent to call twice for the same branch/SHA (a
+// branch touching both the SPA and a native platform pushes once per gate) — a
+// no-op push still returns true.
 function pushBranchToOrigin(branch: string, trace: (line: string) => void = () => {}): boolean {
   if (!REPO) return false;
   try {
-    trace(`pushing ${branch} to origin (triggers ${PLATFORM_VERIFY_WORKFLOW} on: push)`);
+    trace(`pushing ${branch} to origin (triggers on: push hosted workflows)`);
     execFileSync("git", ["push", "origin", `${branch}:${branch}`], { stdio: "ignore" });
     trace("push ok");
     return true;
   } catch (err) {
-    console.warn(`  (push of ${branch} to origin failed — platform-verify gate fails closed: ${err})`);
+    console.warn(`  (push of ${branch} to origin failed — hosted-workflow gate fails closed: ${err})`);
     trace(`push FAILED — gate fails closed: ${err}`);
     return false;
   }
 }
 
-// Await platform-verify.yml's conclusion for `branch`'s current head SHA, polling
-// `gh run list` until it completes or PLATFORM_VERIFY_TIMEOUT_MS elapses. Fail-closed
-// throughout: a `gh` error, a timeout, or a run that never appears all resolve to
-// "failure" rather than silently clearing the gate on ambiguity.
+// `branch`'s current head SHA, or null (tracing why) if it can't be resolved.
+// Shared by both hosted-workflow gates below — fail-closed either way: a
+// branch ref that can't be resolved never gets treated as passing.
+function resolveHeadSha(branch: string, trace: (line: string) => void): string | null {
+  try {
+    return execFileSync("git", ["rev-parse", branch], { encoding: "utf8" }).trim();
+  } catch {
+    trace(`could not resolve ${branch}'s head SHA — gate fails closed`);
+    return null;
+  }
+}
+
+// The real `gh run list` lookup `awaitWorkflowConclusion` polls in production.
+// Isolated to a one-line function so both hosted-workflow gates below share the
+// exact same shelling-out shape; workflow-gate.test.mts exercises
+// awaitWorkflowConclusion itself against a stubbed replacement for this, not
+// against a real `gh` call.
+function ghListWorkflowRuns(workflow: string): WorkflowRun[] {
+  const out = execFileSync(
+    "gh",
+    ["run", "list", "--repo", REPO, "--workflow", workflow, "--json", "headSha,status,conclusion,url", "--limit", "20"],
+    { encoding: "utf8" },
+  );
+  return JSON.parse(out) as WorkflowRun[];
+}
+
+// Await platform-verify.yml's conclusion for `branch`'s current head SHA (ADR-0042).
 async function awaitPlatformVerify(
   branch: string,
   trace: (line: string) => void = () => {},
 ): Promise<"success" | "failure"> {
   if (!REPO) return "failure";
-  let headSha: string;
-  try {
-    headSha = execFileSync("git", ["rev-parse", branch], { encoding: "utf8" }).trim();
-  } catch {
-    trace(`could not resolve ${branch}'s head SHA — gate fails closed`);
-    return "failure"; // can't resolve the SHA we just pushed → fail closed
-  }
-  trace(`awaiting ${PLATFORM_VERIFY_WORKFLOW} for ${headSha}`);
-  trace(
-    `polling every ${PLATFORM_VERIFY_POLL_MS / 1000}s, timeout ${PLATFORM_VERIFY_TIMEOUT_MS / 60_000}min (timeout ⇒ failure)`,
-  );
+  const headSha = resolveHeadSha(branch, trace);
+  if (!headSha) return "failure"; // can't resolve the SHA we just pushed → fail closed
+  return awaitWorkflowConclusion(PLATFORM_VERIFY_WORKFLOW, headSha, ghListWorkflowRuns, {
+    timeoutMs: PLATFORM_VERIFY_TIMEOUT_MS,
+    pollMs: PLATFORM_VERIFY_POLL_MS,
+    trace,
+  });
+}
 
-  const deadline = Date.now() + PLATFORM_VERIFY_TIMEOUT_MS;
-  let announcedUrl = false;
-  while (Date.now() < deadline) {
-    try {
-      const out = execFileSync(
-        "gh",
-        [
-          "run",
-          "list",
-          "--repo",
-          REPO,
-          "--workflow",
-          PLATFORM_VERIFY_WORKFLOW,
-          "--json",
-          "headSha,status,conclusion,url",
-          "--limit",
-          "20",
-        ],
-        { encoding: "utf8" },
-      );
-      const runs = JSON.parse(out) as {
-        headSha: string;
-        status: string;
-        conclusion: string | null;
-        url: string;
-      }[];
-      const run = runs.find((r) => r.headSha === headSha);
-      if (!run) {
-        trace("no run for this SHA yet (workflow not queued)");
-      } else {
-        if (!announcedUrl) {
-          trace(`run: ${run.url}`);
-          announcedUrl = true;
-        }
-        trace(`status=${run.status} conclusion=${run.conclusion ?? "-"}`);
-      }
-      if (run && run.status === "completed") {
-        trace(run.conclusion === "success" ? "GATE PASS" : `GATE FAIL (${run.conclusion})`);
-        return run.conclusion === "success" ? "success" : "failure";
-      }
-    } catch (err) {
-      console.warn(`  (gh run list failed while awaiting platform-verify for ${branch}, retrying: ${err})`);
-      trace(`gh run list failed, retrying: ${err}`);
-    }
-    await sleep(PLATFORM_VERIFY_POLL_MS);
-  }
-  console.warn(
-    `  (platform-verify timed out for ${branch} after ${PLATFORM_VERIFY_TIMEOUT_MS}ms — fail-closed)`,
-  );
-  trace(`TIMED OUT after ${PLATFORM_VERIFY_TIMEOUT_MS / 60_000}min — gate fails closed`);
-  return "failure";
+// Await web-verify.yml's conclusion for `branch`'s current head SHA (issue #275).
+// Same fail-closed shape as awaitPlatformVerify, sharing awaitWorkflowConclusion:
+// a `gh` error, a timeout, or a run that never appears for this exact SHA all
+// resolve to "failure", never a silent pass — and a `success` recorded against a
+// stale SHA from an earlier push can never satisfy this poll either.
+async function awaitWebVerifyWorkflow(
+  branch: string,
+  trace: (line: string) => void = () => {},
+): Promise<"success" | "failure"> {
+  if (!REPO) return "failure";
+  const headSha = resolveHeadSha(branch, trace);
+  if (!headSha) return "failure";
+  return awaitWorkflowConclusion(WEB_VERIFY_WORKFLOW, headSha, ghListWorkflowRuns, {
+    timeoutMs: WEB_VERIFY_WORKFLOW_TIMEOUT_MS,
+    pollMs: WEB_VERIFY_WORKFLOW_POLL_MS,
+    trace,
+  });
 }
 
 // A compact, agent-authored overview of what a branch actually produced, for the
@@ -816,7 +826,7 @@ function worktreeIdForBranch(branch: string): string | null {
 
 // The file a trace pane tails for a given role. Agent roles get this written for
 // them by the sandbox runner; host-side roles have to write it themselves (see
-// openPlatformVerifyTrace) — either way the path convention lives here, once.
+// openHostGateTrace) — either way the path convention lives here, once.
 function traceLogPath(branch: string, role: string): string {
   const slug = branch.replace(/\//g, "-");
   return join(REPO_ROOT, ".sandcastle", "logs", `${slug}-${role}.log`);
@@ -1522,6 +1532,8 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
             reviewerComplete: false,
             webVerifyNeeded: false,
             webVerifyComplete: true, // N/A → clears the web gate trivially
+            webVerifyWorkflowNeeded: false,
+            webVerifyWorkflowComplete: true, // N/A → clears the web-verify-workflow gate trivially
             platformVerifyNeeded: false,
             platformVerifyComplete: true, // N/A → clears the platform gate trivially
           };
@@ -1600,6 +1612,20 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         // non-SPA branches, and inert entirely until the SPA exists. We only spend
         // it on branches that already cleared the reviewer — a branch the reviewer
         // already blocked won't merge regardless.
+        //
+        // This is the FIRST of TWO distinct browser gates this branch may have to
+        // clear (issue #275) — the second, webVerifyWorkflowNeeded/Complete below,
+        // is a different check with a different failure mode, not a duplicate:
+        //   - THIS gate (webVerify): the sandbox `browser-verify` agent drives the
+        //     live SPA for THIS slice and audits its own SPA-side privacy
+        //     properties (authorized-only re-identification, browser egress
+        //     hygiene, audit-on-decrypt) once, for the code this slice touched.
+        //   - THAT gate (webVerifyWorkflow): the hosted web-verify.yml GitHub
+        //     Actions run — the FULL committed tests/web/ Playwright suite (215
+        //     specs, issue #273), regression-testing code this slice's agent may
+        //     never have looked at. A red suite there is exactly the "orchestrator
+        //     merges on a red browser suite" bug issue #275 was filed to close.
+        // Neither replaces the other: dropping either loses a different guarantee.
         let webVerifyNeeded = false;
         let webVerifyComplete = true; // N/A defaults to clear
         if (reviewerComplete && branchTouchesSpa(issue.branch)) {
@@ -1644,15 +1670,68 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           }
         }
 
+        // Hosted web-verify.yml gate (issue #275) — see the two-browser-gate note
+        // above webVerifyNeeded for why this is NOT a duplicate of that gate.
+        // Keys on the exact same SPA_PATHS diff (branchTouchesSpa) the sandbox
+        // browser gate above already uses, so a branch touching no SPA surface
+        // clears it trivially instead of waiting on a run that will never be
+        // interesting. Mirrors platform-verify's own push-then-poll-by-SHA
+        // wiring (ADR-0042): push the branch head so web-verify.yml's `on: push`
+        // fires, then await ITS conclusion for THIS branch's exact head SHA —
+        // never the latest run on the workflow, so a stale green from an earlier
+        // push can never satisfy this gate. Anything other than `success` (a
+        // failure, a timeout, or no run ever appearing for this SHA) leaves the
+        // gate unmet; there is no warn-and-continue path. We only spend it on
+        // branches that already cleared the reviewer AND the sandbox browser
+        // gate — a branch either of those already blocked won't merge regardless.
+        let webVerifyWorkflowNeeded = false;
+        let webVerifyWorkflowComplete = true; // N/A defaults to clear
+        if (reviewerComplete && webVerifyComplete && branchTouchesSpa(issue.branch)) {
+          webVerifyWorkflowNeeded = true;
+          // Lifecycle → GitHub: handing off to the hosted web-verify gate.
+          setStateLabel(issue.id, "running-web-verify-workflow");
+          postOnce(
+            issue.id,
+            "sandcastle:web-verify-workflow-started",
+            `🌐 **Web-verify gate** is now operating — pushing \`${issue.branch}\` to origin and ` +
+              `awaiting the hosted GitHub Actions web-verify run (the full committed tests/web/ ` +
+              `Playwright suite, issue #273).`,
+          );
+          // Open the trace file BEFORE the pane, so `tail -F` has this run's
+          // output from its first line rather than an empty file.
+          const webVerifyWorkflowTrace = openHostGateTrace(issue.branch, "web-verify-workflow");
+          webVerifyWorkflowTrace(`web-verify gate for ${issue.branch}`);
+          openTracePane(issue.branch, "web-verify-workflow");
+
+          if (!pushBranchToOrigin(issue.branch, webVerifyWorkflowTrace)) {
+            webVerifyWorkflowComplete = false;
+          } else {
+            const conclusion = await awaitWebVerifyWorkflow(issue.branch, webVerifyWorkflowTrace);
+            webVerifyWorkflowComplete = conclusion === "success";
+          }
+
+          // Lifecycle → GitHub: the hosted run attested the full Playwright
+          // suite green. (A FAIL/timeout/push-failure stays silent here and
+          // surfaces as the blocked comment in the gate loop below.)
+          if (webVerifyWorkflowComplete) {
+            postOnce(
+              issue.id,
+              "sandcastle:web-verify-workflow-clean",
+              `🌐 Web-verify gate: hosted GitHub Actions run succeeded for \`${issue.branch}\` — the ` +
+                `full tests/web/ Playwright suite is green.`,
+            );
+          }
+        }
+
         // Platform-verification gate (ADR-0042). Unlike every other gate in this
         // loop, this one waits on an EXTERNAL GitHub Actions run, not an in-sandbox
         // agent: a branch touching macos/ or windows/ needs an OS-specific
         // build/smoke-launch that only a real macOS/Windows machine can do. We only
-        // spend it on branches that already cleared the reviewer AND the browser
-        // gate — a branch either of those already blocked won't merge regardless.
+        // spend it on branches that already cleared the reviewer AND both browser
+        // gates — a branch any of those already blocked won't merge regardless.
         let platformVerifyNeeded = false;
         let platformVerifyComplete = true; // N/A defaults to clear
-        if (reviewerComplete && webVerifyComplete) {
+        if (reviewerComplete && webVerifyComplete && webVerifyWorkflowComplete) {
           const { mac, win } = branchTouchesPlatform(issue.branch);
           if (mac || win) {
             platformVerifyNeeded = true;
@@ -1669,7 +1748,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
             );
             // Open the trace file BEFORE the pane, so `tail -F` has this run's
             // output from its first line rather than an empty file.
-            const trace = openPlatformVerifyTrace(issue.branch);
+            const trace = openHostGateTrace(issue.branch, "platform-verify");
             trace(`platform gate for ${issue.branch} — hosted jobs: ${jobs}`);
             openTracePane(issue.branch, "platform-verify");
 
@@ -1701,6 +1780,8 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           reviewerComplete,
           webVerifyNeeded,
           webVerifyComplete,
+          webVerifyWorkflowNeeded,
+          webVerifyWorkflowComplete,
           platformVerifyNeeded,
           platformVerifyComplete,
         };
@@ -1723,14 +1804,17 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   // The fail-closed merge gate: a branch is mergeable ONLY if it carries work
   // (commits ahead of the target, this run's or a prior run's), the implementer
   // signaled done, the independent reviewer attested clean, and — when it touches
-  // the SPA or a native platform — the browser gate and/or the external hosted
-  // platform-verify run attested clean too.
+  // the SPA or a native platform — the sandbox browser gate, the hosted
+  // web-verify.yml run, and/or the external hosted platform-verify run all
+  // attested clean too (issue #275: a red web-verify.yml run must withhold the
+  // merge exactly like a red platform-verify run does).
   const mergeable = (r: {
     hasWork: boolean;
     implementerComplete: boolean;
     reviewed: boolean;
     reviewerComplete: boolean;
     webVerifyComplete: boolean;
+    webVerifyWorkflowComplete: boolean;
     platformVerifyComplete: boolean;
   }) =>
     r.hasWork &&
@@ -1738,6 +1822,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     r.reviewed &&
     r.reviewerComplete &&
     r.webVerifyComplete &&
+    r.webVerifyWorkflowComplete &&
     r.platformVerifyComplete;
 
   const completedIssues = evaluated
@@ -1760,9 +1845,11 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         ? "reviewer withheld attestation (leak-audit / correctness FAIL)"
         : !r.webVerifyComplete
           ? "browser gate withheld attestation (web behavior / SPA-privacy FAIL)"
-          : !r.platformVerifyComplete
-            ? "platform gate withheld attestation (hosted macOS/Windows build+smoke FAIL, timeout, or push failure)"
-            : "change was not reviewed";
+          : !r.webVerifyWorkflowComplete
+            ? "web-verify gate withheld attestation (hosted web-verify.yml FAIL, timeout, no run for this SHA, or push failure)"
+            : !r.platformVerifyComplete
+              ? "platform gate withheld attestation (hosted macOS/Windows build+smoke FAIL, timeout, or push failure)"
+              : "change was not reviewed";
     console.warn(
       `  ⊘ ${issue.id} (${issue.branch}) BLOCKED from merge: ${why} — commits kept on branch for the next cycle / a human`,
     );
@@ -1775,9 +1862,11 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         ? "reviewer"
         : !r.webVerifyComplete
           ? "web-verify"
-          : !r.platformVerifyComplete
-            ? "platform-verify"
-            : "unreviewed";
+          : !r.webVerifyWorkflowComplete
+            ? "web-verify-workflow"
+            : !r.platformVerifyComplete
+              ? "platform-verify"
+              : "unreviewed";
     setStateLabel(issue.id, "blocked");
     postOnce(
       issue.id,
