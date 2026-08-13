@@ -6,10 +6,13 @@ appended as they occur (``header`` -> per-hop ``detection`` -> ``outbound`` ->
 memory and a process killed mid-stream still yields everything that had arrived.
 
 Every record carries a ``section``: ``observed`` (witnessed) or ``reconstructed``
-(produced later by replaying through ``blindfold explain``, issue #255) -- so a
-reader can never mistake a replayed field for an observed one. This slice only
-ever writes ``observed`` records; ``reconstructed`` detection records are
-appended by the replay path in a later slice, correlated by ``hop_index``.
+(produced by replaying through ``blindfold explain``, issue #269 --
+:mod:`blindfold_devtools.replay`) -- so a reader can never mistake a replayed
+field for an observed one. Live capture (:mod:`blindfold_devtools.live_capture`)
+only ever writes ``observed`` records; ``reconstructed`` ``detection`` records
+are appended by the replay path, correlated by ``hop_index``, either into a
+brand-new capture (a bare payload/``--text`` input) or onto an already-captured
+live exchange's own file (an ``explain <id>``/``--last`` input).
 
 Shared field vocabulary with the Processing trace (ADR-0035) is spelled
 identically on purpose: ``hop_index``, ``hop_kind``, ``endpoint``, ``streamed``,
@@ -85,6 +88,15 @@ class DetectionRecord(_CaptureRecord):
     surrogates: tuple[str, ...] = ()
     pass_name: str | None = None
     offsets: tuple[tuple[int, int], ...] | None = None
+    # Reconstructed-only (issue #269): whether replay had an L3 adjudicator model
+    # actually configured for this run -- independent of whether L3 adjudicated
+    # anything (it never does: replay always passes inbox=None, and blindfold_
+    # payload's L3 branch requires BOTH l3_detector and inbox to be non-None, so
+    # l3_confirmed/l3_dismissed/l3_provider above are always 0/0/None regardless
+    # of this flag). Load-bearing for the comparison (#256): without it, a novel
+    # entity the *live* run's L3 confirmed but replay structurally can't
+    # reproduce reads as an unexplained divergence instead of an expected one.
+    l3_wired: bool = False
 
 
 @dataclass(frozen=True)

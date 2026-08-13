@@ -276,3 +276,81 @@ def test_reconstructed_detection_fields_are_visibly_distinguished_from_observed(
     hop_line = next(line for line in lines if line.startswith("hop 0"))
     reconstructed_line = next(line for line in lines if "reconstructed" in line)
     assert hop_line != reconstructed_line
+
+
+def test_an_unwired_l3_replay_notes_l1_l2_only_in_the_summary():
+    from blindfold_devtools.capture import SECTION_RECONSTRUCTED, DetectionRecord
+
+    records = [
+        _header({"messages": [{"role": "user", "content": "Hi Martin Bach"}]}),
+        OutboundRecord(
+            section=SECTION_OBSERVED,
+            ts="2026-08-12T00:00:00.5+00:00",
+            payload={"messages": [{"role": "user", "content": "Hi Bernhard Vogt"}]},
+        ),
+        DetectionRecord(
+            section=SECTION_RECONSTRUCTED,
+            ts="2026-08-12T00:00:00.7+00:00",
+            hop_index=0,
+            hop_kind="user",
+            l1_counts={},
+            l1_duration_ms=0.0,
+            l2_count=0,
+            l2_duration_ms=0.0,
+            l3_confirmed=0,
+            l3_dismissed=0,
+            l3_suppressed=0,
+            l3_provider=None,
+            l3_duration_ms=None,
+            surrogates=("Bernhard Vogt",),
+            l3_wired=False,
+        ),
+        _footer({"Bernhard Vogt": "Martin Bach"}),
+    ]
+
+    rendered = render_capture(
+        records,
+        graph_entities=[Entity(canonical="Martin Bach", variations=(), surrogate="Bernhard Vogt")],
+        mapping=SurrogateMapping(),
+    )
+
+    assert "L1/L2-only" in rendered
+
+
+def test_a_wired_l3_replay_does_not_note_l1_l2_only():
+    from blindfold_devtools.capture import SECTION_RECONSTRUCTED, DetectionRecord
+
+    records = [
+        _header({"messages": [{"role": "user", "content": "Hi Martin Bach"}]}),
+        OutboundRecord(
+            section=SECTION_OBSERVED,
+            ts="2026-08-12T00:00:00.5+00:00",
+            payload={"messages": [{"role": "user", "content": "Hi Bernhard Vogt"}]},
+        ),
+        DetectionRecord(
+            section=SECTION_RECONSTRUCTED,
+            ts="2026-08-12T00:00:00.7+00:00",
+            hop_index=0,
+            hop_kind="user",
+            l1_counts={},
+            l1_duration_ms=0.0,
+            l2_count=0,
+            l2_duration_ms=0.0,
+            l3_confirmed=0,
+            l3_dismissed=0,
+            l3_suppressed=0,
+            l3_provider=None,
+            l3_duration_ms=None,
+            surrogates=("Bernhard Vogt",),
+            l3_wired=True,
+        ),
+        _footer({"Bernhard Vogt": "Martin Bach"}),
+    ]
+
+    rendered = render_capture(
+        records,
+        graph_entities=[Entity(canonical="Martin Bach", variations=(), surrogate="Bernhard Vogt")],
+        mapping=SurrogateMapping(),
+    )
+
+    assert "L1/L2-only" not in rendered
