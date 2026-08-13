@@ -105,10 +105,19 @@ untouched view is a FAIL.
   specs (and any minimal `serve_fixture.py` extension) — they become committed regression tests —
   and output <promise>COMPLETE</promise>.
 - **FAIL** — any behavior or privacy assertion fails, or you could not satisfy a privacy
-  property: **do NOT** output the completion signal. Leave a comment on branch `{{BRANCH}}`'s
-  tracking issue stating the failing property + the smallest concrete fix, so the next cycle
-  (or a human, for a `leak-policy` fail) addresses it. Withholding the signal blocks the merge
-  — that is the gate working.
+  property: **do NOT** output the completion signal. Withholding the signal blocks the merge —
+  that is the gate working.
+- **A pre-existing failure unrelated to this branch** (confirmed by diff-against-`{{TARGET_BRANCH}}`
+  and an isolated rerun) — do not fix it (out of scope) and do not silently drop it either: issue
+  #273 is the precedent for what happens when a finding like this has nowhere to go. **Do not run
+  `gh issue comment` / `gh issue edit`** — this sandbox's token has no `issues:write`, and every
+  such call fails with "Resource not accessible by personal access token."
+
+Either way, state the failing property (or the pre-existing-failure finding) + the smallest
+concrete fix in a `<handoff-notes>` block at the end of your final message — the orchestrator
+lifts it out host-side and posts it to `{{BRANCH}}`'s tracking issue, where the next cycle reads
+it back as `<prior-cycle-notes>`. Emit it whether you PASS, FAIL, or merely observe a pre-existing
+failure — this is the only channel a finding can reach the tracker through.
 
 # RULES
 

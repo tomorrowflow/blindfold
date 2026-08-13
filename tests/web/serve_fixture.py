@@ -118,6 +118,7 @@ from blindfold.app import (
     get_audit_log,
     get_entity_graph,
     get_gliner_activation_store,
+    get_gliner_classifier_factory,
     get_gliner_hub_client,
     get_gliner_provisioning_tracker,
     get_l3_health_probe,
@@ -268,6 +269,23 @@ class _StubGlinerHubClient:
         return local_dir
 
 
+class _StubGlinerClassifier:
+    """Test double for the GlinerClassifier seam (issue #159's activation smoke
+    test) -- mirrors tests/test_gliner_detection_settings_admin.py's own
+    `_StubClassifier`. The fabricated `_STUB_GLINER_FILE_CONTENT` bytes above are
+    not a real ONNX model, so the real `GlinerOnnxClassifier` (the
+    `get_gliner_classifier_factory` production default) can never load them --
+    a browser-driven retry click must never require the real `gliner` package.
+    """
+
+    def classify(self, candidate) -> bool:
+        return True
+
+
+def _stub_gliner_classifier_factory(model_path: str) -> _StubGlinerClassifier:
+    return _StubGlinerClassifier()
+
+
 class _InMemoryGlinerActivationStore:
     """Test double for PostgresActivationSettingsStore's get/set surface (#145) --
     this fixture has no `BLINDFOLD_DATABASE_URL`, so without this override
@@ -300,6 +318,7 @@ def _apply_gliner_detection_overrides() -> None:
     app.dependency_overrides[get_gliner_hub_client] = _StubGlinerHubClient
     app.dependency_overrides[get_gliner_activation_store] = lambda: activation_store
     app.dependency_overrides[get_gliner_provisioning_tracker] = lambda: tracker
+    app.dependency_overrides[get_gliner_classifier_factory] = lambda: _stub_gliner_classifier_factory
 
 
 def _build_empty_app():

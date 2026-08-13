@@ -119,7 +119,12 @@ test.describe("graph editor — inspector reveal", () => {
 
     const revealBtn = inspector.getByTestId("reveal-btn");
     await expect(revealBtn).toHaveText("Reveal & log");
-    await expect(revealBtn).toHaveCSS("background-color", "rgb(176, 127, 32)"); // --bf-ochre
+    // Tinted, not solid-filled (issue #111's §6.1 hard rule: reveal is a real-space
+    // crossing, reserved-ochre-family only, never neutral/solid-filled) -- matches
+    // every other ochre surface (role chip, audit pill, blind-index input) and the
+    // same assertion entity-list-shell.spec.ts makes on this shared RevealButton.
+    await expect(revealBtn).toHaveClass(/bf-reveal-badge--ochre/);
+    await expect(revealBtn).toHaveCSS("background-color", "rgb(250, 246, 236)"); // --bf-ochre-bg
     await expect(revealBtn).toHaveClass(/bf-reveal-badge--full/);
   });
 });

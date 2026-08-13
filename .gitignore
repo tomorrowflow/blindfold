@@ -19,6 +19,7 @@ tests/web/test-results/
 tests/web/playwright-report/
 tests/web/blob-report/
 frontend/test-results/
+/test-results/
 
 # graphify output
 graphify-out/

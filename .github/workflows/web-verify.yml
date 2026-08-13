@@ -1,0 +1,90 @@
+# web-verify — CI gate for the management SPA's committed browser suite (issue #273).
+#
+# tests/web/ (the @playwright/test suite backing ADR-0011/ADR-0026's SPA-side privacy
+# properties -- authorized-only re-identification, browser egress hygiene, audit-on-decrypt,
+# plus every view's observable behavior) previously ran only when a `browser-verify` agent
+# happened to be spawned for a frontend-touching Sandcastle slice (`.claude/agents/
+# browser-verify.md`, `.sandcastle/web-verify-prompt.md`) -- nothing ran it unconditionally,
+# so two real regressions (graph-editor-fidelity.spec.ts, settings-detection.spec.ts) and two
+# flaky specs (settings-import.spec.ts, audit-log-shell.spec.ts) sat unnoticed on `main` until
+# a browser-verify run for an unrelated slice (#264) happened to surface them in its own log.
+#
+# Own job, not folded into platform-verify.yml: platform-verify's matrix (macos-latest/
+# windows-latest) exists to answer an OS-irreducible question (does the native shell actually
+# build and launch on real macOS/Windows) that this Linux-hosted browser suite has no part of
+# -- tests/web/ runs the same ubuntu-latest-hosted @playwright/test + Chromium combination
+# every run, with nothing OS-specific to gate. Folding it into platform-verify's matrix would
+# conflate two unrelated pass/fail semantics under one job name.
+#
+# Runs on every push/PR to main, not path-filtered: unlike platform-verify.yml's macos/**+
+# windows/** scoping (native-shell code that literally cannot regress this suite),
+# tests/web/'s fixture (`serve_fixture.py`) drives the *whole* management ASGI app
+# (`blindfold.app:app`) through the real HTTP surface -- entity graph, RBAC, review inbox,
+# audit log, GLiNER provisioning, Transit -- so a regression reachable from this suite can
+# originate in nearly any `src/blindfold/*.py` module, not just `frontend/**`/`tests/web/**`.
+# The repo has no equivalent path-filtered gate for `uv run pytest` either (it runs
+# unconditionally in the Sandcastle AFK loop's own `verify` step) -- this mirrors that: "the
+# way a red pytest does" means unconditional, not path-scoped.
+#
+# Browser provisioning: `npx playwright install --with-deps chromium` on the stock
+# ubuntu-latest runner -- `--with-deps` apt-installs Chromium's system libraries first, which
+# needs the runner's own sudo (unavailable in the Sandcastle sandbox this workflow's tests
+# were developed in; verified equivalent in-sandbox via a pre-existing Chromium install
+# instead). `serve_fixture.py` needs the Python package itself importable, so `uv sync` runs
+# before Playwright.
+#
+# No spec is excluded from this gate. All 215 tests/web/ specs (every view's behavior +
+# egress-hygiene/reveal-authorization/audit-on-decrypt privacy assertions) run here
+# unconditionally -- the privacy-bearing ones are exactly the ones issue #273 called out as
+# most needing a gate, so excluding any of them for runtime/flakiness reasons would be the
+# one thing explicitly out of bounds (see the issue's own "Leak-audit clauses" note).
+
+name: web-verify
+
+"on":
+  push:
+    branches: [main]
+  pull_request: {}
+  workflow_dispatch: {}
+
+jobs:
+  web-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install Python dependencies
+        run: uv sync
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install tests/web dependencies
+        working-directory: tests/web
+        run: npm ci
+
+      - name: Install Chromium (+ system deps)
+        working-directory: tests/web
+        run: npx playwright install --with-deps chromium
+
+      - name: Run the browser suite
+        working-directory: tests/web
+        run: npx playwright test
+
+      - name: Upload Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: tests/web/test-results/
+          retention-days: 7

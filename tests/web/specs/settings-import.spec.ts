@@ -1,5 +1,5 @@
 import { test, expect, WORKSPACE, REAL_PERSON } from "./fixtures";
-import { request as pwRequest } from "@playwright/test";
+import { request as pwRequest, type Page } from "@playwright/test";
 
 // Settings -> Import (issue #116; two-phase preview/commit API added by #127):
 // bulk-seed the entity graph from CSV/JSON with a real preview-before-commit
@@ -14,9 +14,22 @@ import { request as pwRequest } from "@playwright/test";
 // on WORKSPACE ("acme"). REAL_PERSON ("Martin Bach") is already a seeded entity
 // there -- reused below to trigger a real blind-index duplicate.
 
+// SettingsImport's upload path reads WorkspaceContext's `activeWorkspace`
+// synchronously (SettingsImport.tsx's `handleFile`), which is null until an
+// async GET /v1/management/workspaces fetch resolves after navigation --
+// uploading immediately after goto() races that fetch (loses occasionally
+// under load, landing on the "No active workspace" parse-error branch instead
+// of ever previewing). The workspace switcher trigger only renders once
+// `activeWorkspace` is set, so waiting for it pins every upload below to run
+// after the fetch resolves, without a guessed sleep or a raised timeout.
+async function gotoSettings(page: Page): Promise<void> {
+  await page.goto("/ui/settings");
+  await expect(page.getByTestId("workspace-switcher-trigger")).toBeVisible();
+}
+
 test.describe("settings import — section renders", () => {
   test("Import section renders under Preferences with a dropzone", async ({ alicePage }) => {
-    await alicePage.goto("/ui/settings");
+    await gotoSettings(alicePage);
     await expect(alicePage.getByRole("heading", { name: "Import" })).toBeVisible();
     await expect(alicePage.locator("body")).toContainText("Bulk seed the entity graph");
     await expect(alicePage.getByTestId("import-dropzone")).toBeVisible();
@@ -25,7 +38,7 @@ test.describe("settings import — section renders", () => {
 
 test.describe("settings import — JSON preview", () => {
   test("selecting a JSON bundle previews rows without committing", async ({ alicePage }) => {
-    await alicePage.goto("/ui/settings");
+    await gotoSettings(alicePage);
 
     const bundle = {
       persons: [{ canonical_name: "Priya Sharma", variations: ["Priya"] }],
@@ -65,7 +78,7 @@ test.describe("settings import — JSON preview", () => {
   test("selecting a file posts to the read-only seed/preview endpoint, not commit", async ({
     alicePage,
   }) => {
-    await alicePage.goto("/ui/settings");
+    await gotoSettings(alicePage);
     const bundle = {
       persons: [{ canonical_name: "Fatima Al-Rashid", variations: [] }],
       terms: [],
@@ -90,7 +103,7 @@ test.describe("settings import — JSON preview", () => {
   });
 
   test("the preview summary reads 'N rows · nothing committed yet'", async ({ alicePage }) => {
-    await alicePage.goto("/ui/settings");
+    await gotoSettings(alicePage);
     const bundle = {
       persons: [{ canonical_name: "Kwame Mensah", variations: [] }],
       terms: [{ canonical_name: "Solari Systems", variations: [] }],
@@ -112,7 +125,7 @@ test.describe("settings import — row-level validation (issue #127)", () => {
   test("a blind-index duplicate of an existing entity is flagged in the Problems column", async ({
     alicePage,
   }) => {
-    await alicePage.goto("/ui/settings");
+    await gotoSettings(alicePage);
     const bundle = {
       persons: [{ canonical_name: REAL_PERSON, variations: [] }],
       terms: [],
@@ -133,7 +146,7 @@ test.describe("settings import — row-level validation (issue #127)", () => {
   test("an unknown relation type is flagged with a reason, valid rows unaffected", async ({
     alicePage,
   }) => {
-    await alicePage.goto("/ui/settings");
+    await gotoSettings(alicePage);
     const bundle = {
       persons: [{ canonical_name: "Noor Haddad", variations: [] }],
       terms: [{ canonical_name: "Ravello Dynamics", variations: [] }],
@@ -162,7 +175,7 @@ test.describe("settings import — row-level validation (issue #127)", () => {
   });
 
   test("a wrong-orientation employer edge is flagged with a reason", async ({ alicePage }) => {
-    await alicePage.goto("/ui/settings");
+    await gotoSettings(alicePage);
     const bundle = {
       persons: [{ canonical_name: "Tomas Novotny", variations: [] }],
       terms: [{ canonical_name: "Birchwood Capital", variations: [] }],
@@ -194,7 +207,7 @@ test.describe("settings import — row-level validation (issue #127)", () => {
     alicePage,
     baseURL,
   }) => {
-    await alicePage.goto("/ui/settings");
+    await gotoSettings(alicePage);
     const bundle = {
       persons: [{ canonical_name: REAL_PERSON, variations: [] }],
       terms: [],
@@ -225,7 +238,7 @@ test.describe("settings import — row-level validation (issue #127)", () => {
 
 test.describe("settings import — corrected persistence copy (issue #127)", () => {
   test("the footnote no longer claims real values never persist", async ({ alicePage }) => {
-    await alicePage.goto("/ui/settings");
+    await gotoSettings(alicePage);
     const bundle = {
       persons: [{ canonical_name: "Ingrid Solheim", variations: [] }],
       terms: [],
@@ -247,7 +260,7 @@ test.describe("settings import — preview dual-encoding", () => {
   test("Kind is dual-encoded (color mark + text label) and Relationship is mono", async ({
     alicePage,
   }) => {
-    await alicePage.goto("/ui/settings");
+    await gotoSettings(alicePage);
 
     const bundle = {
       persons: [{ canonical_name: "Priya Sharma", variations: [] }],
@@ -285,7 +298,7 @@ test.describe("settings import — drag and drop", () => {
   test("dragging a JSON file onto the dropzone previews it without clicking to browse", async ({
     alicePage,
   }) => {
-    await alicePage.goto("/ui/settings");
+    await gotoSettings(alicePage);
 
     const bundle = {
       persons: [{ canonical_name: "Léa Fontaine", variations: [] }],
@@ -312,7 +325,7 @@ test.describe("settings import — drag and drop", () => {
 
 test.describe("settings import — CSV preview", () => {
   test("selecting a CSV file previews the same row shape as JSON", async ({ alicePage }) => {
-    await alicePage.goto("/ui/settings");
+    await gotoSettings(alicePage);
 
     const csv = [
       "kind,value,variations,relation,target",
@@ -338,7 +351,7 @@ test.describe("settings import — commit / discard", () => {
   test("Commit posts the parsed bundle to the seed endpoint for the active workspace", async ({
     alicePage,
   }) => {
-    await alicePage.goto("/ui/settings");
+    await gotoSettings(alicePage);
 
     const bundle = {
       persons: [{ canonical_name: "Priya Sharma", variations: ["Priya"] }],
@@ -366,7 +379,7 @@ test.describe("settings import — commit / discard", () => {
   });
 
   test("Discard clears the preview without any network call", async ({ alicePage }) => {
-    await alicePage.goto("/ui/settings");
+    await gotoSettings(alicePage);
 
     const bundle = { persons: [{ canonical_name: "Priya Sharma", variations: [] }], terms: [], entity_relationships: [] };
     await alicePage.getByTestId("import-file-input").setInputFiles({
@@ -393,7 +406,7 @@ test.describe("settings import — leak audit", () => {
     alicePage,
     baseURL,
   }) => {
-    await alicePage.goto("/ui/settings");
+    await gotoSettings(alicePage);
 
     const realName = "Nadia Kessler";
     const bundle = { persons: [{ canonical_name: realName, variations: [] }], terms: [], entity_relationships: [] };
@@ -428,7 +441,7 @@ test.describe("settings import — leak audit", () => {
     const requestHosts = new Set<string>();
     alicePage.on("request", (req) => requestHosts.add(new URL(req.url()).host));
 
-    await alicePage.goto("/ui/settings");
+    await gotoSettings(alicePage);
     const bundle = { persons: [{ canonical_name: "Omar Farah", variations: [] }], terms: [], entity_relationships: [] };
     await alicePage.getByTestId("import-file-input").setInputFiles({
       name: "bundle.json",
@@ -447,7 +460,7 @@ test.describe("settings import — leak audit", () => {
   test("the inbound real value never lands in localStorage or sessionStorage", async ({
     alicePage,
   }) => {
-    await alicePage.goto("/ui/settings");
+    await gotoSettings(alicePage);
     const realName = "Yusuf Demir — leak-check-marker";
     const bundle = { persons: [{ canonical_name: realName, variations: [] }], terms: [], entity_relationships: [] };
     await alicePage.getByTestId("import-file-input").setInputFiles({
@@ -480,7 +493,7 @@ test.describe("settings import — malformed input", () => {
   test("malformed JSON shows a parse error, not a crash, and nothing commits", async ({
     alicePage,
   }) => {
-    await alicePage.goto("/ui/settings");
+    await gotoSettings(alicePage);
     await alicePage.getByTestId("import-file-input").setInputFiles({
       name: "bundle.json",
       mimeType: "application/json",
@@ -495,7 +508,7 @@ test.describe("settings import — malformed input", () => {
 
 test.describe("settings — no export note", () => {
   test("a closing note states there is no export", async ({ alicePage }) => {
-    await alicePage.goto("/ui/settings");
+    await gotoSettings(alicePage);
     await expect(alicePage.getByTestId("settings-no-export-note")).toContainText(
       "No export. Colleague sharing goes through the shared surrogate store and workspace roles; the voice-diary consumes the JSON API."
     );

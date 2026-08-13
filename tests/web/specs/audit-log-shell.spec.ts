@@ -32,6 +32,11 @@ test.describe("Audit log — alice (holds viewer)", () => {
   }) => {
     await alicePage.goto("/ui/audit");
     const pills = alicePage.getByTestId("audit-log-row-kind");
+    // evaluateAll snapshots the DOM once, with no auto-retry -- unlike toHaveCount
+    // below, it can't wait out the WorkspaceContext fetch that gates the audit
+    // rows' first render. Pin the count first (same 4-row expectation the previous
+    // test already established) so the snapshot always lands after that fetch.
+    await expect(pills).toHaveCount(4);
     const kinds = await pills.evaluateAll((els) => els.map((el) => el.getAttribute("data-kind")));
     expect(new Set(kinds)).toEqual(new Set(["reveal", "lookup", "block"]));
 

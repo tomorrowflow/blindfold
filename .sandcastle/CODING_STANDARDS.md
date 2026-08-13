@@ -28,6 +28,11 @@ we pseudonymize **reversibly**.
 ## Stack & style
 
 - **Python 3.12+ / FastAPI**, managed with **uv**. Run tests with `uv run pytest`.
+- **Management SPA** (`frontend/`, ADR-0011/ADR-0026): browser suite lives in `tests/web/`
+  (`@playwright/test`), gated in CI by `.github/workflows/web-verify.yml` (issue #273). Run
+  locally from `tests/web/` with `npx playwright test` (`npm ci` first if `node_modules` is
+  absent; `npx playwright install --with-deps chromium` once per machine to provision the
+  browser).
 - **Deep modules**: small public interface, substantial implementation behind it.
   Keep each module focused on one responsibility.
 - Type-annotate public functions; avoid bare `Any` and unchecked casts on the
