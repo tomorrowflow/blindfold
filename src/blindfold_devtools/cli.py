@@ -1,17 +1,21 @@
-"""``blindfold captures`` / ``blindfold explain`` -- the Diagnostic session's own
-CLI (ADR-0047 §6, issue #257).
+"""``blindfold captures`` / ``blindfold explain`` / ``blindfold serve`` -- the
+Diagnostic session's own CLI (ADR-0047 §6/§7, issues #257/#271).
 
 Source-run only, like every devtools entry point: there is no ``[project.scripts]``
 wiring here, since that would install a console script pointing at a module absent
 from the release wheel (ADR-0047 §2). Run as ``python -m blindfold_devtools captures``
-/ ``... explain --last`` from a source checkout with the ``devtools`` dependency
-group installed.
+/ ``... explain --last`` / ``... serve`` from a source checkout with the ``devtools``
+dependency group installed.
 
 ``run()`` takes an already-resolved capture directory / mapping / graph (this
-module's own testable seam, mirroring ``blindfold.cli``'s ``run(argv, *, store)``);
-``main()`` wires those from the real environment -- ``BLINDFOLD_EXCHANGE_CAPTURE_DIR``,
-the shared-store refusal every devtools entry point carries (ADR-0047 §7), and the
-vendored-seed mapping the shipped proxy itself blindfolds with by default.
+module's own testable seam, mirroring ``blindfold.cli``'s ``run(argv, *, store)``)
+for ``captures``/``explain``; ``serve`` is dispatched directly from ``main()`` to
+:func:`blindfold_devtools.diagnostic_entry.run_diagnostic_server`, which resolves
+its own settings and carries its own refusals (root-Transit-token, shared store,
+missing capture directory, override drift). ``main()`` wires ``captures``/``explain``
+from the real environment -- ``BLINDFOLD_EXCHANGE_CAPTURE_DIR``, the shared-store
+refusal every devtools entry point carries (ADR-0047 §7), and the vendored-seed
+mapping the shipped proxy itself blindfolds with by default.
 """
 
 from __future__ import annotations
@@ -22,7 +26,9 @@ from collections.abc import Iterable, Sequence
 from pathlib import Path
 from typing import TextIO
 
+from blindfold.config import DEFAULT_HOST, DEFAULT_PORT
 from blindfold.detection import Entity
+from blindfold.serve import DevModeRequiredError
 from blindfold.surrogates import SurrogateMapping
 from rich.console import Console
 from rich.table import Table
@@ -30,6 +36,9 @@ from rich.table import Table
 from .capture import read_capture
 from .capture_listing import CaptureSummary, list_captures
 from .capture_render import CaptureNotFoundError, render_capture, resolve_capture
+from .diagnostic_entry import MissingCaptureDirectoryError, run_diagnostic_server
+from .override_targets import OverrideDriftError
+from .shared_store_refusal import SharedStoreRefusalError
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -47,6 +56,16 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Capture id (a capture's filename, minus .jsonl).",
     )
     explain.add_argument("--last", action="store_true", help="Resolve the most recent capture.")
+
+    serve = sub.add_parser("serve", help="Run a Diagnostic session's capturing proxy.")
+    serve.add_argument(
+        "--host",
+        default=DEFAULT_HOST,
+        help=f"Bind address (default: {DEFAULT_HOST} -- loopback-only, same as `blindfold serve`).",
+    )
+    serve.add_argument(
+        "--port", type=int, default=DEFAULT_PORT, help=f"Bind port (default: {DEFAULT_PORT})."
+    )
 
     return parser
 
@@ -115,7 +134,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     from blindfold.store import vendored_seed_repository
 
     from .settings import load_devtools_settings
-    from .shared_store_refusal import SharedStoreRefusalError, refuse_if_shared_store
+
+    argv = list(argv) if argv is not None else sys.argv[1:]
+    args = _build_parser().parse_args(argv)
+
+    if args.command == "serve":
+        try:
+            run_diagnostic_server(host=args.host, port=args.port)
+        except (
+            DevModeRequiredError,
+            SharedStoreRefusalError,
+            MissingCaptureDirectoryError,
+            OverrideDriftError,
+        ) as exc:
+            print(f"blindfold: {exc}", file=sys.stderr)
+            return 1
+        return 0
+
+    from .shared_store_refusal import refuse_if_shared_store
 
     settings = get_settings()
     try:

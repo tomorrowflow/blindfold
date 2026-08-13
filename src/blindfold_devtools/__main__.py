@@ -1,4 +1,5 @@
-"""``python -m blindfold_devtools captures`` / ``... explain --last`` (issue #257).
+"""``python -m blindfold_devtools captures`` / ``... explain --last`` / ``... serve``
+(issues #257/#271).
 
 There is no ``[project.scripts]`` console entry for this: an installed console
 script pointing at ``blindfold_devtools`` would be broken on any environment
