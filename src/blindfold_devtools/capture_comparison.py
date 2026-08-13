@@ -66,9 +66,33 @@ class Divergence:
     reason: str
 
 
+@dataclass(frozen=True)
+class Comparison:
+    """The comparison's outcome.
+
+    ``comparable`` is ``False`` when the capture carries no ``reconstructed``
+    detection records at all -- a live-only capture (§5's ``observed`` section
+    stands alone as a legitimate, permanent artifact shape), or one whose replay
+    has not been run yet (#269). That is distinct from a replay that ran and
+    genuinely found zero reconstructed surrogates: that case is still
+    ``comparable`` and reports its (possibly empty) ``divergences`` normally
+    (issue #270).
+    """
+
+    comparable: bool
+    divergences: tuple[Divergence, ...] = ()
+
+
 def _observed_injected(records: Iterable) -> dict[str, str]:
     footer = next((r for r in records if isinstance(r, FooterRecord)), None)
     return dict(footer.injected) if footer is not None else {}
+
+
+def _has_reconstructed_section(records: Iterable) -> bool:
+    return any(
+        isinstance(record, DetectionRecord) and record.section == SECTION_RECONSTRUCTED
+        for record in records
+    )
 
 
 def _reconstructed_surrogates(records: Iterable) -> frozenset[str]:
@@ -79,14 +103,20 @@ def _reconstructed_surrogates(records: Iterable) -> frozenset[str]:
     return frozenset(surrogates)
 
 
-def compare(
-    records: Iterable, *, graph_entities: Iterable[Entity]
-) -> tuple[Divergence, ...]:
+def compare(records: Iterable, *, graph_entities: Iterable[Entity]) -> Comparison:
     """Compare an Exchange capture's observed and reconstructed sections and
     classify every divergent surrogate on the severity ladder (``defect`` >
     ``expected`` > ``unknown`` -- ``leak`` is the offline leak check's own,
     higher-ranked classification; see ``leak_check.py``).
+
+    Returns a not-comparable :class:`Comparison` when no ``reconstructed``
+    detection record is present at all, rather than misreading that absence as
+    an empty (all-clear) reconstructed section (issue #270).
     """
+    records = list(records)
+    if not _has_reconstructed_section(records):
+        return Comparison(comparable=False)
+
     entities = list(graph_entities)
     graph_surrogate_to_real = {entity.surrogate: entity.canonical for entity in entities}
     graph_reals = {entity.canonical for entity in entities} | {
@@ -111,4 +141,4 @@ def compare(
         divergences.append(
             Divergence(severity=severity, ref=surrogate, reason=_REASONS[severity])
         )
-    return tuple(divergences)
+    return Comparison(comparable=True, divergences=tuple(divergences))

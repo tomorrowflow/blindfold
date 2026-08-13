@@ -74,11 +74,12 @@ def test_a_graph_known_entity_replaced_live_but_missed_on_replay_is_a_defect():
         _reconstructed_detection(()),
     ]
 
-    divergences = compare(records, graph_entities=graph)
+    result = compare(records, graph_entities=graph)
 
-    assert len(divergences) == 1
-    assert divergences[0].severity == SEVERITY_DEFECT
-    assert divergences[0].ref == "Bernhard Vogt"
+    assert result.comparable
+    assert len(result.divergences) == 1
+    assert result.divergences[0].severity == SEVERITY_DEFECT
+    assert result.divergences[0].ref == "Bernhard Vogt"
 
 
 def test_a_novel_entity_divergence_is_expected_not_defect():
@@ -90,11 +91,12 @@ def test_a_novel_entity_divergence_is_expected_not_defect():
         _reconstructed_detection(()),
     ]
 
-    divergences = compare(records, graph_entities=[])
+    result = compare(records, graph_entities=[])
 
-    assert len(divergences) == 1
-    assert divergences[0].severity == SEVERITY_EXPECTED
-    assert divergences[0].ref == "Provisional Person"
+    assert result.comparable
+    assert len(result.divergences) == 1
+    assert result.divergences[0].severity == SEVERITY_EXPECTED
+    assert result.divergences[0].ref == "Provisional Person"
 
 
 def test_a_pii_counter_position_divergence_is_expected_not_defect():
@@ -111,10 +113,11 @@ def test_a_pii_counter_position_divergence_is_expected_not_defect():
         _reconstructed_detection(("+1-555-0107",)),
     ]
 
-    divergences = compare(records, graph_entities=[])
+    result = compare(records, graph_entities=[])
 
-    assert {d.ref for d in divergences} == {surrogate, "+1-555-0107"}
-    assert all(d.severity == SEVERITY_EXPECTED for d in divergences)
+    assert result.comparable
+    assert {d.ref for d in result.divergences} == {surrogate, "+1-555-0107"}
+    assert all(d.severity == SEVERITY_EXPECTED for d in result.divergences)
 
 
 def test_a_surrogate_unattributable_to_the_graph_or_a_reserved_shape_is_unknown():
@@ -126,11 +129,12 @@ def test_a_surrogate_unattributable_to_the_graph_or_a_reserved_shape_is_unknown(
         _reconstructed_detection(("Mystery Surrogate",)),
     ]
 
-    divergences = compare(records, graph_entities=[])
+    result = compare(records, graph_entities=[])
 
-    assert len(divergences) == 1
-    assert divergences[0].severity == SEVERITY_UNKNOWN
-    assert divergences[0].ref == "Mystery Surrogate"
+    assert result.comparable
+    assert len(result.divergences) == 1
+    assert result.divergences[0].severity == SEVERITY_UNKNOWN
+    assert result.divergences[0].ref == "Mystery Surrogate"
 
 
 def test_matching_surrogates_on_both_sides_produce_no_divergence():
@@ -140,4 +144,19 @@ def test_matching_surrogates_on_both_sides_produce_no_divergence():
         _reconstructed_detection(("Bernhard Vogt",)),
     ]
 
-    assert compare(records, graph_entities=graph) == ()
+    result = compare(records, graph_entities=graph)
+    assert result.comparable
+    assert result.divergences == ()
+
+
+def test_a_capture_with_no_reconstructed_records_at_all_is_not_comparable():
+    # A live-only capture (or one whose replay hasn't run yet, #269) carries no
+    # `reconstructed` detection records at all -- that must be distinguishable
+    # from a replay that genuinely produced zero reconstructed surrogates.
+    graph = [Entity(canonical="Martin Bach", variations=(), surrogate="Bernhard Vogt")]
+    records = [_footer({"Bernhard Vogt": "Martin Bach"})]
+
+    result = compare(records, graph_entities=graph)
+
+    assert result.comparable is False
+    assert result.divergences == ()
