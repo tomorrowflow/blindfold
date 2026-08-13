@@ -141,3 +141,59 @@ def test_main_refuses_with_no_capture_directory_configured(monkeypatch, capsys):
 
     assert exit_code == 1
     assert "BLINDFOLD_EXCHANGE_CAPTURE_DIR" in capsys.readouterr().err
+
+
+def test_main_serve_defaults_to_loopback_host_and_port(monkeypatch):
+    from blindfold.config import DEFAULT_HOST, DEFAULT_PORT
+
+    calls = []
+    monkeypatch.setattr(
+        "blindfold_devtools.cli.run_diagnostic_server",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    exit_code = main(["serve"])
+
+    assert exit_code == 0
+    assert calls == [{"host": DEFAULT_HOST, "port": DEFAULT_PORT}]
+
+
+def test_main_serve_passes_through_explicit_host_and_port(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        "blindfold_devtools.cli.run_diagnostic_server",
+        lambda **kwargs: calls.append(kwargs),
+    )
+
+    exit_code = main(["serve", "--host", "0.0.0.0", "--port", "9000"])
+
+    assert exit_code == 0
+    assert calls == [{"host": "0.0.0.0", "port": 9000}]
+
+
+def test_main_serve_reports_dev_mode_required_error_and_exits_nonzero(monkeypatch, capsys):
+    from blindfold.serve import DevModeRequiredError
+
+    def _raise(**kwargs):
+        raise DevModeRequiredError("refusing to start against a root OpenBao Transit token")
+
+    monkeypatch.setattr("blindfold_devtools.cli.run_diagnostic_server", _raise)
+
+    exit_code = main(["serve"])
+
+    assert exit_code == 1
+    assert "refusing to start against a root OpenBao Transit token" in capsys.readouterr().err
+
+
+def test_main_serve_reports_shared_store_refusal_error_and_exits_nonzero(monkeypatch, capsys):
+    from blindfold_devtools.shared_store_refusal import SharedStoreRefusalError
+
+    def _raise(**kwargs):
+        raise SharedStoreRefusalError("refusing to start a Diagnostic session: shared store")
+
+    monkeypatch.setattr("blindfold_devtools.cli.run_diagnostic_server", _raise)
+
+    exit_code = main(["serve"])
+
+    assert exit_code == 1
+    assert "refusing to start a Diagnostic session: shared store" in capsys.readouterr().err

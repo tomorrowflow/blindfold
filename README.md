@@ -185,6 +185,46 @@ spec built on Linux is what `tests/test_frozen_proxy_packaging.py` exercises in-
 
 ---
 
+## Diagnostic session
+
+A **Diagnostic session** (ADR-0047) answers the question ordinary `blindfold serve`
+cannot: *"this payload contains no real value, and here is the proof."* It records the
+full round trip of a real exchange — inbound, blindfolded outbound, provider response,
+restored response, and the surrogate pair table — to a local file you name, then lets
+you inspect it.
+
+It is **source-run only** — `blindfold_devtools` is a sibling package to `blindfold`
+that never ships in the release wheel or the frozen binary (ADR-0047 §2), so this needs
+a source checkout with the `devtools` dependency group installed:
+
+```bash
+uv sync --group devtools
+export BLINDFOLD_EXCHANGE_CAPTURE_DIR=/tmp/blindfold-captures
+uv run python -m blindfold_devtools serve
+```
+
+`serve` reuses `blindfold serve`'s own startup guards (loopback bind by default, the
+SEC-2 root-Transit-token refusal) and adds its own: it refuses to start against a
+shared Postgres store or a configured OpenBao Transit token — a Diagnostic session
+runs against a local SQLite store with the Local key cipher only, never someone else's
+data — and refuses with no `BLINDFOLD_EXCHANGE_CAPTURE_DIR` configured, since there
+would be nowhere to write the capture. Every refusal fires before the server binds,
+naming the cause.
+
+Point a client at it exactly as you would ordinary `blindfold serve` (see
+[Usability](#usability)) and make a request — a capture file lands in the directory you
+named. Then, from the same checkout:
+
+```bash
+uv run python -m blindfold_devtools captures       # list captures in the directory
+uv run python -m blindfold_devtools explain --last # render the most recent one
+```
+
+`explain` prints the full prompt text of the capture to your terminal — it's your own
+machine and your own opted-in directory, and the file already holds the plaintext.
+
+---
+
 ## Usability
 
 **Point your tool at the proxy — a ~2-line change, no app rewrite.** The management
