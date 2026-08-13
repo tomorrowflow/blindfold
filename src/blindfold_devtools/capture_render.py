@@ -108,8 +108,8 @@ def render_capture(
         )
 
     leak_result = leak_check(records, mapping)
-    divergences = compare(records, graph_entities=graph_entities)
-    defects = [d for d in divergences if d.severity == SEVERITY_DEFECT]
+    comparison = compare(records, graph_entities=graph_entities)
+    defects = [d for d in comparison.divergences if d.severity == SEVERITY_DEFECT]
 
     lines: list[str] = []
     if leak_result.findings:
@@ -142,8 +142,12 @@ def render_capture(
     lines.append(f"  outcome: {footer.outcome}")
     lines.append(f"  detected: {len(footer.injected)} value(s) injected")
     lines.append(f"  {leak_result.summary()}")
-    if divergences:
-        for divergence in divergences:
+    if not comparison.comparable:
+        lines.append(
+            "  comparison: not run -- no reconstructed section (live-only capture)"
+        )
+    elif comparison.divergences:
+        for divergence in comparison.divergences:
             lines.append(
                 f"  divergence [{divergence.severity}]: {divergence.ref} -- {divergence.reason}"
             )

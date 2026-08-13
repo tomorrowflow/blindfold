@@ -54,6 +54,8 @@ def test_an_in_flight_capture_states_what_is_missing_rather_than_erroring():
 
 
 def test_a_leak_renders_the_mismatch_banner_before_anything_else():
+    # No `reconstructed` section at all -- not-comparable per #270 -- but the
+    # leak check is independent of the comparison and must still banner.
     mapping = SurrogateMapping()
     mapping.seed("Martin Bach", "Bernhard Vogt")
     records = [
@@ -78,7 +80,53 @@ def test_a_leak_renders_the_mismatch_banner_before_anything_else():
 def test_a_defect_with_no_leak_also_renders_the_mismatch_banner():
     # A graph-known entity replaced live but missed on replay (no leak at all --
     # the offline leak check finds nothing) still counts as a `defect`, the
-    # severity ladder's other banner-worthy tier (ADR-0047 §9).
+    # severity ladder's other banner-worthy tier (ADR-0047 §9). Replay *ran* --
+    # a reconstructed detection record is present, just missing this surrogate
+    # (issue #270: absent from the section, not the section itself absent).
+    from blindfold_devtools.capture import SECTION_RECONSTRUCTED, DetectionRecord
+
+    records = [
+        _header({"messages": [{"role": "user", "content": "Hi Martin Bach"}]}),
+        OutboundRecord(
+            section=SECTION_OBSERVED,
+            ts="2026-08-12T00:00:00.5+00:00",
+            payload={"messages": [{"role": "user", "content": "Hi Bernhard Vogt"}]},
+        ),
+        DetectionRecord(
+            section=SECTION_RECONSTRUCTED,
+            ts="2026-08-12T00:00:00.7+00:00",
+            hop_index=0,
+            hop_kind="user",
+            l1_counts={},
+            l1_duration_ms=0.0,
+            l2_count=0,
+            l2_duration_ms=0.0,
+            l3_confirmed=0,
+            l3_dismissed=0,
+            l3_suppressed=0,
+            l3_provider=None,
+            l3_duration_ms=None,
+            surrogates=(),
+        ),
+        _footer({"Bernhard Vogt": "Martin Bach"}),
+    ]
+
+    rendered = render_capture(
+        records,
+        graph_entities=[Entity(canonical="Martin Bach", variations=(), surrogate="Bernhard Vogt")],
+        mapping=SurrogateMapping(),
+    )
+
+    assert rendered.strip().startswith("MISMATCH")
+    assert "defect" in rendered.lower()
+
+
+def test_a_live_only_capture_of_a_graph_known_entity_renders_no_banner_and_states_not_run():
+    # Issue #270: replay never ran at all -- no `reconstructed` detection record
+    # of any kind is present. That is a legitimate, permanent artifact shape
+    # (ADR-0047 §5's `observed` section stands alone), and must not be misread
+    # as an empty, all-clear reconstructed section: this is exactly the shape
+    # that used to banner every graph-known real capture as a false `defect`.
     records = [
         _header({"messages": [{"role": "user", "content": "Hi Martin Bach"}]}),
         OutboundRecord(
@@ -95,19 +143,39 @@ def test_a_defect_with_no_leak_also_renders_the_mismatch_banner():
         mapping=SurrogateMapping(),
     )
 
-    assert rendered.strip().startswith("MISMATCH")
-    assert "defect" in rendered.lower()
+    assert "MISMATCH" not in rendered
+    assert "not run" in rendered
 
 
 def test_only_expected_divergences_render_no_banner():
     # A novel entity, never in the graph -- compare() classifies its own
     # divergence as `expected`, never `defect` (ADR-0047 §9). No leak either.
+    # Replay ran (a reconstructed record is present) and didn't reproduce the
+    # provisional surrogate, which is exactly the expected case this test names.
+    from blindfold_devtools.capture import SECTION_RECONSTRUCTED, DetectionRecord
+
     records = [
         _header({"messages": [{"role": "user", "content": "Hi Someone Novel"}]}),
         OutboundRecord(
             section=SECTION_OBSERVED,
             ts="2026-08-12T00:00:00.5+00:00",
             payload={"messages": [{"role": "user", "content": "Hi Provisional Person"}]},
+        ),
+        DetectionRecord(
+            section=SECTION_RECONSTRUCTED,
+            ts="2026-08-12T00:00:00.7+00:00",
+            hop_index=0,
+            hop_kind="user",
+            l1_counts={},
+            l1_duration_ms=0.0,
+            l2_count=0,
+            l2_duration_ms=0.0,
+            l3_confirmed=0,
+            l3_dismissed=0,
+            l3_suppressed=0,
+            l3_provider=None,
+            l3_duration_ms=None,
+            surrogates=(),
         ),
         _footer({"Provisional Person": "Someone Novel"}),
     ]
