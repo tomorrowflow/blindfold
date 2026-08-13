@@ -271,11 +271,24 @@ console.log(
 // ---------------------------------------------------------------------------
 
 // Repo slug for `gh` (derived once; empty string disables reporting cleanly).
+//
+// Derived from the git remote, NOT from `gh repo view` — that command goes
+// through GitHub's GraphQL API, so a transient `HTTP 401` on it used to leave
+// REPO empty and silently no-op every `if (!REPO) return` path below: label
+// state, issue comments, the terminal close, AND the trust gate's own label-
+// event lookup (observed 2026-08-13 — ten iterations reported every issue as
+// "not applied by a trusted maintainer" when the labels were in fact correct).
+// The remote URL is local git state and cannot fail on an auth blip.
 const REPO = (() => {
   try {
-    return execFileSync("gh", ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"], {
+    const url = execFileSync("git", ["remote", "get-url", "origin"], {
       encoding: "utf8",
     }).trim();
+    // Both remote spellings: git@github.com:owner/repo.git and
+    // https://github.com/owner/repo(.git). Anything else (a non-GitHub remote,
+    // no remote at all) yields "" and disables reporting exactly as before.
+    const match = url.match(/^(?:git@[^:]+:|(?:ssh|git|https?):\/\/[^/]+\/)([^/]+\/[^/]+?)(?:\.git)?$/);
+    return match ? match[1] : "";
   } catch {
     return "";
   }
@@ -1138,10 +1151,20 @@ function reapOrphanedWorktrees(): void {
 // authorize autonomous pickup. This is the hard boundary the planner's
 // label-presence filter can't provide. Fail-CLOSED: no repo / any error / no
 // trusted applier → not authorized.
-function sandcastleLabeledByTrusted(id: string): boolean {
-  if (!REPO) return false;
+// Denial carries WHY. Every non-authorized outcome is still a denial (the gate
+// stays fail-closed), but "the events query errored" and "the label was applied
+// by @someone-untrusted" are different problems with different fixes, and
+// reporting the second when the first happened sends the human to inspect
+// labels that were never read. Never widen this to authorize on an error.
+type PickupTrust = { authorized: boolean; reason: string };
+
+function sandcastleLabeledByTrusted(id: string): PickupTrust {
+  if (!REPO) {
+    return { authorized: false, reason: "the repo slug could not be resolved (see the startup error)" };
+  }
+  let out: string;
   try {
-    const out = execFileSync(
+    out = execFileSync(
       "gh",
       [
         "api",
@@ -1152,11 +1175,24 @@ function sandcastleLabeledByTrusted(id: string): boolean {
       ],
       { encoding: "utf8" },
     );
-    const appliers = out.split("\n").map((s) => s.trim()).filter(Boolean);
-    return appliers.some((a) => TRUSTED_MAINTAINERS.includes(a));
-  } catch {
-    return false;
+  } catch (err) {
+    const detail = err instanceof Error ? err.message.split("\n")[0] : String(err);
+    return {
+      authorized: false,
+      reason: `the label-event lookup failed, so the applier is UNKNOWN — not untrusted (${detail})`,
+    };
   }
+  const appliers = out.split("\n").map((s) => s.trim()).filter(Boolean);
+  if (appliers.some((a) => TRUSTED_MAINTAINERS.includes(a))) {
+    return { authorized: true, reason: "" };
+  }
+  return {
+    authorized: false,
+    reason: appliers.length === 0
+      ? "no `labeled` event for `Sandcastle` exists on this issue"
+      : `\`Sandcastle\` was applied by ${appliers.map((a) => `@${a}`).join(", ")}, not by a ` +
+        `trusted maintainer (${TRUSTED_MAINTAINERS.join(", ")})`,
+  };
 }
 
 // Fetch an issue's comments partitioned by author trust. Untrusted (non-
@@ -1239,6 +1275,38 @@ function trustedCommentContext(id: string): string {
 // Main loop
 // ---------------------------------------------------------------------------
 
+// Fail fast rather than limp: an empty REPO silently disables every host-side
+// `gh` path (label state, comments, terminal close, platform-verify, and the
+// trust gate's label-event lookup), so a run that continues past this point
+// looks like it is working while reporting nothing and authorizing nothing.
+// Better to stop here with the actual cause than to spend ten iterations
+// denying correctly-labelled issues.
+if (!REPO) {
+  console.error(
+    "Cannot resolve the GitHub repo slug from `git remote get-url origin`. Every host-side\n" +
+      "issue operation (labels, comments, close, the platform gate) and the trusted-maintainer\n" +
+      "pickup gate depend on it, so this run would report nothing and work nothing.\n" +
+      "Check that `origin` points at a GitHub remote, then re-run.",
+  );
+  process.exit(1);
+}
+
+// `gh` must actually be authenticated on the host, too — REPO now comes from
+// local git state, so it can no longer serve as an implicit auth check the way
+// `gh repo view` accidentally did. One cheap REST call, with the remedy named.
+try {
+  execFileSync("gh", ["api", "user", "--jq", ".login"], { encoding: "utf8", stdio: "pipe" });
+} catch (err) {
+  const detail = err instanceof Error ? err.message.split("\n")[0] : String(err);
+  console.error(
+    `\`gh\` is not authenticated on this host (${detail}).\n` +
+      "The orchestrator does every issue update and the trusted-maintainer pickup check from\n" +
+      "here, so run `gh auth login` and re-run. (A transient GitHub 401 also lands here —\n" +
+      "in that case simply re-running is enough.)",
+  );
+  process.exit(1);
+}
+
 ensureSandcastleLabels();
 
 // Reconcile leftovers from prior runs BEFORE planning: an interrupted run, or a
@@ -1299,10 +1367,10 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   // triage rights; verifying the APPLIER here makes the boundary a code gate,
   // not a model instruction. Drop — loudly — any planned issue that fails it.
   const trustedIssues = issues.filter((issue) => {
-    if (sandcastleLabeledByTrusted(issue.id)) return true;
+    const trust = sandcastleLabeledByTrusted(issue.id);
+    if (trust.authorized) return true;
     console.warn(
-      `  ⛔ ${issue.id} (${issue.title}) SKIPPED: \`Sandcastle\` label was not applied by a ` +
-        `trusted maintainer (${TRUSTED_MAINTAINERS.join(", ")}). Autonomous pickup denied.`,
+      `  ⛔ ${issue.id} (${issue.title}) SKIPPED: autonomous pickup denied — ${trust.reason}.`,
     );
     return false;
   });
