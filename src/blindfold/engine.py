@@ -67,6 +67,11 @@ class HopDetail:
     l3_provider: str | None
     l3_duration_ms: float | None
     surrogates: tuple[str, ...] = ()
+    # Issue #261 (ADR-0035): how many of this hop's candidates fell back to
+    # #148's single-candidate retry seam after a short batch response -- 0 for
+    # every hop before this field existed, and for one where every candidate was
+    # answered by the batch prompt itself.
+    l3_solo_retried: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -82,6 +87,7 @@ class HopDetail:
             "l3_provider": self.l3_provider,
             "l3_duration_ms": self.l3_duration_ms,
             "surrogates": list(self.surrogates),
+            "l3_solo_retried": self.l3_solo_retried,
         }
 
 
@@ -104,6 +110,7 @@ class _HopContext:
     l3_suppressed: int = 0
     l3_duration_ms: float = 0.0
     l3_ran: bool = False
+    l3_solo_retried: int = 0
     surrogates: list[str] = field(default_factory=list)
 
 
@@ -121,6 +128,7 @@ def _finish_hop(ctx: _HopContext, hop_kind: str, hop_index: int) -> HopDetail:
         l3_provider=ctx.l3_provider if ctx.l3_ran else None,
         l3_duration_ms=ctx.l3_duration_ms if ctx.l3_ran else None,
         surrogates=tuple(ctx.surrogates),
+        l3_solo_retried=ctx.l3_solo_retried,
     )
 
 
@@ -545,7 +553,17 @@ def _blindfold_text(
     # mint is durably *recorded* for review varies with which inbox got substituted.
     if l3_detector is not None:
         l3_started_at = time.monotonic()
-        adjudications = l3_detector.detect(result, mapping.entities(), declared_tools)
+
+        def _record_solo_retry(_candidate: Any) -> None:
+            if hop_ctx is not None:
+                hop_ctx.l3_solo_retried += 1
+
+        adjudications = l3_detector.detect(
+            result,
+            mapping.entities(),
+            declared_tools,
+            on_solo_retry=_record_solo_retry if hop_ctx is not None else None,
+        )
         if hop_ctx is not None:
             confirmed = sum(1 for _, decision in adjudications if decision.is_entity)
             hop_ctx.l3_ran = True
