@@ -191,6 +191,7 @@ def blindfold_payload(
     inbox: ReviewInbox | None = None,
     declared_tools: frozenset[str] = frozenset(),
     workspace: str = DEFAULT_WORKSPACE,
+    phone_candidates_enabled: bool = True,
 ) -> tuple[dict[str, Any], ExchangeSession]:
     """Return a blindfolded copy of an Anthropic Messages ``payload`` plus the session.
 
@@ -212,6 +213,17 @@ def blindfold_payload(
     workspace its confirm should grow. Defaults to the default workspace slug for
     a caller with no workspace in context.
 
+    ``phone_candidates_enabled`` (issue #279) is the audited per-workspace opt-out
+    for the phone-shaped L3 candidate producer (``select_phone_candidate_spans``,
+    issue #277) — the caller's own argument, mirroring how ``declared_tools``
+    already reaches :meth:`L3Detector.detect`, never state on ``l3_detector``
+    itself (#261's purity invariant: candidate selection is a pure function of the
+    hop's own inputs). Default True reproduces today's behavior. False drops only
+    the phone-shaped producer's output from the merge; ``select_candidate_spans``'s
+    capitalized-token candidates are unaffected, and L1's international-format
+    ``_PHONE_RE`` detection (a deterministic pass, never L3 candidacy) is untouched
+    either way.
+
     The resulting ``session.hops`` (issue #153, ADR-0035) labels each hop's L3
     detail with ``l3_detector.provider_name`` when ``l3_detector`` ran for that hop
     — a display-only string, never used to select behavior here.
@@ -225,7 +237,8 @@ def blindfold_payload(
     if system is not None:
         ctx = _HopContext(l3_provider=l3_provider)
         out["system"] = _blindfold_system(
-            system, mapping, session, l3_detector, inbox, declared_tools, ctx, workspace
+            system, mapping, session, l3_detector, inbox, declared_tools, ctx,
+            workspace, phone_candidates_enabled,
         )
         session.hops.append(_finish_hop(ctx, "system", len(session.hops)))
 
@@ -233,7 +246,7 @@ def blindfold_payload(
         ctx = _HopContext(l3_provider=l3_provider)
         message["content"] = _blindfold_content(
             message.get("content"), mapping, session, l3_detector, inbox,
-            declared_tools, ctx, workspace,
+            declared_tools, ctx, workspace, phone_candidates_enabled,
         )
         session.hops.append(
             _finish_hop(ctx, _hop_kind_for_message(message), len(session.hops))
@@ -251,6 +264,7 @@ def blindfold_chat_completions_payload(
     inbox: ReviewInbox | None = None,
     declared_tools: frozenset[str] = frozenset(),
     workspace: str = DEFAULT_WORKSPACE,
+    phone_candidates_enabled: bool = True,
 ) -> tuple[dict[str, Any], ExchangeSession]:
     """Return a blindfolded copy of an OpenAI Chat Completions ``payload`` plus the session.
 
@@ -261,6 +275,8 @@ def blindfold_chat_completions_payload(
     ``declared_tools`` (ADR-0023, issue #72) — see :func:`extract_declared_tools_chat_completions`.
 
     ``workspace`` (issue #171) — see :func:`blindfold_payload`.
+
+    ``phone_candidates_enabled`` (issue #279) — see :func:`blindfold_payload`.
     """
     session = ExchangeSession()
     out = copy.deepcopy(payload)
@@ -271,7 +287,7 @@ def blindfold_chat_completions_payload(
         ctx = _HopContext(l3_provider=l3_provider)
         message["content"] = _blindfold_content(
             message.get("content"), mapping, session, l3_detector, inbox,
-            declared_tools, ctx, workspace,
+            declared_tools, ctx, workspace, phone_candidates_enabled,
         )
         session.hops.append(
             _finish_hop(ctx, _hop_kind_for_message(message), len(session.hops))
@@ -378,15 +394,18 @@ def _blindfold_system(
     declared_tools: frozenset[str] = frozenset(),
     hop_ctx: "_HopContext | None" = None,
     workspace: str = DEFAULT_WORKSPACE,
+    phone_candidates_enabled: bool = True,
 ) -> Any:
     if isinstance(system, str):
         return _blindfold_text(
-            system, mapping, session, l3_detector, inbox, declared_tools, hop_ctx, workspace
+            system, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
+            workspace, phone_candidates_enabled,
         )
     if isinstance(system, list):
         return [
             _blindfold_block(
-                block, mapping, session, l3_detector, inbox, declared_tools, hop_ctx, workspace
+                block, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
+                workspace, phone_candidates_enabled,
             )
             for block in system
         ]
@@ -402,15 +421,18 @@ def _blindfold_content(
     declared_tools: frozenset[str] = frozenset(),
     hop_ctx: "_HopContext | None" = None,
     workspace: str = DEFAULT_WORKSPACE,
+    phone_candidates_enabled: bool = True,
 ) -> Any:
     if isinstance(content, str):
         return _blindfold_text(
-            content, mapping, session, l3_detector, inbox, declared_tools, hop_ctx, workspace
+            content, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
+            workspace, phone_candidates_enabled,
         )
     if isinstance(content, list):
         return [
             _blindfold_block(
-                block, mapping, session, l3_detector, inbox, declared_tools, hop_ctx, workspace
+                block, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
+                workspace, phone_candidates_enabled,
             )
             for block in content
         ]
@@ -426,18 +448,20 @@ def _blindfold_block(
     declared_tools: frozenset[str] = frozenset(),
     hop_ctx: "_HopContext | None" = None,
     workspace: str = DEFAULT_WORKSPACE,
+    phone_candidates_enabled: bool = True,
 ) -> Any:
     if not isinstance(block, dict):
         return block
     block_type = block.get("type")
     if block_type == "text" and isinstance(block.get("text"), str):
         block["text"] = _blindfold_text(
-            block["text"], mapping, session, l3_detector, inbox, declared_tools, hop_ctx, workspace
+            block["text"], mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
+            workspace, phone_candidates_enabled,
         )
     elif block_type == "tool_result":
         block["content"] = _blindfold_content(
             block.get("content"), mapping, session, l3_detector, inbox,
-            declared_tools, hop_ctx, workspace,
+            declared_tools, hop_ctx, workspace, phone_candidates_enabled,
         )
     elif block_type == "tool_use":
         # Tool-call JSON (issue #11): the assistant's prior tool_use.input is echoed
@@ -446,7 +470,7 @@ def _blindfold_block(
         # across every hop, not just text blocks.
         block["input"] = _blindfold_json_value(
             block.get("input"), mapping, session, l3_detector, inbox,
-            declared_tools, hop_ctx, workspace,
+            declared_tools, hop_ctx, workspace, phone_candidates_enabled,
         )
     return block
 
@@ -460,23 +484,27 @@ def _blindfold_json_value(
     declared_tools: frozenset[str] = frozenset(),
     hop_ctx: "_HopContext | None" = None,
     workspace: str = DEFAULT_WORKSPACE,
+    phone_candidates_enabled: bool = True,
 ) -> Any:
     """Recursively rewrite every string leaf in a JSON-shaped value via L1+L2."""
     if isinstance(value, str):
         return _blindfold_text(
-            value, mapping, session, l3_detector, inbox, declared_tools, hop_ctx, workspace
+            value, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
+            workspace, phone_candidates_enabled,
         )
     if isinstance(value, dict):
         return {
             k: _blindfold_json_value(
-                v, mapping, session, l3_detector, inbox, declared_tools, hop_ctx, workspace
+                v, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
+                workspace, phone_candidates_enabled,
             )
             for k, v in value.items()
         }
     if isinstance(value, list):
         return [
             _blindfold_json_value(
-                item, mapping, session, l3_detector, inbox, declared_tools, hop_ctx, workspace
+                item, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
+                workspace, phone_candidates_enabled,
             )
             for item in value
         ]
@@ -492,6 +520,7 @@ def _blindfold_text(
     declared_tools: frozenset[str] = frozenset(),
     hop_ctx: "_HopContext | None" = None,
     workspace: str = DEFAULT_WORKSPACE,
+    phone_candidates_enabled: bool = True,
 ) -> str:
     """Rewrite ``text`` by replacing every L2-detected entity span with its surrogate.
 
@@ -506,6 +535,9 @@ def _blindfold_text(
     ``workspace`` (issue #171) is stamped onto every ``ReviewItem`` a novel
     candidate mints here, so confirm later knows which workspace's EntityGraph
     to grow.
+
+    ``phone_candidates_enabled`` (issue #279) reaches :meth:`L3Detector.detect`
+    unchanged — see :func:`blindfold_payload`.
     """
     result = text
     l2_started_at = time.monotonic()
@@ -566,6 +598,7 @@ def _blindfold_text(
             mapping.entities(),
             declared_tools,
             on_solo_retry=_record_solo_retry if hop_ctx is not None else None,
+            phone_candidates_enabled=phone_candidates_enabled,
         )
         if hop_ctx is not None:
             confirmed = sum(1 for _, decision in adjudications if decision.is_entity)

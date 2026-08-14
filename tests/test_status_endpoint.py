@@ -59,6 +59,7 @@ async def test_status_endpoint_returns_the_settled_contract_shape():
         "upstream_base_url",
         "l3_model",
         "fail_closed_policy",
+        "phone_candidates_enabled",
         "has_persistent_store",
         "mapping_cipher",
         "host",
@@ -362,6 +363,7 @@ async def test_config_never_carries_the_openbao_token_or_any_secret(monkeypatch)
         "upstream_base_url",
         "l3_model",
         "fail_closed_policy",
+        "phone_candidates_enabled",
         "has_persistent_store",
         "mapping_cipher",
         "host",
@@ -440,6 +442,31 @@ async def test_config_fail_closed_policy_reflects_the_deterministic_only_opt_in(
 
     assert degraded_resp.json()["config"]["fail_closed_policy"] == "deterministic-only"
     assert default_resp.json()["config"]["fail_closed_policy"] == "fail-closed"
+
+
+@pytest.mark.anyio
+async def test_config_surfaces_the_phone_candidates_opt_out_alongside_fail_closed_policy():
+    # Issue #279 AC: "the setting is visible where deterministic_only is visible" --
+    # deterministic_only's own visibility surface is this exact config dict
+    # (fail_closed_policy, above). A workspace that opted out must read False here;
+    # every other workspace reads the default-on True (upgrade-safety property).
+    policies = WorkspacePolicies()
+    policies.opt_out_phone_candidates("ws-a")
+    app.dependency_overrides[get_workspace_policies] = lambda: policies
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://proxy.test") as client:
+            opted_out_resp = await client.get(
+                "/v1/status", headers={"x-blindfold-workspace": "ws-a"}
+            )
+            default_resp = await client.get(
+                "/v1/status", headers={"x-blindfold-workspace": "ws-b"}
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert opted_out_resp.json()["config"]["phone_candidates_enabled"] is False
+    assert default_resp.json()["config"]["phone_candidates_enabled"] is True
 
 
 class _StubTransitClientForCipherProbe:

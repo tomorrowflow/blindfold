@@ -554,6 +554,7 @@ class L3Detector:
         known_entities: list[Entity],
         declared_tools: frozenset[str] = frozenset(),
         on_solo_retry: Callable[[CandidateSpan], None] | None = None,
+        phone_candidates_enabled: bool = True,
     ) -> list[tuple[CandidateSpan, L3Adjudication]]:
         if self._deterministic_only:
             return []
@@ -583,9 +584,18 @@ class L3Detector:
         # ONE ordered candidate list before any cache lookup, so #261's invariant
         # (batch composition is a pure function of the hop's own inputs) covers
         # both producers identically.
+        #
+        # Issue #279: ``phone_candidates_enabled`` is the audited per-workspace
+        # opt-out -- its false positives are structurally opaque to a user with no
+        # adjudicator wired (unlike a flagged capitalized token, which self-
+        # explains). Narrower than ``deterministic_only``: it drops only the
+        # phone-shaped producer's output from the merge, never
+        # select_candidate_spans's. A caller's own argument, not ambient state on
+        # this instance, so #261's purity invariant covers it the same way it
+        # already covers ``declared_tools``.
         candidates = sorted(
             select_candidate_spans(text, known_entities, self._allowlist, declared_tools)
-            + select_phone_candidate_spans(text),
+            + (select_phone_candidate_spans(text) if phone_candidates_enabled else []),
             key=lambda candidate: candidate.start,
         )
         batch_capable = hasattr(self._adjudicator, "adjudicate_batch")

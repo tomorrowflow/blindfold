@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from blindfold.l3 import (
     CandidateSpan,
     L3Adjudication,
+    L3ContentCache,
     L3Detector,
     select_phone_candidate_spans,
 )
@@ -122,3 +123,48 @@ def test_detect_adjudicates_a_phone_shaped_candidate_alongside_a_capitalized_tok
     detector.detect(text, known_entities=[])
 
     assert {call.text for call in adjudicator.calls} == {"Klaus", "555-0142"}
+
+
+def test_detect_omits_phone_shaped_candidates_when_the_workspace_opted_out():
+    # Issue #279: the audited per-workspace opt-out governs only the phone-shaped
+    # producer -- select_candidate_spans's capitalized-token candidate ("Klaus")
+    # is unaffected, since the opt-out is not deterministic_only (that skips L3
+    # entirely; this is narrower).
+    adjudicator = _RecordingAdjudicator()
+    detector = L3Detector(adjudicator)
+    text = "Klaus said the on-call pager is 555-0142 today."
+
+    detector.detect(text, known_entities=[], phone_candidates_enabled=False)
+
+    assert {call.text for call in adjudicator.calls} == {"Klaus"}
+
+
+def test_content_cache_group_from_an_opted_in_workspace_never_serves_an_opted_out_one():
+    # Issue #279 hazard 1: L3ContentCache is keyed on the group digest, and a
+    # group is chunked from the candidate list *before* any cache lookup -- an
+    # opted-in workspace's candidate list includes the phone-shaped span, an
+    # opted-out one's doesn't, so the two workspaces chunk different groups and
+    # get different digests. Verified here rather than trusted: a cached group
+    # written under phone_candidates_enabled=True must never be served, whole or
+    # in part, to a request made with phone_candidates_enabled=False sharing the
+    # same content cache (e.g. two workspaces behind the same process-wide L3
+    # singleton with a shared allowlist).
+    text = "Klaus said the on-call pager is 555-0142 today."
+    shared_cache = L3ContentCache()
+
+    on_adjudicator = _RecordingAdjudicator()
+    L3Detector(on_adjudicator, cache=shared_cache).detect(
+        text, known_entities=[], phone_candidates_enabled=True
+    )
+
+    off_adjudicator = _RecordingAdjudicator()
+    result = L3Detector(off_adjudicator, cache=shared_cache).detect(
+        text, known_entities=[], phone_candidates_enabled=False
+    )
+
+    # The opted-out request never even proposes the phone-shaped span as a
+    # candidate, so a bled cache hit would be the only way it could reach the
+    # adjudicator -- assert it was actually adjudicated fresh (a cache hit would
+    # have left off_adjudicator.calls empty) and only for "Klaus".
+    assert {call.text for call in off_adjudicator.calls} == {"Klaus"}
+    assert {candidate.text for candidate, _ in result} == {"Klaus"}

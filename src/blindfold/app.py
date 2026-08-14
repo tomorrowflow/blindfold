@@ -1342,6 +1342,10 @@ async def status(
             "fail_closed_policy": (
                 "deterministic-only" if policy.deterministic_only else "fail-closed"
             ),
+            # Issue #279: visible alongside fail_closed_policy for the same reason --
+            # a reduced posture must be readable from the trace/audit surface, not
+            # silent. Governs only the phone-shaped L3 candidate producer, never L1/L2.
+            "phone_candidates_enabled": policy.phone_candidates_enabled,
             # ADR-0034 §2: Setup's "Enhanced local detection" toggle is store-gated
             # -- the SPA reads this to decide whether to render the toggle at all.
             "has_persistent_store": bool(settings.database_url),
@@ -1461,6 +1465,7 @@ async def messages(
             lambda: blindfold_payload(
                 payload, mapping, effective_l3_detector, inbox, declared_tools,
                 workspace=workspace,
+                phone_candidates_enabled=policy.phone_candidates_enabled,
             ),
             workspace,
             policy.deterministic_only,
@@ -1590,6 +1595,7 @@ async def count_tokens(
             lambda: blindfold_payload(
                 payload, mapping, effective_l3_detector, None, declared_tools,
                 workspace=workspace,
+                phone_candidates_enabled=policy.phone_candidates_enabled,
             ),
             workspace,
             policy.deterministic_only,
@@ -1663,6 +1669,7 @@ async def chat_completions(
             lambda: blindfold_chat_completions_payload(
                 payload, mapping, effective_l3_detector, inbox, declared_tools,
                 workspace=workspace,
+                phone_candidates_enabled=policy.phone_candidates_enabled,
             ),
             workspace,
             policy.deterministic_only,
@@ -2500,10 +2507,14 @@ def _policy_response(policy: WorkspacePolicy) -> dict:
 
     ``fail_closed`` is always the inverse of ``deterministic_only`` -- the comp's
     "Fail closed on dependency loss" toggle maps directly onto it (do not invert).
+
+    ``phone_candidates_enabled`` (issue #279) is a narrower, independent posture:
+    the audited per-workspace opt-out for the phone-shaped L3 candidate producer.
     """
     return {
         "deterministic_only": policy.deterministic_only,
         "fail_closed": not policy.deterministic_only,
+        "phone_candidates_enabled": policy.phone_candidates_enabled,
     }
 
 
@@ -2531,21 +2542,32 @@ async def put_workspace_policy(
     policies: WorkspacePolicies = Depends(get_workspace_policies),
     audit_log: AuditLog = Depends(get_audit_log),
 ) -> dict:
-    """Flip a workspace's fail-closed posture (ADR-0009, issue #118).
+    """Set a workspace's whole ADR-0009 posture (issue #118 / issue #279).
 
-    Requires the ``admin`` role. Body: ``{"deterministic_only": bool}``. A PUT that
-    changes the posture writes an ``AuditRecord`` attributed to the calling identity
-    (``policy-degrade-enabled`` / ``policy-degrade-disabled`` -- ADR-0009's "the
-    degrade opt-in must be audited" mandate); a no-op PUT (same value) writes nothing.
+    Requires the ``admin`` role. Body: ``{"deterministic_only": bool,
+    "phone_candidates_enabled": bool}`` -- the full desired state on every call
+    (a key absent from the body reverts that flag to its own default: False for
+    ``deterministic_only``, True for ``phone_candidates_enabled``), not a partial
+    patch. A PUT that changes either flag writes its own ``AuditRecord``
+    attributed to the calling identity (``policy-degrade-enabled``/
+    ``policy-degrade-disabled`` for ``deterministic_only``;
+    ``policy-phone-candidates-disabled``/``policy-phone-candidates-enabled`` for
+    ``phone_candidates_enabled`` -- ADR-0009's "the degrade opt-in must be
+    audited" mandate, applied to both); a flag left unchanged writes nothing for
+    that flag.
     """
     _require_role(request, slug, "admin", rbac)
     deterministic_only = bool(body.get("deterministic_only", False))
-    was_deterministic_only = policies.for_workspace(slug).deterministic_only
+    phone_candidates_enabled = bool(body.get("phone_candidates_enabled", True))
+    current = policies.for_workspace(slug)
+    was_deterministic_only = current.deterministic_only
+    was_phone_candidates_enabled = current.phone_candidates_enabled
 
-    if deterministic_only:
-        policies.opt_in_deterministic_only(slug)
-    else:
-        policies.reset(slug)
+    policies.set_policy(
+        slug,
+        deterministic_only=deterministic_only,
+        phone_candidates_enabled=phone_candidates_enabled,
+    )
 
     if deterministic_only != was_deterministic_only:
         audit_log.append(
@@ -2556,6 +2578,24 @@ async def put_workspace_policy(
                     "workspace opted into deterministic-only mode"
                     if deterministic_only
                     else "workspace returned to fail-closed by default"
+                ),
+                identity=_caller_identity(request),
+            )
+        )
+
+    if phone_candidates_enabled != was_phone_candidates_enabled:
+        audit_log.append(
+            AuditRecord(
+                workspace=slug,
+                event=(
+                    "policy-phone-candidates-enabled"
+                    if phone_candidates_enabled
+                    else "policy-phone-candidates-disabled"
+                ),
+                reason=(
+                    "workspace re-enabled the phone-shaped L3 candidate producer"
+                    if phone_candidates_enabled
+                    else "workspace opted out of the phone-shaped L3 candidate producer"
                 ),
                 identity=_caller_identity(request),
             )

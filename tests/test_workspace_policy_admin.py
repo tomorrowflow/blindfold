@@ -75,7 +75,11 @@ async def test_policy_get_returns_default_fail_closed_state():
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body == {"deterministic_only": False, "fail_closed": True}
+    assert body == {
+        "deterministic_only": False,
+        "fail_closed": True,
+        "phone_candidates_enabled": True,
+    }
 
 
 @pytest.mark.anyio
@@ -122,8 +126,16 @@ async def test_policy_put_true_flips_deterministic_only_and_get_reflects_it():
         app.dependency_overrides.clear()
 
     assert put_resp.status_code == 200
-    assert put_resp.json() == {"deterministic_only": True, "fail_closed": False}
-    assert get_resp.json() == {"deterministic_only": True, "fail_closed": False}
+    assert put_resp.json() == {
+        "deterministic_only": True,
+        "fail_closed": False,
+        "phone_candidates_enabled": True,
+    }
+    assert get_resp.json() == {
+        "deterministic_only": True,
+        "fail_closed": False,
+        "phone_candidates_enabled": True,
+    }
 
 
 @pytest.mark.anyio
@@ -146,7 +158,11 @@ async def test_policy_put_false_resets_to_fail_closed():
         app.dependency_overrides.clear()
 
     assert resp.status_code == 200
-    assert resp.json() == {"deterministic_only": False, "fail_closed": True}
+    assert resp.json() == {
+        "deterministic_only": False,
+        "fail_closed": True,
+        "phone_candidates_enabled": True,
+    }
     assert policies.for_workspace("ws-a").deterministic_only is False
 
 
@@ -232,3 +248,180 @@ async def test_policy_put_noop_same_value_writes_no_audit_record():
 
     assert resp.status_code == 200
     assert audit_log.records == []
+
+
+@pytest.mark.anyio
+async def test_policy_put_false_opts_out_phone_candidates_and_get_reflects_it():
+    # Issue #279: the audited per-workspace opt-out for the phone-shaped L3
+    # candidate producer, threaded through the same PUT contract as
+    # deterministic_only. Independent flag -- omitting deterministic_only from
+    # the body leaves it at its own default (False).
+    rbac = RbacRegistry()
+    rbac.grant("alice", "ws-a", "admin")
+    policies = WorkspacePolicies()
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_workspace_policies] = lambda: policies
+    try:
+        async with _make_client() as client:
+            put_resp = await client.put(
+                "/v1/management/workspaces/ws-a/policy",
+                json={"phone_candidates_enabled": False},
+                headers={"x-blindfold-identity": "alice"},
+            )
+            get_resp = await client.get(
+                "/v1/management/workspaces/ws-a/policy",
+                headers={"x-blindfold-identity": "alice"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert put_resp.status_code == 200
+    expected = {
+        "deterministic_only": False,
+        "fail_closed": True,
+        "phone_candidates_enabled": False,
+    }
+    assert put_resp.json() == expected
+    assert get_resp.json() == expected
+    assert policies.for_workspace("ws-a").phone_candidates_enabled is False
+
+
+@pytest.mark.anyio
+async def test_policy_put_true_reverts_a_phone_candidates_opt_out():
+    rbac = RbacRegistry()
+    rbac.grant("alice", "ws-a", "admin")
+    policies = WorkspacePolicies()
+    policies.opt_out_phone_candidates("ws-a")
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_workspace_policies] = lambda: policies
+    try:
+        async with _make_client() as client:
+            resp = await client.put(
+                "/v1/management/workspaces/ws-a/policy",
+                json={"phone_candidates_enabled": True},
+                headers={"x-blindfold-identity": "alice"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert resp.json()["phone_candidates_enabled"] is True
+    assert policies.for_workspace("ws-a").phone_candidates_enabled is True
+
+
+@pytest.mark.anyio
+async def test_policy_put_disabling_phone_candidates_writes_an_audited_record():
+    # The reduction must be audited (ADR-0009's mandate, applied to this
+    # narrower switch) -- attributed to the calling admin identity, same as the
+    # deterministic_only degrade toggle.
+    rbac = RbacRegistry()
+    rbac.grant("alice", "ws-a", "admin")
+    policies = WorkspacePolicies()
+    audit_log = AuditLog()
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_workspace_policies] = lambda: policies
+    app.dependency_overrides[get_audit_log] = lambda: audit_log
+    try:
+        async with _make_client() as client:
+            resp = await client.put(
+                "/v1/management/workspaces/ws-a/policy",
+                json={"phone_candidates_enabled": False},
+                headers={"x-blindfold-identity": "alice"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert len(audit_log.records) == 1
+    record = audit_log.records[0]
+    assert record.workspace == "ws-a"
+    assert record.event == "policy-phone-candidates-disabled"
+    assert record.identity == "alice"
+
+
+@pytest.mark.anyio
+async def test_policy_put_reenabling_phone_candidates_writes_an_audited_record():
+    rbac = RbacRegistry()
+    rbac.grant("alice", "ws-a", "admin")
+    policies = WorkspacePolicies()
+    policies.opt_out_phone_candidates("ws-a")
+    audit_log = AuditLog()
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_workspace_policies] = lambda: policies
+    app.dependency_overrides[get_audit_log] = lambda: audit_log
+    try:
+        async with _make_client() as client:
+            resp = await client.put(
+                "/v1/management/workspaces/ws-a/policy",
+                json={"phone_candidates_enabled": True},
+                headers={"x-blindfold-identity": "alice"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert len(audit_log.records) == 1
+    record = audit_log.records[0]
+    assert record.workspace == "ws-a"
+    assert record.event == "policy-phone-candidates-enabled"
+    assert record.identity == "alice"
+
+
+@pytest.mark.anyio
+async def test_policy_put_noop_same_phone_candidates_value_writes_no_audit_record():
+    rbac = RbacRegistry()
+    rbac.grant("alice", "ws-a", "admin")
+    policies = WorkspacePolicies()  # default: phone_candidates_enabled=True
+    audit_log = AuditLog()
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_workspace_policies] = lambda: policies
+    app.dependency_overrides[get_audit_log] = lambda: audit_log
+    try:
+        async with _make_client() as client:
+            resp = await client.put(
+                "/v1/management/workspaces/ws-a/policy",
+                json={"phone_candidates_enabled": True},
+                headers={"x-blindfold-identity": "alice"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert audit_log.records == []
+
+
+@pytest.mark.anyio
+async def test_policy_put_sets_both_flags_independently_in_one_call():
+    # A PUT is the workspace's whole desired posture in one write -- both flags
+    # must land together, and each changed flag gets its own audit record.
+    rbac = RbacRegistry()
+    rbac.grant("alice", "ws-a", "admin")
+    policies = WorkspacePolicies()
+    audit_log = AuditLog()
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_workspace_policies] = lambda: policies
+    app.dependency_overrides[get_audit_log] = lambda: audit_log
+    try:
+        async with _make_client() as client:
+            resp = await client.put(
+                "/v1/management/workspaces/ws-a/policy",
+                json={"deterministic_only": True, "phone_candidates_enabled": False},
+                headers={"x-blindfold-identity": "alice"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert resp.json() == {
+        "deterministic_only": True,
+        "fail_closed": False,
+        "phone_candidates_enabled": False,
+    }
+    events = {r.event for r in audit_log.records}
+    assert events == {"policy-degrade-enabled", "policy-phone-candidates-disabled"}

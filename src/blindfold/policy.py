@@ -16,7 +16,7 @@ This module owns two seams the proxy depends on:
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 
 DEFAULT_WORKSPACE = "default"
@@ -32,10 +32,19 @@ class WorkspacePolicy:
 
     ``deterministic_only`` is the audited opt-in: skip L3 (no novelty discovery), keep
     L1+L2 (known entities still protected). Default is fail-closed by default.
+
+    ``phone_candidates_enabled`` (issue #279) is a narrower, independent opt-out: with
+    no adjudicator wired, a phone-shaped false positive (`select_phone_candidate_spans`,
+    issue #277) is the only candidate class a user cannot self-diagnose from the block
+    message alone (unlike a flagged capitalized token, which self-explains). Default is
+    **on** -- turning it off trades away #277's NANPA-format protection for a workspace
+    that finds the false-positive rate unacceptable; `_PHONE_RE`'s international-format
+    L1 detection is untouched either way (a deterministic pass, not L3 candidacy).
     """
 
     slug: str
     deterministic_only: bool = False
+    phone_candidates_enabled: bool = True
 
 
 class WorkspacePolicies:
@@ -46,7 +55,43 @@ class WorkspacePolicies:
 
     def opt_in_deterministic_only(self, slug: str) -> None:
         """Record an audited, scoped opt-in: this workspace runs deterministic-only."""
-        self._policies[slug] = WorkspacePolicy(slug=slug, deterministic_only=True)
+        self._policies[slug] = replace(self.for_workspace(slug), deterministic_only=True)
+
+    def opt_out_phone_candidates(self, slug: str) -> None:
+        """Record an audited, scoped opt-out (issue #279): this workspace's L3 pass
+        never proposes phone-shaped candidates. Independent of ``deterministic_only``
+        -- preserves whatever that flag is currently set to for ``slug``.
+        """
+        self._policies[slug] = replace(
+            self.for_workspace(slug), phone_candidates_enabled=False
+        )
+
+    def opt_in_phone_candidates(self, slug: str) -> None:
+        """Revert an :meth:`opt_out_phone_candidates` -- back to the default-on posture."""
+        self._policies[slug] = replace(
+            self.for_workspace(slug), phone_candidates_enabled=True
+        )
+
+    def set_policy(
+        self,
+        slug: str,
+        *,
+        deterministic_only: bool = False,
+        phone_candidates_enabled: bool = True,
+    ) -> None:
+        """Record the workspace's whole ADR-0009 posture in one write.
+
+        The management PUT endpoint's request body is the full desired state on
+        every call (not a partial patch) -- mirrors that contract directly, rather
+        than composing :meth:`opt_in_deterministic_only`/:meth:`opt_out_phone_candidates`
+        (each of which preserves whatever the *other* flag currently is, the right
+        behavior for a single-flag caller, the wrong one for a full-state PUT).
+        """
+        self._policies[slug] = WorkspacePolicy(
+            slug=slug,
+            deterministic_only=deterministic_only,
+            phone_candidates_enabled=phone_candidates_enabled,
+        )
 
     def reset(self, slug: str) -> None:
         self._policies.pop(slug, None)
@@ -81,6 +126,11 @@ class AuditRecord:
                                         deterministic-only mode (issue #118).
       - ``policy-degrade-disabled``    — an admin returned a workspace to
                                         fail-closed by default (issue #118).
+      - ``policy-phone-candidates-disabled`` — an admin opted a workspace out of
+                                        the phone-shaped L3 candidate producer
+                                        (issue #279).
+      - ``policy-phone-candidates-enabled``  — an admin reverted that opt-out
+                                        (issue #279).
 
     ``ts`` is the record's own recorded-at timestamp (ISO-8601, UTC) — the full audit
     log view (issue #102) sorts and filters on it; mirrors ``BlockRecord.ts``
@@ -111,7 +161,8 @@ def audit_event_kind(event: str) -> str | None:
     reveal/lookup/block classification the drawer (#95) and the full-page audit
     log view (#102/#124) both key off. ``None`` for structural or non-real-space
     events (``deterministic-only-pass``, ``entity-merged``, ``surrogate-edited``,
-    ``upstream-*``, ``policy-degrade-*``), which the audit log view never shows.
+    ``upstream-*``, ``policy-degrade-*``, ``policy-phone-candidates-*``), which
+    the audit log view never shows.
     """
     if event in ("re-identified", "re-identify-denied", "re-identify-failed"):
         return "reveal"
