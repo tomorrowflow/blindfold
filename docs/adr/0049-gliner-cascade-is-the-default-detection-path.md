@@ -94,8 +94,36 @@ defensible answer to a miss.
   all) is not a blocker. The asymmetry is what makes that sequencing safe: the flip's
   downside is over-redaction, which lands in the review inbox where a human can see and clear
   it, while the status quo's downside is a miss, which nobody can see.
-- **Setup grows a ~197MB download** with the progress, failure and resume affordances that
-  implies. This is the real cost of the decision and most of the implementation work.
+- **Setup's provisioning flow already exists and is smaller work than it looks.** `Setup.tsx`
+  (issue #146) already renders the "Enhanced local detection" checkbox with the ~197MB help
+  text, calls `POST …/gliner-provision`, handles failure, and shows a restart screen on
+  success. What this ADR changes is the checkbox's **default value** and
+  `DEFAULT_L3_PROVIDER` — not the download machinery.
+
+- **A failed download must become visible, narrowing ADR-0034 §5.** That section made
+  provisioning failure deliberately non-blocking, and `Setup.tsx` implements it by falling
+  through "exactly as if the toggle had been left unticked". That is benign for a default-off
+  toggle and is the silent 4× recall regression this ADR exists to prevent once the toggle is
+  default-on. **Non-blocking is retained — the operator always reaches their workspace — but
+  the reduced-detection state must be visibly and persistently surfaced, with a retry.**
+  Blocking Setup on a network failure is rejected: it would strand air-gapped installs that
+  intend to use the `BLINDFOLD_L3_GLINER_MODEL_PATH` hatch.
+
+- **Activation still requires a process restart, and that is accepted for now.** The persisted
+  flag takes effect on the *next* start (ADR-0034 §1, "no mutable runtime config"), so a
+  default-on install runs the bare LLM until it restarts, and Setup's last step becomes a
+  restart instruction for every new install. Making the flag hot-swappable is **rejected**:
+  ADR-0034 §1's startup-resolved rule is what keeps "which detector is running" answerable
+  from configuration alone, and mutable mid-process detection config would reintroduce the
+  request-history dependence `CONTEXT.md`'s **Detection is reproducible** invariant forbids.
+  The better fix is for the **supervisor** to offer the restart as a button rather than an
+  instruction — it already owns the proxy lifecycle (ADR-0044) and has the primitives
+  (`ProxyProcessKit.launch`/`kill`, `ProxySupervisor.Start`), though not a restart command.
+  That is deliberately **not** a prerequisite: the comparison is one restart at 93% recall
+  against no restart at 21%, and gating the recall win on native-shell work in two languages
+  — one of which has no sandbox verification path — would let polish gate substance. Note
+  ADR-0041's "no auto-restart after a crash" is untouched; a user-initiated restart is a
+  different thing.
 - **ADR-0034 §1/§2's opt-in framing is superseded** on the question of the *default*. Its
   activation mechanism — the persisted flag, env precedence, store-gating — is unchanged and
   still correct; only the default value of the opt-in moves.

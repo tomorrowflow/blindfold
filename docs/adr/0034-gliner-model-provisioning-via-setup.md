@@ -59,6 +59,16 @@ incoherent — it would wipe the just-created workspace — so GLiNER stays env-
 there. Real Setup (ADR-0029/0030: name a workspace, import company entities) already
 presupposes persistence; the in-memory default is a dev/demo mode.
 
+- **Update (issue #282): the gate is unchanged and still correct, but "the ephemeral
+  in-memory default" is no longer the default.** ADR-0043 made an unset
+  `BLINDFOLD_DATABASE_URL` resolve to a durable SQLite store, so `has_persistent_store`
+  (`app.py`, `bool(settings.database_url)`) is now **true** on a stock install and the toggle
+  renders there. The gate today covers only the explicit `memory://` opt-out — where the
+  reasoning above still holds exactly, since the activation flag cannot survive the restart
+  that activates it. Recorded because the in-code comments describing this gate still say
+  "the ephemeral in-memory default", which reads as though the toggle is hidden on normal
+  installs. It is not.
+
 ### 3. Model lives in a new install-global data directory
 
 We introduce Blindfold's first **data directory** (see CONTEXT.md), rooted at
@@ -85,6 +95,17 @@ Setup detects it and skips the download ("already provisioned"); air-gapped oper
 place the files manually. A download failure never blocks completing Setup (as with
 Sample data, ADR-0030). Because the model is **install-global, not per-workspace**,
 retry lives on a new **detection/settings** management view, not the entity list.
+
+- **Update (ADR-0049, issue #282): "non-blocking" is retained but narrowed to
+  "non-blocking *and visible*".** The reasoning above is sound for a toggle that defaults
+  **off** — a failed download simply leaves you where you already were. ADR-0049 makes the
+  cascade the default, and at that point falling through silently (as `Setup.tsx` does today,
+  "exactly as if the toggle had been left unticked") is a silent 4× recall regression rather
+  than a no-op. The operator must still always reach their workspace; what changes is that
+  the resulting reduced-detection state has to be surfaced persistently, with a retry, rather
+  than being indistinguishable from a deliberate opt-out. Blocking Setup on a download failure
+  remains rejected for the reason §5 gives, plus a second one: it would strand air-gapped
+  installs relying on `BLINDFOLD_L3_GLINER_MODEL_PATH`.
 
 ### 6. Optional `gliner` dependency extra
 
