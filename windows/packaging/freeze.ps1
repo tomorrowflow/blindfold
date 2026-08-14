@@ -22,6 +22,14 @@ try {
     uv sync --group freeze
     if ($LASTEXITCODE -ne 0) { throw "uv sync --group freeze failed with exit code $LASTEXITCODE" }
 
+    # ADR-0047 §12 (amended, issue #272): rich (blindfold_devtools' own runtime
+    # dependency) is reachable from the product's own import graph via pydantic's lazy
+    # import, so a release-binary containment check against it would be vacuous or
+    # unfixable, never a genuine signal. The real invariant -- rich never installed in
+    # the freeze environment -- is asserted here, before PyInstaller runs.
+    uv run python packaging/freeze_env_check.py
+    if ($LASTEXITCODE -ne 0) { throw "freeze environment precondition failed with exit code $LASTEXITCODE" }
+
     uv run pyinstaller packaging/blindfold-proxy.spec --distpath dist --workpath build -y
     if ($LASTEXITCODE -ne 0) { throw "pyinstaller freeze failed with exit code $LASTEXITCODE" }
 } finally {

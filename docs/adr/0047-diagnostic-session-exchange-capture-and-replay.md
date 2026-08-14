@@ -218,7 +218,7 @@ Four checks:
    `pytest`, every PR, naming the offending import.
 2. **Binary containment** — no `blindfold_devtools` in the release binary's PKG entries,
    embedded PYZ, or `base_library.zip`, matched in both dotted-name and path form at a name
-   boundary. Devtools-only dependencies ride the same name list.
+   boundary.
 3. **Frozen importability** — the binary itself reports the module unimportable, via a
    stdlib-only self-check flag on `packaging/blindfold_proxy_entry.py`.
 4. **Positive control** — a canary binary built with `hiddenimports=["blindfold_devtools"]`
@@ -232,6 +232,20 @@ reachability regression produces a *clean* binary that passes every check and sh
 as a runtime `ImportError` in a user's hands; with it empty, the same regression bundles
 devtools and fails the build. `excludes` does not add defence — it converts a detectable
 build failure into an undetectable shipped one.
+
+**Amended 2026-08-14 (issue #272): `rich`, blindfold_devtools' own runtime dependency, does
+NOT ride the same name list as check 2 claimed.** Unlike `blindfold_devtools`, `rich` IS
+reachable from the product's own import graph today — `pydantic/_internal/_core_utils.py`
+does a lazy `from rich.pretty import pprint`, which PyInstaller's modulegraph follows. A
+binary-containment check against it is either vacuous (the freeze environment never has it
+installed — true of CI's `uv sync --group freeze`, which resolves `dev + freeze` only, so
+the check could never go red) or unfixable (the environment does have it installed, so
+freezing genuinely bundles it — correctly, and no `blindfold` change closes that). Both
+directions violate this section's own rule that a green check must have been shown capable
+of going red. The actual invariant — `rich` never installed in the freeze environment in the
+first place — is asserted as a fifth, independent precondition (`packaging/
+freeze_env_check.py`), in the freeze job, before PyInstaller runs at all, not as part of
+checks 2–4's binary-level matching.
 
 Hard fail everywhere. **PyInstaller is pinned exactly** (the `freeze` group currently floats
 at `>=6.21`): check 2 uses an internal API and the mechanics are version-specific. If the

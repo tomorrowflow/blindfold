@@ -36,10 +36,17 @@ _absence_check_spec = importlib.util.spec_from_file_location(
 absence_check = importlib.util.module_from_spec(_absence_check_spec)
 _absence_check_spec.loader.exec_module(absence_check)
 
-# ADR-0047 §12: "Devtools-only dependencies (rich) ride the same name list." rich is
-# blindfold_devtools' own runtime dependency (pyproject.toml's `devtools` group) and must
-# be just as absent from the release binary as blindfold_devtools itself.
-FORBIDDEN_MODULES = ("blindfold_devtools", "rich")
+# ADR-0047 §12 (amended 2026-08-14, issue #272): `rich` was removed from this list. It is
+# blindfold_devtools' own runtime dependency (pyproject.toml's `devtools` group), but
+# unlike blindfold_devtools it IS reachable from the product's own import graph today
+# (pydantic/_internal/_core_utils.py's lazy `from rich.pretty import pprint`) -- a
+# containment check against it here would pass vacuously whenever the freeze environment
+# lacks it (which `dev + freeze` always does -- `devtools` is not a default group) and
+# hard-fail whenever the environment genuinely has it installed, correctly (no `blindfold`
+# change can make pydantic's own lazy import go away). The real invariant -- rich never
+# installed in the freeze environment in the first place -- is asserted as a precondition
+# in the freeze job, before PyInstaller runs; see packaging/freeze_env_check.py.
+FORBIDDEN_MODULES = ("blindfold_devtools",)
 
 
 def render_canary_spec(

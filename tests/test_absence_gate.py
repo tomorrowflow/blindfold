@@ -1,7 +1,11 @@
 """Absence gate (ADR-0047 §12 checks 2-4, issue #252): binary containment, frozen
 importability, and the canary positive control that proves both actually detect
-`blindfold_devtools` (and its devtools-only dependency `rich`) rather than passing
-vacuously.
+`blindfold_devtools` rather than passing vacuously.
+
+Does NOT cover `rich` (`blindfold_devtools`' own runtime dependency): a release-binary
+containment check against it would only ever be vacuous or unfixable, never a genuine
+regression signal (issue #272) -- see tests/test_freeze_env_check.py for the precondition
+that replaced it (asserted in the freeze job, before PyInstaller runs, not here).
 
 Findings this slice builds on: docs/research/pyinstaller-module-absence.md
 (`research/pyinstaller-absence`, commit 6794fd0) -- validated against real PyInstaller
