@@ -227,6 +227,13 @@ def _shift_span(decision: L3Adjudication, delta: int) -> L3Adjudication:
     )
 
 
+def _window_left(candidate: CandidateSpan) -> int:
+    """The absolute offset of ``candidate.context``'s left edge — the ``delta`` that
+    translates a context-relative span to/from this occurrence's absolute position
+    (see :func:`_shift_span` and :class:`L3ContentCache`)."""
+    return candidate.start - candidate.context_offset
+
+
 def _group_digest(group: list[CandidateSpan]) -> str:
     """Digest a whole **group** (issue #261 / ADR-0048 corollary 2) — an ordered
     list of candidates chunked from the hop's full candidate list before any cache
@@ -295,7 +302,7 @@ class L3ContentCache:
         self._entries.move_to_end(key)
         stored = self._entries[key]
         return [
-            _shift_span(decision, candidate.start - candidate.context_offset)
+            _shift_span(decision, _window_left(candidate))
             for candidate, decision in zip(group, stored)
         ]
 
@@ -304,7 +311,7 @@ class L3ContentCache:
     ) -> None:
         key = _group_digest(group)
         self._entries[key] = [
-            _shift_span(decision, -(candidate.start - candidate.context_offset))
+            _shift_span(decision, -_window_left(candidate))
             for candidate, decision in zip(group, decisions)
         ]
         self._entries.move_to_end(key)
