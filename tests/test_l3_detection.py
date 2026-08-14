@@ -573,28 +573,37 @@ def test_content_cache_skips_re_scanning_unchanged_chunks_across_turns():
     assert len(adjudicator.calls) == 1
 
 
-def test_content_cache_only_re_scans_spans_whose_context_changed():
-    # Subtler version: a real coding-agent turn appends a new sentence to an
-    # otherwise-unchanged transcript. The cache must serve the unchanged span from
-    # the prior turn and only fire L3 for the new candidate, so L3 cost stays
-    # proportional to *new* spans across turns — not the cumulative payload.
-    # The added sentence on turn two lies beyond Klaus's context window — Klaus's
-    # window is fully contained in turn-one prefix, so its cache key matches.
+def test_content_cache_only_re_adjudicates_the_final_group_when_text_is_appended():
+    # Issue #261 / ADR-0048 corollary 2: the content cache is keyed on the whole
+    # GROUP now, not the individual candidate -- a fixed batch_size chunk of the
+    # ordered candidate list, computed before any cache lookup. A real coding-agent
+    # turn appends a new sentence to an otherwise-unchanged transcript; that new
+    # candidate can only ever land in (or start) the FINAL group, so every earlier,
+    # already-full group is untouched -- same members, same order, same content --
+    # and stays a cache hit. L3 cost still stays proportional to *new* candidates
+    # across turns, just at group granularity rather than per-candidate.
+    # "Anna" needs > 40 trailing chars of its own so its context window doesn't
+    # reach into the appended sentence -- otherwise appending would change its
+    # own (span, context) too, not just add a new final group.
     turn_one = (
-        "Please brief Klaus tomorrow about the new initiative which is launching."
+        "We met Klaus, Yasmin, Priya, Boris, and Anna at the offsite for the"
+        " quarterly review meeting today, thank you."
     )
-    turn_two = turn_one + " Yasmin asked for the slides."
+    turn_two = turn_one + " Elin asked for the slides."
     adjudicator = _RecordingAdjudicator()
-    detector = L3Detector(adjudicator)
+    detector = L3Detector(adjudicator, batch_size=5)
 
-    detector.detect(turn_one, known_entities=[])
-    detector.detect(turn_two, known_entities=[])
+    detector.detect(turn_one, known_entities=[])  # exactly one full group of 5
+    calls_after_turn_one = len(adjudicator.calls)
+    detector.detect(turn_two, known_entities=[])  # appends a second, partial group
 
+    assert calls_after_turn_one == 5
     flagged = [call.text for call in adjudicator.calls]
-    # "Klaus"'s context is unchanged between turns (window is bounded), so it must
-    # NOT trigger a second L3 call on turn two; only "Yasmin" is novel.
-    assert flagged.count("Klaus") == 1
-    assert flagged.count("Yasmin") == 1
+    # The first (full) group is unchanged on turn two -- none of its five members
+    # are re-adjudicated -- only "Elin", the new final group, misses.
+    for name in ("Klaus", "Yasmin", "Priya", "Boris", "Anna", "Elin"):
+        assert flagged.count(name) == 1
+    assert len(adjudicator.calls) == 6
 
 
 def test_content_cache_reanchors_a_cached_span_to_each_occurrences_own_position():
@@ -637,9 +646,14 @@ def test_content_cache_reanchors_a_cached_span_to_each_occurrences_own_position(
     detector.detect(turn_one, known_entities=[])
 
     # Turn two: the identical sentence recurs, shifted a few characters later (more
-    # transcript ahead of it), now trailed by an unrelated phone number.
+    # transcript ahead of it), now trailed by an unrelated phone number. The
+    # trailing text is deliberately kept free of any capitalized word (issue #261:
+    # the content cache is now keyed on the whole group, so a NEW candidate here
+    # would grow "Kestrel"/"Dynamics"'s group and force a wholesale re-adjudication
+    # -- exactly the input-determined shift ADR-0048 corollary 2 accepts, but not
+    # what this test means to exercise).
     turn_two_prefix = "Z" * 70
-    turn_two = turn_two_prefix + block + " Call +49 30 5550 2277 now"
+    turn_two = turn_two_prefix + block + " call the number +49 30 5550 2277 now"
     kestrel_start_turn_two = len(turn_two_prefix) + kestrel_local_start
 
     results = detector.detect(turn_two, known_entities=[])
@@ -687,22 +701,23 @@ def test_l3_unavailable_is_silent_when_no_candidate_spans_exist():
 
 
 def test_content_cache_is_bounded_and_evicts_the_least_recently_used_entry():
-    # ADR-0022: the content cache is a real-value store (keys are un-blindfolded
-    # candidate text) so it must be bounded, never allowed to grow without limit for
-    # the life of the process. Least-recently-used eviction keeps hot (recurring)
-    # candidates cached while a cold one ages out first.
+    # ADR-0022: the content cache must be bounded, never allowed to grow without
+    # limit for the life of the process. Least-recently-used eviction keeps hot
+    # (recurring) groups cached while a cold one ages out first. Issue #261: the
+    # cache is now keyed on the group (a list of candidates, digested), not the
+    # individual candidate -- each entry here is its own single-member group.
     cache = L3ContentCache(max_entries=2)
-    klaus = CandidateSpan(text="Klaus", start=0, end=5, context="ctx-klaus")
-    yasmin = CandidateSpan(text="Yasmin", start=0, end=6, context="ctx-yasmin")
-    priya = CandidateSpan(text="Priya", start=0, end=5, context="ctx-priya")
-    decision = L3Adjudication(is_entity=True)
+    klaus = [CandidateSpan(text="Klaus", start=0, end=5, context="ctx-klaus")]
+    yasmin = [CandidateSpan(text="Yasmin", start=0, end=6, context="ctx-yasmin")]
+    priya = [CandidateSpan(text="Priya", start=0, end=5, context="ctx-priya")]
+    decisions = [L3Adjudication(is_entity=True)]
 
-    cache.put(klaus, decision)
-    cache.put(yasmin, decision)
+    cache.put(klaus, decisions)
+    cache.put(yasmin, decisions)
     # Touch klaus so it's the most-recently-used of the two; yasmin becomes the
     # least-recently-used and is the one evicted when the cache is over capacity.
     cache.get(klaus)
-    cache.put(priya, decision)
+    cache.put(priya, decisions)
 
     assert cache.get(klaus) is not None
     assert cache.get(priya) is not None
@@ -903,29 +918,67 @@ def test_batch_adjudication_cache_hits_bypass_the_batch_call_entirely():
     assert by_text["Yasmin"].is_entity is False
 
 
-def test_batch_adjudication_only_cache_misses_are_sent_in_the_batch():
-    # Subtler cache/batch interaction: within a single detect() call, a mix of
-    # cache hits and cache misses must only send the misses to adjudicate_batch —
-    # a hit is resolved from the cache and never occupies a batch slot. Mirrors
-    # test_content_cache_only_re_scans_spans_whose_context_changed's fixture:
-    # "Klaus"'s context window is fully contained in turn one, so it's unchanged
-    # (and thus a cache hit) on turn two; only the newly-appended "Yasmin" misses.
-    turn_one = (
+def test_batch_prompt_sequence_is_identical_for_a_cold_and_a_warm_detector():
+    # Issue #261 / ADR-0048 corollary 2: batch composition must be a pure function
+    # of the hop's inputs, never of cache state. A cold detector adjudicating
+    # "Klaus, Yasmin" sends both in ONE batch. Under the pre-#261 per-candidate
+    # cache, a detector warmed by a prior hop that cached "Klaus" alone (identical
+    # local context) would instead send a batch of ONLY "Yasmin" -- a different
+    # prompt shape for the identical target text, purely because of prior request
+    # history. The fix groups before any cache lookup, so "Klaus"'s group grew
+    # (now includes "Yasmin") and is a wholesale miss -- the whole group is sent,
+    # matching the cold run exactly.
+    target_text = (
+        "Please brief Klaus tomorrow about the new initiative which is launching."
+        " Yasmin asked for the slides."
+    )
+    priming_text = (
         "Please brief Klaus tomorrow about the new initiative which is launching."
     )
-    turn_two = turn_one + " Yasmin asked for the slides."
+
+    cold_adjudicator = _RecordingBatchAdjudicator()
+    L3Detector(cold_adjudicator, batch_size=5).detect(target_text, known_entities=[])
+
+    warm_adjudicator = _RecordingBatchAdjudicator()
+    warm_detector = L3Detector(warm_adjudicator, batch_size=5)
+    warm_detector.detect(priming_text, known_entities=[])  # primes "Klaus" alone
+    warm_adjudicator.batch_calls.clear()  # isolate the priming call's own prompt
+    warm_detector.detect(target_text, known_entities=[])
+
+    cold_sequence = [call.texts for call in cold_adjudicator.batch_calls]
+    warm_sequence = [call.texts for call in warm_adjudicator.batch_calls]
+    assert warm_sequence == cold_sequence
+
+
+def test_batch_adjudication_only_the_final_group_is_sent_in_the_batch():
+    # Issue #261 / ADR-0048 corollary 2: within a single detect() call, an
+    # earlier, already-full group that is unchanged is served entirely from the
+    # group cache and never occupies a batch call; only the FINAL group -- new or
+    # grown by appended text -- misses and is sent to adjudicate_batch. This is
+    # the pure-grouping counterpart of the (now-removed) per-candidate cache
+    # bypass: composition is decided before any cache lookup, so a hit or miss
+    # always applies to the whole group, never a subset of it.
+    # "Anna" needs > 40 trailing chars of its own so its context window doesn't
+    # reach into the appended sentence -- otherwise appending would change its
+    # own (span, context) too, not just add a new final group.
+    turn_one = (
+        "We met Klaus, Yasmin, Priya, Boris, and Anna at the offsite for the"
+        " quarterly review meeting today, thank you."
+    )
+    turn_two = turn_one + " Elin asked for the slides."
     warm_adjudicator = _RecordingBatchAdjudicator({"Klaus": L3Adjudication(is_entity=True)})
     shared_cache = L3ContentCache()
     warm_detector = L3Detector(warm_adjudicator, cache=shared_cache, batch_size=5)
-    warm_detector.detect(turn_one, known_entities=[])
+    warm_detector.detect(turn_one, known_entities=[])  # primes the one full group
 
     adjudicator = _RecordingBatchAdjudicator()
     detector = L3Detector(adjudicator, cache=shared_cache, batch_size=5)
 
     detector.detect(turn_two, known_entities=[])
 
+    # The first group (Klaus..Anna) is an unchanged cache hit -- not resent.
     assert len(adjudicator.batch_calls) == 1
-    assert adjudicator.batch_calls[0].texts == ("Yasmin",)
+    assert adjudicator.batch_calls[0].texts == ("Elin",)
 
 
 class _ShortResponseBatchAdjudicator:
@@ -1001,6 +1054,29 @@ def test_batch_short_response_recovers_missing_verdicts_via_single_candidate_ret
         r for r in caplog.records if "l3_batch_adjudication_short_response" in r.getMessage()
     ]
     assert mismatch_records == []
+
+
+def test_solo_retry_after_short_batch_response_is_reported_via_callback():
+    # Issue #261: #148's solo retry is kept unchanged, but which candidates were
+    # answered via that seam (rather than the batch prompt) is currently invisible
+    # -- the processing trace (ADR-0035) needs it so a diagnostic session (ADR-0047)
+    # can see which candidates were answered which way. detect()'s optional
+    # on_solo_retry callback fires exactly once per candidate that went through
+    # the single-candidate retry seam, whether or not that retry recovered a
+    # verdict -- never for a candidate the batch itself answered.
+    text = "We met Klaus, Yasmin, and Priya at the offsite."
+    adjudicator = _RetryCapableShortResponseBatchAdjudicator(
+        verdict_count=2,
+        single_decisions={"Priya": L3Adjudication(is_entity=True)},
+    )
+    detector = L3Detector(adjudicator, batch_size=5)
+    solo_retried: list[str] = []
+
+    detector.detect(
+        text, known_entities=[], on_solo_retry=lambda candidate: solo_retried.append(candidate.text)
+    )
+
+    assert solo_retried == ["Priya"]
 
 
 class _RetryFailsBatchAdjudicator:
