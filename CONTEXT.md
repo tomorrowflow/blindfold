@@ -103,12 +103,19 @@ to add it via `/grill-with-docs`, not to invent a synonym.
     skip the expensive call for spans it can confirm directly (ADR-0033). Full-document
     ML detection is *not* L3 — that would be a new concept requiring its own term
     and ADR (ADR-0003 rejected it deliberately).
-- **Candidate span** — a flagged span (unknown capitalized token, fuzzy near-miss,
-  ambiguous first name) handed to L3, plus minimal context. L3 cost scales with the
-  number of candidate spans, not payload size. A span already occupied by an
-  injected **surrogate** is never a candidate span — L3 adjudicates unknown real-world
-  referents, not our own fakes. The exclusion is position-scoped: the same string
-  at a different, unoccupied position can still be a candidate.
+- **Candidate span** — a flagged span handed to L3, plus minimal context. Two
+  producers feed the same adjudication path: unknown **capitalized tokens** (plus
+  fuzzy near-misses and ambiguous first names), and **phone-shaped** digit runs
+  that no deterministic pass matched. L3 cost scales with the number of candidate
+  spans, not payload size. A span already occupied by an injected **surrogate** is
+  never a candidate span — L3 adjudicates unknown real-world referents, not our own
+  fakes. The exclusion is position-scoped: the same string at a different,
+  unoccupied position can still be a candidate. The two producers are not
+  symmetric, and one setting follows from that: a mis-flagged capitalized token
+  self-explains to whoever reviews it, a mis-flagged digit run does not — so the
+  phone-shaped producer alone can be switched off per **workspace**, an audited
+  choice to discover less, never a way to un-protect a registered referent or a
+  value the deterministic passes already match.
 - **Hop** — a single message within a request (system prompt, a user turn, or a
   **tool-result** message). Blindfold rewrites every hop, not just the first prompt.
 - **Workspace** — the scoping unit for team access (RBAC), disambiguation context,
@@ -408,6 +415,23 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   loopback-only base-url check (plain oMLX has no remote-routing feature of its own, so
   loopback is sufficient there) — a future provider must re-derive its own local-only
   story, not assume either check transfers.
+- **Detection is reproducible.** The same **hop**, adjudicated under the same
+  conditions — the same **entity graph**, **allowlist**, **review inbox**,
+  **declared tool vocabulary** and per-**workspace** detection settings — produces
+  the same detection outcome. What gets protected never depends on request history,
+  process age, or cache state, and no optimisation may buy throughput by making a
+  span's verdict a function of what this process happened to adjudicate earlier
+  (ADR-0048). This is what makes a reported miss reproducible and a detection
+  regression measurable: without it, a real regression and an unlucky sample look
+  alike. Two limits, stated so neither is mistaken for a defect. It is a claim
+  about **identical conditions, not about repeating a request** — a run that
+  confirms a **novel entity** mints a **provisional surrogate** into the review
+  inbox, changing the conditions, so the same hop sent twice is legitimately
+  adjudicated differently. And the **last mile is not ours**: the adjudication
+  requests Blindfold issues are a pure function of the inputs above, but the
+  adjudicator returning the same answer to the same request is that process's
+  property — Blindfold pins what the protocol exposes (greedy decoding, fixed
+  seed) and cannot verify the rest.
 - **No diagnostic code ships.** The ability to see real payload content exists only in a
   **Diagnostic session** run from source; every release artifact is asserted to contain no
   `blindfold_devtools` module — and the assertion carries a **positive control** (a canary
