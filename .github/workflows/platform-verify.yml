@@ -35,9 +35,33 @@ name: platform-verify
 
 "on":
   push:
+    # Rule: every file the freeze job reads must appear in this list. It is not just
+    # macos/**/windows/** -- the freeze half (both jobs, ADR-0047 §12) reads
+    # packaging/blindfold-proxy.spec, packaging/freeze_env_check.py, and
+    # packaging/absence_gate.py/absence_check.py, plus pyproject.toml for the
+    # freeze/devtools group definitions and the PyInstaller pin absence_check.py's
+    # docstring calls load-bearing. Before #276, none of those were listed, so a change
+    # to any of them shipped without this gate ever running -- #272 landed exactly such
+    # a change, and the gate only ran because that commit also happened to touch this
+    # workflow file. This is a narrowing-and-correction of the filter, not its removal
+    # (unlike web-verify.yml, which runs unpath-filtered by its own deliberate choice) --
+    # the macOS/Windows matrix stays expensive and scoped to what actually needs it.
+    #
+    # uv.lock decision: included. It pins the exact resolved PyInstaller version the
+    # absence gate's internal-API reads depend on (pyproject.toml only constrains
+    # "pyinstaller==6.21.0", but a `uv lock --upgrade` re-resolution of any other
+    # dependency can still rewrite this file); a lock bump can break the gate without
+    # touching pyproject.toml or anything else in this list. It will churn on unrelated
+    # dependency bumps and fire this expensive job more often than macos/**/windows/**
+    # alone would -- accepted deliberately, because a privacy-bearing build gate silently
+    # not running is the exact failure class this issue exists to close, and that
+    # outweighs the extra hosted-runner cost.
     paths:
       - "macos/**"
       - "windows/**"
+      - "packaging/**"
+      - "pyproject.toml"
+      - "uv.lock"
       - ".github/workflows/platform-verify.yml"
   workflow_dispatch: {}
 
