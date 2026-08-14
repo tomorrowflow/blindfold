@@ -590,6 +590,15 @@ def _blindfold_text(
         # (above) ran on this exact string, and nothing rewrites ``result`` between
         # that call and here.
         novel_extents: list[_ConfirmedExtent] = []
+        # Issue #277: a phone-shaped candidate (select_phone_candidate_spans) is
+        # contactable PII, not a novel named entity -- once L3 confirms it, there
+        # is no merge/coreference curation step the way there is for a person/org
+        # candidate. Mint it exactly like an L1-detected international number
+        # (mapping.mint_pii, ADR-0005 reserved-namespace) and skip the
+        # provisional-review-inbox path entirely. Collected separately so the
+        # coalescing pass below never sees these extents (a phone-shaped match is
+        # already the whole span; it has no adjacent-token fragments to merge).
+        pii_spans: list[tuple[int, int, str, str]] = []
         for candidate, decision in adjudications:
             if not decision.is_entity:
                 continue
@@ -597,6 +606,11 @@ def _blindfold_text(
                 candidate.start >= start and candidate.end <= end
                 for start, end in injected_surrogate_ranges
             ):
+                continue
+            if decision.entity_type == "phone":
+                real = result[candidate.start : candidate.end]
+                surrogate = mapping.mint_pii("phone", real)
+                pii_spans.append((candidate.start, candidate.end, surrogate, real))
                 continue
             # Issue #170: prefer the adjudicator's own authoritative span extent
             # (e.g. GLiNER's multi-word org span) over the confirming candidate's
@@ -674,7 +688,7 @@ def _blindfold_text(
             )
             spans.append((start, end, item.provisional_surrogate, real))
         for start, end, surrogate, real in sorted(
-            spans, key=lambda s: s[0], reverse=True
+            spans + pii_spans, key=lambda s: s[0], reverse=True
         ):
             result = result[:start] + surrogate + result[end:]
             session.record(surrogate, real)

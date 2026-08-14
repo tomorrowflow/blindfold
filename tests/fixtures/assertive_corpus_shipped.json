@@ -6,20 +6,19 @@
     "pinned_reference": "as committed in this repository; verified against source_file_sha256 below by test_assertive_shipped_corpus_has_complete_provenance",
     "source_file": "src/blindfold/store/vendored_seed.json",
     "source_file_sha256": "d839842cd2c8f22d0e6fcd56bf12c589d622125b60636c68f97fd0ceaf1804ae",
-    "record_count": 3,
-    "selection_methodology": "Hand-authored must/must_not records built directly on entities and non-entities vendored_seed.json already documents, so no new judgment call about what's sensitive is made in this fixture: `must` entries reuse `persons`/`terms` entries (blindfold targets per ADR-0013); `must_not` entries reuse ADR-0013's own curation notes on what was explicitly excluded from the entity graph (org_units are structure, never blindfolded) plus a near-miss token that shares no L2 surface form with any seeded variation (token-boundary guard, not a curated exception). One record adds a real L1 PII must entry (RFC 2606 .example email, unrelated to any seeded entity so the L1 regex path -- not L2 -- is what's under test) and its own must_not (a bare digit run without the '+' _PHONE_RE requires). One record's must entry is tagged layer L3 (a novel org name, deliberately not seeded anywhere) to exercise the L1/L2-only gating skip -- CI has no local adjudicator, and #260/ADR-0048 hold that even a wired one wouldn't be reproducible yet."
+    "record_count": 4,
+    "selection_methodology": "Hand-authored must/must_not records built directly on entities and non-entities vendored_seed.json already documents, so no new judgment call about what's sensitive is made in this fixture: `must` entries reuse `persons`/`terms` entries (blindfold targets per ADR-0013); `must_not` entries reuse ADR-0013's own curation notes on what was explicitly excluded from the entity graph (org_units are structure, never blindfolded) plus a near-miss token that shares no L2 surface form with any seeded variation (token-boundary guard, not a curated exception). One record adds a real L1 PII must entry (RFC 2606 .example email, unrelated to any seeded entity so the L1 regex path -- not L2 -- is what's under test). One record's must entry is tagged layer L3 (a novel org name, deliberately not seeded anywhere) to exercise the L1/L2-only gating skip -- CI has no local adjudicator, and #260/ADR-0048 hold that even a wired one wouldn't be reproducible yet. Issue #277: a NANPA-shaped phone number without a leading '+' (`_PHONE_RE` requires one) used to be pinned here as a `must_not` -- an asserted detection gap, not a guarded false positive. The maintainer's hybrid decision (a loose phone-shaped candidate producer, adjudicated by L3) makes these `must` again, tagged layer L3 like the novel-org record above (candidate confirmation needs a wired adjudicator this CI doesn't have). Their `must_not` siblings are the false-positive surface a loose matcher creates: two dash-shaped confusables (an invoice reference, a weight range) still match the matcher and are tagged layer L3 -- only a wired adjudicator's contextual rejection actually proves those stay unblindfolded (the shape alone doesn't rule them out, by design). Two more (a dotted build/version fragment, a decimal GPS coordinate) surfaced during the issue's own blast-radius measurement against a synthetic agentic-traffic sample and drove a matcher tightening (dash-only, never dot, for the exchange-line pair) -- those are matcher-excluded outright, not L3-gated, so they carry no `layer` key."
   },
   "records": [
     {
       "id": "sample_data_person_and_l1_email",
-      "text": "Please make sure Martin approves the budget and send the confirmation to alex.doe@example.com. Note that Sam has a Bachelor's degree in mechanical engineering, and the on-call pager is 555-0142.",
+      "text": "Please make sure Martin approves the budget and send the confirmation to alex.doe@example.com. Note that Sam has a Bachelor's degree in mechanical engineering.",
       "must": [
         {"value": "Martin", "layer": "L2", "kind": "person"},
         {"value": "alex.doe@example.com", "layer": "L1", "kind": "email"}
       ],
       "must_not": [
-        {"value": "Bachelor", "layer": "L2", "kind": "term", "note": "token-boundary near-miss of the seeded variation 'Bach' -- must not over-redact on a substring match"},
-        {"value": "555-0142", "layer": "L1", "kind": "phone", "note": "no leading '+' -- _PHONE_RE requires one; a bare NANPA-shaped digit run must not be minted as PII"}
+        {"value": "Bachelor", "layer": "L2", "kind": "term", "note": "token-boundary near-miss of the seeded variation 'Bach' -- must not over-redact on a substring match"}
       ]
     },
     {
@@ -66,6 +65,21 @@
         {"value": "Solstice Analytics", "layer": "L3", "kind": "org", "note": "novel org, deliberately not seeded anywhere -- requires L3 adjudication; must skip in an L1/L2-only gating run rather than fail or silently pass"}
       ],
       "must_not": []
+    },
+    {
+      "id": "phone_shaped_candidate_requires_l3_and_is_gated",
+      "text": "Reach the desk at 415-555-0142, or try (415) 555-0142, or just the on-call pager 555-0142. Unrelated: invoice reference 205-118-4471 is overdue, the shipping weight range (grams) is 410-2277, internal build 302.204.9981 shipped last night, and the datacenter longitude is -122.4194.",
+      "must": [
+        {"value": "415-555-0142", "layer": "L3", "kind": "phone", "note": "issue #277: NANPA area-code-shaped number, no leading '+' -- _PHONE_RE misses it; the loose phone-shaped producer must flag it as a candidate and L3 must confirm it"},
+        {"value": "(415) 555-0142", "layer": "L3", "kind": "phone", "note": "issue #277: parenthesized-area-code NANPA shape, same gap as above"},
+        {"value": "555-0142", "layer": "L3", "kind": "phone", "note": "issue #277: bare local-number NANPA shape (no area code) -- was wrongly pinned must_not before this issue; a bare digit run must not stay an asserted gap once a workable detection path exists"}
+      ],
+      "must_not": [
+        {"value": "205-118-4471", "layer": "L3", "kind": "reference", "note": "issue #277: an invoice/reference number sharing the exact NANPA area-exchange-line digit grouping (3-3-4, dash) -- shape alone cannot distinguish it from a phone; L3 must reject it from context"},
+        {"value": "410-2277", "layer": "L3", "kind": "dimension", "note": "issue #277: a weight/dimension range sharing the bare local-number shape (3-4, dash) with a phone number -- L3 must reject it from context, not the matcher"},
+        {"value": "302.204.9981", "kind": "version", "note": "issue #277 blast-radius measurement: a dotted build/version fragment matched an earlier draft of the phone-shaped matcher (dot allowed as the exchange-line separator). Tightened to dash-only for that pair, so this is now excluded by the matcher itself -- proven directly by test_l3_phone_candidate_detection.py, not by L3 rejection, hence no layer/L3 gate here"},
+        {"value": "-122.4194", "kind": "coordinate", "note": "issue #277 blast-radius measurement: a decimal GPS coordinate fragment -- the same dotted-fraction shape as the version fragment above, and the false-positive class that motivated dash-only tightening (not one of the issue's own named categories; discovered while measuring against a synthetic agentic-traffic sample). Matcher-excluded, not L3-gated, same reasoning as the version entry"}
+      ]
     }
   ]
 }

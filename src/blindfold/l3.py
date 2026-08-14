@@ -38,6 +38,27 @@ _CONTEXT_WINDOW = 40
 
 _CAPITALIZED_RE = re.compile(r"\b[A-ZÄÖÜ][a-zäöüß]+\b")
 
+# Phone-*shaped* candidate matcher (issue #277): `_PHONE_RE` (detection.py, L1) is
+# anchored on a leading `+` for precision, so a NANPA-format number missing it --
+# `415-555-0142`, `(415) 555-0142`, `555-0142` -- never reaches L1. This regex is
+# deliberately loose *relative to `_PHONE_RE`* (no mandatory `+`) but not
+# unstructured: it keeps the real structural shape of a NANPA number (an optional
+# 3-digit area code, parenthesized or separator-joined, followed by a 3-digit
+# exchange and a 4-digit line) so it doesn't fire on every bare digit run (order
+# numbers, dimensions, ports, line numbers). Candidates only -- L3 adjudication
+# (engine.py) decides which are genuinely phone numbers; see the issue's "hybrid"
+# decision for why neither stage alone is correct.
+#
+# The exchange-line pair is dash-only, never dot-joined: the blast-radius
+# measurement (issue #277 acceptance criteria) found a dotted 3+4-digit group is
+# exactly the shape of a decimal build/version fragment or a GPS coordinate
+# (`-122.4194`) -- a dash is a strong phone-specific signal a dot isn't, so
+# excluding it at the matcher removes that whole false-positive class rather than
+# relying on L3 to reject every occurrence.
+_PHONE_SHAPED_RE = re.compile(
+    r"(?<!\d)(?:\(\d{3}\)[ ]?|\d{3}[ \-.])?\d{3}-\d{4}(?!\d)"
+)
+
 # ADR-0033 positional evidence: what precedes a token for it to count as a
 # sentence, quotation, or heading start -- start of the hop text, start of a
 # line (covers markdown headings and bullet/numbered list markers, optionally
@@ -383,6 +404,29 @@ def select_candidate_spans(
     return candidates
 
 
+def select_phone_candidate_spans(text: str) -> list[CandidateSpan]:
+    """Flag phone-*shaped* spans in ``text`` (issue #277) -- a producer separate
+    from :func:`select_candidate_spans`'s capitalized-token pass, feeding the same
+    L3 candidate path (:meth:`L3Detector.detect`). Pure function of ``text`` alone,
+    same as the capitalized-token pass is pure over its own inputs (#261's
+    invariant: candidate selection never depends on history or process state).
+    """
+    candidates: list[CandidateSpan] = []
+    for match in _PHONE_SHAPED_RE.finditer(text):
+        start, end = match.start(), match.end()
+        context, context_offset = _context_window(text, start, end)
+        candidates.append(
+            CandidateSpan(
+                text=match.group(0),
+                start=start,
+                end=end,
+                context=context,
+                context_offset=context_offset,
+            )
+        )
+    return candidates
+
+
 def _capitalized_positions(text: str) -> dict[str, list[int]]:
     """Pre-scan: map each exact capitalized token to every start offset where it
     appears in ``text`` (ADR-0033). Built once per hop so the main candidate loop
@@ -531,8 +575,18 @@ class L3Detector:
         # which groups happen to already be cached. The content cache (keyed on
         # the group, not the candidate — see L3ContentCache) then serves or
         # adjudicates each group as a whole.
-        candidates = select_candidate_spans(
-            text, known_entities, self._allowlist, declared_tools
+        #
+        # Issue #277: the phone-shaped producer (select_phone_candidate_spans) is
+        # a separate, named pass -- deliberately not folded into
+        # select_candidate_spans itself (its capitalized-token candidates and a
+        # phone-shaped digit run have nothing in common) -- but still merges into
+        # ONE ordered candidate list before any cache lookup, so #261's invariant
+        # (batch composition is a pure function of the hop's own inputs) covers
+        # both producers identically.
+        candidates = sorted(
+            select_candidate_spans(text, known_entities, self._allowlist, declared_tools)
+            + select_phone_candidate_spans(text),
+            key=lambda candidate: candidate.start,
         )
         batch_capable = hasattr(self._adjudicator, "adjudicate_batch")
 
