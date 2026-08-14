@@ -48,5 +48,6 @@ Vocabulary follows [`../../CONTEXT.md`](../../CONTEXT.md).
 | [0036](0036-component-restore-bounded-closed-world-sub-token.md) | Component restore — bounded, closed-world sub-token restore | Accepted |
 | [0047](0047-diagnostic-session-exchange-capture-and-replay.md) | Diagnostic session — source-only exchange capture and replay | Accepted |
 | [0048](0048-adjudication-batching-must-not-change-a-verdict.md) | Adjudication batching may amortise cost, but must never change a verdict | Accepted |
+| [0049](0049-gliner-cascade-is-the-default-detection-path.md) | The GLiNER cascade is the default detection path, provisioned at Setup | Accepted |
 
 New ADRs: copy [`0000-template.md`](0000-template.md), take the next number.
