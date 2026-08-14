@@ -109,6 +109,44 @@ ADR-0003 rejected explicitly.
 `L3ContentCache` is unaffected: it caches final verdicts keyed by
 `(span_text, context)` regardless of whether GLiNER or the LLM produced them.
 
+- **Update (issue #140): German coverage is validated — the deferral above is
+  discharged.** Measured 2026-08-14 against the shipped model on local hardware,
+  24 hand-labelled synthetic spans through `GlinerOnnxClassifier.classify_span`:
+
+  | set | recall | precision |
+  | --- | --- | --- |
+  | German PER + ORG (17 spans) | **100%** (13/13) | 93% |
+  | German occupational-surname homographs | **100%** | **100%** |
+  | English control (7 spans) | 100% | 80% |
+
+  The homograph class ADR-0023 named as the motivating risk — surnames that are also
+  occupation words — resolves correctly as PER in every case (`Fischer`, `Schneider`,
+  `Bäcker`, `Weber`, `Koch`, `Jäger`), as does the non-ASCII shape from issue #179
+  (`Vörösmarty`). German precision is *higher* than English on this sample, so
+  "German-best-effort" understates it: German is the stronger of the two languages
+  here, and the residual German risk is over-redaction (`Abteilung` → organization),
+  not a miss. GLiNER is no longer German-best-effort; it is validated for German
+  PER/ORG on this model.
+
+- **Update (issue #140): two details of the §2 text above never shipped as written.**
+  The model is `gliner-pii-base-v1.0`, not `gliner-pii-edge-v1.0` (ADR-0034 §4 update,
+  issue #159, replaced it — this section was not updated to match). And the label set
+  is `("person", "organization")` (`_GLINER_LABELS`), not the four labels named above:
+  **`product` and `codename` were never wired.** The measurement is therefore of a
+  two-label zero-shot classifier. This matters for the miss it produced — a German
+  codename that is also a common adjective (`Zeitlos`, "timeless") is GLiNER-negative
+  and then dismissed by the LLM, which is the one class the cascade has no answer for.
+
+- **Update (issue #140): Position A makes GLiNER's precision a hard ceiling on the
+  cascade's.** "A GLiNER false positive is over-redaction — a quality bug, not a
+  privacy bug — and is safe to accept" was written before CONTEXT.md's Key invariants
+  recorded that over-redaction is *not* free (a mismatched provisional surrogate
+  corrupts the live outbound payload until review clears it). Because a GLiNER
+  positive returns immediately, the LLM can never overrule one. Measured live: the
+  cascade blindfolds `Transit` in "OpenBao Transit handles the key wrapping" — a term
+  this project's own key custody depends on — because GLiNER labels it `organization`
+  and it is absent from the seeded allowlist. Tracked separately in issue #280.
+
 ### 3. wordfreq deferred
 
 wordfreq (`zipf_frequency`, EN+DE, fully local) addresses the German gap Mikheev
