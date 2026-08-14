@@ -90,17 +90,21 @@ def test_replay_with_no_l3_detector_is_stamped_unwired():
     assert result.detections[0].l3_wired is False
 
 
-def test_inbox_none_means_l3_never_confirms_a_novel_entity_even_when_wired():
-    """Finding (issue #269's own instruction to verify this before proceeding):
-    ``blindfold.engine._blindfold_text``'s L3 branch guards on
-    ``l3_detector is not None AND inbox is not None``. Replay always passes
-    ``inbox=None`` (no test payload may grow the real Review inbox or entity
-    graph, per the issue's own hard rule) -- so even a wired, always-confirming
-    L3 adjudicator never mints a provisional surrogate for a genuinely novel
-    capitalized name during replay. The ADR's "mints are harmless" framing
-    does not hold for L3 the way it does for L1 PII: L3 doesn't skip *minting*
-    something harmless, it skips *running* at all. See replay.py's module
-    docstring and this issue's handoff notes.
+def test_inbox_none_still_lets_l3_confirm_and_mint_a_novel_entity_when_wired():
+    """Issue #274 (route (a), maintainer-decided): ``blindfold.engine._blindfold_text``
+    used to guard its L3 branch on ``l3_detector is not None AND inbox is not None``,
+    so replay's mandatory ``inbox=None`` (no test payload may grow the real Review
+    inbox or entity graph, per #269's own hard rule) meant a wired, always-confirming
+    L3 adjudicator never even ran during replay -- see the git history of this test
+    (formerly ``test_inbox_none_means_l3_never_confirms_a_novel_entity_even_when_wired``)
+    for that now-superseded finding.
+
+    ``inbox is not None`` now gates only whether a confirmed candidate is *recorded*
+    for review, not whether L3 *runs*: with a detector wired, L3 adjudicates and mints
+    a provisional surrogate during replay exactly as it does live, even though
+    ``inbox=None``. Production behaviour (a real inbox) is unchanged -- see
+    ``test_blindfold_engine.py``'s and ``test_l3_surrogate_coalescing.py``'s own
+    inbox-upsert assertions, untouched by this fix.
     """
     payload = {"messages": [{"role": "user", "content": "Hi Completely Novel Person"}]}
     mapping = SurrogateMapping()  # empty graph: "Completely Novel Person" is unknown to L2
@@ -108,8 +112,12 @@ def test_inbox_none_means_l3_never_confirms_a_novel_entity_even_when_wired():
 
     result = replay(payload, mapping=mapping, l3_detector=detector)
 
-    # Not blindfolded at all -- L3 never ran to confirm and mint it.
-    assert result.payload["messages"][0]["content"] == "Hi Completely Novel Person"
-    assert result.session.injected == {}
-    # The mapping the caller supplied is untouched -- no growth, not even ephemeral mint state.
+    # Blindfolded: L3 ran, confirmed the novel span, and minted a provisional
+    # surrogate for it -- the real value never appears in the outbound payload.
+    assert "Completely Novel Person" not in result.payload["messages"][0]["content"]
+    assert set(result.session.injected.values()) == {"Completely Novel Person"}
+    # The caller's own SurrogateMapping is still untouched -- the mint landed in the
+    # ephemeral inbox substitute this fix introduces, never in the main mapping
+    # (mirrors the live request path: a provisional surrogate is never the main
+    # mapping's business until a human confirms it).
     assert mapping.entities() == []

@@ -287,11 +287,14 @@ def _operator_l3_detector(settings) -> L3Detector | None:
     unwired/unprovisioned adjudicator is never handed to replay, since replay's
     mandatory ``inbox=None`` would otherwise raise ``L3Unavailable`` the first
     time a novel candidate span appeared (the request-path fail-closed
-    behavior, wrong for a capability with no egress to protect) -- see
-    ``replay.py``'s own module docstring for why ``inbox=None`` makes this
-    detector's presence purely a stamp, not something that ever actually runs.
-    Same settings check as :func:`blindfold.app._build_inner_l3_adjudicator` /
-    the ``/v1/status`` health probe, a fourth consistent instance of it.
+    behavior, wrong for a capability with no egress to protect).
+
+    Since issue #274, a detector returned here genuinely runs during replay --
+    ``inbox=None`` no longer suppresses L3 adjudication itself, only whether a
+    confirmed candidate is recorded to the real review inbox (see
+    ``replay.py``'s own module docstring and ``engine._replay_inbox``). Same
+    settings check as :func:`blindfold.app._build_inner_l3_adjudicator` / the
+    ``/v1/status`` health probe, a fourth consistent instance of it.
     """
     if settings.l3_provider == "gliner":
         from blindfold.gliner_provisioning import is_gliner_model_ready

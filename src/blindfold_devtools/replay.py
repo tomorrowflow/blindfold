@@ -19,20 +19,21 @@ replacement algorithm itself.
 
 ``inbox=None`` always (ADR-0047 §6): no novel entity from a replay payload may
 reach the real Review inbox or grow the entity graph through the learning loop.
-**Finding, verified against the current engine.py (issue #269's own instruction
-to check this claim before proceeding):** ``blindfold.engine._blindfold_text``'s
-L3 branch guards on ``l3_detector is not None and inbox is not None`` -- BOTH,
-not just the detector. With ``inbox=None`` this is always false, so L3 *never*
-adjudicates during replay, regardless of whether an L3 detector is wired. The
-ADR text's "mints are harmless: SurrogateMapping is in-memory with no store
-handle" describes L1 PII mints, not L3 -- L3 does not skip minting a harmless
-provisional surrogate here, it skips running at all. Reconciling that (letting
-L3 mint a provisional surrogate through some inbox-less path) would mean
-restructuring ``_blindfold_text``'s L3 block, a change to privacy-critical
-request-path code out of scope for this devtools-only slice; see this issue's
-handoff notes. ``l3_wired`` on the emitted :class:`DetectionRecord` therefore
-records only whether an L3 detector was *configured* for this run (a caller-side
-settings fact), not whether it ran -- it never does.
+**Issue #274 (route (a), maintainer-decided):** this used to also mean L3 never
+adjudicated at all during replay -- ``blindfold.engine._blindfold_text``'s L3
+branch guarded on ``l3_detector is not None and inbox is not None`` (BOTH, not
+just the detector), so ``inbox=None`` made the whole branch unreachable
+regardless of whether an L3 detector was wired. Fixed at the source: the engine
+now substitutes an ephemeral, non-persistent ``ReviewInbox()`` for the call
+whenever ``inbox=None`` and a detector is wired (see ``engine._replay_inbox``),
+so L3 still adjudicates and mints a provisional surrogate exactly as it does
+live -- it is only the *recording* of a confirmed candidate for human review
+that ``inbox=None`` skips, never the run itself. No production caller is
+affected: both request-path call sites in ``app.py`` always pass the
+DI-injected real ``ReviewInbox``. ``l3_wired`` on the emitted
+:class:`DetectionRecord` therefore now means what it says -- an L3 detector was
+configured *and actually ran* for this call; the two are the same fact again
+now that inbox-less replay can't suppress the run.
 """
 
 from __future__ import annotations
@@ -140,8 +141,10 @@ def replay(
 ) -> ReplayResult:
     """Drive the real pipeline over ``payload``: never sends anything upstream
     (no upstream client is even reachable from here), never writes to a review
-    inbox (``inbox=None``, always). ``endpoint`` (dialect) is auto-detected by
-    shape (:func:`blindfold_devtools.dialect.detect_dialect`).
+    inbox (``inbox=None``, always -- a wired L3 detector still adjudicates and
+    mints, issue #274, but the mint lands in an ephemeral inbox substitute that
+    is discarded with this call, never the real one). ``endpoint`` (dialect) is
+    auto-detected by shape (:func:`blindfold_devtools.dialect.detect_dialect`).
     """
     endpoint = detect_dialect(payload)
     original_hop_texts = [text for _hop_kind, text in hop_texts(payload)]

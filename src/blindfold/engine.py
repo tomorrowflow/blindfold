@@ -153,6 +153,26 @@ class ExchangeSession:
         self.injected[surrogate] = real
 
 
+def _replay_inbox(
+    l3_detector: L3Detector | None, inbox: ReviewInbox | None
+) -> ReviewInbox | None:
+    """Issue #274 (ADR-0047 §6, route (a)): a caller passing ``inbox=None`` with a
+    wired ``l3_detector`` (replay's mandatory shape -- no test payload may grow the
+    real Review inbox or entity graph) still needs L3 to *run*; only whether a
+    confirmed candidate is *recorded* for review is optional. Substitutes a
+    brand-new, unattached ``ReviewInbox()`` -- no store, no mapping cipher, so
+    ``upsert`` can never call through to persistence (``_persistent()`` is False) --
+    scoped to this one call and never returned to the caller, so a provisional
+    surrogate it mints is exactly as harmless as an in-memory L1/L2 mint: it cannot
+    reach the real review inbox, the entity graph, or any store. No production
+    caller ever passes ``inbox=None`` (both request-path call sites in ``app.py``
+    always pass the DI-injected ``ReviewInbox``), so this never fires there.
+    """
+    if l3_detector is not None and inbox is None:
+        return ReviewInbox()
+    return inbox
+
+
 def blindfold_payload(
     payload: dict[str, Any],
     mapping: SurrogateMapping,
@@ -188,6 +208,7 @@ def blindfold_payload(
     session = ExchangeSession()
     out = copy.deepcopy(payload)
     l3_provider = l3_detector.provider_name if l3_detector is not None else None
+    inbox = _replay_inbox(l3_detector, inbox)
 
     system = out.get("system")
     if system is not None:
@@ -233,6 +254,7 @@ def blindfold_chat_completions_payload(
     session = ExchangeSession()
     out = copy.deepcopy(payload)
     l3_provider = l3_detector.provider_name if l3_detector is not None else None
+    inbox = _replay_inbox(l3_detector, inbox)
 
     for message in out.get("messages", []):
         ctx = _HopContext(l3_provider=l3_provider)
@@ -514,7 +536,14 @@ def _blindfold_text(
     # provisional state separate is what lets ``reject`` cleanly drop them) and
     # land in the review inbox for async human review. Auto-blindfold is non-
     # blocking — the request never stalls waiting on the reviewer.
-    if l3_detector is not None and inbox is not None:
+    #
+    # Issue #274: whether L3 *runs* depends only on ``l3_detector`` — ``inbox`` is
+    # never ``None`` here (the caller, ``blindfold_payload``/
+    # ``blindfold_chat_completions_payload``, substitutes an ephemeral,
+    # non-persistent ``ReviewInbox()`` via ``_replay_inbox`` whenever the real one
+    # is absent), so a confirmed candidate is always minted — only whether that
+    # mint is durably *recorded* for review varies with which inbox got substituted.
+    if l3_detector is not None:
         l3_started_at = time.monotonic()
         adjudications = l3_detector.detect(result, mapping.entities(), declared_tools)
         if hop_ctx is not None:

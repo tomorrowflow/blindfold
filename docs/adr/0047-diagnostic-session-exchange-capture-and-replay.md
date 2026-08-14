@@ -120,10 +120,18 @@ anything upstream.**
 It reads the operator's **entity graph** read-only — validating against the vendored seed
 would answer the wrong question — and passes `inbox=None`, so no **novel entity** from a
 test payload can reach the real **Review inbox** or grow the graph through the **learning
-loop**. Mints are harmless: `SurrogateMapping` is in-memory with no store handle.
+loop**. Mints are harmless: `SurrogateMapping` is in-memory with no store handle, and (issue
+#274) so is the ephemeral `ReviewInbox()` the engine substitutes for the call whenever a
+detector is wired and `inbox=None` — it mints and adjudicates exactly as the live path does,
+but is discarded with the call, never attached to a store, so a confirmed candidate can reach
+neither the real Review inbox nor the entity graph.
 
-An unwired or unavailable L3 does **not** make `explain` fail closed — fail-closed protects
-**egress**, and `explain` has none — but an L1/L2-only run stamps itself in the artifact.
+An unwired L3 does **not** make `explain` fail closed — fail-closed protects **egress**, and
+`explain` has none — but an L1/L2-only run (no adjudicator configured) stamps itself in the
+artifact via `l3_wired`, which now means what it says: a wired detector actually adjudicated.
+Before issue #274, `inbox=None` silently suppressed the run itself regardless of what was
+wired, which made `explain`'s claim to double as the corpus evaluator (§11) structurally
+false for the L3 tier — fixed at the source, not by weakening the claim.
 
 Selection: `blindfold captures` lists (id, time, endpoint, hop count, detected count,
 outcome, an excerpt of the first user hop), `blindfold explain <id>` resolves against the

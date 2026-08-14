@@ -88,14 +88,16 @@ class DetectionRecord(_CaptureRecord):
     surrogates: tuple[str, ...] = ()
     pass_name: str | None = None
     offsets: tuple[tuple[int, int], ...] | None = None
-    # Reconstructed-only (issue #269): whether replay had an L3 adjudicator model
-    # actually configured for this run -- independent of whether L3 adjudicated
-    # anything (it never does: replay always passes inbox=None, and blindfold_
-    # payload's L3 branch requires BOTH l3_detector and inbox to be non-None, so
-    # l3_confirmed/l3_dismissed/l3_provider above are always 0/0/None regardless
-    # of this flag). Load-bearing for the comparison (#256): without it, a novel
-    # entity the *live* run's L3 confirmed but replay structurally can't
-    # reproduce reads as an unexplained divergence instead of an expected one.
+    # Reconstructed-only (issue #269, corrected by #274): whether replay had an
+    # L3 adjudicator actually configured for this run -- since #274, this is the
+    # same fact as "L3 actually ran": replay always passes inbox=None, but the
+    # engine substitutes an ephemeral, non-persistent ReviewInbox() for the call
+    # whenever a detector is wired (blindfold.engine._replay_inbox), so a wired
+    # detector adjudicates and mints exactly as the live path does -- only the
+    # *recording* of a confirmed candidate to the real review inbox is skipped.
+    # Load-bearing for the comparison (#256): without it, a novel entity the
+    # *live* run's L3 confirmed but replay had no adjudicator wired to reproduce
+    # reads as an unexplained divergence instead of an expected one.
     l3_wired: bool = False
 
 
