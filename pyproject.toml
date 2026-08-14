@@ -39,6 +39,17 @@ dev = [
 # frozen-proxy ⊃ ui_dist" layering) is a dev/CI-time release step, never a
 # runtime dependency of `blindfold serve` — kept out of `dev` so an ordinary
 # test run never needs it installed.
+#
+# Deliberately never co-installed with `devtools` in CI — `uv sync --group freeze`
+# resolves `dev + freeze` only (there is no `[tool.uv] default-groups` pulling `devtools`
+# in). This matters because `devtools`' own runtime dependency `rich` IS reachable from
+# the product's own import graph (pydantic's lazy `from rich.pretty import pprint` —
+# packaging/blindfold-proxy.spec's excludes comment), so a `freeze` + `devtools`
+# co-install genuinely bundles rich into the release binary — freezing would then
+# correctly fail. packaging/freeze_env_check.py asserts this precondition (rich not
+# importable) in the freeze job before PyInstaller runs, so a developer who runs `uv sync
+# --all-groups` (or `--group devtools`) and then freezes meets a named cause there
+# instead of an unexplained one buried in PyInstaller's own bundling (issue #272).
 freeze = [
     "pyinstaller==6.21.0",
 ]
@@ -46,7 +57,8 @@ freeze = [
 # `captures`/`explain` rendering). Deliberately its own group, not `dev` and not `freeze` —
 # it is a source-run-only capability, not a test-suite or freeze-time dependency, and it
 # must never reach the wheel or the frozen binary (see [tool.hatch.build.targets.wheel]
-# below and packaging/blindfold-proxy.spec's excludes comment).
+# below, packaging/blindfold-proxy.spec's excludes comment, and the `freeze` group comment
+# above for how that's actually guaranteed — issue #272).
 devtools = [
     "rich>=13.7",
 ]

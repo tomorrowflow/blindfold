@@ -54,6 +54,16 @@ a = Analysis(
     # turn that regression into a *clean* binary that passes every absence check and ships,
     # failing only as a runtime ImportError in a user's hands -- instead of failing the build,
     # which is what happens with excludes left empty.
+    #
+    # This reachability claim is NOT extended to rich (blindfold_devtools' own runtime
+    # dependency, pyproject.toml's `devtools` group): unlike blindfold_devtools, rich IS
+    # reachable from this entry point's import graph today -- pydantic/_internal/
+    # _core_utils.py does a lazy `from rich.pretty import pprint`, and PyInstaller's
+    # modulegraph follows function-level imports. An excludes=["rich"] entry here would
+    # therefore mask a real reachability fact rather than prove absence (issue #272).
+    # rich's absence from the release binary is instead guaranteed by never installing it
+    # in the freeze environment in the first place -- see packaging/freeze_env_check.py,
+    # asserted in the freeze job before this spec ever runs.
     excludes=[],
     noarchive=False,
     optimize=0,
