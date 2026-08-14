@@ -20,13 +20,25 @@ documentation, and the IBAN is a test value.
    unconfigured ⇒ fail-closed per ADR-0009):
 
    ```
-   uv sync && BLINDFOLD_OLLAMA_MODEL=<local-tag> uv run blindfold serve
+   uv sync && BLINDFOLD_L3_MODEL=<local-tag> uv run blindfold serve
    ```
 
-2. Point a client at it — `ANTHROPIC_BASE_URL=http://localhost:8000`,
-   `ANTHROPIC_AUTH_TOKEN=<real key>`. Without a key, set `BLINDFOLD_UPSTREAM_BASE_URL` to a small
-   local echo server that logs the received body and returns an Anthropic-shaped message; that
-   proves blindfold + mint + restore but not the real provider.
+   `BLINDFOLD_OLLAMA_MODEL` is a legacy alias for the same setting (`serve.py`); prefer the
+   current name.
+
+   **Record which detection configuration the run measures** — the two answer different
+   questions and produce very different recall (ADR-0049):
+
+   - `BLINDFOLD_L3_PROVIDER=gliner` + `BLINDFOLD_L3_INNER_PROVIDER=omlx` — the GLiNER cascade.
+   - neither set — the bare L3 LLM.
+
+2. Point a client at the **proxy's** port — `ANTHROPIC_BASE_URL=http://localhost:25463`
+   (`DEFAULT_PORT` in `config.py`; overridable with `BLINDFOLD_PORT`),
+   `ANTHROPIC_AUTH_TOKEN=<real key>`. Do not use `:8000` — that is the local L3 provider's own
+   port, so agent traffic would go straight to the adjudicator. Without a key, set
+   `BLINDFOLD_UPSTREAM_BASE_URL` to a small local echo server that logs the received body and
+   returns an Anthropic-shaped message; that proves blindfold + mint + restore but not the real
+   provider.
 
 3. Copy `74-engagement-brief.md` somewhere the client can read it, then paste `74-prompt.md` with
    `<BRIEF-PATH>` / `<OUT-PATH>` substituted.
