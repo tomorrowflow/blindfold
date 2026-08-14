@@ -43,7 +43,13 @@ key and is treated as the primary secret.
    (Claude Code via `ANTHROPIC_BASE_URL` + `ANTHROPIC_AUTH_TOKEN`) and
    **OpenAI `/v1/chat/completions`** (scripts/IDEs) as native passthrough, never
    format translation. Blindfolds **every hop** (system prompt, user turns,
-   **tool-result messages**), not just the first prompt.
+   **tool-result messages**), not just the first prompt. Also serves
+   **`POST /v1/messages/count_tokens`** (issue #267) — the gateway protocol's
+   optional token-counting endpoint, so context measurement doesn't cost a real
+   inference request — with the identical blindfold-then-leak-gate treatment,
+   and **`HEAD /api/hello`** (Claude Code's connection-warming probe, bare 200).
+   `GET /v1/models` is a deliberate absence, documented at the route module's
+   own docstring.
 2. **Detection** (inline, fail-closed):
    - **L1** deterministic — hand-rolled regex for emails, phones, IBANs, IDs.
    - **L2** curated dictionary — 4-pass, German-aware (exact → normalized via

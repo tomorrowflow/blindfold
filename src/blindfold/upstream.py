@@ -129,6 +129,23 @@ class UpstreamClient:
             raise _map_httpx_error(exc) from exc
         return response.json()
 
+    async def send_count_tokens(
+        self, payload: dict, headers: dict[str, str]
+    ) -> dict:
+        """Forward a blindfolded body to the upstream's own count-tokens endpoint
+        (issue #267): a hop-shaped request (``system``/``messages``/``tools``, no
+        sampling params) that returns a bare token count, never surrogate text --
+        there is no restore side to this call.
+        """
+        try:
+            response = await self._client.post(
+                "/v1/messages/count_tokens", json=payload, headers=headers
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise _map_httpx_error(exc) from exc
+        return response.json()
+
     async def send_chat_completions(
         self, payload: dict, headers: dict[str, str]
     ) -> dict:

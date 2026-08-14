@@ -172,9 +172,12 @@ def _replay_inbox(
     ``upsert`` can never call through to persistence (``_persistent()`` is False) --
     scoped to this one call and never returned to the caller, so a provisional
     surrogate it mints is exactly as harmless as an in-memory L1/L2 mint: it cannot
-    reach the real review inbox, the entity graph, or any store. No production
-    caller ever passes ``inbox=None`` (both request-path call sites in ``app.py``
-    always pass the DI-injected ``ReviewInbox``), so this never fires there.
+    reach the real review inbox, the entity graph, or any store. Two production
+    callers pass ``inbox=None`` deliberately: devtools replay (this route,
+    ADR-0047 §6) and ``POST /v1/messages/count_tokens`` (issue #267) — a
+    count-only request must never grow the durable review inbox. Both
+    ``/v1/messages`` and ``/v1/chat/completions`` always pass the DI-injected
+    ``ReviewInbox``, so this never fires for a real inference exchange.
     """
     if l3_detector is not None and inbox is None:
         return ReviewInbox()

@@ -72,6 +72,19 @@ transport config: missing CA bundle, malformed base URL) used to escape as a raw
 is the exception-type-scoped catch-all that fires no matter where the
 ``UpstreamError`` was raised, funneling it through the same
 ``blindfold_upstream_error`` body+audit+log response as every other upstream failure.
+
+Gateway-protocol optional endpoints (issue #267): ``POST /v1/messages/count_tokens``
+is a hop-shaped request (``system``/``messages``/``tools``, no sampling params) that
+gets the identical blindfold-then-leak-gate treatment as ``/v1/messages`` before
+forwarding to the upstream's own count endpoint — see that route's own docstring for
+the ephemeral-inbox mint decision. ``HEAD /api/hello`` (Claude Code's connection-
+warming probe) is a bare 200, touching no hop. ``GET /v1/models`` is deliberately
+left unimplemented: it's queried only when a user opts into
+``CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY=1``, and serving it means either a
+passthrough that discloses what the configured upstream credential can access (a
+config-disclosure surface this loopback-only app has no reason to grow) or a
+hardcoded list that goes stale — the picker's fallback when the endpoint is absent
+is harmless, so the absence is the considered answer, not a gap.
 """
 
 from __future__ import annotations
@@ -85,7 +98,7 @@ from datetime import datetime
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from .allowlist_seed import load_seeded_allowlist_tokens
 from .bootstrap import bootstrap_admin, bootstrap_from_vendored_seed
@@ -1267,6 +1280,16 @@ def _resolution_gate_or_block(
     return None
 
 
+@app.head("/api/hello")
+async def api_hello() -> Response:
+    """Claude Code's connection-warming probe (issue #267, gateway protocol's
+    best-effort startup traffic). A bare 200 with no body is the cheapest correct
+    answer -- this touches no hop, mints nothing, and reveals no config, so there
+    is no request path here to blindfold or leak-audit.
+    """
+    return Response(status_code=200)
+
+
 @app.get("/v1/status")
 async def status(
     request: Request,
@@ -1506,6 +1529,106 @@ async def messages(
         upstream_duration_ms=upstream_duration_ms,
     )
     return restored
+
+
+@app.post("/v1/messages/count_tokens")
+async def count_tokens(
+    request: Request,
+    upstream: UpstreamClient = Depends(get_upstream_client),
+    mapping: SurrogateMapping = Depends(get_mapping),
+    l3_detector: L3Detector = Depends(get_l3_detector),
+    policies: WorkspacePolicies = Depends(get_workspace_policies),
+    audit_log: AuditLog = Depends(get_audit_log),
+    block_history: BlockHistory = Depends(get_block_history),
+    upstream_health: RecentFailureHealth = Depends(get_upstream_health),
+    trace: ProcessingTraceBuffer = Depends(get_processing_trace),
+    unprotected_mode: UnprotectedMode = Depends(get_unprotected_mode),
+):
+    """Serve Claude Code's context-measurement call without an inference request
+    (issue #267, gateway protocol's optional token-counting endpoints).
+
+    A count-tokens body carries a full hop shape (``system``/``messages``/
+    ``tools``) and gets the identical pre-egress treatment as ``/v1/messages``:
+    blindfold every hop, then the leak gate, before forwarding to the upstream's
+    own count endpoint. There is no restore side — the response is a bare token
+    count, never surrogate text — so no resolution gate runs here.
+
+    Deliberately never receives the real, DI-injected ``ReviewInbox``: the mint
+    pass below always passes ``inbox=None``, so ``blindfold_payload`` substitutes
+    the ephemeral, unattached inbox :func:`~blindfold.engine._replay_inbox`
+    already provides for a wired-detector/no-inbox caller (issue #274) — a
+    confirmed novel candidate is still minted (so it's blindfolded out of this
+    request), but the mint can never reach the durable review inbox or grow the
+    entity graph. A measurement is not a use; determinism of the shared
+    ``mapping`` singleton means the same real value still gets the same surrogate
+    when the same content is actually sent moments later.
+
+    The returned count is of the *surrogate* text that would actually be sent,
+    not the user's real text — those can differ when a surrogate tokenizes
+    differently. This is arguably the correct number (it's what the provider
+    bills and what fills the context window), but it means Claude Code's context
+    meter reflects the blindfolded prompt, not the real one.
+    """
+    start = time.monotonic()
+    payload = await request.json()
+    workspace = _workspace_slug(request)
+    policy = policies.for_workspace(workspace)
+    forwarded = _forwarded_headers(request)
+
+    if unprotected_mode.is_active():
+        # ADR-0038: same bypass as `/v1/messages` -- see that handler's comment.
+        # A count request consumes the override's bookkeeping exactly like an
+        # inference request would; it must not get a free pass that skips
+        # `note_exchange_complete` (which would let it egress real values on a
+        # bound the operator never re-granted) nor consume a grant twice.
+        unprotected_mode.note_exchange_complete()
+        blinded, session = payload, ExchangeSession()
+    else:
+        effective_l3_detector = None if policy.deterministic_only else l3_detector
+        declared_tools = extract_declared_tools_messages(payload)
+        result = await _mint_or_block(
+            lambda: blindfold_payload(
+                payload, mapping, effective_l3_detector, None, declared_tools,
+                workspace=workspace,
+            ),
+            workspace,
+            policy.deterministic_only,
+            audit_log,
+            block_history,
+        )
+        if isinstance(result, JSONResponse):
+            _record_trace(
+                trace, workspace, "count_tokens", False, OUTCOME_BLOCKED, 0, start,
+                reason=_block_reason(result),
+            )
+            return result
+        blinded, session = result
+
+        block = _leak_gate_or_block(blinded, mapping, workspace, audit_log, block_history)
+        if block is not None:
+            _record_trace(
+                trace, workspace, "count_tokens", False, OUTCOME_BLOCKED,
+                len(session.injected), start, reason=_block_reason(block), session=session,
+            )
+            return block
+
+    upstream_start = time.monotonic()
+    try:
+        raw_response = await upstream.send_count_tokens(blinded, forwarded)
+    except UpstreamError as exc:
+        _record_trace(
+            trace, workspace, "count_tokens", False, OUTCOME_UPSTREAM_ERROR,
+            len(session.injected), start, reason=str(exc), session=session,
+            upstream_duration_ms=(time.monotonic() - upstream_start) * 1000,
+        )
+        return _upstream_error_response(exc, workspace, audit_log, upstream_health)
+    upstream_duration_ms = (time.monotonic() - upstream_start) * 1000
+    _record_trace(
+        trace, workspace, "count_tokens", False, OUTCOME_PASSED,
+        len(session.injected), start, session=session,
+        upstream_duration_ms=upstream_duration_ms,
+    )
+    return raw_response
 
 
 @app.post("/v1/chat/completions")
