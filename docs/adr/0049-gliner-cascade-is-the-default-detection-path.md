@@ -108,6 +108,19 @@ defensible answer to a miss.
     `tests/fixtures/gliner_org_probe_corpus.json` and `tests/test_gliner_org_seed_audit.py`
     for the full measurement and the per-token rationale. #280's structural question
     (whether Position A should survive at all) is untouched by this update.
+  - **`Transit`'s seeding is a maintainer instruction, not an agent judgment call — recorded
+    here because a review cycle blocked on it.** `Transit` was rejected once already
+    (`_CURATION_REJECTS`, issue #87, 2026-07-10) as bare generic prose that could plausibly
+    name a deployment's own secret. Issue #281's own **Acceptance Criteria** name the
+    supersession explicitly, by literal token: *"Confirmed public-token false positives are
+    added to `seeded_allowlist.txt`, `Transit` among them."* That sentence is the human
+    ratification of the reversal — the maintainer who filed #281 wrote the token into the
+    issue's acceptance criteria themselves, rather than leaving its seeding to whatever a
+    probe measurement turned up. The distinction matters because the general curation rule
+    (public/coined identifier, no surname or dictionary-word collision) would not by itself
+    settle `Transit` — it is an ordinary English word — and #281 resolves that tension with
+    product-specific context (`Transit` is OpenBao's/Vault's own named key-wrapping engine,
+    not a generic noun in this project's traffic) that only the issue author could supply.
 - **Setup's provisioning flow already exists and is smaller work than it looks.** `Setup.tsx`
   (issue #146) already renders the "Enhanced local detection" checkbox with the ~197MB help
   text, calls `POST …/gliner-provision`, handles failure, and shows a restart screen on
