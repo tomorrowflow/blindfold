@@ -16,12 +16,7 @@ import json
 import httpx
 
 from blindfold.l3 import CandidateSpan, L3Adjudication
-from blindfold.ollama import (
-    _PROMPT_TEMPLATE,
-    _build_batch_prompt,
-    OllamaAdjudicator,
-    is_cloud_model,
-)
+from blindfold.ollama import _PROMPT_TEMPLATE, OllamaAdjudicator, is_cloud_model
 
 
 def test_ollama_adjudicator_sends_the_candidate_and_context_and_confirms_an_entity():
@@ -97,26 +92,6 @@ def test_adjudicator_single_prompt_rejects_common_verbs_and_action_labels_mid_se
     assert "refactor" in lowered or "build" in lowered or "find" in lowered
 
 
-def test_adjudicator_batch_prompt_rejects_common_verbs_and_action_labels_mid_sentence():
-    # Issue #164: the batch counterpart of the single-candidate test above. Both
-    # _PROMPT_TEMPLATE and _BATCH_PROMPT_TEMPLATE must carry the third rejection
-    # category (the two templates are maintained together in ollama.py, and
-    # OpenAICompatibleAdjudicator imports _build_batch_prompt unchanged from ollama.py).
-    from blindfold.ollama import _build_batch_prompt
-
-    candidates = [
-        CandidateSpan(text="Write", start=8, end=13, context="Use the Write tool"),
-        CandidateSpan(text="Refactor", start=4, end=12, context="Run Refactor now"),
-    ]
-    prompt = _build_batch_prompt(candidates)
-    lowered = prompt.lower()
-
-    assert "verb" in lowered or "action" in lowered
-    assert "label" in lowered or "instruction" in lowered or "command" in lowered
-    assert "write" in lowered
-    assert "refactor" in lowered or "build" in lowered or "find" in lowered
-
-
 def test_adjudicator_single_prompt_rejects_common_capitalized_nouns_used_generically():
     # Issue #165: live false-positive evidence — Code, Index, Design, Transit,
     # Artifacts, Tool confirmed as entities by inner oMLX when they appear in
@@ -130,27 +105,6 @@ def test_adjudicator_single_prompt_rejects_common_capitalized_nouns_used_generic
 
     # Fourth rejection rule: a common English or German noun used generically/
     # technically — even when capitalized — must be explicitly rejected.
-    assert "noun" in lowered
-    # Representative live-evidence words from the issue must appear as examples.
-    assert "code" in lowered
-    assert "index" in lowered or "design" in lowered or "transit" in lowered or "artifacts" in lowered or "tool" in lowered
-
-
-def test_adjudicator_batch_prompt_rejects_common_capitalized_nouns_used_generically():
-    # Issue #165: batch counterpart of the single-candidate test above. Both
-    # _PROMPT_TEMPLATE and _BATCH_PROMPT_TEMPLATE must carry the fourth rejection
-    # category (the two templates are maintained together in ollama.py, and
-    # OpenAICompatibleAdjudicator imports _build_batch_prompt unchanged from ollama.py).
-    from blindfold.ollama import _build_batch_prompt
-
-    candidates = [
-        CandidateSpan(text="Code", start=8, end=12, context="Use the Code tool"),
-        CandidateSpan(text="Index", start=4, end=9, context="Build an Index now"),
-    ]
-    prompt = _build_batch_prompt(candidates)
-    lowered = prompt.lower()
-
-    # Fourth rejection rule: a common noun used generically/technically.
     assert "noun" in lowered
     # Representative live-evidence words from the issue must appear as examples.
     assert "code" in lowered
@@ -295,171 +249,3 @@ def test_ping_ollama_reports_unhealthy_scrubbed_detail_when_unreachable():
     assert health == DependencyHealth(healthy=False, detail="ollama unreachable")
 
 
-def test_build_batch_prompt_states_the_exact_expected_verdict_count():
-    # Issue #148 (#142 regression): live testing against a real local model
-    # (oMLX gemma-4-e2b-it-4bit) showed received<expected verdicts almost every
-    # batch call -- the root cause is the prompt/format, not the parser (the
-    # parser already round-trips a well-formed N-item array losslessly, see
-    # test_ollama_adjudicator_batch_sends_one_call_for_n_candidates). The prior
-    # prompt only said "exactly one verdict per candidate" without ever stating
-    # the concrete N, leaving a weak model to guess how many items to emit.
-    # Naming N explicitly is the low-risk half of the fix (the other half is
-    # L3Detector's per-candidate retry-recovery for whatever still comes up
-    # short, see test_l3_detection.py).
-    candidates = [
-        CandidateSpan(text="Quentin", start=0, end=7, context="ctx-1"),
-        CandidateSpan(text="Priya", start=0, end=5, context="ctx-2"),
-        CandidateSpan(text="Yasmin", start=0, end=6, context="ctx-3"),
-    ]
-
-    prompt = _build_batch_prompt(candidates)
-
-    assert "exactly 3 verdicts" in prompt
-
-
-def test_ollama_adjudicator_batch_sends_one_call_for_n_candidates():
-    # Issue #142: one HTTP round-trip carries every candidate in the batch, with
-    # each candidate's text and context present in the single prompt sent, and the
-    # response's verdict array maps back positionally.
-    captured: dict = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured["request"] = request
-        return httpx.Response(
-            200,
-            json={
-                "response": json.dumps(
-                    {"verdicts": [{"is_entity": True}, {"is_entity": False}]}
-                )
-            },
-        )
-
-    http = httpx.Client(
-        base_url="http://localhost:11434", transport=httpx.MockTransport(handler)
-    )
-    adjudicator = OllamaAdjudicator(
-        base_url="http://localhost:11434", model="llama3.1", http=http
-    )
-    candidates = [
-        CandidateSpan(text="Quentin", start=0, end=7, context="Please brief Quentin."),
-        CandidateSpan(text="Bash", start=0, end=4, context="Run the Bash script."),
-    ]
-
-    decisions = adjudicator.adjudicate_batch(candidates)
-
-    assert decisions == [
-        L3Adjudication(is_entity=True),
-        L3Adjudication(is_entity=False),
-    ]
-    sent = json.loads(captured["request"].content.decode("utf-8"))
-    assert sent["model"] == "llama3.1"
-    assert "Quentin" in sent["prompt"]
-    assert "Bash" in sent["prompt"]
-    assert "Please brief Quentin." in sent["prompt"]
-    assert "Run the Bash script." in sent["prompt"]
-
-
-def test_ollama_adjudicator_batch_pins_sampling_to_temperature_zero_and_a_fixed_seed():
-    # Issue #259: the batch call site is a separate literal from the single-candidate
-    # one and must carry the same pinned options -- this is exactly the kind of
-    # drift the issue calls out (four call sites across two modules).
-    from blindfold.ollama import ADJUDICATOR_SEED, ADJUDICATOR_TEMPERATURE
-
-    captured: dict = {}
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        captured["request"] = request
-        return httpx.Response(
-            200,
-            json={
-                "response": json.dumps(
-                    {"verdicts": [{"is_entity": True}, {"is_entity": False}]}
-                )
-            },
-        )
-
-    http = httpx.Client(
-        base_url="http://localhost:11434", transport=httpx.MockTransport(handler)
-    )
-    adjudicator = OllamaAdjudicator(
-        base_url="http://localhost:11434", model="llama3.1", http=http
-    )
-    candidates = [
-        CandidateSpan(text="Quentin", start=0, end=7, context="Please brief Quentin."),
-        CandidateSpan(text="Bash", start=0, end=4, context="Run the Bash script."),
-    ]
-
-    adjudicator.adjudicate_batch(candidates)
-
-    sent = json.loads(captured["request"].content.decode("utf-8"))
-    assert sent["options"] == {
-        "temperature": ADJUDICATOR_TEMPERATURE,
-        "seed": ADJUDICATOR_SEED,
-    }
-
-
-def test_ollama_adjudicator_batch_tolerates_a_short_verdict_array():
-    # Issue #142 fail-closed contract: the adjudicator itself doesn't raise on a
-    # short/malformed response -- it returns however many verdicts it could parse,
-    # positionally, and leaves L3Detector to fail-close the rest (is_entity: true).
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(
-            200, json={"response": json.dumps({"verdicts": [{"is_entity": False}]})}
-        )
-
-    http = httpx.Client(
-        base_url="http://localhost:11434", transport=httpx.MockTransport(handler)
-    )
-    adjudicator = OllamaAdjudicator(
-        base_url="http://localhost:11434", model="llama3.1", http=http
-    )
-    candidates = [
-        CandidateSpan(text="Quentin", start=0, end=7, context="ctx-1"),
-        CandidateSpan(text="Priya", start=0, end=5, context="ctx-2"),
-    ]
-
-    decisions = adjudicator.adjudicate_batch(candidates)
-
-    assert decisions == [L3Adjudication(is_entity=False)]
-
-
-def test_ollama_adjudicator_batch_tolerates_malformed_json():
-    # A completely unparseable response body degrades to zero verdicts, not an
-    # exception -- L3Detector's fail-closed padding handles the rest.
-    def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"response": "not json at all"})
-
-    http = httpx.Client(
-        base_url="http://localhost:11434", transport=httpx.MockTransport(handler)
-    )
-    adjudicator = OllamaAdjudicator(
-        base_url="http://localhost:11434", model="llama3.1", http=http
-    )
-    candidates = [CandidateSpan(text="Quentin", start=0, end=7, context="ctx-1")]
-
-    decisions = adjudicator.adjudicate_batch(candidates)
-
-    assert decisions == []
-
-
-def test_ollama_adjudicator_batch_propagates_a_local_outage_so_l3_fails_closed():
-    # ADR-0009 / leak-audit clause F: a network-layer failure of the batch call
-    # itself is not swallowed -- it propagates so L3Detector turns it into the
-    # typed L3Unavailable, same as the single-candidate path.
-    def handler(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("connection refused", request=request)
-
-    http = httpx.Client(
-        base_url="http://localhost:11434", transport=httpx.MockTransport(handler)
-    )
-    adjudicator = OllamaAdjudicator(
-        base_url="http://localhost:11434", model="llama3.1", http=http
-    )
-    candidates = [CandidateSpan(text="Quentin", start=0, end=7, context="ctx-1")]
-
-    try:
-        adjudicator.adjudicate_batch(candidates)
-        raised = False
-    except httpx.ConnectError:
-        raised = True
-    assert raised

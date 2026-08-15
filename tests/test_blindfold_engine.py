@@ -176,50 +176,6 @@ def test_blindfold_records_l3_confirmed_dismissed_suppressed_and_provider_per_ho
     assert hop.l3_duration_ms >= 0
 
 
-def test_blindfold_records_l3_solo_retried_per_hop():
-    # Issue #261: #148's short-batch-response solo retry is unchanged in
-    # behaviour, but which candidates it answered through must now be visible on
-    # the per-hop detail (ADR-0035), for a diagnostic session (ADR-0047) to
-    # surface which candidates were answered through the batch vs. the solo seam.
-    from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
-    from blindfold.review import ReviewInbox
-
-    class _ShortBatchThenSoloAdjudicator:
-        def adjudicate_batch(self, candidates: list[CandidateSpan]) -> list[L3Adjudication]:
-            # Always returns exactly one verdict, however many candidates were
-            # asked about -- every candidate past the first must fall back to
-            # the single-candidate retry seam.
-            return [L3Adjudication(is_entity=False)]
-
-        def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
-            return L3Adjudication(is_entity=candidate.text == "Petra")
-
-    mapping = SurrogateMapping.from_pairs([])
-    inbox = ReviewInbox()
-    detector = L3Detector(_ShortBatchThenSoloAdjudicator(), batch_size=5)
-    payload = {
-        "model": "claude-3-5-sonnet",
-        "messages": [
-            {
-                "role": "user",
-                "content": "Please loop in Zolfgang and Petra on this.",
-            }
-        ],
-    }
-
-    _blinded, session = blindfold_payload(payload, mapping, detector, inbox)
-
-    assert len(session.hops) == 1
-    hop = session.hops[0]
-    # "Zolfgang" (the first candidate) was answered by the batch call itself
-    # (dismissed there); "Petra" fell back to the solo retry seam and was
-    # confirmed there -- proof the trace attributes the right verdict to the
-    # right prompt shape, not just a count.
-    assert hop.l3_solo_retried == 1
-    assert hop.l3_confirmed == 1  # Petra, via solo retry
-    assert hop.l3_dismissed == 1  # Zolfgang, via the batch call
-
-
 def test_hop_detail_to_dict_is_json_shaped_for_the_processing_trace():
     # Issue #153: the processing trace serializes session.hops via HopDetail.to_dict()
     # -- plain JSON-shaped values only (a tuple isn't directly JSON-serializable).
@@ -238,7 +194,6 @@ def test_hop_detail_to_dict_is_json_shaped_for_the_processing_trace():
         l3_provider="ollama",
         l3_duration_ms=3.0,
         surrogates=("Berta Vogel",),
-        l3_solo_retried=1,
     )
 
     assert hop.to_dict() == {
@@ -254,5 +209,4 @@ def test_hop_detail_to_dict_is_json_shaped_for_the_processing_trace():
         "l3_provider": "ollama",
         "l3_duration_ms": 3.0,
         "surrogates": ["Berta Vogel"],
-        "l3_solo_retried": 1,
     }

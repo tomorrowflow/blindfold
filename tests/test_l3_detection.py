@@ -599,37 +599,74 @@ def test_content_cache_skips_re_scanning_unchanged_chunks_across_turns():
     assert len(adjudicator.calls) == 1
 
 
-def test_content_cache_only_re_adjudicates_the_final_group_when_text_is_appended():
-    # Issue #261 / ADR-0048 corollary 2: the content cache is keyed on the whole
-    # GROUP now, not the individual candidate -- a fixed batch_size chunk of the
-    # ordered candidate list, computed before any cache lookup. A real coding-agent
-    # turn appends a new sentence to an otherwise-unchanged transcript; that new
-    # candidate can only ever land in (or start) the FINAL group, so every earlier,
-    # already-full group is untouched -- same members, same order, same content --
-    # and stays a cache hit. L3 cost still stays proportional to *new* candidates
-    # across turns, just at group granularity rather than per-candidate.
+def test_content_cache_only_re_adjudicates_a_newly_appended_candidate():
+    # Issue #283 (ADR-0048 corollary 3): the content cache is keyed per-candidate
+    # again, not per-group -- there is no group left to protect once batching is
+    # gone. A real coding-agent turn appends a new sentence to an otherwise-
+    # unchanged transcript; every earlier candidate's own (text, context) is
+    # untouched and stays a cache hit, so only the newly-appended candidate is a
+    # genuine miss. L3 cost still stays proportional to *new* candidates across
+    # turns.
     # "Anna" needs > 40 trailing chars of its own so its context window doesn't
     # reach into the appended sentence -- otherwise appending would change its
-    # own (span, context) too, not just add a new final group.
+    # own (span, context) too, not just add a new candidate.
     turn_one = (
         "We met Klaus, Yasmin, Priya, Boris, and Anna at the offsite for the"
         " quarterly review meeting today, thank you."
     )
     turn_two = turn_one + " Elin asked for the slides."
     adjudicator = _RecordingAdjudicator()
-    detector = L3Detector(adjudicator, batch_size=5)
+    detector = L3Detector(adjudicator)
 
-    detector.detect(turn_one, known_entities=[])  # exactly one full group of 5
+    detector.detect(turn_one, known_entities=[])  # five genuinely novel candidates
     calls_after_turn_one = len(adjudicator.calls)
-    detector.detect(turn_two, known_entities=[])  # appends a second, partial group
+    detector.detect(turn_two, known_entities=[])  # appends one new candidate
 
     assert calls_after_turn_one == 5
     flagged = [call.text for call in adjudicator.calls]
-    # The first (full) group is unchanged on turn two -- none of its five members
-    # are re-adjudicated -- only "Elin", the new final group, misses.
+    # None of turn one's five candidates are re-adjudicated on turn two -- only
+    # "Elin", the newly-appended candidate, misses.
     for name in ("Klaus", "Yasmin", "Priya", "Boris", "Anna", "Elin"):
         assert flagged.count(name) == 1
     assert len(adjudicator.calls) == 6
+
+
+def test_a_candidates_own_adjudication_is_identical_for_a_cold_and_a_warm_detector():
+    # Issue #261's reproducibility invariant, reframed for issue #283 (ADR-0048
+    # corollary 3). #261 existed because batch *composition* depended on cache
+    # state: the same hop text was protected differently by a warm process and a
+    # cold one, since which candidates shared a batch (and therefore each one's
+    # position and batch size -- both of which moved a verdict, ADR-0048) was a
+    # function of what the cache already held. With batching gone there is no
+    # composition left to couple through cache state -- every candidate always
+    # gets its own solo prompt -- but the underlying property #261 protected must
+    # still hold: a candidate's own adjudication (its exact context) must not
+    # depend on whether the detector process is cold or already has an unrelated
+    # candidate cached from a prior hop.
+    target_text = (
+        "Please brief Klaus tomorrow about the new initiative which is launching."
+        " Yasmin asked for the slides."
+    )
+    priming_text = (
+        "Please brief Klaus tomorrow about the new initiative which is launching."
+    )
+
+    cold_adjudicator = _RecordingAdjudicator()
+    L3Detector(cold_adjudicator).detect(target_text, known_entities=[])
+
+    warm_adjudicator = _RecordingAdjudicator()
+    warm_detector = L3Detector(warm_adjudicator)
+    warm_detector.detect(priming_text, known_entities=[])  # primes "Klaus" alone
+    warm_adjudicator.calls.clear()  # isolate the priming call's own prompt
+    warm_detector.detect(target_text, known_entities=[])
+
+    # "Klaus" is now a cache hit for the warm detector (identical prior context)
+    # and never reaches the adjudicator again; "Yasmin", novel either way, reaches
+    # it with the exact same context regardless of process warmth.
+    assert [call.text for call in warm_adjudicator.calls] == ["Yasmin"]
+    cold_yasmin = next(call for call in cold_adjudicator.calls if call.text == "Yasmin")
+    warm_yasmin = warm_adjudicator.calls[0]
+    assert warm_yasmin.context == cold_yasmin.context
 
 
 def test_content_cache_reanchors_a_cached_span_to_each_occurrences_own_position():
@@ -729,21 +766,20 @@ def test_l3_unavailable_is_silent_when_no_candidate_spans_exist():
 def test_content_cache_is_bounded_and_evicts_the_least_recently_used_entry():
     # ADR-0022: the content cache must be bounded, never allowed to grow without
     # limit for the life of the process. Least-recently-used eviction keeps hot
-    # (recurring) groups cached while a cold one ages out first. Issue #261: the
-    # cache is now keyed on the group (a list of candidates, digested), not the
-    # individual candidate -- each entry here is its own single-member group.
+    # (recurring) candidates cached while a cold one ages out first. Issue #283:
+    # keyed per-candidate again (the pre-#261 shape), not per-group.
     cache = L3ContentCache(max_entries=2)
-    klaus = [CandidateSpan(text="Klaus", start=0, end=5, context="ctx-klaus")]
-    yasmin = [CandidateSpan(text="Yasmin", start=0, end=6, context="ctx-yasmin")]
-    priya = [CandidateSpan(text="Priya", start=0, end=5, context="ctx-priya")]
-    decisions = [L3Adjudication(is_entity=True)]
+    klaus = CandidateSpan(text="Klaus", start=0, end=5, context="ctx-klaus")
+    yasmin = CandidateSpan(text="Yasmin", start=0, end=6, context="ctx-yasmin")
+    priya = CandidateSpan(text="Priya", start=0, end=5, context="ctx-priya")
+    decision = L3Adjudication(is_entity=True)
 
-    cache.put(klaus, decisions)
-    cache.put(yasmin, decisions)
+    cache.put(klaus, decision)
+    cache.put(yasmin, decision)
     # Touch klaus so it's the most-recently-used of the two; yasmin becomes the
     # least-recently-used and is the one evicted when the cache is over capacity.
     cache.get(klaus)
-    cache.put(priya, decisions)
+    cache.put(priya, decision)
 
     assert cache.get(klaus) is not None
     assert cache.get(priya) is not None
@@ -855,435 +891,57 @@ def test_l3_detect_logs_periodic_progress_during_a_long_pass(caplog):
     assert len(result) == 12
 
 
-@dataclass
-class _BatchCall:
-    texts: tuple[str, ...]
-
-
-class _RecordingBatchAdjudicator:
-    """Stub for a batch-capable provider (issue #142) — records every
-    adjudicate_batch() call (candidates it received, in order) without firing real
-    I/O, and never exposes adjudicate() as a single-candidate fallback path.
+class _CoupledBatchAdjudicator:
+    """Stub reproducing ADR-0048's own measurement: solo adjudication (`adjudicate`)
+    is the reference answer and always confirms; batching the identical span
+    alongside enough other candidates to fill a group flips the verdict, purely as
+    a function of the group's size -- never of the candidate itself. A conforming
+    detector (issue #283) must never call `adjudicate_batch` at all.
     """
 
-    def __init__(
-        self, decisions: dict[str, L3Adjudication] | None = None
-    ) -> None:
-        self.batch_calls: list[_BatchCall] = []
-        self._decisions = decisions or {}
-
-    def adjudicate_batch(
-        self, candidates: list[CandidateSpan]
-    ) -> list[L3Adjudication]:
-        self.batch_calls.append(_BatchCall(texts=tuple(c.text for c in candidates)))
-        return [
-            self._decisions.get(c.text, L3Adjudication(is_entity=False))
-            for c in candidates
-        ]
-
-
-def test_batch_adjudication_sends_one_call_for_a_batch_and_maps_results_by_position():
-    # Issue #142: a batch-capable adjudicator gets ONE call listing every candidate
-    # in the batch, and the returned verdicts map back to N L3Adjudication results
-    # in the same order as the candidates were selected — not N separate calls.
-    text = "We met Klaus, Yasmin, and Priya at the offsite."
-    adjudicator = _RecordingBatchAdjudicator({"Klaus": L3Adjudication(is_entity=True)})
-    detector = L3Detector(adjudicator, batch_size=5)
-
-    results = detector.detect(text, known_entities=[])
-
-    # A single round trip carried all three candidates (the round-trip reduction
-    # this issue exists for), not one call per candidate.
-    assert len(adjudicator.batch_calls) == 1
-    assert adjudicator.batch_calls[0].texts == ("Klaus", "Yasmin", "Priya")
-    assert len(results) == 3
-    by_text = {candidate.text: decision for candidate, decision in results}
-    assert by_text["Klaus"].is_entity is True
-    assert by_text["Yasmin"].is_entity is False
-    assert by_text["Priya"].is_entity is False
-
-
-def test_batch_adjudication_splits_into_multiple_calls_above_batch_size():
-    # Issue #142: batch_size bounds each individual call (the issue's own accuracy
-    # note — a batch loses per-span focus as N grows) rather than sending every
-    # candidate in one unbounded call. 7 candidates at batch_size=3 must split into
-    # 3 calls of sizes 3, 3, 1 — never one call of 7, never 7 calls of 1.
-    nato = "Alfa Bravo Charlie Delta Echo Foxtrot Golf"
-    text = " and ".join(nato.split())
-    adjudicator = _RecordingBatchAdjudicator()
-    detector = L3Detector(adjudicator, batch_size=3)
-
-    results = detector.detect(text, known_entities=[])
-
-    assert [len(call.texts) for call in adjudicator.batch_calls] == [3, 3, 1]
-    assert len(results) == 7
-    assert sorted(t for call in adjudicator.batch_calls for t in call.texts) == sorted(
-        nato.split()
-    )
-
-
-def test_batch_adjudication_cache_hits_bypass_the_batch_call_entirely():
-    # ADR-0003 content cache is unaffected by batching (issue #142's own framing):
-    # a candidate already cached from a prior turn must not be re-sent in a batch
-    # call — only genuinely novel (span, context) pairs go to the adjudicator, in
-    # batch mode exactly as in the single-candidate path.
-    text = "Please brief Klaus tomorrow about Yasmin's initiative."
-    adjudicator = _RecordingBatchAdjudicator({"Klaus": L3Adjudication(is_entity=True)})
-    detector = L3Detector(adjudicator, batch_size=5)
-
-    detector.detect(text, known_entities=[])  # turn one: both candidates novel
-    calls_after_turn_one = len(adjudicator.batch_calls)
-    results_turn_two = detector.detect(text, known_entities=[])  # turn two: unchanged
-
-    assert calls_after_turn_one == 1
-    assert adjudicator.batch_calls[0].texts == ("Klaus", "Yasmin")
-    # Turn two is served entirely from cache — no second batch call at all.
-    assert len(adjudicator.batch_calls) == 1
-    by_text = {candidate.text: decision for candidate, decision in results_turn_two}
-    assert by_text["Klaus"].is_entity is True
-    assert by_text["Yasmin"].is_entity is False
-
-
-def test_batch_prompt_sequence_is_identical_for_a_cold_and_a_warm_detector():
-    # Issue #261 / ADR-0048 corollary 2: batch composition must be a pure function
-    # of the hop's inputs, never of cache state. A cold detector adjudicating
-    # "Klaus, Yasmin" sends both in ONE batch. Under the pre-#261 per-candidate
-    # cache, a detector warmed by a prior hop that cached "Klaus" alone (identical
-    # local context) would instead send a batch of ONLY "Yasmin" -- a different
-    # prompt shape for the identical target text, purely because of prior request
-    # history. The fix groups before any cache lookup, so "Klaus"'s group grew
-    # (now includes "Yasmin") and is a wholesale miss -- the whole group is sent,
-    # matching the cold run exactly.
-    target_text = (
-        "Please brief Klaus tomorrow about the new initiative which is launching."
-        " Yasmin asked for the slides."
-    )
-    priming_text = (
-        "Please brief Klaus tomorrow about the new initiative which is launching."
-    )
-
-    cold_adjudicator = _RecordingBatchAdjudicator()
-    L3Detector(cold_adjudicator, batch_size=5).detect(target_text, known_entities=[])
-
-    warm_adjudicator = _RecordingBatchAdjudicator()
-    warm_detector = L3Detector(warm_adjudicator, batch_size=5)
-    warm_detector.detect(priming_text, known_entities=[])  # primes "Klaus" alone
-    warm_adjudicator.batch_calls.clear()  # isolate the priming call's own prompt
-    warm_detector.detect(target_text, known_entities=[])
-
-    cold_sequence = [call.texts for call in cold_adjudicator.batch_calls]
-    warm_sequence = [call.texts for call in warm_adjudicator.batch_calls]
-    assert warm_sequence == cold_sequence
-
-
-def test_batch_adjudication_only_the_final_group_is_sent_in_the_batch():
-    # Issue #261 / ADR-0048 corollary 2: within a single detect() call, an
-    # earlier, already-full group that is unchanged is served entirely from the
-    # group cache and never occupies a batch call; only the FINAL group -- new or
-    # grown by appended text -- misses and is sent to adjudicate_batch. This is
-    # the pure-grouping counterpart of the (now-removed) per-candidate cache
-    # bypass: composition is decided before any cache lookup, so a hit or miss
-    # always applies to the whole group, never a subset of it.
-    # "Anna" needs > 40 trailing chars of its own so its context window doesn't
-    # reach into the appended sentence -- otherwise appending would change its
-    # own (span, context) too, not just add a new final group.
-    turn_one = (
-        "We met Klaus, Yasmin, Priya, Boris, and Anna at the offsite for the"
-        " quarterly review meeting today, thank you."
-    )
-    turn_two = turn_one + " Elin asked for the slides."
-    warm_adjudicator = _RecordingBatchAdjudicator({"Klaus": L3Adjudication(is_entity=True)})
-    shared_cache = L3ContentCache()
-    warm_detector = L3Detector(warm_adjudicator, cache=shared_cache, batch_size=5)
-    warm_detector.detect(turn_one, known_entities=[])  # primes the one full group
-
-    adjudicator = _RecordingBatchAdjudicator()
-    detector = L3Detector(adjudicator, cache=shared_cache, batch_size=5)
-
-    detector.detect(turn_two, known_entities=[])
-
-    # The first group (Klaus..Anna) is an unchanged cache hit -- not resent.
-    assert len(adjudicator.batch_calls) == 1
-    assert adjudicator.batch_calls[0].texts == ("Elin",)
-
-
-class _ShortResponseBatchAdjudicator:
-    """Stub for a malformed/short batch response (issue #142): returns fewer
-    verdicts than candidates it was handed, as a real LLM might on a truncated or
-    malformed JSON array.
-    """
-
-    def __init__(self, verdict_count: int) -> None:
-        self._verdict_count = verdict_count
-
-    def adjudicate_batch(
-        self, candidates: list[CandidateSpan]
-    ) -> list[L3Adjudication]:
-        return [L3Adjudication(is_entity=False)] * self._verdict_count
-
-
-class _RetryCapableShortResponseBatchAdjudicator:
-    """Stub for the real-world shape (issue #148, #142 regression): a provider
-    that under-returns on the batch call — exactly like a weak local model that
-    ignores the numbered-list instruction — but, unlike
-    ``_ShortResponseBatchAdjudicator``, also implements the plain single-
-    candidate ``adjudicate()`` the same provider classes (Ollama, oMLX) always
-    ship. L3Detector should recover the shortfall through that already-reliable
-    seam instead of immediately over-redacting.
-    """
-
-    def __init__(self, verdict_count: int, single_decisions: dict[str, L3Adjudication]) -> None:
-        self._verdict_count = verdict_count
-        self._single_decisions = single_decisions
-        self.single_calls: list[str] = []
-
-    def adjudicate_batch(
-        self, candidates: list[CandidateSpan]
-    ) -> list[L3Adjudication]:
-        return [L3Adjudication(is_entity=False)] * self._verdict_count
+    def __init__(self) -> None:
+        self.solo_calls: list[str] = []
+        self.batch_calls: list[tuple[str, ...]] = []
 
     def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
-        self.single_calls.append(candidate.text)
-        return self._single_decisions[candidate.text]
-
-
-def test_batch_short_response_recovers_missing_verdicts_via_single_candidate_retry(caplog):
-    # Issue #148 (#142 regression): live testing showed batch calls almost always
-    # under-return. Root cause is the prompt/format (see
-    # test_build_batch_prompt_states_the_exact_expected_verdict_count), not the
-    # parser -- but a genuinely short response still needs handling. Rather than
-    # immediately over-redacting every missing candidate, L3Detector retries the
-    # shortfall through the adjudicator's plain single-candidate adjudicate()
-    # seam (the reliable, already-battle-tested path predating batching) before
-    # falling back to the fail-closed pad. A full recovery is not a "genuine"
-    # model shortfall, so no warning fires.
-    text = "We met Klaus, Yasmin, and Priya at the offsite."
-    adjudicator = _RetryCapableShortResponseBatchAdjudicator(
-        verdict_count=2,
-        single_decisions={"Priya": L3Adjudication(is_entity=True)},
-    )
-    detector = L3Detector(adjudicator, batch_size=5)
-
-    with caplog.at_level(logging.WARNING, logger="blindfold.l3"):
-        results = detector.detect(text, known_entities=[])
-
-    by_text = {candidate.text: decision for candidate, decision in results}
-    assert len(by_text) == 3
-    assert by_text["Klaus"].is_entity is False
-    assert by_text["Yasmin"].is_entity is False
-    # Recovered via retry, not the fail-closed pad -- reflects the real verdict.
-    assert by_text["Priya"].is_entity is True
-    assert adjudicator.single_calls == ["Priya"]
-
-    # Fully recovered -- not a "genuine" model shortfall, so no warning.
-    mismatch_records = [
-        r for r in caplog.records if "l3_batch_adjudication_short_response" in r.getMessage()
-    ]
-    assert mismatch_records == []
-
-
-def test_solo_retry_after_short_batch_response_is_reported_via_callback():
-    # Issue #261: #148's solo retry is kept unchanged, but which candidates were
-    # answered via that seam (rather than the batch prompt) is currently invisible
-    # -- the processing trace (ADR-0035) needs it so a diagnostic session (ADR-0047)
-    # can see which candidates were answered which way. detect()'s optional
-    # on_solo_retry callback fires exactly once per candidate that went through
-    # the single-candidate retry seam, whether or not that retry recovered a
-    # verdict -- never for a candidate the batch itself answered.
-    text = "We met Klaus, Yasmin, and Priya at the offsite."
-    adjudicator = _RetryCapableShortResponseBatchAdjudicator(
-        verdict_count=2,
-        single_decisions={"Priya": L3Adjudication(is_entity=True)},
-    )
-    detector = L3Detector(adjudicator, batch_size=5)
-    solo_retried: list[str] = []
-
-    detector.detect(
-        text, known_entities=[], on_solo_retry=lambda candidate: solo_retried.append(candidate.text)
-    )
-
-    assert solo_retried == ["Priya"]
-
-
-class _RetryFailsBatchAdjudicator:
-    """Stub for the genuine-shortfall case (issue #148): both the batch call AND
-    the single-candidate retry come up short for the same candidate (e.g. the
-    same outage/flake truncated both). This must still fail closed and still
-    warn — the retry is a best-effort recovery, not a second silent-drop risk.
-    """
-
-    def __init__(self, verdict_count: int) -> None:
-        self._verdict_count = verdict_count
+        self.solo_calls.append(candidate.text)
+        return L3Adjudication(is_entity=True)
 
     def adjudicate_batch(
         self, candidates: list[CandidateSpan]
     ) -> list[L3Adjudication]:
-        return [L3Adjudication(is_entity=False)] * self._verdict_count
-
-    def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
-        raise RuntimeError("local daemon flaked on the retry too")
+        self.batch_calls.append(tuple(c.text for c in candidates))
+        return [L3Adjudication(is_entity=len(candidates) == 1) for _ in candidates]
 
 
-def test_batch_short_response_retry_failure_still_fails_closed_and_warns(caplog):
-    # Issue #148: when the per-candidate retry (test_batch_short_response_
-    # recovers_missing_verdicts_via_single_candidate_retry) is ALSO unable to
-    # resolve a candidate, this is a genuine model/daemon shortfall, not a
-    # transient batch-format hiccup — the existing #142 fail-closed contract
-    # (over-redact, warn with scrubbed counts) still applies unchanged.
-    text = "We met Klaus, Yasmin, and Priya at the offsite."
-    adjudicator = _RetryFailsBatchAdjudicator(verdict_count=2)
-    detector = L3Detector(adjudicator, batch_size=5)
+def test_candidate_verdict_does_not_depend_on_what_else_is_in_the_hop():
+    # ADR-0048 corollary 3 (issue #283): "a candidate span's verdict must not
+    # depend on whether, with what, or where it was batched" -- solo adjudication
+    # is the reference. "Helvetia" (the ADR's own repro) confirms alone; the
+    # identical span, in a hop crowded with four other candidates, must confirm
+    # exactly the same way -- never dismissed purely because of its hop-mates.
+    solo_text = "The Helvetia rollout slipped by two weeks."
+    crowded_text = (
+        "The Helvetia rollout slipped by two weeks. We also met Klaus, Yasmin,"
+        " Priya, and Boris at the offsite."
+    )
 
-    with caplog.at_level(logging.WARNING, logger="blindfold.l3"):
-        results = detector.detect(text, known_entities=[])
+    solo_adjudicator = _CoupledBatchAdjudicator()
+    solo_results = L3Detector(solo_adjudicator).detect(solo_text, known_entities=[])
+    helvetia_solo = next(d for c, d in solo_results if c.text == "Helvetia")
 
-    by_text = {candidate.text: decision for candidate, decision in results}
-    assert len(by_text) == 3
-    assert by_text["Priya"].is_entity is True  # fail-closed: retry also failed
+    crowded_adjudicator = _CoupledBatchAdjudicator()
+    crowded_results = L3Detector(crowded_adjudicator).detect(
+        crowded_text, known_entities=[]
+    )
+    helvetia_crowded = next(d for c, d in crowded_results if c.text == "Helvetia")
 
-    mismatch_records = [
-        r for r in caplog.records if "l3_batch_adjudication_short_response" in r.getMessage()
-    ]
-    assert len(mismatch_records) == 1
-    message = mismatch_records[0].getMessage()
-    assert "expected=3" in message
-    assert "received=2" in message
-    assert "missing=1" in message
-    for token in ("Klaus", "Yasmin", "Priya"):
-        assert token not in message
-
-
-def test_batch_short_response_treats_missing_candidates_as_is_entity_true(caplog):
-    # Issue #142 fail-closed contract: a short/malformed batch response (fewer
-    # verdicts than candidates) must NOT silently dismiss the unadjudicated
-    # candidates. The two verdicts present are honored (both false here); the
-    # third candidate, missing a verdict entirely, is over-redacted
-    # (is_entity=True) rather than risking an unresolved real entity slipping
-    # through as if it had been reviewed and cleared.
-    text = "We met Klaus, Yasmin, and Priya at the offsite."
-    adjudicator = _ShortResponseBatchAdjudicator(verdict_count=2)
-    detector = L3Detector(adjudicator, batch_size=5)
-
-    with caplog.at_level(logging.WARNING, logger="blindfold.l3"):
-        results = detector.detect(text, known_entities=[])
-
-    by_text = {candidate.text: decision for candidate, decision in results}
-    assert len(by_text) == 3
-    assert by_text["Klaus"].is_entity is False
-    assert by_text["Yasmin"].is_entity is False
-    assert by_text["Priya"].is_entity is True  # fail-closed: no verdict returned
-
-    # Scrubbed: the mismatch is logged with candidate counts only, never the
-    # candidate text itself (leak-audit — this is still real, un-blindfolded text).
-    mismatch_records = [
-        r for r in caplog.records if "l3_batch_adjudication_short_response" in r.getMessage()
-    ]
-    assert len(mismatch_records) == 1
-    message = mismatch_records[0].getMessage()
-    assert "expected=3" in message
-    assert "received=2" in message
-    assert "missing=1" in message
-    for token in ("Klaus", "Yasmin", "Priya"):
-        assert token not in message
-
-
-def test_batch_short_response_still_caches_the_fail_closed_verdict():
-    # The fail-closed is_entity=True verdict for a missing candidate is cached
-    # like any other decision — a subsequent turn with the same (span, context)
-    # doesn't re-adjudicate it (ADR-0003), and doesn't need a fresh short response
-    # to stay protected.
-    text = "We met Priya at the offsite."
-    detector = L3Detector(_ShortResponseBatchAdjudicator(verdict_count=0), batch_size=5)
-
-    first = detector.detect(text, known_entities=[])
-    second = detector.detect(text, known_entities=[])
-
-    assert dict(first)[first[0][0]].is_entity is True
-    assert dict(second)[second[0][0]].is_entity is True
-
-
-def test_batch_adjudication_cuts_round_trips_5x_at_default_batch_size_over_100_candidates():
-    # Acceptance criterion (issue #142): "latency for a 100-candidate pass is lower
-    # than sequential baseline at batch size 5." HTTP round-trips (not wall-clock,
-    # which a unit test can't measure meaningfully against a stub) is the cost this
-    # issue set out to cut -- ADR-0022's own deferred-followup framing ("the HTTP
-    # round-trip overhead ... is paid separately for every candidate"). A single-
-    # candidate adjudicator pays exactly 100 round-trips for 100 candidates; the
-    # default batch size (5) cuts that to 20 -- a 5x reduction, documented here as
-    # the before/after figure for the PR.
-    nato_words = [
-        "Alfa", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel",
-        "India", "Juliett", "Kilo", "Lima", "Mike", "November", "Oscar", "Papa",
-        "Quebec", "Romeo", "Sierra", "Tango",
-    ]
-    # A hyphen suffix keeps each occurrence's (text, context) content-cache key
-    # unique (the candidate span itself is still the bare word, e.g. "Alfa" — the
-    # regex stops at the non-word hyphen) so all 100 occurrences are genuine cache
-    # misses, not artificially deduped within a single detect() pass.
-    words = [f"{w}-{i}" for i in range(5) for w in nato_words]  # 100 occurrences
-    assert len(words) == 100
-    text = " and ".join(words)
-
-    sequential_adjudicator = _RecordingAdjudicator()
-    L3Detector(sequential_adjudicator).detect(text, known_entities=[])
-
-    batch_adjudicator = _RecordingBatchAdjudicator()
-    L3Detector(batch_adjudicator, batch_size=5).detect(text, known_entities=[])
-
-    assert len(sequential_adjudicator.calls) == 100
-    assert len(batch_adjudicator.batch_calls) == 20
-    assert len(sequential_adjudicator.calls) == 5 * len(batch_adjudicator.batch_calls)
-
-
-class _PartlyShortRetryCapableBatchAdjudicator:
-    """Records both batch calls and single-candidate retry calls, and under-
-    returns by a fixed amount on every batch — the representative live-traffic
-    shape from issue #148's report (short, but not empty, most batches).
-    """
-
-    def __init__(self, shortfall_per_batch: int) -> None:
-        self._shortfall_per_batch = shortfall_per_batch
-        self.batch_calls: list[int] = []
-        self.single_calls: list[str] = []
-
-    def adjudicate_batch(
-        self, candidates: list[CandidateSpan]
-    ) -> list[L3Adjudication]:
-        self.batch_calls.append(len(candidates))
-        verdict_count = max(0, len(candidates) - self._shortfall_per_batch)
-        return [L3Adjudication(is_entity=False)] * verdict_count
-
-    def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
-        self.single_calls.append(candidate.text)
-        return L3Adjudication(is_entity=False)
-
-
-def test_batch_adjudication_still_cuts_inner_llm_calls_when_batches_under_return():
-    # Issue #148 acceptance criterion: batching must still measurably reduce
-    # inner-LLM call count vs per-candidate even on a representative batch where
-    # most batch calls under-return by a small amount (the live-testing shape) —
-    # the retry-recovery this issue adds (test_batch_short_response_recovers_
-    # missing_verdicts_via_single_candidate_retry) trades one extra call per
-    # missing candidate, not a full per-candidate fallback for the whole batch.
-    nato_words = [
-        "Alfa", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot", "Golf", "Hotel",
-        "India", "Juliett", "Kilo", "Lima", "Mike", "November", "Oscar", "Papa",
-        "Quebec", "Romeo", "Sierra", "Tango",
-    ]
-    words = [f"{w}-{i}" for i in range(5) for w in nato_words]  # 100 occurrences
-    text = " and ".join(words)
-
-    # Every 5-candidate batch under-returns by 1 (4 of 5), the report's "off by
-    # a little" case -- each shortfall is recovered by exactly one retry call.
-    adjudicator = _PartlyShortRetryCapableBatchAdjudicator(shortfall_per_batch=1)
-    L3Detector(adjudicator, batch_size=5).detect(text, known_entities=[])
-
-    total_calls = len(adjudicator.batch_calls) + len(adjudicator.single_calls)
-    assert len(adjudicator.batch_calls) == 20
-    assert len(adjudicator.single_calls) == 20  # one retry per under-returned batch
-    assert total_calls == 40
-    # Still well under the 100 calls a fully per-candidate pass would cost.
-    assert total_calls < 100
+    assert helvetia_solo.is_entity is True
+    assert helvetia_crowded.is_entity is True
+    # One candidate, one prompt: the batch seam is never invoked, regardless of
+    # how many other candidates share the hop.
+    assert solo_adjudicator.batch_calls == []
+    assert crowded_adjudicator.batch_calls == []
 
 
 def test_count_capitalized_tokens_counts_every_raw_capitalized_occurrence():
