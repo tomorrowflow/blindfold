@@ -821,9 +821,11 @@ def _live_surrogate_values(
     process-global vocabulary: a "Bernhard Vogt" seed surrogate for an unrelated
     referent, never mentioned anywhere in *this* text, must never suppress a
     genuinely novel real value that merely shares a word with it (issue #68's
-    own hardening — see :func:`_injected_surrogate_ranges` and the mint-time
-    surrogate-space guard in :func:`_blindfold_text`, both of which key off this
-    same occurs-in-text scope rather than word-level set membership).
+    own hardening). The same occurs-in-text discipline (rather than word-level
+    set membership) backs the mint-time pool-vs-corpus guard
+    (:func:`store._mint.pool_entry_collides_with_corpus`) and the repair path
+    (:meth:`review.ReviewInbox.purge_surrogate_collisions`); this helper is
+    consumed only by :func:`_injected_surrogate_ranges`.
     """
     values: set[str] = set(mapping.known_surrogates())
     values.update(session.injected)
