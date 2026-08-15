@@ -21,7 +21,7 @@ import re
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NoReturn
 
 from .detection import detect_l2, detect_pii
 from .l3 import _SENTENCE_STOPWORDS as _COMPONENT_STOPWORDS
@@ -1110,7 +1110,11 @@ def scrub_entity_reference(real: str, mapping: SurrogateMapping) -> str:
     return f"hash:{digest}"
 
 
-def leak_gate(blinded_outbound: dict[str, Any], mapping: SurrogateMapping) -> None:
+def leak_gate(
+    blinded_outbound: dict[str, Any],
+    mapping: SurrogateMapping,
+    inbox: ReviewInbox | None = None,
+) -> None:
     """Pre-egress leak gate (SEC-5, ADR-0020): the prevention half of the egress split.
 
     Raises :class:`LeakError` if a known real entity value is present anywhere in a
@@ -1118,18 +1122,36 @@ def leak_gate(blinded_outbound: dict[str, Any], mapping: SurrogateMapping) -> No
     ``upstream.open_stream`` is ever called), so a blindfold-engine miss is caught
     *before* any byte reaches the provider rather than detected after the fact.
 
+    Issue #287: a **provisional** entity -- L3-confirmed and minted into the review
+    inbox, but not yet human-confirmed into the entity graph -- is never in
+    ``mapping.real_values()``; that set only grows on confirm. Restore still puts
+    the real value in front of the client on the turn it is discovered, so the
+    client's own transcript can carry it straight back on a later turn. Passing the
+    process-global ``inbox`` here closes that gap: its real values are checked the
+    same way, so a miss on a provisional entity still fails closed instead of
+    egressing on every turn after the one it was discovered on.
+
     The failure reason is scrubbed (SEC-3, issue #40): it references the offending
-    entity by :func:`scrub_entity_reference`, never the plaintext. That one reason
+    entity by :func:`scrub_entity_reference` (mapping-known values) or by its
+    provisional surrogate (inbox values), never the plaintext. That one reason
     string is what gets logged at WARNING and raised in the exception, so the same
     scrubbed string is what later reaches the 503 body and the audit record.
     """
+    def _raise_leak(ref: str) -> NoReturn:
+        # SEC-3 (issue #40): one scrubbed-reason format for both the mapping and the
+        # inbox path, so the string that reaches the log, the 503 body, and the audit
+        # record is byte-identical no matter which set the leaked value came from.
+        reason = f"real entity value would egress upstream (ref: {ref})"
+        logger.warning("leak_gate: %s", reason)
+        raise LeakError(reason)
+
     outbound_text = _collect_text(blinded_outbound)
     for real in mapping.real_values():
         if real in outbound_text:
-            ref = scrub_entity_reference(real, mapping)
-            reason = f"real entity value would egress upstream (ref: {ref})"
-            logger.warning("leak_gate: %s", reason)
-            raise LeakError(reason)
+            _raise_leak(scrub_entity_reference(real, mapping))
+    for item in inbox.list() if inbox is not None else ():
+        if item.real in outbound_text:
+            _raise_leak(item.provisional_surrogate)
 
 
 def resolution_gate(restored_response: dict[str, Any], session: ExchangeSession) -> None:

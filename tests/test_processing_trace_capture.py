@@ -27,12 +27,14 @@ from blindfold.app import (
     get_mapping,
     get_openai_upstream_client,
     get_processing_trace,
+    get_review_inbox,
     get_upstream_client,
     get_workspace_policies,
 )
 from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
 from blindfold.policy import DEFAULT_WORKSPACE, WorkspacePolicies
 from blindfold.processing_trace import ProcessingTraceBuffer
+from blindfold.review import ReviewInbox
 from blindfold.store import vendored_seed_repository
 from blindfold.surrogates import SurrogateMapping
 from blindfold.upstream import UpstreamClient, UpstreamError
@@ -443,6 +445,11 @@ async def test_passed_record_carries_scrubbed_per_hop_detail_and_l3_rollup():
     app.dependency_overrides[get_l3_detector] = lambda: L3Detector(
         _ConfirmQuentinAdjudicator(), provider_name="omlx"
     )
+    # Isolation: this confirms "Quentin" as a novel candidate, minting it into
+    # whichever ReviewInbox is wired. Without overriding, that would be the real,
+    # process-global inbox (app.py's DI default) -- polluting it for the rest of
+    # the suite with a provisional real value other tests reuse as a fixture name.
+    app.dependency_overrides[get_review_inbox] = lambda: ReviewInbox()
     app.dependency_overrides[get_processing_trace] = lambda: trace
     try:
         transport = httpx.ASGITransport(app=app)

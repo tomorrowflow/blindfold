@@ -24,6 +24,7 @@ from blindfold.engine import (
     resolution_gate,
     restore_response,
 )
+from blindfold.review import ReviewInbox
 from blindfold.surrogates import SurrogateMapping
 
 
@@ -113,6 +114,92 @@ def test_leak_gate_falls_back_to_a_hashed_id_when_the_leak_has_no_surrogate(capl
     assert "hash:" in str(excinfo.value)
     warnings = [record.getMessage() for record in caplog.records]
     assert not any("Quentin" in w for w in warnings), warnings
+
+
+def test_leak_gate_raises_when_a_provisional_entitys_real_value_is_in_the_outbound_payload():
+    # Issue #287: a provisional entity (L3-confirmed, minted into the review inbox,
+    # not yet human-confirmed into the entity graph) is NOT in the mapping's
+    # real_values() set -- it lives only in the inbox until confirm/reject. The
+    # gate must still catch it, since the client's transcript can carry the
+    # restored real value back on a later turn.
+    mapping = _mapping()
+    inbox = ReviewInbox()
+    inbox.upsert("Kestrel Dynamics", context="Please brief Kestrel Dynamics.")
+    leaky_outbound = {
+        "messages": [{"role": "user", "content": "Follow up with Kestrel Dynamics."}]
+    }
+
+    with pytest.raises(LeakError):
+        leak_gate(leaky_outbound, mapping, inbox)
+
+
+def test_leak_gate_raises_when_a_provisional_entitys_real_value_is_in_a_tool_use_input():
+    # Issue #287's own observed shape: the client's transcript replays the restored
+    # real value inside a tool call's arguments (e.g. a file it wrote, a command it
+    # ran), not just prose. leak_gate already walks every string leaf regardless of
+    # shape (_collect_text / walk_string_leaves) -- this pins that the provisional
+    # check inherits that same coverage rather than being prose-only.
+    mapping = _mapping()
+    inbox = ReviewInbox()
+    inbox.upsert("79 555 0142", context="Call 79 555 0142 back.")
+    leaky_outbound = {
+        "messages": [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "name": "send_sms",
+                        "input": {"to": "79 555 0142", "body": "confirmed"},
+                    }
+                ],
+            }
+        ]
+    }
+
+    with pytest.raises(LeakError):
+        leak_gate(leaky_outbound, mapping, inbox)
+
+
+def test_leak_gate_does_not_block_on_an_empty_inbox_when_only_confirmed_values_are_present():
+    # No change to what the gate does for confirmed entities (acceptance criterion):
+    # passing an inbox with no provisional items must not alter the existing
+    # mapping-only behavior.
+    mapping = _mapping()
+    inbox = ReviewInbox()
+    payload = {
+        "model": "m",
+        "messages": [{"role": "user", "content": "Hi Anna Schmidt"}],
+    }
+    blinded, _session = blindfold_payload(payload, mapping)
+
+    # Should not raise: no provisional entities exist, and the outbound is clean.
+    leak_gate(blinded, mapping, inbox)
+
+
+def test_leak_gate_scrubs_a_provisional_leaks_reason_to_the_provisional_surrogate(
+    caplog,
+):
+    """SEC-3 (issue #40) extended to provisional entities: the block reason and the
+    WARNING log must reference the leaked entity by its provisional surrogate,
+    never the real plaintext -- same discipline as a leak on a confirmed entity.
+    """
+    mapping = _mapping()
+    inbox = ReviewInbox()
+    item = inbox.upsert("Kestrel Dynamics", context="Please brief Kestrel Dynamics.")
+    leaky_outbound = {
+        "messages": [{"role": "user", "content": "Follow up with Kestrel Dynamics."}]
+    }
+
+    with caplog.at_level(logging.WARNING, logger="blindfold.engine"):
+        with pytest.raises(LeakError) as excinfo:
+            leak_gate(leaky_outbound, mapping, inbox)
+
+    assert item.provisional_surrogate in str(excinfo.value)
+    assert "Kestrel Dynamics" not in str(excinfo.value)
+    warnings = [record.getMessage() for record in caplog.records]
+    assert any(item.provisional_surrogate in w for w in warnings), warnings
+    assert not any("Kestrel Dynamics" in w for w in warnings), warnings
 
 
 def test_resolution_gate_accepts_a_clean_round_trip():

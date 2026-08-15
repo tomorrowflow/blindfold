@@ -1240,15 +1240,23 @@ def _leak_gate_or_block(
     workspace: str,
     audit_log: AuditLog,
     block_history: BlockHistory,
+    inbox: ReviewInbox | None = None,
 ) -> JSONResponse | None:
     """Run the pre-egress :func:`leak_gate`; return a block ``JSONResponse`` if it raised.
 
     Runs before ``upstream.send_*``/``open_stream`` (ADR-0020, SEC-5): a leaked real
     value is a prevented privacy bug, not a post-hoc detection — nothing reaches the
     provider on this path.
+
+    ``inbox`` (issue #287) extends the gate's known-real-value set to provisional
+    entities -- minted into the review inbox but not yet human-confirmed into the
+    entity graph, so absent from ``mapping.real_values()``. Without it, a
+    provisional entity's real value (restored to the client on the turn it was
+    discovered) egresses unblocked on any later turn whose transcript carries it
+    back and whose detection pass misses it.
     """
     try:
-        leak_gate(blinded, mapping)
+        leak_gate(blinded, mapping, inbox)
     except LeakError as exc:
         # SEC-3 (issue #40): `exc`'s message is already the one scrubbed reason
         # string leak_gate logged — forward it as-is so the 503 body, the audit
@@ -1494,7 +1502,9 @@ async def messages(
             return result
         blinded, session = result
 
-        block = _leak_gate_or_block(blinded, mapping, workspace, audit_log, block_history)
+        block = _leak_gate_or_block(
+            blinded, mapping, workspace, audit_log, block_history, inbox
+        )
         if block is not None:
             _record_trace(
                 trace, workspace, "messages", streamed, OUTCOME_BLOCKED,
@@ -1557,6 +1567,7 @@ async def count_tokens(
     request: Request,
     upstream: UpstreamClient = Depends(get_upstream_client),
     mapping: SurrogateMapping = Depends(get_mapping),
+    inbox: ReviewInbox = Depends(get_review_inbox),
     l3_detector: L3Detector = Depends(get_l3_detector),
     policies: WorkspacePolicies = Depends(get_workspace_policies),
     audit_log: AuditLog = Depends(get_audit_log),
@@ -1574,15 +1585,23 @@ async def count_tokens(
     own count endpoint. There is no restore side — the response is a bare token
     count, never surrogate text — so no resolution gate runs here.
 
-    Deliberately never receives the real, DI-injected ``ReviewInbox``: the mint
-    pass below always passes ``inbox=None``, so ``blindfold_payload`` substitutes
-    the ephemeral, unattached inbox :func:`~blindfold.engine._replay_inbox`
+    The mint pass below always passes ``inbox=None``, so ``blindfold_payload``
+    substitutes the ephemeral, unattached inbox :func:`~blindfold.engine._replay_inbox`
     already provides for a wired-detector/no-inbox caller (issue #274) — a
     confirmed novel candidate is still minted (so it's blindfolded out of this
     request), but the mint can never reach the durable review inbox or grow the
     entity graph. A measurement is not a use; determinism of the shared
     ``mapping`` singleton means the same real value still gets the same surrogate
     when the same content is actually sent moments later.
+
+    The real, DI-injected ``ReviewInbox`` IS read here, though (issue #287): a
+    provisional entity minted on an earlier ``/v1/messages``/``/v1/chat/completions``
+    exchange lives only in that durable inbox, never in ``mapping.real_values()``,
+    and a count-tokens body carrying its real value back (the same transcript-
+    replay exposure as any other endpoint) must still be caught by the pre-egress
+    leak gate. Reading the inbox's existing items is not a "use" that needs
+    withholding the way minting into it would be — only the write side is
+    deliberately skipped above.
 
     The returned count is of the *surrogate* text that would actually be sent,
     not the user's real text — those can differ when a surrogate tokenizes
@@ -1626,7 +1645,9 @@ async def count_tokens(
             return result
         blinded, session = result
 
-        block = _leak_gate_or_block(blinded, mapping, workspace, audit_log, block_history)
+        block = _leak_gate_or_block(
+            blinded, mapping, workspace, audit_log, block_history, inbox
+        )
         if block is not None:
             _record_trace(
                 trace, workspace, "count_tokens", False, OUTCOME_BLOCKED,
@@ -1701,7 +1722,9 @@ async def chat_completions(
             return result
         blinded, session = result
 
-        block = _leak_gate_or_block(blinded, mapping, workspace, audit_log, block_history)
+        block = _leak_gate_or_block(
+            blinded, mapping, workspace, audit_log, block_history, inbox
+        )
         if block is not None:
             _record_trace(
                 trace, workspace, "chat_completions", False, OUTCOME_BLOCKED,
