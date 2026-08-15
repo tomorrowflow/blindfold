@@ -21,7 +21,7 @@ import re
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NoReturn
 
 from .detection import detect_l2, detect_pii
 from .l3 import _SENTENCE_STOPWORDS as _COMPONENT_STOPWORDS
@@ -1106,21 +1106,21 @@ def leak_gate(
     string is what gets logged at WARNING and raised in the exception, so the same
     scrubbed string is what later reaches the 503 body and the audit record.
     """
+    def _raise_leak(ref: str) -> NoReturn:
+        # SEC-3 (issue #40): one scrubbed-reason format for both the mapping and the
+        # inbox path, so the string that reaches the log, the 503 body, and the audit
+        # record is byte-identical no matter which set the leaked value came from.
+        reason = f"real entity value would egress upstream (ref: {ref})"
+        logger.warning("leak_gate: %s", reason)
+        raise LeakError(reason)
+
     outbound_text = _collect_text(blinded_outbound)
     for real in mapping.real_values():
         if real in outbound_text:
-            ref = scrub_entity_reference(real, mapping)
-            reason = f"real entity value would egress upstream (ref: {ref})"
-            logger.warning("leak_gate: %s", reason)
-            raise LeakError(reason)
+            _raise_leak(scrub_entity_reference(real, mapping))
     for item in inbox.list() if inbox is not None else ():
         if item.real in outbound_text:
-            reason = (
-                "real entity value would egress upstream "
-                f"(ref: {item.provisional_surrogate})"
-            )
-            logger.warning("leak_gate: %s", reason)
-            raise LeakError(reason)
+            _raise_leak(item.provisional_surrogate)
 
 
 def resolution_gate(restored_response: dict[str, Any], session: ExchangeSession) -> None:
