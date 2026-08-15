@@ -353,8 +353,13 @@ _processing_trace = ProcessingTraceBuffer()
 # endpoint is polled ~5s) against L3/Transit. Kept as module-global CachedHealthProbe
 # instances (not built per-request) so the TTL is actually meaningful across polls.
 # upstream has no cheap standalone active probe of its own (it's the paid provider) --
-# its health is the passive RecentFailureHealth signal instead, fed by the existing
-# `_upstream_error_response` funnel (#86). l3/transit/store use an active probe:
+# its health is the passive RecentFailureHealth signal instead, driven by the actual
+# outcome of real requests: a run of consecutive failures (fed by the existing
+# `_upstream_error_response` funnel, #86) flips it unhealthy, and a subsequent
+# successful upstream call (marked at each of the messages/count_tokens/
+# chat_completions call sites) clears it immediately (issue #290) -- no restart, and
+# no reliance on a decay timer that can't tell "recovered" from "just quiet". l3/
+# transit/store use an active probe:
 #   - l3: `settings.l3_model` unset means no adjudicator is wired at all (the
 #     `_UnconfiguredAdjudicator` case, ADR-0009) -- reported unhealthy without a network
 #     call, since that state is already certain; configured means a live ping_ollama or
@@ -368,8 +373,13 @@ _processing_trace = ProcessingTraceBuffer()
 #     the probe seam still exists so /v1/status treats all four dependencies uniformly
 #     and a future Postgres-backed store can wire a real probe without reshaping this.
 _HEALTH_PROBE_TTL_SECONDS = 5.0
-_UPSTREAM_UNHEALTHY_WINDOW_SECONDS = 60.0
-_upstream_health = RecentFailureHealth(unhealthy_window_seconds=_UPSTREAM_UNHEALTHY_WINDOW_SECONDS)
+# Issue #290: three consecutive upstream failures with no success between them --
+# enough to tell a truly broken upstream from one flaky request, without waiting
+# through a long run of failed exchanges first.
+_UPSTREAM_UNHEALTHY_AFTER_CONSECUTIVE_FAILURES = 3
+_upstream_health = RecentFailureHealth(
+    unhealthy_after_consecutive_failures=_UPSTREAM_UNHEALTHY_AFTER_CONSECUTIVE_FAILURES
+)
 
 
 def _default_l3_probe() -> DependencyHealth:
@@ -1089,10 +1099,14 @@ def _upstream_error_response(
     error shape. ``exc``'s message is already scrubbed -- it carries only the
     transport-level failure shape, never payload content (see ``UpstreamError``).
 
-    Issue #92: also feeds `/v1/status`'s passive upstream health signal -- this is
-    the one funnel every upstream-boundary failure already routes through, so it's
-    the natural place to mark "upstream" unhealthy for the bounded decay window
-    (:class:`~blindfold.status.RecentFailureHealth`), with no extra call sites needed.
+    Issue #92/#290: also feeds `/v1/status`'s passive upstream health signal -- this
+    is the one funnel every upstream-boundary failure already routes through, so
+    it's the natural place to record a failure against
+    :class:`~blindfold.status.RecentFailureHealth`'s consecutive-failure count. The
+    counter only flips the surface unhealthy after a run of consecutive failures
+    (never a single transient one); the matching success call sites
+    (``upstream_health.mark_success()`` at each of ``messages``/``count_tokens``/
+    ``chat_completions``) are what clears it again once real requests succeed.
     """
     logger.warning(
         "blindfold_upstream_error: workspace=%s sub_reason=%s reason=%s",
@@ -1102,7 +1116,7 @@ def _upstream_error_response(
     )
     audit_log.append(AuditRecord(workspace=workspace, event="upstream-error", reason=str(exc)))
     if upstream_health is not None:
-        upstream_health.mark_unhealthy(exc.sub_reason)
+        upstream_health.mark_failure(exc.sub_reason)
     return JSONResponse(
         status_code=exc.status_code,
         content={
@@ -1499,6 +1513,7 @@ async def messages(
                 upstream_duration_ms=(time.monotonic() - upstream_start) * 1000,
             )
             return _upstream_error_response(exc, workspace, audit_log, upstream_health)
+        upstream_health.mark_success()
         open_stream_duration_ms = (time.monotonic() - upstream_start) * 1000
         return StreamingResponse(
             _stream_restored(
@@ -1518,6 +1533,7 @@ async def messages(
             upstream_duration_ms=(time.monotonic() - upstream_start) * 1000,
         )
         return _upstream_error_response(exc, workspace, audit_log, upstream_health)
+    upstream_health.mark_success()
     upstream_duration_ms = (time.monotonic() - upstream_start) * 1000
     restored = restore_response(raw_response, session)
     block = _resolution_gate_or_block(restored, session, workspace, audit_log, block_history)
@@ -1628,6 +1644,7 @@ async def count_tokens(
             upstream_duration_ms=(time.monotonic() - upstream_start) * 1000,
         )
         return _upstream_error_response(exc, workspace, audit_log, upstream_health)
+    upstream_health.mark_success()
     upstream_duration_ms = (time.monotonic() - upstream_start) * 1000
     _record_trace(
         trace, workspace, "count_tokens", False, OUTCOME_PASSED,
@@ -1704,6 +1721,7 @@ async def chat_completions(
             upstream_duration_ms=(time.monotonic() - upstream_start) * 1000,
         )
         return _upstream_error_response(exc, workspace, audit_log, upstream_health)
+    upstream_health.mark_success()
     upstream_duration_ms = (time.monotonic() - upstream_start) * 1000
     restored = restore_chat_completion(raw_response, session)
     block = _resolution_gate_or_block(restored, session, workspace, audit_log, block_history)
