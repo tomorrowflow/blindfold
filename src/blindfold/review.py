@@ -25,7 +25,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 from .policy import DEFAULT_WORKSPACE
-from .store._mint import collides_with_known_entity, surrogate_space_match
+from .store._mint import (
+    collides_with_known_entity,
+    pool_entry_collides_with_corpus,
+    surrogate_space_match,
+)
 
 if TYPE_CHECKING:
     from .mapping_cipher import MappingCipher
@@ -282,6 +286,7 @@ class ReviewInbox:
         context_offset: int | None = None,
         entity_type: str | None = None,
         workspace: str = DEFAULT_WORKSPACE,
+        corpus_text: str | None = None,
     ) -> ReviewItem:
         """Add (or reuse) a provisional inbox entry for ``real`` and return it.
 
@@ -300,6 +305,16 @@ class ReviewInbox:
         is the closed-world set of known entities' canonical names + Variations
         (the same set the pre-egress leak gate checks); a pool entry that contains
         one as a substring is skipped, never assigned to any item.
+
+        ``corpus_text`` (issue #292) extends that same disjointness from known
+        reals to the live corpus being processed this exchange: a pool entry
+        already occurring (whole value or distinctive component) in
+        ``corpus_text`` is skipped too, the same way a pool entry colliding
+        with a known real is. Defaults to ``context`` when omitted, so every
+        existing caller that only ever had the local context snippet keeps
+        checking against it; ``engine.py``'s real call site passes the full
+        hop text explicitly, since the collision that matters can be anywhere
+        in the hop, not just near this candidate's own occurrence.
 
         ``context_offset`` (ADR-0035 decision 11, issue #155) should be the
         candidate span's own position within ``context`` — the real detection
@@ -331,7 +346,10 @@ class ReviewInbox:
         )
         start_position = self._pool_positions.get(pool_key, 0)
         surrogate, next_position = _next_provisional(
-            pool_key, start_position, known_values
+            pool_key,
+            start_position,
+            known_values,
+            corpus_text if corpus_text is not None else context,
         )
         self._pool_positions[pool_key] = next_position
         if context_offset is None:
@@ -463,15 +481,38 @@ def _provisional_pool_entry(pool_key: str, position: int) -> str:
 
 
 def _next_provisional(
-    pool_key: str, start_position: int, known_values: Iterable[str]
+    pool_key: str,
+    start_position: int,
+    known_values: Iterable[str],
+    corpus_text: str = "",
 ) -> tuple[str, int]:
     """The first mint-time-disjoint entry at or after ``start_position`` in the
     ``pool_key`` pool, and the cursor position to resume from on the next call
-    for that same pool (issue #80, per-pool since issue #167)."""
+    for that same pool (issue #80, per-pool since issue #167).
+
+    ``corpus_text`` (issue #292) adds pool-vs-corpus disjointness alongside
+    the existing pool-vs-known-real check: a *named* pool entry already
+    occurring (whole value or distinctive component) in the text being
+    processed this exchange is skipped too, the same way a known-real
+    collision is. Deliberately scoped to named entries only (``position <
+    len(pool)``), never the numbered ``"Provisional Surrogate {N}"`` fallback:
+    that fallback's own words ("Provisional", "Surrogate", the pool's kind
+    name) are generic project vocabulary that legitimately appears constantly
+    in ordinary corpus text about Blindfold itself -- checking it against the
+    corpus would spuriously collide on every fallback candidate forever,
+    turning a bounded pool walk into an unbounded one. The embedded position
+    number already makes every fallback entry unique without needing a corpus
+    check.
+    """
     known = list(known_values)
+    pool_size = len(_PROVISIONAL_POOLS[pool_key])
     position = start_position
     while True:
         candidate = _provisional_pool_entry(pool_key, position)
+        is_named_entry = position < pool_size
         position += 1
-        if not collides_with_known_entity(candidate, known):
-            return candidate, position
+        if collides_with_known_entity(candidate, known):
+            continue
+        if is_named_entry and pool_entry_collides_with_corpus(candidate, corpus_text):
+            continue
+        return candidate, position

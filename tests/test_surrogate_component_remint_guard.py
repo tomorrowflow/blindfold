@@ -1,54 +1,70 @@
 """Issue #292: Blindfold's own surrogates get re-detected as novel real entities.
 
-Root cause (engine.py:701, ``_injected_surrogate_ranges``): the existing L3
-"already-injected surrogate" guard (ADR-0022, issue #68) only skips a candidate
-whose own occurrence position falls entirely inside a literal occurrence of the
-*full* surrogate string in this hop's text. It says nothing about a **surrogate
-component** (CONTEXT.md ~line 267, e.g. ``Carla`` in ``Carla Distel``) that shows
-up on its own, at a *different* position, elsewhere in the same text -- e.g. a
-worked example inside a doc/glossary hop the agent reads. L3 confirms that bare
-component as a fresh novel person, the review inbox mints it a *second*
-surrogate, and the resulting inbox item's ``real`` (the component, e.g.
-``"Carla"``) is a substring of the live surrogate ``"Carla Distel"`` that
-legitimately appears throughout the traffic -- so ``leak_gate``'s
-``item.real in outbound_text`` check (issue #287) fires on every subsequent
-request forever. Reproduced here directly at the ``blindfold_payload`` seam
-(same one ``test_review_inbox_mint_hardening.py`` uses), not the full HTTP
-app, since the defect and its fix are both in the mint pass.
+**Corrected root cause** (trusted-maintainer comment after cycle 2): the bug is
+not that a surrogate *component* can't be told apart from a genuine real value
+by string alone -- that ambiguity is real but only matters once a colliding
+surrogate has already been minted. The actual defect is that the provisional
+surrogate pool (``review._PROVISIONAL_POOL``) was never checked for
+disjointness against the **live corpus** being processed -- only against other
+pools (issue #80's pool-vs-pool checks) and the closed-world set of known real
+values. This repository's own docs (``CONTEXT.md``, ``docs/adr/0036``) used a
+literal pool entry as a worked example, so an agent reading either as a tool
+result handed L3 a bare pool-name component as prose; L3 confirmed it as a
+novel real; that string was simultaneously live as a surrogate for an
+unrelated referent; ``leak_gate``'s ``item.real in outbound_text`` substring
+check (issue #287) then fired on every subsequent payload, forever.
+
+**The fix**: extend issue #80's mint-time disjointness from seeded reals to
+the live corpus (``store._mint.pool_entry_collides_with_corpus``,
+``review._next_provisional``) -- a pool entry already occurring in the hop's
+own text is skipped, falling back to the next pool entry, exactly like an
+entry colliding with a known real value already is. No candidate is ever
+dismissed into plaintext: cycle 2's value-scoped ``surrogate_space_match``
+dismissal in ``engine._blindfold_text`` is removed outright, not narrowed
+further. Docs no longer use a literal pool entry as an example (see
+``test_no_pool_entry_appears_as_a_literal_example_in_docs``).
+
+**The accepted residual**: a real value in a *later* exchange can still
+collide with a surrogate minted in an *earlier* one (or pre-seeded before this
+exchange) -- pool-vs-corpus disjointness only guards the corpus being
+processed *this* exchange. That tail stays fail-closed (blocked by
+``leak_gate``, unchanged and out of scope), never fail-open -- see
+``test_kurt_colliding_with_an_earlier_minted_surrogate_still_fails_closed``
+and ``test_standalone_component_of_an_earlier_minted_surrogate_still_fails_closed``,
+mirroring the reviewer's own cycle-2 findings.
 
 Leak-audit clauses exercised:
-- A: the stub upstream would receive only the live surrogate, never a second,
-  spurious surrogate for a fragment of it.
-- F (fail-closed unchanged): a genuinely novel real value that shares no span
-  with surrogate-space still mints exactly as before -- the guard must not
-  widen into a general "don't detect anything surrogate-shaped" policy
-  (mirrors ``test_l3_surrogate_reblindfold_guard.py``'s companion "Vogt"
-  case for the *other* direction's guard).
-N/A this slice: B/C/D/E/G -- no restore/store-repair-path assertions in this
-file (the repair-path acceptance criterion has its own test).
+- A: no candidate is ever left in plaintext by dismissal (removed); a real
+  value colliding with corpus-disjoint-avoided surrogate space still mints
+  and blindfolds normally; a real value colliding with an *earlier*-minted
+  surrogate still fails closed (blocked), never egresses.
+- F (fail-closed unchanged / restored): a genuinely novel real value that
+  shares no span with surrogate-space still mints exactly as before; the
+  accepted residual blocks rather than leaks.
+N/A this slice: B/C/D/E/G -- no restore/store-schema/mapping-cipher changes;
+the repair path (``purge_surrogate_collisions``) is unchanged and has its own
+tests below.
 """
 
 from __future__ import annotations
 
-import json
+import pathlib
 import re
 
-import httpx
 import pytest
 
-from blindfold.app import (
-    app,
-    get_audit_log,
-    get_l3_detector,
-    get_mapping,
-    get_review_inbox,
-    get_upstream_client,
-)
-from blindfold.engine import blindfold_payload, leak_gate
+from blindfold.engine import LeakError, blindfold_payload, leak_gate
 from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
-from blindfold.review import ReviewInbox
+from blindfold.review import _PROVISIONAL_POOL, ReviewInbox
+from blindfold.store._mint import (
+    _PERSON_POOL,
+    _REPLACEMENT_POOL,
+    _TERM_POOL,
+    _ORG_POOL,
+)
 from blindfold.surrogates import SurrogateMapping
-from blindfold.upstream import UpstreamClient
+
+_REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
 class _ConfirmAnyNameShapedTokenAdjudicator:
@@ -64,10 +80,92 @@ class _ConfirmAnyNameShapedTokenAdjudicator:
         return L3Adjudication(is_entity=True)
 
 
-def test_standalone_component_of_a_live_surrogate_is_never_minted_as_provisional_real():
-    # "Referent Real" / "Carla Distel" stand in for #292's engagement-fixture
-    # referent and its already-minted multi-word surrogate S.
-    mapping = SurrogateMapping.from_pairs([("Referent Real", "Carla Distel")])
+def test_no_pool_entry_appears_as_a_literal_example_in_docs():
+    # Acceptance criterion: docs no longer use literal pool entries as
+    # examples -- a regression guard so this can't silently reappear. Scans
+    # CONTEXT.md and every docs/adr/*.md file for any surrogate-pool entry
+    # (from every pool -- seed-time and provisional alike), the actual
+    # trigger for the reported deadlock (a pool entry doubling as a doc's
+    # own worked example).
+    from blindfold.review import _PROVISIONAL_ORG_POOL
+
+    all_pool_entries = (
+        list(_PERSON_POOL)
+        + list(_TERM_POOL)
+        + list(_ORG_POOL)
+        + list(_REPLACEMENT_POOL)
+        + list(_PROVISIONAL_POOL)
+        + list(_PROVISIONAL_ORG_POOL)
+    )
+
+    doc_paths = [_REPO_ROOT / "CONTEXT.md", *sorted((_REPO_ROOT / "docs" / "adr").glob("*.md"))]
+    offenders = []
+    for path in doc_paths:
+        text = path.read_text()
+        for entry in all_pool_entries:
+            if entry in text:
+                offenders.append((path.name, entry))
+
+    assert offenders == []
+
+
+def test_pool_vs_corpus_disjointness_prevents_the_reported_deadlock():
+    # The observed deadlock's actual shape: a referent needing a *fresh*
+    # surrogate this exchange, and a literal pool entry (+ its first
+    # component) already present as plain prose in the *same* hop's corpus
+    # -- e.g. a doc/glossary tool result read alongside real traffic. The
+    # pool entry must never be assigned; the next pool entry is used
+    # instead, so no candidate ever needs to be dismissed and no subsequent
+    # payload carrying the newly-assigned surrogate is blocked.
+    mapping = SurrogateMapping()
+    inbox = ReviewInbox()
+    detector = L3Detector(_ConfirmAnyNameShapedTokenAdjudicator())
+    pool_entry = _PROVISIONAL_POOL[0]
+    first_component = pool_entry.split()[0]
+    payload = {
+        "model": "m",
+        "messages": [
+            {
+                "role": "user",
+                "content": (
+                    "Sarah Bergmann filed the report. By the way, a "
+                    "surrogate component is a word token of a multi-word "
+                    f"surrogate (e.g. {first_component} in {pool_entry})."
+                ),
+            }
+        ],
+    }
+
+    blindfolded, session = blindfold_payload(payload, mapping, detector, inbox)
+
+    items = {item.real: item for item in inbox.list()}
+    assert "Sarah Bergmann" in items
+    assert items["Sarah Bergmann"].provisional_surrogate != pool_entry
+
+    text = blindfolded["messages"][0]["content"]
+    # Not blocked -- the whole point of avoiding the collision at mint time.
+    leak_gate({"messages": [{"role": "user", "content": text}]}, mapping, inbox)
+
+
+def test_reading_context_and_adr0036_excerpts_as_tool_results_does_not_deadlock_the_gate():
+    # The concrete reproduction from live-verify run 4: CONTEXT.md's
+    # "Surrogate component" glossary entry and ADR-0036's worked example,
+    # read as a tool result alongside genuine traffic in the same exchange,
+    # must not deadlock the gate -- neither on this hop nor (the actual
+    # reported symptom -- "every payload, forever") on a later one.
+    context_md = _REPO_ROOT / "CONTEXT.md"
+    context_lines = context_md.read_text().splitlines()
+    glossary_excerpt = "\n".join(context_lines[253:271])
+
+    adr_0036 = (
+        _REPO_ROOT
+        / "docs"
+        / "adr"
+        / "0036-component-restore-bounded-closed-world-sub-token.md"
+    )
+    adr_excerpt = "\n".join(adr_0036.read_text().splitlines()[:30])
+
+    mapping = SurrogateMapping()
     inbox = ReviewInbox()
     detector = L3Detector(_ConfirmAnyNameShapedTokenAdjudicator())
     payload = {
@@ -76,39 +174,34 @@ def test_standalone_component_of_a_live_surrogate_is_never_minted_as_provisional
             {
                 "role": "user",
                 "content": (
-                    "Referent Real asked me to loop in Carla about the schedule."
+                    "Sarah Bergmann asked me to review these two doc "
+                    f"excerpts:\n\n{glossary_excerpt}\n\n{adr_excerpt}"
                 ),
             }
         ],
     }
 
     blindfolded, session = blindfold_payload(payload, mapping, detector, inbox)
-
-    # The bare component "Carla" (second occurrence, standalone -- not inside
-    # the "Carla Distel" occurrence L2 just injected for "Referent Real") must
-    # never become a provisional real entity.
-    inbox_reals = {item.real for item in inbox.list()}
-    assert "Carla" not in inbox_reals
-
-    # The live surrogate itself must still egress untouched -- this is not a
-    # second-surrogate-for-the-same-referent regression.
     text = blindfolded["messages"][0]["content"]
-    assert "Carla Distel" in text
-    assert "Referent Real" not in text
-
-    # Companion assertion from the issue: once the component is never minted,
-    # a later outbound payload that legitimately carries the live surrogate S
-    # must not deadlock the pre-egress leak gate (issue #287's
-    # ``item.real in outbound_text`` check over inbox items).
     leak_gate({"messages": [{"role": "user", "content": text}]}, mapping, inbox)
+
+    # A later, unrelated exchange carrying the same now-live surrogate(s)
+    # must not be blocked either -- the reported symptom was every request
+    # deadlocking, not just the one that read the docs.
+    followup = {
+        "model": "m",
+        "messages": [{"role": "user", "content": "Please summarize the review."}],
+    }
+    blindfolded_followup, _ = blindfold_payload(followup, mapping, detector, inbox)
+    followup_text = blindfolded_followup["messages"][0]["content"]
+    leak_gate({"messages": [{"role": "user", "content": followup_text}]}, mapping, inbox)
 
 
 def test_genuinely_novel_real_value_sharing_no_span_with_surrogate_space_still_mints():
-    # Guard over-broadness check (acceptance criterion 4): a real value that
+    # Guard over-broadness check (no loss of detection): a real value that
     # shares NO span with any live surrogate must be detected and minted
-    # exactly as before -- the fix must not become "never mint anything
-    # surrogate-shaped", only "never mint a live surrogate's own component".
-    mapping = SurrogateMapping.from_pairs([("Referent Real", "Carla Distel")])
+    # exactly as before.
+    mapping = SurrogateMapping.from_pairs([("Referent Real", "Erika Mustermann")])
     inbox = ReviewInbox()
     detector = L3Detector(_ConfirmAnyNameShapedTokenAdjudicator())
     payload = {
@@ -128,15 +221,10 @@ def test_genuinely_novel_real_value_sharing_no_span_with_surrogate_space_still_m
 
 
 def test_real_value_that_is_a_bare_character_fragment_of_an_unrelated_surrogate_still_mints():
-    # Reviewer finding on cycle 1 (leak-audit clause A): ``surrogate_space_match``
-    # used a raw ``candidate in value`` substring test, so a genuinely novel real
-    # value that is merely a *character*-level fragment of an unrelated live
-    # surrogate -- "Kurt" inside "Kurtis Vale", no word boundary -- was wrongly
-    # dismissed and left in plaintext. A CONTEXT.md ~line 267 "surrogate
-    # component" is a whole word token of a multi-word surrogate ("Kurtis" or
-    # "Vale"), never a partial prefix of one of those tokens. "Kurt" is not
-    # Blindfold's own output re-entering the transcript here; it must still be
-    # detected, minted, and blindfolded -- never dismissed into plaintext.
+    # A genuinely novel real value that is merely a *character*-level
+    # fragment of an unrelated live surrogate -- "Kurt" inside "Kurtis
+    # Vale", no word boundary -- is not Blindfold's own output re-entering
+    # the transcript; it must still be detected, minted, and blindfolded.
     mapping = SurrogateMapping.from_pairs([("Unrelated Referent", "Kurtis Vale")])
     inbox = ReviewInbox()
     detector = L3Detector(_ConfirmAnyNameShapedTokenAdjudicator())
@@ -164,13 +252,14 @@ def test_real_value_that_is_a_bare_character_fragment_of_an_unrelated_surrogate_
     assert not re.search(r"\bKurt\b", text)
 
 
-def test_self_poisoning_loop_no_component_of_a_previously_emitted_surrogate_is_minted():
-    # Acceptance criterion (the general form, not just the single-word repro
-    # above): a payload containing a previously emitted surrogate must not
-    # produce a provisional entity for the surrogate itself OR for any of its
-    # components, wherever in the text they surface -- standalone, together,
-    # or in either order.
-    mapping = SurrogateMapping.from_pairs([("Referent Real", "Carla Distel")])
+def test_standalone_component_of_an_earlier_minted_surrogate_still_fails_closed():
+    # Cycle 1's original repro, re-asserted against the new design: "Carla"
+    # (now "Erika") standing alone, elsewhere in the same text as the
+    # already-live surrogate "Erika Mustermann" *established before this
+    # exchange* (pre-seeded, not this hop's own corpus -- pool-vs-corpus
+    # disjointness only guards the corpus being processed this exchange).
+    # This is the accepted residual: fails closed (blocked), never leaked.
+    mapping = SurrogateMapping.from_pairs([("Referent Real", "Erika Mustermann")])
     inbox = ReviewInbox()
     detector = L3Detector(_ConfirmAnyNameShapedTokenAdjudicator())
     payload = {
@@ -179,17 +268,54 @@ def test_self_poisoning_loop_no_component_of_a_previously_emitted_surrogate_is_m
             {
                 "role": "user",
                 "content": (
-                    "I need Carla to review before Distel signs off, since "
-                    "Carla Distel already scoped it."
+                    "Referent Real asked me to loop in Erika about the "
+                    "schedule."
                 ),
             }
         ],
     }
 
-    blindfold_payload(payload, mapping, detector, inbox)
+    blindfolded, session = blindfold_payload(payload, mapping, detector, inbox)
+    text = blindfolded["messages"][0]["content"]
 
-    inbox_reals = {item.real for item in inbox.list()}
-    assert inbox_reals.isdisjoint({"Carla", "Distel", "Carla Distel"})
+    with pytest.raises(LeakError):
+        leak_gate({"messages": [{"role": "user", "content": text}]}, mapping, inbox)
+
+
+def test_kurt_colliding_with_an_earlier_minted_surrogate_still_fails_closed():
+    # Cycle 2 reviewer's exact finding: a real seed surrogate "Kurt
+    # Steinmetz" (live via L2 dict substitution of "Some Referent") and a
+    # genuinely different real "Kurt" mentioned separately in the same hop.
+    # Cycle 2's now-removed dismissal path leaked "Kurt" into plaintext
+    # here (fail-open); with that path gone, this reverts to the pre-#292
+    # fail-closed default -- blocked, not leaked. leak_gate itself is
+    # untouched and out of scope for this issue.
+    mapping = SurrogateMapping.from_pairs([("Some Referent", "Kurt Steinmetz")])
+    inbox = ReviewInbox()
+    detector = L3Detector(_ConfirmAnyNameShapedTokenAdjudicator())
+    payload = {
+        "model": "m",
+        "messages": [
+            {
+                "role": "user",
+                "content": (
+                    "Please loop in Kurt about it. Some Referent already "
+                    "signed off."
+                ),
+            }
+        ],
+    }
+
+    blindfolded, session = blindfold_payload(payload, mapping, detector, inbox)
+    text = blindfolded["messages"][0]["content"]
+
+    with pytest.raises(LeakError) as exc_info:
+        leak_gate({"messages": [{"role": "user", "content": text}]}, mapping, inbox)
+
+    # SEC-3: the raised reason references the newly-minted item's own
+    # provisional surrogate (issue #287's existing scrubbing), never the
+    # plaintext real value "Kurt" that triggered it.
+    assert "Kurt" not in str(exc_info.value)
 
 
 def test_purge_surrogate_collisions_repairs_an_already_poisoned_persisted_inbox():
@@ -197,11 +323,11 @@ def test_purge_surrogate_collisions_repairs_an_already_poisoned_persisted_inbox(
     # this fix existed -- with mapping_cipher "none" the inbox is in-memory and
     # a restart clears it, but a persisted inbox carries the deadlock across
     # restarts with no way out except hand-rejecting every colliding item.
-    mapping = SurrogateMapping.from_pairs([("Referent Real", "Carla Distel")])
+    mapping = SurrogateMapping.from_pairs([("Referent Real", "Erika Mustermann")])
     inbox = ReviewInbox()
     poisoned = inbox.upsert(
-        "Carla",
-        context="...abbreviates a full-name surrogate (Carla for Carla Distel)...",
+        "Erika",
+        context="...abbreviates a full-name surrogate (Erika for Erika Mustermann)...",
     )
     legitimate = inbox.upsert(
         "Priya Nadkarni", context="Priya Nadkarni sent the update yesterday."
@@ -254,80 +380,3 @@ def test_purge_surrogate_collisions_never_drops_a_bare_character_fragment_match(
 
     assert removed == []
     assert genuine.id in {item.id for item in inbox.list()}
-
-
-def _make_echo_upstream(recorded: list[httpx.Request]) -> UpstreamClient:
-    def handler(request: httpx.Request) -> httpx.Response:
-        recorded.append(request)
-        payload = json.loads(request.content.decode("utf-8"))
-        echoed_text = payload["messages"][0]["content"]
-        return httpx.Response(
-            200,
-            json={
-                "id": "msg_1",
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "text", "text": echoed_text}],
-                "model": "claude-3-5-sonnet",
-                "stop_reason": "end_turn",
-            },
-        )
-
-    client = httpx.AsyncClient(
-        base_url="http://upstream.test", transport=httpx.MockTransport(handler)
-    )
-    return UpstreamClient(base_url="http://upstream.test", client=client)
-
-
-@pytest.mark.anyio
-async def test_dismissed_collision_is_audited_with_a_scrubbed_reason_and_request_succeeds():
-    # Acceptance criteria: the dismissal must be "visible in the dismissal log"
-    # with a "distinguishable reason", and reason strings stay SEC-3 scrubbed
-    # (reference the entity, never the plaintext) -- exercised end to end
-    # through the app, the same seam ``test_l3_surrogate_reblindfold_guard.py``
-    # uses, since the audit write lives in app.py's ``_mint_or_block`` (the one
-    # place all mint call sites converge), not in the engine.
-    mapping = SurrogateMapping.from_pairs([("Referent Real", "Carla Distel")])
-    inbox = ReviewInbox()
-    detector = L3Detector(_ConfirmAnyNameShapedTokenAdjudicator())
-
-    recorded: list[httpx.Request] = []
-    audit_log = get_audit_log()
-    audit_log.records.clear()
-    app.dependency_overrides[get_upstream_client] = lambda: _make_echo_upstream(recorded)
-    app.dependency_overrides[get_mapping] = lambda: mapping
-    app.dependency_overrides[get_review_inbox] = lambda: inbox
-    app.dependency_overrides[get_l3_detector] = lambda: detector
-    try:
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(
-            transport=transport, base_url="http://proxy.test"
-        ) as client:
-            resp = await client.post(
-                "/v1/messages",
-                json={
-                    "model": "m",
-                    "messages": [
-                        {
-                            "role": "user",
-                            "content": (
-                                "Referent Real asked me to loop in Carla about "
-                                "the schedule."
-                            ),
-                        }
-                    ],
-                },
-            )
-    finally:
-        app.dependency_overrides.clear()
-
-    # Non-blocking: the request still succeeds; dismissal never fail-closes it.
-    assert resp.status_code == 200
-
-    collision_records = [
-        r for r in audit_log.records if r.event == "dismissed-surrogate-collision"
-    ]
-    assert len(collision_records) == 1
-    assert "Carla Distel" in collision_records[0].reason
-    # Never the plaintext real value that triggered the dismissal.
-    assert "Referent Real" not in collision_records[0].reason

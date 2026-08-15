@@ -123,7 +123,7 @@ behavior; per-workspace scoping is a possible future slice, not this one.
   the character-fragment false-dismiss class but does **not** close the
   residual named in cycle-1's notes: a genuine real value that happens to
   equal a whole, distinctive word component of an unrelated live surrogate
-  (real `"Carla"` + surrogate `"Carla Distel"` for someone else) is still
+  (real `"Erika"` + surrogate `"Erika Mustermann"` for someone else) is still
   indistinguishable from Blindfold's own output by string alone, and is still
   dismissed (fail-open) rather than blocked. Mitigated, not eliminated, by
   scoping to occurs-in-this-text — same accepted residual as issue #68's own
@@ -131,6 +131,35 @@ behavior; per-workspace scoping is a possible future slice, not this one.
   (making `item.real in outbound_text` word-boundary aware) instead of
   dismissing at mint time, which is an ADR-level fail-closed-vs-fail-open
   trade-off, not a code change this issue's scope covers.
+- **Issue #292, corrected (trusted-maintainer framing after cycle 2):** the
+  premise both cycle 1 and cycle 2 inherited — that a genuine real must be
+  distinguished from a surrogate component *by string alone* — was itself
+  wrong. `review.py`'s `_PROVISIONAL_POOL` is eight plausible fake names;
+  `CONTEXT.md` and this repository's own ADR-0036 used one of them (`"Erika
+  Mustermann"`/`"Erika"`) as a literal worked example. Reading either as a
+  tool result handed L3 that pool entry's own component as prose, which L3
+  confirmed as a novel real — the actual trigger, not a fundamental string-
+  matching ambiguity. Cycle 2's value-scoped `surrogate_space_match`
+  dismissal in `engine._blindfold_text` is **removed outright**, not narrowed
+  further: no candidate is ever dismissed into plaintext again. In its place,
+  `store._mint.pool_entry_collides_with_corpus` extends issue #80's
+  mint-time disjointness from the closed-world set of known reals to the
+  live corpus being processed this exchange — `review._next_provisional`
+  skips a *named* pool entry (never the numbered fallback; see its own
+  docstring for why) that already occurs, whole or as a distinctive
+  component, in the hop's own text, falling back to the next pool entry.
+  This prevents the collision from ever arising for *this exchange's* own
+  corpus, rather than adjudicating it after the fact. `surrogate_space_match`
+  itself is kept, unchanged, purely for `purge_surrogate_collisions`'s
+  repair-path use (a store already poisoned by a pre-this-fix mint). The
+  residual named just above — a real value colliding with a surrogate
+  *already minted in an earlier exchange* (this exchange's own corpus check
+  can't see across exchange boundaries) — is unchanged and still fails
+  closed by design: `leak_gate` (untouched, out of scope) blocks it. Docs no
+  longer use a literal pool entry as a worked example (see
+  `test_no_pool_entry_appears_as_a_literal_example_in_docs`), which is what
+  actually unblocks the observed deadlock; the corpus check is defense in
+  depth against the same class of accident recurring.
 
 ## Alternatives considered
 

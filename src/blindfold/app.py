@@ -1219,26 +1219,6 @@ async def _mint_or_block(
                 reason="workspace opted into deterministic-only mode; L3 skipped",
             )
         )
-    # Issue #292: `mint`'s ExchangeSession records every candidate the mint pass
-    # dismissed as a surrogate-space collision (never minted into the review
-    # inbox). One audit record per dismissal, here -- the one place all three
-    # mint call sites (messages / count_tokens / chat_completions) converge --
-    # so the event is written exactly once per request, same as the
-    # deterministic-only-pass record just above. The ref is a live surrogate
-    # value, never the candidate's own real text (SEC-3): a surrogate is safe
-    # to log by construction.
-    _, session = result
-    for ref in session.dismissed_surrogate_collisions:
-        audit_log.append(
-            AuditRecord(
-                workspace=workspace,
-                event="dismissed-surrogate-collision",
-                reason=(
-                    "L3-confirmed candidate collides with surrogate-space "
-                    f"(ref: {ref})"
-                ),
-            )
-        )
     return result
 
 

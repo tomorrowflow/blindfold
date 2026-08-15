@@ -17,11 +17,26 @@ closed-world set the pre-egress leak gate (``engine.leak_gate``) checks via
 ``mapping.real_values()``, so mint and gate can never disagree. A rejected entry is
 skipped, never reused for a later referent (:func:`mint_surrogates`).
 
-The mirror-direction guard (issue #292): :func:`surrogate_space_match` keeps a
-newly-L3-confirmed candidate from being minted as a provisional *real* entity
-when the candidate is itself equal to, a component of, or a substring of a
-surrogate already live in the transcript -- Blindfold's own prior output
-re-detected as a novel referent, not an actual one.
+Pool-vs-corpus disjointness (issue #292): :func:`pool_entry_collides_with_corpus`
+extends the issue #80 discipline above from the closed-world set of known REAL
+values to the live CORPUS being processed this exchange -- a pool entry (or a
+distinctive component of it) that already occurs as plain text in the hop must
+never be assigned, the same way a pool entry colliding with a known real is
+skipped. This is what actually closes the reported deadlock: this repository's
+own docs used a literal ``review._PROVISIONAL_POOL`` entry as a worked example,
+so reading them as a tool result handed L3 that entry's own component as prose,
+which L3 confirmed as a novel real -- colliding with the identical string
+already live as an unrelated referent's surrogate. Preventing the surrogate
+assignment from ever colliding with the corpus in the first place removes the
+ambiguity instead of adjudicating it after the fact.
+
+:func:`surrogate_space_match` (kept for the repair path,
+``review.ReviewInbox.purge_surrogate_collisions``) is the mirror-direction
+check: whether an already-poisoned, already-persisted item's ``real`` collides
+with surrogate-space. It is no longer used at mint time (that dismissal path
+-- fail-open on a genuine real/surrogate-component coincidence -- was removed;
+pool-vs-corpus disjointness prevents the collision from arising instead of
+adjudicating it after the mint).
 """
 
 from __future__ import annotations
@@ -177,6 +192,33 @@ def surrogate_space_match(candidate: str, surrogate_values: Iterable[str]) -> st
         if candidate in words:
             return value
     return None
+
+
+def pool_entry_collides_with_corpus(candidate: str, corpus_text: str) -> bool:
+    """True if ``candidate`` (a surrogate pool entry under consideration) already
+    occurs -- as its whole value, or a whole, distinctive word-boundary
+    component -- in ``corpus_text``, the text being processed for this exchange.
+
+    The corpus-vs-pool counterpart to :func:`collides_with_known_entity`'s
+    pool-vs-known-real check (issue #80), extended per issue #292: a pool entry
+    that already appears as plain text in the hop must never be assigned to a
+    referent, or the assigned surrogate collides with prose already present in
+    the very exchange it is injected into. Matching is word-boundary and
+    stopword-filtered -- the same basis :func:`surrogate_space_match` uses --
+    not a raw substring test, so a pool entry merely sharing characters (not a
+    whole word) with the corpus is not treated as a collision.
+    """
+    if not candidate or not corpus_text:
+        return False
+    if re.search(rf"\b{re.escape(candidate)}\b", corpus_text):
+        return True
+    corpus_words = set(re.findall(r"\w+", corpus_text))
+    for word in re.findall(r"\w+", candidate):
+        if word in _COMPONENT_STOPWORDS:
+            continue
+        if word in corpus_words:
+            return True
+    return False
 
 
 def mint_surrogates(kind: str, count: int, known_values: Iterable[str] = ()) -> list[str]:

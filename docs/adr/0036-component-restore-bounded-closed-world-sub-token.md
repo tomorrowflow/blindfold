@@ -8,20 +8,25 @@
 Since [ADR-0033](0033-l3-candidate-precision-positional-case-heuristic-and-gliner-cascade.md)
 (GLiNER cascade) and the span-coalescing that followed (issue #162), a multi-word
 entity is minted as a **single multi-word surrogate**: real `Sarah Bergmann` →
-surrogate `Carla Distel`, recorded once in the per-exchange closed-world set
-(`session.injected`, ADR-0006).
+surrogate `Erika Mustermann`, recorded once in the per-exchange closed-world set
+(`session.injected`, ADR-0006). (`Erika Mustermann` — the canonical German
+placeholder-identity name — is used as this ADR's worked example precisely
+because it is a reserved name no live surrogate pool ever mints; issue #292
+found that an earlier worked example here doubled as an actual
+`_PROVISIONAL_POOL` entry, so an agent reading this ADR as a tool result could
+trigger the exact collision it documents.)
 
 Restore ([ADR-0024](0024-inflection-robust-restore-bounded-suffixes.md)) matches an
 injected surrogate as a whole string at a word boundary, plus a bounded German suffix.
 That leaves a real gap when the provider **abbreviates** a full-name surrogate — the
 common, natural case for both people and organizations:
 
-- Prompt contains `Sarah Bergmann` → forwarded as `Carla Distel`.
-- The provider replies `"Hallo Carla!"` — first name only.
-- `Carla` is not the injected surrogate string `Carla Distel`, so restore leaves it
-  untouched and the **synthetic** token `Carla` reaches the user un-restored.
+- Prompt contains `Sarah Bergmann` → forwarded as `Erika Mustermann`.
+- The provider replies `"Hallo Erika!"` — first name only.
+- `Erika` is not the injected surrogate string `Erika Mustermann`, so restore leaves it
+  untouched and the **synthetic** token `Erika` reaches the user un-restored.
 
-This is **not a privacy leak** — `Carla` is a fake the provider was given; the real
+This is **not a privacy leak** — `Erika` is a fake the provider was given; the real
 value never left the machine. But the user sees a wrong (synthetic) name instead of
 their own, which undermines Restore's transparency contract. ADR-0024 explicitly
 scoped this out ("mid-string inflection of a first name inside a full-name surrogate
@@ -38,7 +43,7 @@ exact, word-boundary, and closed-world:
 - **Pass 1 — full surrogates.** Exactly today's ADR-0024 behavior (whole surrogate at
   a word boundary + bounded suffix). Runs first, so a full match is never clobbered.
 - **Pass 2 — leftover components.** Restores component references that Pass 1 did not
-  consume (e.g. bare `Carla`).
+  consume (e.g. bare `Erika`).
 
 A component becomes a restore key only if it is **distinctive AND unambiguous**:
 
@@ -46,13 +51,13 @@ A component becomes a restore key only if it is **distinctive AND unambiguous**:
   `GmbH`/`Corporation`/`Ltd`, etc.). The same list backs L3 candidate suppression and
   inner-adjudicator precision (issues #161/#165), so the three features stay consistent.
 - **Unambiguous** — maps to exactly one real value among this exchange's injected
-  surrogates. A component shared by two surrogates (two people named `Carla`) is
+  surrogates. A component shared by two surrogates (two people named `Erika`) is
   **not** registered; the token is left untouched.
 
 A restored component maps by **positional alignment** when the surrogate and real
-value have equal word counts (`Carla`→`Sarah`, `Distel`→`Bergmann` ⇒ `"Hallo
+value have equal word counts (`Erika`→`Sarah`, `Mustermann`→`Bergmann` ⇒ `"Hallo
 Sarah!"`), falling back to the **full real value** when the shapes differ
-(`Carla`→`Sarah Bergmann`). Scope is **all multi-word surrogates** — persons and
+(`Erika`→`Sarah Bergmann`). Scope is **all multi-word surrogates** — persons and
 organizations both (`Nordwind` for `Nordwind Logistik`).
 
 Why this is bounded, unlike the matching ADR-0024 rejected: the key set is the small,
@@ -95,7 +100,7 @@ buffer growth.
 
 ## Alternatives considered
 
-- **Component → full real value only** (`Carla`→`Sarah Bergmann`) — simpler, no
+- **Component → full real value only** (`Erika`→`Sarah Bergmann`) — simpler, no
   alignment, but verbose (`"Hallo Sarah Bergmann!"` where the provider wrote a first
   name). Kept as the fallback for unequal word counts, not the default.
 - **Fix on the surrogate-generation side** (mononym surrogates, no coalescing) —

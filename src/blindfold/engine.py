@@ -33,7 +33,6 @@ from .l3 import L3Detector, L3Unavailable, count_capitalized_tokens
 from .l3 import _context_window as _l3_context_window
 from .policy import DEFAULT_WORKSPACE
 from .review import ReviewInbox
-from .store._mint import surrogate_space_match
 from .surrogates import SurrogateMapping
 
 logger = logging.getLogger(__name__)
@@ -149,12 +148,6 @@ class ExchangeSession:
     def __init__(self) -> None:
         self.injected: dict[str, str] = {}  # surrogate -> real
         self.hops: list[HopDetail] = []  # scrubbed per-hop detail (ADR-0035, issue #153)
-        # Issue #292: live surrogates a would-be provisional candidate collided
-        # with this exchange -- one entry per dismissed mint, never the
-        # candidate's own real text (SEC-3: a surrogate value is safe to log,
-        # by construction never a real entity). The app layer turns each into
-        # a scrubbed ``dismissed-surrogate-collision`` audit record.
-        self.dismissed_surrogate_collisions: list[str] = []
 
     def record(self, surrogate: str, real: str) -> None:
         self.injected[surrogate] = real
@@ -693,36 +686,6 @@ def _blindfold_text(
             start = min(extent.start for extent in group)
             end = max(extent.end for extent in group)
             real = result[start:end]
-            # Issue #292: a candidate equal to, or a whole word-boundary
-            # component of, a surrogate already live in this text is not a
-            # novel referent -- it is Blindfold's own prior output re-entering
-            # the transcript (e.g. a doc/glossary hop illustrating a
-            # surrogate's component word). Minting it would put the same
-            # string in both namespaces at once: a restore key in
-            # surrogate-space, and a "protected real" whose
-            # ``item.real in outbound_text`` leak-gate check (issue #287) then
-            # fires on every request that legitimately carries the live
-            # surrogate -- the reported deadlock. Scoped to surrogates
-            # *occurring in this text* (``_live_surrogate_values``, the same
-            # scope ``_injected_surrogate_ranges`` uses just above), never the
-            # full process-global vocabulary, so a genuinely novel real value
-            # that merely shares a word with an unrelated, never-mentioned
-            # surrogate still mints (issue #68's own "Vogt" precedent --
-            # acceptance criterion: no loss of detection). Matching is
-            # word-boundary/stopword-filtered (``surrogate_space_match``), not
-            # a raw substring test -- a cycle-1 review found the raw substring
-            # form wrongly dismissed (leaked in plaintext) a genuinely novel
-            # real value sharing only characters, not a whole word, with an
-            # unrelated surrogate (e.g. "Kurt" inside "Kurtis Vale").
-            # ``leak_gate``/``resolution_gate`` are untouched by this guard: a
-            # true real value is still caught there exactly as before -- the
-            # fix is this narrower mint-time check, not a widened gate.
-            collision = surrogate_space_match(
-                real, _live_surrogate_values(result, mapping, session, inbox)
-            )
-            if collision is not None:
-                session.dismissed_surrogate_collisions.append(collision)
-                continue
             context, context_offset = _l3_context_window(result, start, end)
             # Issue #167: a coalesced multi-word entity ("Nordwind Logistik")
             # carries ONE type for the whole span, not per-token -- the mint pass
@@ -745,6 +708,11 @@ def _blindfold_text(
                 context_offset=context_offset,
                 entity_type=entity_type,
                 workspace=workspace,
+                # Issue #292: pool-vs-corpus disjointness -- the collision
+                # that matters can be anywhere in this hop's text (e.g. a
+                # doc/glossary tool result far from this candidate's own
+                # occurrence), not just the local context window.
+                corpus_text=result,
             )
             spans.append((start, end, item.provisional_surrogate, real))
         for start, end, surrogate, real in sorted(
