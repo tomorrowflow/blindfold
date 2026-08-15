@@ -948,6 +948,13 @@ def _component_restore_map(injected: dict[str, str]) -> dict[str, str]:
         for index, word in enumerate(surrogate_words):
             if word in _COMPONENT_STOPWORDS:
                 continue
+            if not any(char.isalpha() for char in word):
+                # A purely positional token (the fallback "Provisional Surrogate
+                # {N}" label's digit, once the pool is exhausted) carries no
+                # entity meaning -- it must never become a restore key, or an
+                # ordinary digit in a response gets rewritten to a real value
+                # (issue #286).
+                continue
             target = real_words[index] if aligned else real
             candidates.setdefault(word, set()).add(target)
     return {word: next(iter(targets)) for word, targets in candidates.items() if len(targets) == 1}
