@@ -280,7 +280,6 @@ def _build_l3_detector(settings: Settings, allowlist: Allowlist) -> L3Detector:
         _build_l3_adjudicator(settings),
         allowlist=allowlist,
         dismissal_log_path=settings.l3_dismissal_log or None,
-        batch_size=settings.l3_batch_size,
         provider_name=settings.l3_provider,
     )
 

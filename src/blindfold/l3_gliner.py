@@ -18,12 +18,9 @@ Cascade logic (Position A):
 
 from __future__ import annotations
 
-import logging
 from typing import Protocol
 
 from .l3 import CandidateSpan, L3Adjudication, L3Adjudicator
-
-logger = logging.getLogger(__name__)
 
 
 class GlinerClassifier(Protocol):
@@ -250,7 +247,7 @@ class GlinerCascadeAdjudicator:
         only, no extent), else the original bool-only ``classify`` (ADR-0033)
         with no type or extent at all. All three are valid ``GlinerClassifier``
         implementations, duck-typed like every other optional seam extension in
-        this codebase (mirrors ``BatchL3Adjudicator``).
+        this codebase.
         """
         classify_span = getattr(self._classifier, "classify_span", None)
         if classify_span is not None:
@@ -275,91 +272,3 @@ class GlinerCascadeAdjudicator:
                 span_end=span_end,
             )
         return self._inner.adjudicate(candidate)
-
-    def adjudicate_batch(
-        self, candidates: list[CandidateSpan]
-    ) -> list[L3Adjudication]:
-        """Batch counterpart to :meth:`adjudicate` (issue #157): GLiNER
-        classification stays per-candidate (local, cheap) -- only the
-        GLiNER-negatives are forwarded to the inner adjudicator, in one
-        ``adjudicate_batch`` call when it exposes one (duck-typed, mirroring
-        ``L3Detector``'s own ``BatchL3Adjudicator`` check), else per-candidate
-        through ``inner.adjudicate``. Position-preserving: returns exactly
-        ``len(candidates)`` results, in the same order.
-        """
-        decisions: list[L3Adjudication | None] = [None] * len(candidates)
-        negative_indices: list[int] = []
-        negatives: list[CandidateSpan] = []
-        for index, candidate in enumerate(candidates):
-            confirmed, entity_type, span_start, span_end = self._classify(candidate)
-            if confirmed:
-                decisions[index] = L3Adjudication(
-                    is_entity=True,
-                    entity_type=entity_type,
-                    span_start=span_start,
-                    span_end=span_end,
-                )
-            else:
-                negative_indices.append(index)
-                negatives.append(candidate)
-
-        if negatives:
-            if hasattr(self._inner, "adjudicate_batch"):
-                negative_decisions = self._adjudicate_negatives_batch(negatives)
-            else:
-                negative_decisions = [
-                    self._inner.adjudicate(candidate) for candidate in negatives
-                ]
-            for index, decision in zip(negative_indices, negative_decisions):
-                decisions[index] = decision
-
-        return decisions  # type: ignore[return-value]
-
-    def _adjudicate_negatives_batch(
-        self, negatives: list[CandidateSpan]
-    ) -> list[L3Adjudication]:
-        """Mirrors ``L3Detector._adjudicate_batch``'s own recovery shape (issue
-        #148), nested one level down: the inner adjudicator's ``adjudicate_batch``
-        call itself failing (network/daemon down) propagates unhandled -- the
-        caller (``L3Detector._adjudicate_batch``, wrapping this whole
-        ``adjudicate_batch`` call) already converts that into ``L3Unavailable``
-        (ADR-0009 fail-closed), so there's no need to duplicate that handling
-        here. A short/malformed response (fewer verdicts than negatives) is
-        this method's own job: retry the missing negatives one at a time
-        through ``inner.adjudicate()``, and only a candidate still unresolved
-        after that retry falls back to ``is_entity=True`` (over-redact, never a
-        silent dismiss).
-        """
-        decisions = list(self._inner.adjudicate_batch(negatives))
-        if len(decisions) < len(negatives):
-            missing = negatives[len(decisions):]
-            recovered, still_missing = self._retry_missing(missing)
-            decisions = decisions + recovered
-            if still_missing:
-                logger.warning(
-                    "gliner_cascade_inner_batch_short_response: "
-                    "expected=%d received=%d missing=%d",
-                    len(negatives),
-                    len(negatives) - still_missing,
-                    still_missing,
-                )
-        return decisions
-
-    def _retry_missing(
-        self, missing_candidates: list[CandidateSpan]
-    ) -> tuple[list[L3Adjudication], int]:
-        """Best-effort per-candidate recovery for an inner-batch shortfall,
-        position-preserving: returns exactly ``len(missing_candidates)``
-        verdicts, in the same order. A retry that itself raises fails closed
-        for just that candidate (``is_entity=True``) rather than aborting the
-        whole batch.
-        """
-        resolved: list[L3Adjudication] = []
-        still_missing = 0
-        for candidate in missing_candidates:
-            try:
-                resolved.append(self._inner.adjudicate(candidate))
-            except Exception:
-                resolved.append(L3Adjudication(is_entity=True))
-                still_missing += 1
-        return resolved, still_missing

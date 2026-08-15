@@ -139,16 +139,15 @@ def test_detect_omits_phone_shaped_candidates_when_the_workspace_opted_out():
     assert {call.text for call in adjudicator.calls} == {"Klaus"}
 
 
-def test_content_cache_group_from_an_opted_in_workspace_never_serves_an_opted_out_one():
-    # Issue #279 hazard 1: L3ContentCache is keyed on the group digest, and a
-    # group is chunked from the candidate list *before* any cache lookup -- an
-    # opted-in workspace's candidate list includes the phone-shaped span, an
-    # opted-out one's doesn't, so the two workspaces chunk different groups and
-    # get different digests. Verified here rather than trusted: a cached group
-    # written under phone_candidates_enabled=True must never be served, whole or
-    # in part, to a request made with phone_candidates_enabled=False sharing the
-    # same content cache (e.g. two workspaces behind the same process-wide L3
-    # singleton with a shared allowlist).
+def test_content_cache_never_serves_a_phone_shaped_verdict_to_an_opted_out_workspace():
+    # Issue #279 hazard 1 (ADR-0048 corollary 3 update, issue #283: the content
+    # cache is keyed per-candidate now, not per-group -- batching, and the group
+    # chunking it required, are gone). The hazard itself is unaffected by that
+    # change: an opted-out request never calls select_phone_candidate_spans at
+    # all, so the phone-shaped candidate is never even proposed, let alone looked
+    # up in a cache shared with an opted-in workspace (e.g. two workspaces behind
+    # the same process-wide L3 singleton with a shared allowlist) -- there is no
+    # cache key for it to bleed through.
     text = "Klaus said the on-call pager is 555-0142 today."
     shared_cache = L3ContentCache()
 
@@ -162,9 +161,10 @@ def test_content_cache_group_from_an_opted_in_workspace_never_serves_an_opted_ou
         text, known_entities=[], phone_candidates_enabled=False
     )
 
-    # The opted-out request never even proposes the phone-shaped span as a
-    # candidate, so a bled cache hit would be the only way it could reach the
-    # adjudicator -- assert it was actually adjudicated fresh (a cache hit would
-    # have left off_adjudicator.calls empty) and only for "Klaus".
-    assert {call.text for call in off_adjudicator.calls} == {"Klaus"}
+    # The opted-out request's results never include the phone-shaped candidate --
+    # "Klaus" is the only candidate it ever proposes, and per-candidate caching
+    # now serves it from the on-run's cache entry rather than re-adjudicating
+    # (a genuine improvement over the pre-#283 group cache: one workspace's warm
+    # cache now benefits another's identical candidate, with no phone bleed).
+    assert off_adjudicator.calls == []
     assert {candidate.text for candidate, _ in result} == {"Klaus"}
