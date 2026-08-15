@@ -1,0 +1,323 @@
+{
+  "_provenance": {
+    "dataset": "Hand-authored public-software/framework/product probe corpus (issue #281)",
+    "measured_against": "knowledgator/gliner-pii-base-v1.0, pinned revision 61726e0ad791dcab3e29339bbec3ad42ded65641 (gliner_provisioning.GLINER_REPO_REVISION), loaded via GlinerOnnxClassifier.classify_span with the shipped two-label set (person, organization) -- l3_gliner._GLINER_LABELS",
+    "measured_date": "2026-08-15",
+    "methodology": "Each token appears in one realistic coding-agent-shaped sentence (the shapes ADR-0049's live finding came from: a prose sentence naming a public tool/product/component). Each sentence was run through select_candidate_spans (no allowlist) to obtain the real CandidateSpan Position A itself would build, then GlinerOnnxClassifier.classify_span(candidate) recorded the actual label -- not a guess, the measurement. 'none' means GLiNER did not flag the token as an entity at all (no false positive to curate). Selection covered two shapes: public-software/product identifiers (the issue's own ask) and common-English-word product names one order riskier (the 'ambiguous-word' category), to find the boundary case the curation rule has to draw.",
+    "curation_rule": "ADR-0023/ADR-0032: seeded only if a genuinely public, non-sensitive identifier, implausible as a protected referent when unregistered. A confirmed organization/person false positive is NOT seeded when the bare token is also a common English dictionary word, a known personal surname, or a place name with no single dominant public-brand reading -- seeding is permanent novelty-discovery loss for that literal token in every future context, not just this measurement's sentence. Two probes (Kafka, Jenkins) are the sharpest instance: both are real, common human surnames, and GLiNER's own label ('person') independently corroborates the collision risk this rule exists to catch."
+  },
+  "probes": [
+    {
+      "token": "Transit",
+      "sentence": "OpenBao Transit handles the key wrapping.",
+      "category": "project-vocab",
+      "gliner_label": "organization",
+      "decision": "seeded",
+      "rationale": "Issue #281's own cited live finding (ADR-0033 update): 'Transit' names OpenBao's/Vault's key-wrapping secrets engine, a term this project's own key custody documentation depends on. Confirmed public product-component identifier. Note: 'Transit' was previously in test_seeded_allowlist.py's _CURATION_REJECTS (issue #87, 2026-07-10 batch) as a generic-word rejection made without this specific product context; this measurement supersedes that call for the reason the issue itself gives -- the 2026-07-10 rejection considered 'Transit' as bare generic prose, not as OpenBao's own named component this project ships documentation about."
+    },
+    {
+      "token": "Docker",
+      "sentence": "Docker builds the image before every deploy.",
+      "category": "public-product",
+      "gliner_label": "organization",
+      "decision": "seeded",
+      "rationale": "Purpose-built brand identifier for the containerization platform; the archaic common-noun sense (a dock worker) is dead in modern usage. Same evidentiary class as the existing seed's Github/Slack/Postgres."
+    },
+    {
+      "token": "Nginx",
+      "sentence": "Nginx proxies the requests to the backend service.",
+      "category": "public-product",
+      "gliner_label": "organization",
+      "decision": "seeded",
+      "rationale": "Not an English dictionary word at all; unambiguous purpose-coined identifier for the web server."
+    },
+    {
+      "token": "Datadog",
+      "sentence": "Datadog monitors the latency across every service.",
+      "category": "public-product",
+      "gliner_label": "organization",
+      "decision": "seeded",
+      "rationale": "Compound coined brand name (Data+dog) with no ordinary-English reading and no known personal-name collision."
+    },
+    {
+      "token": "Figma",
+      "sentence": "Figma renders the design mockups for the new page.",
+      "category": "public-product",
+      "gliner_label": "person",
+      "decision": "seeded",
+      "rationale": "Coined brand name, not a dictionary word and not a known given/family name -- GLiNER's 'person' label here is a type-classification miss (still resolved to is_entity=true either way under Position A), not evidence of real personal-name collision."
+    },
+    {
+      "token": "Netlify",
+      "sentence": "Netlify hosts the static site from the build output.",
+      "category": "public-product",
+      "gliner_label": "organization",
+      "decision": "seeded",
+      "rationale": "Coined brand name (Net+lify), no ordinary-English reading, no personal-name collision."
+    },
+    {
+      "token": "Heroku",
+      "sentence": "Heroku deploys the app straight from the git push.",
+      "category": "public-product",
+      "gliner_label": "organization",
+      "decision": "seeded",
+      "rationale": "Coined brand name, no ordinary-English reading, no personal-name collision."
+    },
+    {
+      "token": "Cloudflare",
+      "sentence": "Cloudflare terminates TLS in front of the origin.",
+      "category": "public-product",
+      "gliner_label": "organization",
+      "decision": "seeded",
+      "rationale": "Compound coined brand name (Cloud+flare), no ordinary-English reading, no personal-name collision."
+    },
+    {
+      "token": "Bitbucket",
+      "sentence": "Bitbucket hosts the mirror of this repository.",
+      "category": "public-product",
+      "gliner_label": "organization",
+      "decision": "seeded",
+      "rationale": "Compound coined brand name (Bit+bucket), no ordinary-English reading, no personal-name collision."
+    },
+    {
+      "token": "Firefox",
+      "sentence": "Firefox blocks the third-party tracking script.",
+      "category": "public-product",
+      "gliner_label": "organization",
+      "decision": "seeded",
+      "rationale": "Compound brand name; the only competing sense is the red panda species, not a person or company -- implausible as a protected referent."
+    },
+    {
+      "token": "Vault",
+      "sentence": "We store secrets in Vault before deploying.",
+      "category": "ambiguous-word",
+      "gliner_label": "organization",
+      "decision": "excluded",
+      "rationale": "Ordinary English dictionary word (a bank/security vault) with no single dominant public-brand reading in isolation -- highly plausible as an internal project/product codename ('Project Vault'). Leaving it out per the issue's own instruction: when in doubt, leave it out."
+    },
+    {
+      "token": "Kafka",
+      "sentence": "Kafka streams the events to the downstream consumers.",
+      "category": "ambiguous-word",
+      "gliner_label": "person",
+      "decision": "excluded",
+      "rationale": "Kafka is a real, common human surname (Franz Kafka among many others) -- GLiNER's own 'person' label corroborates the collision risk directly. Exactly the Don/Mark/Stone/Frank failure mode ADR-0023/ADR-0033 name: seeding this token would permanently lose novelty discovery for any unregistered private individual actually named Kafka."
+    },
+    {
+      "token": "Jenkins",
+      "sentence": "Jenkins runs the build pipeline on every commit.",
+      "category": "ambiguous-word",
+      "gliner_label": "person",
+      "decision": "excluded",
+      "rationale": "Jenkins is a common English surname; GLiNER's own 'person' label corroborates it. Same collision class as Kafka above -- left out."
+    },
+    {
+      "token": "Confluence",
+      "sentence": "Confluence hosts the design documents for review.",
+      "category": "ambiguous-word",
+      "gliner_label": "organization",
+      "decision": "excluded",
+      "rationale": "Ordinary English dictionary word (a coming-together of things) with no single dominant public-brand reading in isolation -- plausible as a generic project/codename. Left out."
+    },
+    {
+      "token": "Notion",
+      "sentence": "Notion stores the meeting notes from standup.",
+      "category": "ambiguous-word",
+      "gliner_label": "organization",
+      "decision": "excluded",
+      "rationale": "Ordinary English dictionary word (an idea/notion), plausible as a generic project/codename. Left out."
+    },
+    {
+      "token": "Zoom",
+      "sentence": "Zoom hosts the daily standup call.",
+      "category": "ambiguous-word",
+      "gliner_label": "organization",
+      "decision": "excluded",
+      "rationale": "Ordinary English verb/word (to zoom), high generic collision -- plausible as an internal codename unrelated to the video-conferencing product. Left out."
+    },
+    {
+      "token": "Stripe",
+      "sentence": "Stripe processes the payment for the subscription.",
+      "category": "ambiguous-word",
+      "gliner_label": "organization",
+      "decision": "excluded",
+      "rationale": "Ordinary English dictionary word (a pattern/stripe), plausible as a generic project/codename despite the well-known payments company. Left out."
+    },
+    {
+      "token": "Scala",
+      "sentence": "Scala handles the batch processing pipeline.",
+      "category": "ambiguous-word",
+      "gliner_label": "organization",
+      "decision": "excluded",
+      "rationale": "Scala is also a real surname (e.g. actress Gia Scala) and a place name (La Scala, Milan) -- the same personal/place-name collision risk as Kafka/Jenkins, even though GLiNER's own label here happened to be 'organization'. Left out."
+    },
+    {
+      "token": "Chrome",
+      "sentence": "Chrome renders the extension's popup correctly.",
+      "category": "ambiguous-word",
+      "gliner_label": "organization",
+      "decision": "excluded",
+      "rationale": "Ordinary English dictionary word (a metal/finish), generic enough to plausibly be a private codename. Left out."
+    },
+    {
+      "token": "Vercel",
+      "sentence": "Vercel builds the frontend preview on every PR.",
+      "category": "public-product",
+      "gliner_label": "person",
+      "decision": "excluded",
+      "rationale": "GLiNER's own label here is 'person', not 'organization' -- unlike Figma's same-shaped miss, this one is left out rather than overridden: nothing in this measurement corroborates that the 'person' label is a pure type-classification miss rather than a genuine ambiguity signal, so it does not clear the same bar. When in doubt, leave it out."
+    },
+    {
+      "token": "Kubernetes",
+      "sentence": "Kubernetes schedules the pods across three nodes.",
+      "category": "public-product",
+      "gliner_label": "none",
+      "decision": "no_action",
+      "rationale": "Not flagged by GLiNER in this context -- no false positive to curate."
+    },
+    {
+      "token": "Redis",
+      "sentence": "Redis caches the session tokens for fast lookup.",
+      "category": "public-product",
+      "gliner_label": "none",
+      "decision": "no_action",
+      "rationale": "Not flagged by GLiNER in this context -- no false positive to curate."
+    },
+    {
+      "token": "Terraform",
+      "sentence": "Terraform provisions the infrastructure from this config.",
+      "category": "public-product",
+      "gliner_label": "none",
+      "decision": "no_action",
+      "rationale": "Not flagged by GLiNER in this context -- no false positive to curate."
+    },
+    {
+      "token": "Ansible",
+      "sentence": "Ansible configures the servers during the rollout.",
+      "category": "public-product",
+      "gliner_label": "none",
+      "decision": "no_action",
+      "rationale": "Not flagged by GLiNER in this context -- no false positive to curate."
+    },
+    {
+      "token": "Helm",
+      "sentence": "Helm packages the Kubernetes manifests into a chart.",
+      "category": "public-product",
+      "gliner_label": "none",
+      "decision": "no_action",
+      "rationale": "Not flagged by GLiNER in this context -- no false positive to curate."
+    },
+    {
+      "token": "Prometheus",
+      "sentence": "Prometheus scrapes the metrics endpoint every 15 seconds.",
+      "category": "public-product",
+      "gliner_label": "none",
+      "decision": "no_action",
+      "rationale": "Not flagged by GLiNER in this context -- no false positive to curate."
+    },
+    {
+      "token": "Loki",
+      "sentence": "Loki aggregates the logs from every pod.",
+      "category": "public-product",
+      "gliner_label": "person",
+      "decision": "excluded",
+      "rationale": "GLiNER labels this 'person' (plausibly reading it as the mythological/character name) -- a confirmed false positive, but 'Loki' is a used given name, so it fails the same collision test as Kafka/Jenkins/Scala. Left out."
+    },
+    {
+      "token": "Istio",
+      "sentence": "Istio manages the service mesh traffic routing.",
+      "category": "public-product",
+      "gliner_label": "person",
+      "decision": "excluded",
+      "rationale": "GLiNER labels this 'person'; unlike Figma, nothing here indicates a pure type-classification miss rather than genuine name-shaped ambiguity, so left out per the same reasoning as Vercel."
+    },
+    {
+      "token": "Jira",
+      "sentence": "Jira tracks the sprint backlog for the team.",
+      "category": "public-product",
+      "gliner_label": "none",
+      "decision": "no_action",
+      "rationale": "Not flagged by GLiNER in this context -- no false positive to curate."
+    },
+    {
+      "token": "Sentry",
+      "sentence": "Sentry captures the exception traceback from production.",
+      "category": "public-product",
+      "gliner_label": "none",
+      "decision": "no_action",
+      "rationale": "Not flagged by GLiNER in this context -- no false positive to curate."
+    },
+    {
+      "token": "Kibana",
+      "sentence": "Kibana visualizes the Elasticsearch query results.",
+      "category": "public-product",
+      "gliner_label": "none",
+      "decision": "no_action",
+      "rationale": "Not flagged by GLiNER in this context -- no false positive to curate."
+    },
+    {
+      "token": "Rust",
+      "sentence": "Rust compiles the binary with zero-cost abstractions.",
+      "category": "ambiguous-word",
+      "gliner_label": "none",
+      "decision": "no_action",
+      "rationale": "Not flagged by GLiNER in this context -- no false positive to curate."
+    },
+    {
+      "token": "Ruby",
+      "sentence": "Ruby powers the legacy billing service.",
+      "category": "ambiguous-word",
+      "gliner_label": "person",
+      "decision": "excluded",
+      "rationale": "Ruby is a common given name -- GLiNER's own 'person' label corroborates the collision risk directly, the same Kafka/Jenkins failure mode. Left out."
+    },
+    {
+      "token": "Swift",
+      "sentence": "Swift compiles down to native code on the device.",
+      "category": "ambiguous-word",
+      "gliner_label": "none",
+      "decision": "no_action",
+      "rationale": "Not flagged by GLiNER in this context -- no false positive to curate. (Also a common surname, so would have been excluded on collision grounds regardless.)"
+    },
+    {
+      "token": "Kotlin",
+      "sentence": "Kotlin replaces Java in the new Android module.",
+      "category": "public-product",
+      "gliner_label": "none",
+      "decision": "no_action",
+      "rationale": "Not flagged by GLiNER in this context -- no false positive to curate."
+    },
+    {
+      "token": "Excel",
+      "sentence": "Excel exports the report as a spreadsheet.",
+      "category": "ambiguous-word",
+      "gliner_label": "none",
+      "decision": "no_action",
+      "rationale": "Not flagged by GLiNER in this context -- no false positive to curate."
+    },
+    {
+      "token": "Word",
+      "sentence": "Word saves the document in the old format.",
+      "category": "ambiguous-word",
+      "gliner_label": "none",
+      "decision": "no_action",
+      "rationale": "Not flagged by GLiNER in this context -- no false positive to curate."
+    },
+    {
+      "token": "Teams",
+      "sentence": "Teams hosts the video call for the retro.",
+      "category": "ambiguous-word",
+      "gliner_label": "none",
+      "decision": "no_action",
+      "rationale": "Not flagged by GLiNER in this context -- no false positive to curate."
+    },
+    {
+      "token": "Java",
+      "sentence": "Java handles the backend services in this stack.",
+      "category": "public-product",
+      "gliner_label": "none",
+      "decision": "no_action",
+      "rationale": "Not flagged by GLiNER in this context -- no false positive to curate."
+    }
+  ]
+}

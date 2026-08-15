@@ -94,6 +94,20 @@ defensible answer to a miss.
   all) is not a blocker. The asymmetry is what makes that sequencing safe: the flip's
   downside is over-redaction, which lands in the review inbox where a human can see and clear
   it, while the status quo's downside is a miss, which nobody can see.
+  - **Update (issue #281): the cheap half is done.** A probe corpus of public-software/
+    framework/product tokens in coding-agent-shaped sentence context was run through the
+    real `GlinerOnnxClassifier.classify_span` (`gliner-pii-base-v1.0`, 2026-08-15).
+    `Transit` — this ADR's own cited live finding — plus nine other confirmed, unambiguous
+    public-brand false positives (`Docker`, `Nginx`, `Datadog`, `Figma`, `Netlify`,
+    `Heroku`, `Cloudflare`, `Bitbucket`, `Firefox`) are now seeded. Ten more confirmed
+    false positives were measured and deliberately left unseeded because the bare token
+    collides with a real surname, place name, or generic dictionary word (`Vault`,
+    `Kafka`, `Jenkins`, `Confluence`, `Notion`, `Zoom`, `Stripe`, `Scala`, `Chrome`,
+    `Vercel`) — seeding is permanent novelty-discovery loss for that literal token in
+    every future context, not just the measured sentence. See
+    `tests/fixtures/gliner_org_probe_corpus.json` and `tests/test_gliner_org_seed_audit.py`
+    for the full measurement and the per-token rationale. #280's structural question
+    (whether Position A should survive at all) is untouched by this update.
 - **Setup's provisioning flow already exists and is smaller work than it looks.** `Setup.tsx`
   (issue #146) already renders the "Enhanced local detection" checkbox with the ~197MB help
   text, calls `POST …/gliner-provision`, handles failure, and shows a restart screen on

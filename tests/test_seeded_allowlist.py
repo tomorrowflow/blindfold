@@ -46,10 +46,16 @@ from blindfold.upstream import UpstreamClient
 # 2026-07-10 live review-inbox run, issue #87): minted live, but generic
 # capitalized prose that could plausibly be a real project/person name. Must
 # stay out of the seed -- the curation rule is identifier-based, not "looks
-# generic". The 2026-07-10 entries (Single/Tools/Darwin/Transit/Mythos) are the
+# generic". The 2026-07-10 entries (Single/Tools/Darwin/Mythos) are the
 # generic-word class issue #87 explicitly declines to seed -- that class is the
-# L3 adjudicator's job (sibling issue #88), not the allowlist's; "Transit" in
-# particular could plausibly be a deployment's own secret.
+# L3 adjudicator's job (sibling issue #88), not the allowlist's.
+#
+# "Transit" was in this set too (2026-07-10: "could plausibly be a deployment's
+# own secret", considered only as bare generic prose). Issue #281 supersedes
+# that call with product-specific evidence: it is OpenBao's/Vault's own named
+# key-wrapping secrets engine, this project's own documented dependency, and a
+# confirmed live GLiNER organization false positive (ADR-0033 §2 update) -- see
+# tests/test_gliner_org_seed_audit.py and tests/fixtures/gliner_org_probe_corpus.json.
 _CURATION_REJECTS = {
     "Session",
     "Subagents",
@@ -61,7 +67,6 @@ _CURATION_REJECTS = {
     "Single",
     "Tools",
     "Darwin",
-    "Transit",
     "Mythos",
 }
 
