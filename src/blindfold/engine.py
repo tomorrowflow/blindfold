@@ -678,6 +678,9 @@ def _blindfold_text(
                     )
             else:
                 start, end = candidate.start, candidate.end
+            start, end = _clip_span_to_candidate_line(
+                result, start, end, candidate.start, candidate.end
+            )
             novel_extents.append(_ConfirmedExtent(start, end, decision.entity_type))
         # Coalesce adjacent/overlapping confirmed extents into one entity before
         # minting (issue #162, widened by #170): select_candidate_spans emits
@@ -728,6 +731,27 @@ def _blindfold_text(
             if hop_ctx is not None:
                 hop_ctx.surrogates.append(surrogate)
     return result
+
+
+def _clip_span_to_candidate_line(
+    text: str, start: int, end: int, candidate_start: int, candidate_end: int
+) -> tuple[int, int]:
+    """Clip ``[start, end)`` so it never crosses a newline outside the confirming
+    candidate's own token (issue #289): an adjudicator-authoritative span (e.g.
+    GLiNER's own multi-word extent, issue #170) can mis-anchor past a line
+    boundary into unrelated following/preceding text -- the live repro is a real
+    value that was literally the entity plus a newline plus a line number from
+    the surrounding listing. ``candidate_start``/``candidate_end`` are always
+    inside one line (a capitalized token, ``_CAPITALIZED_RE``, can't itself
+    contain a newline), so clipping can never cut into the candidate's own token.
+    """
+    newline_before = text.rfind("\n", start, candidate_start)
+    if newline_before != -1:
+        start = newline_before + 1
+    newline_after = text.find("\n", candidate_end, end)
+    if newline_after != -1:
+        end = newline_after
+    return start, end
 
 
 @dataclass(frozen=True)
