@@ -392,10 +392,12 @@ class ReviewInbox:
 
     def purge_surrogate_collisions(self, mapping: "SurrogateMapping") -> list[ReviewItem]:
         """Repair path (issue #292) for a store already poisoned before the
-        mint-time guard existed: drop every item whose ``real`` is equal to, a
-        component of, or a substring of a surrogate live in that item's own
+        mint-time guard existed: drop every item whose ``real`` is equal to, or
+        a whole word-boundary component of, a surrogate live in that item's own
         recorded ``context`` -- Blindfold's own prior output, wrongly minted as
-        a provisional real entity, not a genuine referent.
+        a provisional real entity, not a genuine referent. See
+        ``store._mint.surrogate_space_match`` for why this is word-boundary and
+        stopword-filtered rather than a raw substring test.
 
         A ``mapping_cipher: none`` inbox is in-memory and a restart clears it,
         but a persisted inbox (ADR-0037) carries the deadlock across restarts

@@ -693,21 +693,27 @@ def _blindfold_text(
             start = min(extent.start for extent in group)
             end = max(extent.end for extent in group)
             real = result[start:end]
-            # Issue #292: a candidate equal to, a component of, or a substring
-            # of a surrogate already live in this text is not a novel referent
-            # -- it is Blindfold's own prior output re-entering the transcript
-            # (e.g. a doc/glossary hop illustrating a surrogate's component
-            # word). Minting it would put the same string in both namespaces
-            # at once: a restore key in surrogate-space, and a "protected
-            # real" whose ``item.real in outbound_text`` leak-gate check
-            # (issue #287) then fires on every request that legitimately
-            # carries the live surrogate -- the reported deadlock. Scoped to
-            # surrogates *occurring in this text* (``_live_surrogate_values``,
-            # the same scope ``_injected_surrogate_ranges`` uses just above),
-            # never the full process-global vocabulary, so a genuinely novel
-            # real value that merely shares a word with an unrelated,
-            # never-mentioned surrogate still mints (issue #68's own "Vogt"
-            # precedent -- acceptance criterion: no loss of detection).
+            # Issue #292: a candidate equal to, or a whole word-boundary
+            # component of, a surrogate already live in this text is not a
+            # novel referent -- it is Blindfold's own prior output re-entering
+            # the transcript (e.g. a doc/glossary hop illustrating a
+            # surrogate's component word). Minting it would put the same
+            # string in both namespaces at once: a restore key in
+            # surrogate-space, and a "protected real" whose
+            # ``item.real in outbound_text`` leak-gate check (issue #287) then
+            # fires on every request that legitimately carries the live
+            # surrogate -- the reported deadlock. Scoped to surrogates
+            # *occurring in this text* (``_live_surrogate_values``, the same
+            # scope ``_injected_surrogate_ranges`` uses just above), never the
+            # full process-global vocabulary, so a genuinely novel real value
+            # that merely shares a word with an unrelated, never-mentioned
+            # surrogate still mints (issue #68's own "Vogt" precedent --
+            # acceptance criterion: no loss of detection). Matching is
+            # word-boundary/stopword-filtered (``surrogate_space_match``), not
+            # a raw substring test -- a cycle-1 review found the raw substring
+            # form wrongly dismissed (leaked in plaintext) a genuinely novel
+            # real value sharing only characters, not a whole word, with an
+            # unrelated surrogate (e.g. "Kurt" inside "Kurtis Vale").
             # ``leak_gate``/``resolution_gate`` are untouched by this guard: a
             # true real value is still caught there exactly as before -- the
             # fix is this narrower mint-time check, not a widened gate.

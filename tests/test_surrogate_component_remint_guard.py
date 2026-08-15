@@ -31,6 +31,7 @@ file (the repair-path acceptance criterion has its own test).
 from __future__ import annotations
 
 import json
+import re
 
 import httpx
 import pytest
@@ -126,6 +127,43 @@ def test_genuinely_novel_real_value_sharing_no_span_with_surrogate_space_still_m
     assert "Priya Nadkarni" in inbox_reals
 
 
+def test_real_value_that_is_a_bare_character_fragment_of_an_unrelated_surrogate_still_mints():
+    # Reviewer finding on cycle 1 (leak-audit clause A): ``surrogate_space_match``
+    # used a raw ``candidate in value`` substring test, so a genuinely novel real
+    # value that is merely a *character*-level fragment of an unrelated live
+    # surrogate -- "Kurt" inside "Kurtis Vale", no word boundary -- was wrongly
+    # dismissed and left in plaintext. A CONTEXT.md ~line 267 "surrogate
+    # component" is a whole word token of a multi-word surrogate ("Kurtis" or
+    # "Vale"), never a partial prefix of one of those tokens. "Kurt" is not
+    # Blindfold's own output re-entering the transcript here; it must still be
+    # detected, minted, and blindfolded -- never dismissed into plaintext.
+    mapping = SurrogateMapping.from_pairs([("Unrelated Referent", "Kurtis Vale")])
+    inbox = ReviewInbox()
+    detector = L3Detector(_ConfirmAnyNameShapedTokenAdjudicator())
+    payload = {
+        "model": "m",
+        "messages": [
+            {
+                "role": "user",
+                "content": (
+                    "Unrelated Referent filed the report. Separately, Kurt "
+                    "asked about the timeline."
+                ),
+            }
+        ],
+    }
+
+    blindfolded, session = blindfold_payload(payload, mapping, detector, inbox)
+
+    inbox_reals = {item.real for item in inbox.list()}
+    assert "Kurt" in inbox_reals
+
+    text = blindfolded["messages"][0]["content"]
+    # No real "Kurt" token crosses egress -- only the surrogate "Kurtis Vale"
+    # (whose first word is a superstring, never a match) may remain.
+    assert not re.search(r"\bKurt\b", text)
+
+
 def test_self_poisoning_loop_no_component_of_a_previously_emitted_surrogate_is_minted():
     # Acceptance criterion (the general form, not just the single-word repro
     # above): a payload containing a previously emitted surrogate must not
@@ -192,6 +230,30 @@ def test_purge_surrogate_collisions_never_drops_a_genuinely_novel_item():
 
     assert removed == []
     assert genuinely_novel.id in {item.id for item in inbox.list()}
+
+
+def test_purge_surrogate_collisions_never_drops_a_bare_character_fragment_match():
+    # Repair-path counterpart to the mint-time false-positive fix above: an
+    # item whose real value is a genuine referent ("Kurt") that merely shares
+    # characters (not a whole word) with an unrelated live surrogate
+    # ("Kurtis Vale" -- "Kurt" is a prefix of "Kurtis", never a standalone
+    # word token of it) must survive the sweep. ``purge_surrogate_collisions``
+    # shares ``surrogate_space_match`` with the mint-time guard, so this locks
+    # the same word-boundary narrowing in at the repair path too.
+    mapping = SurrogateMapping.from_pairs([("Unrelated Referent", "Kurtis Vale")])
+    inbox = ReviewInbox()
+    genuine = inbox.upsert(
+        "Kurt",
+        context=(
+            "Kurtis Vale filed the report. Separately, Kurt asked about the "
+            "timeline."
+        ),
+    )
+
+    removed = inbox.purge_surrogate_collisions(mapping)
+
+    assert removed == []
+    assert genuine.id in {item.id for item in inbox.list()}
 
 
 def _make_echo_upstream(recorded: list[httpx.Request]) -> UpstreamClient:

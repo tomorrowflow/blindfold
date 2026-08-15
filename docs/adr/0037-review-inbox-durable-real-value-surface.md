@@ -111,6 +111,26 @@ behavior; per-workspace scoping is a possible future slice, not this one.
   (`ReviewInbox.purge_surrogate_collisions`) right after hydration, so a
   poisoned store repairs itself on the next restart instead of requiring one
   hand-reject per colliding item.
+- Issue #292 follow-up: cycle-1's `surrogate_space_match` used a raw
+  `candidate in value` substring test, which caught the reported deadlock but
+  was itself a leak-audit clause A regression — it also dismissed (left in
+  plaintext) a genuinely novel real value sharing only *characters*, not a
+  whole word, with an unrelated live surrogate (`"Kurt"` inside
+  `"Kurtis Vale"`, `"Alan"` inside `"Alana Bright"`). Narrowed to a
+  word-boundary, stopword-filtered match on CONTEXT.md's own "surrogate
+  component" definition (whole word tokens only), the same basis
+  `engine._component_restore_map` uses for the restore direction. This closes
+  the character-fragment false-dismiss class but does **not** close the
+  residual named in cycle-1's notes: a genuine real value that happens to
+  equal a whole, distinctive word component of an unrelated live surrogate
+  (real `"Carla"` + surrogate `"Carla Distel"` for someone else) is still
+  indistinguishable from Blindfold's own output by string alone, and is still
+  dismissed (fail-open) rather than blocked. Mitigated, not eliminated, by
+  scoping to occurs-in-this-text — same accepted residual as issue #68's own
+  guard. Resolving it fully would mean moving the fix into `leak_gate` itself
+  (making `item.real in outbound_text` word-boundary aware) instead of
+  dismissing at mint time, which is an ADR-level fail-closed-vs-fail-open
+  trade-off, not a code change this issue's scope covers.
 
 ## Alternatives considered
 

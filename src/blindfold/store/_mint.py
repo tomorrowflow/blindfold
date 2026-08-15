@@ -26,7 +26,10 @@ re-detected as a novel referent, not an actual one.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
+
+from ..l3 import _SENTENCE_STOPWORDS as _COMPONENT_STOPWORDS
 
 _PERSON_POOL: tuple[str, ...] = (
     "Bernhard Vogt",
@@ -134,9 +137,9 @@ def collides_with_known_entity(candidate: str, known_values: Iterable[str]) -> b
 
 def surrogate_space_match(candidate: str, surrogate_values: Iterable[str]) -> str | None:
     """Return the first ``surrogate_values`` entry ``candidate`` collides with --
-    equal to it, a **surrogate component** of it (CONTEXT.md), or a plain
-    substring of it -- or ``None`` if ``candidate`` shares no span with any of
-    them.
+    equal to it, or a whole, distinctive **surrogate component** of it
+    (CONTEXT.md) -- or ``None`` if ``candidate`` shares no such span with any
+    of them.
 
     The mirror-direction check to :func:`collides_with_known_entity`: that
     function keeps a newly-minted *surrogate* disjoint from known *real*
@@ -144,13 +147,34 @@ def surrogate_space_match(candidate: str, surrogate_values: Iterable[str]) -> st
     newly-L3-confirmed *real* candidate from being minted when it is actually
     a fragment of surrogate-space re-entering the transcript (issue #292) --
     Blindfold's own prior output, not a novel referent -- by testing
-    containment the other way. A single ``in`` test covers all three cases
-    the issue names: equality (a string is a substring of itself), a
-    component word (contiguous inside the surrogate string by construction),
-    and a bare substring.
+    containment the other way.
+
+    Matching is **word-boundary and stopword-filtered**, the same basis
+    ``engine._component_restore_map`` uses for the restore direction (ADR-0036)
+    -- NOT a raw ``candidate in value`` substring test. A cycle-1 review found
+    that a raw substring test dismissed genuinely novel real values sharing
+    only characters (not a whole word) with an unrelated live surrogate --
+    e.g. ``"Kurt"`` inside ``"Kurtis Vale"``, or ``"Alan"`` inside
+    ``"Alana Bright"`` -- leaving them un-blindfolded in plaintext (a leak-
+    audit clause A regression: fail-closed had become fail-open). A
+    CONTEXT.md "surrogate component" is a whole word token of a multi-word
+    surrogate, so the match is restricted to that: ``candidate`` equal to the
+    whole surrogate value, or equal to one of its distinctive (non-stopword)
+    word tokens.
     """
+    if not candidate:
+        return None
     for value in surrogate_values:
-        if candidate and value and candidate in value:
+        if not value:
+            continue
+        if candidate == value:
+            return value
+        words = {
+            word
+            for word in re.findall(r"\w+", value)
+            if word not in _COMPONENT_STOPWORDS
+        }
+        if candidate in words:
             return value
     return None
 
