@@ -113,6 +113,32 @@ def test_context_offset_locates_the_correct_occurrence_when_the_token_repeats():
     assert second.context[: second.context_offset].endswith("that ")
 
 
+def test_candidate_selection_flags_a_bare_given_name_with_a_non_german_diacritic():
+    # Issue #288: the given name "Tomás" reached the provider bare and unmodified
+    # while ASCII given names ("Priya", "Annika") were caught, even though the
+    # detection path is identical once a token becomes a candidate. Root cause:
+    # the old character class ([A-ZÄÖÜ][a-zäöüß]+) special-cased only German
+    # umlauts/ß, so 'á' — not in that continuation set — broke the match entirely.
+    # "Tomás" never became a candidate span at all, so it never reached L3.
+    text = "The migration owner is Tomás, per the last sync."
+
+    candidates = select_candidate_spans(text, known_entities=[])
+
+    assert "Tomás" in {candidate.text for candidate in candidates}
+
+
+def test_candidate_selection_flags_a_bare_given_name_with_a_different_diacritic_class():
+    # Issue #288 acceptance criterion: coverage for at least one other non-ASCII
+    # class beyond 'á', so the fix is a general Unicode-aware rule rather than one
+    # more codepoint bolted onto the old enumerated character class. 'ñ' (Iberian,
+    # distinct from German ä/ö/ü/ß) is the second class here.
+    text = "The client contact is Peña, reachable after lunch."
+
+    candidates = select_candidate_spans(text, known_entities=[])
+
+    assert "Peña" in {candidate.text for candidate in candidates}
+
+
 def test_l3_does_not_re_flag_entities_already_covered_by_l2():
     # ADR-0003: L3 adjudicates the *leftovers* — tokens the entity-graph dictionary
     # didn't already match. A token whose surface is a canonical or variation of a

@@ -36,7 +36,35 @@ if TYPE_CHECKING:
 # is bounded by span count, not payload size.
 _CONTEXT_WINDOW = 40
 
-_CAPITALIZED_RE = re.compile(r"\b[A-ZÄÖÜ][a-zäöüß]+\b")
+# Word run (any script) -- candidacy itself is decided by _is_capitalized_token,
+# not by this character class, so no diacritic needs enumerating here (issue #288:
+# the old [A-ZÄÖÜ][a-zäöüß]+ class special-cased German umlauts/ß only, so a token
+# like "Tomás" -- 'á' isn't German -- broke the continuation run and never matched
+# at all, never becoming an L3 candidate).
+_WORD_RE = re.compile(r"\w+", re.UNICODE)
+
+
+def _is_capitalized_token(token: str) -> bool:
+    """True if ``token`` is Title-Case: one uppercase letter then only lowercase
+    letters, in any script. Matches the intent of the old ``[A-ZÄÖÜ][a-zäöüß]+``
+    class -- excludes ALL-CAPS acronyms, digit/underscore runs, and internal-cap
+    tokens ("GmbH", "FastAPI") -- without hand-enumerating every diacritic a real
+    given/family name might carry.
+    """
+    return (
+        len(token) >= 2
+        and token.isalpha()
+        and token[0].isupper()
+        and token[1:].islower()
+    )
+
+
+def _capitalized_token_matches(text: str):
+    """Yield ``re.Match`` objects for each Title-Case word in ``text`` (see
+    :func:`_is_capitalized_token`) -- the Unicode-general replacement for what
+    used to be ``_CAPITALIZED_RE.finditer(text)``."""
+    return (m for m in _WORD_RE.finditer(text) if _is_capitalized_token(m.group(0)))
+
 
 # Phone-*shaped* candidate matcher (issue #277): `_PHONE_RE` (detection.py, L1) is
 # anchored on a leading `+` for precision, so a NANPA-format number missing it --
@@ -378,7 +406,7 @@ def select_candidate_spans(
     known_surfaces = _known_surfaces(known_entities)
     capitalized_positions = _capitalized_positions(text)
     candidates: list[CandidateSpan] = []
-    for match in _CAPITALIZED_RE.finditer(text):
+    for match in _capitalized_token_matches(text):
         token = match.group(0)
         if token in _SENTENCE_STOPWORDS:
             continue
@@ -434,7 +462,7 @@ def _capitalized_positions(text: str) -> dict[str, list[int]]:
     occurrence currently being filtered.
     """
     positions: dict[str, list[int]] = {}
-    for match in _CAPITALIZED_RE.finditer(text):
+    for match in _capitalized_token_matches(text):
         positions.setdefault(match.group(0), []).append(match.start())
     return positions
 
@@ -499,7 +527,7 @@ def count_capitalized_tokens(text: str) -> int:
     would later filter (stopwords, known entities, declared tools, positional-case
     noise) — never the already-filtered candidate count.
     """
-    return sum(1 for _ in _CAPITALIZED_RE.finditer(text))
+    return sum(1 for _ in _capitalized_token_matches(text))
 
 
 class L3Detector:
