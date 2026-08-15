@@ -102,6 +102,8 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 
 from .allowlist_seed import load_seeded_allowlist_tokens
 from .bootstrap import bootstrap_admin, bootstrap_from_vendored_seed
+from . import build_info
+from .build_info import BuildIdentity
 from .config import (
     MAPPING_CIPHER_LOCAL,
     Settings,
@@ -584,6 +586,10 @@ def get_gliner_activation_store():
     from .store.activation_settings import PostgresActivationSettingsStore
 
     return PostgresActivationSettingsStore(database_url)
+
+
+def get_build_identity() -> BuildIdentity:
+    return build_info.get_build_identity()
 
 
 def get_upstream_health() -> RecentFailureHealth:
@@ -1324,6 +1330,7 @@ async def status(
     entity_graph: EntityGraph = Depends(get_entity_graph),
     policies: WorkspacePolicies = Depends(get_workspace_policies),
     unprotected_mode: UnprotectedMode = Depends(get_unprotected_mode),
+    build_identity: BuildIdentity = Depends(get_build_identity),
 ) -> dict:
     """The single status contract for the Home view + menu bar (issue #92).
 
@@ -1348,6 +1355,11 @@ async def status(
     recent_blocks = block_history.recent()
     return {
         "state": compute_state(dependencies),
+        # Issue #291: build provenance -- which git SHA this proxy was built from
+        # (frozen) or is running from (source, plus the dirty flag). Read from the
+        # existing unauthenticated /v1/status surface, so a live-verify preflight
+        # can refuse to start against a build that predates the repo's HEAD.
+        "build": build_identity.to_dict(),
         "dependencies": {name: health.to_dict() for name, health in dependencies.items()},
         "blocks": {
             "window_minutes": block_history.window_minutes,

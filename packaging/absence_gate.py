@@ -73,9 +73,16 @@ def render_canary_spec(
             '"blindfold.app",\n        "blindfold_devtools",  # canary: issue #252 positive control',
         )
     if datas_smuggle:
+        marker = 'datas=collect_data_files("blindfold") + [(BUILD_SHA_STAMP, "blindfold")],'
+        assert marker in text, (
+            "render_canary_spec's datas_smuggle replace target no longer matches "
+            "blindfold-proxy.spec's datas= line -- a silent no-op here would build a "
+            "canary that never smuggles blindfold_devtools, defeating the positive "
+            "control (ADR-0047 §12) without a single test going red"
+        )
         text = text.replace(
-            'datas=collect_data_files("blindfold"),',
-            'datas=collect_data_files("blindfold")'
+            marker,
+            'datas=collect_data_files("blindfold") + [(BUILD_SHA_STAMP, "blindfold")]'
             ' + [(str(SRC_DIR / "blindfold_devtools" / "__init__.py"), "blindfold_devtools")],'
             "  # canary: issue #252 positive control, the datas vector excludes cannot reach",
         )

@@ -121,6 +121,27 @@ async def test_status_config_reports_the_actual_bind_host_and_port():
     assert body["config"]["port"] == 25465
 
 
+@pytest.mark.anyio
+async def test_status_reports_build_identity():
+    # Issue #291: a running proxy must be askable what it is -- the live-verify
+    # preflight reads exactly this field to refuse a stale build before a run starts.
+    from blindfold.app import get_build_identity
+    from blindfold.build_info import BuildIdentity
+
+    app.dependency_overrides[get_build_identity] = lambda: BuildIdentity(
+        sha="deadbeef", dirty=True, source="source", path=None
+    )
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://proxy.test") as client:
+            resp = await client.get("/v1/status")
+    finally:
+        app.dependency_overrides.clear()
+
+    body = resp.json()
+    assert body["build"] == {"sha": "deadbeef", "source": "source", "dirty": True}
+
+
 class _FakeProbe:
     def __init__(self, health: DependencyHealth) -> None:
         self._health = health

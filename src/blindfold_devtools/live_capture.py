@@ -27,6 +27,7 @@ import httpx
 from fastapi import FastAPI, Request
 
 from blindfold import app as blindfold_app
+from blindfold.build_info import get_build_identity
 from blindfold.policy import DEFAULT_WORKSPACE
 from blindfold.processing_trace import (
     OUTCOME_BLOCKED,
@@ -286,6 +287,7 @@ class CaptureMiddleware:
         workspace = _workspace_from_scope(scope)
         capture_id, writer = self._directory.start_capture()
         ctx = _CaptureContext(writer=writer, capture_id=capture_id)
+        build_identity = get_build_identity()
         writer.write(
             HeaderRecord(
                 section=SECTION_OBSERVED,
@@ -295,6 +297,9 @@ class CaptureMiddleware:
                 streamed=streamed,
                 workspace=workspace,
                 inbound_payload=inbound_payload,
+                build_sha=build_identity.sha,
+                build_dirty=build_identity.dirty,
+                build_source=build_identity.source,
             )
         )
 

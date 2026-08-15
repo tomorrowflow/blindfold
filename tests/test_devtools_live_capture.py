@@ -90,6 +90,44 @@ async def test_a_non_streaming_exchange_writes_a_header_record_with_the_real_inb
     assert header.inbound_payload == request_body
 
 
+@pytest.mark.anyio
+async def test_header_record_carries_the_running_process_build_identity(tmp_path):
+    # Issue #291: an archived capture must stay attributable after the fact -- the
+    # header records the same build identity /v1/status exposes, not re-derived.
+    import subprocess
+
+    from blindfold.build_info import BuildIdentity, get_build_identity
+
+    directory = CaptureDirectory(tmp_path / "captures")
+    app.dependency_overrides[get_upstream_client] = lambda: _stub_upstream("hi")
+    app.dependency_overrides[get_mapping] = lambda: SurrogateMapping()
+    app.dependency_overrides[get_workspace_policies] = _deterministic_only_policies
+
+    get_build_identity.cache_clear()
+    expected_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    try:
+        wrapped = install_capture(app, directory)
+        transport = httpx.ASGITransport(app=wrapped)
+        async with httpx.AsyncClient(transport=transport, base_url="http://proxy.test") as client:
+            response = await client.post(
+                "/v1/messages",
+                json={"model": "claude-opus", "messages": [{"role": "user", "content": "hi"}]},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+    capture_files = sorted((tmp_path / "captures").glob("*.jsonl"))
+    capture = read_capture(capture_files[0])
+    header = capture.records[0]
+    assert isinstance(header, HeaderRecord)
+    assert header.build_sha == expected_sha
+    assert header.build_source == "source"
+
+
 def _echoing_stub_upstream(recorded: list[dict]) -> UpstreamClient:
     def handler(request: httpx.Request) -> httpx.Response:
         sent = json.loads(request.content.decode("utf-8"))

@@ -20,12 +20,44 @@ itself.
 """
 
 import pathlib
+import subprocess
+import tempfile
 
 from PyInstaller.utils.hooks import collect_data_files
 
 REPO_ROOT = pathlib.Path(SPECPATH).parent
 SRC_DIR = REPO_ROOT / "src"
 BLINDFOLD_DIR = SRC_DIR / "blindfold"
+
+
+def _stamp_build_sha() -> str:
+    """Issue #291: write the git SHA this freeze is building from to a temp file,
+    added to ``datas`` below so it lands at ``blindfold/_build_sha`` in the bundle
+    -- the same relative path ``build_info.py``'s ``Path(__file__).parent`` lookup
+    expects, frozen or source-run alike (ADR-0026's ``ui_dist`` precedent). Never
+    written into ``src/blindfold/`` itself: freezing must not mutate the checkout
+    it is building from.
+    """
+    try:
+        sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=REPO_ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    except (OSError, subprocess.CalledProcessError):
+        sha = "unknown"
+    # PyInstaller's `datas` (source, dest_dir) keeps the source's own basename when
+    # placing it under dest_dir -- so the source file itself must already be named
+    # `_build_sha`, not just live in a scratch directory.
+    stamp_dir = pathlib.Path(tempfile.mkdtemp(prefix="blindfold-build-sha-"))
+    stamp_file = stamp_dir / "_build_sha"
+    stamp_file.write_text(sha)
+    return str(stamp_file)
+
+
+BUILD_SHA_STAMP = _stamp_build_sha()
 
 a = Analysis(
     [str(REPO_ROOT / "packaging" / "blindfold_proxy_entry.py")],
@@ -35,8 +67,9 @@ a = Analysis(
     # the vendored cold-start seed, curated-dictionary word lists -- collected
     # at the same relative path the package's own `Path(__file__).parent`
     # lookups expect. Generic on purpose: a future vendored data file needs
-    # no matching edit here.
-    datas=collect_data_files("blindfold"),
+    # no matching edit here. Issue #291's build-SHA stamp rides the same
+    # (source, dest_dir) shape, landing at the package root alongside app.py.
+    datas=collect_data_files("blindfold") + [(BUILD_SHA_STAMP, "blindfold")],
     hiddenimports=[
         # uvicorn.run(APP_TARGET, ...) resolves "blindfold.app:app" by string
         # (serve.py's APP_TARGET) -- invisible to PyInstaller's static import

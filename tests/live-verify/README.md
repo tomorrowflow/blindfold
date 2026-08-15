@@ -32,7 +32,22 @@ documentation, and the IBAN is a test value.
    - `BLINDFOLD_L3_PROVIDER=gliner` + `BLINDFOLD_L3_INNER_PROVIDER=omlx` — the GLiNER cascade.
    - neither set — the bare L3 LLM.
 
-2. Point a client at the **proxy's** port — `ANTHROPIC_BASE_URL=http://localhost:25463`
+2. **Run the preflight before pasting anything.** It refuses to proceed if the running
+   proxy is not the repo's current `HEAD` — a stale binary's findings are unattributable
+   to `main` (issue #291):
+
+   ```
+   uv run python tests/live-verify/preflight.py
+   ```
+
+   A mismatch (or a build too old to report an identity at all) names the expected SHA,
+   the actual SHA, and the binary's path, then exits non-zero — **rebuild the proxy and
+   restart it** before running live-verify. A match prints the matching SHA and exits 0.
+   `--base-url`/`--repo-root` override the defaults (`http://localhost:25463`, this
+   checkout) if you're pointing at a different proxy or comparing against a different
+   worktree.
+
+3. Point a client at the **proxy's** port — `ANTHROPIC_BASE_URL=http://localhost:25463`
    (`DEFAULT_PORT` in `config.py`; overridable with `BLINDFOLD_PORT`),
    `ANTHROPIC_AUTH_TOKEN=<real key>`. Do not use `:8000` — that is the local L3 provider's own
    port, so agent traffic would go straight to the adjudicator. Without a key, set
@@ -40,7 +55,7 @@ documentation, and the IBAN is a test value.
    returns an Anthropic-shaped message; that proves blindfold + mint + restore but not the real
    provider.
 
-3. Copy `74-engagement-brief.md` somewhere the client can read it, then paste `74-prompt.md` with
+4. Copy `74-engagement-brief.md` somewhere the client can read it, then paste `74-prompt.md` with
    `<BRIEF-PATH>` / `<OUT-PATH>` substituted.
 
 ## What to check afterwards
@@ -52,6 +67,9 @@ documentation, and the IBAN is a test value.
 - `GET /v1/management/review-inbox` (or `/ui/review-inbox`) — the novel candidates appear as
   provisional items, i.e. the ADR-0010 learning loop fired.
 - Startup refuses a `:cloud` model tag, with no override (the local-only invariant).
+- If you ran a Diagnostic session (ADR-0047) alongside this run, its Exchange captures'
+  header records carry the same `build_sha`/`build_source` the preflight checked, so an
+  archived capture stays attributable to this run's build after the fact.
 
 See `.claude/skills/leak-audit` for the property being asserted, and
 `docs/adr/0022-wire-l3-adjudicator-local-ollama.md` for the contract.

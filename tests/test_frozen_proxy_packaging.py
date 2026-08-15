@@ -233,6 +233,40 @@ def test_frozen_binary_reaches_local_mapping_cipher_with_ambient_store_key_clear
         proc.wait(timeout=5)
 
 
+def test_frozen_binary_reports_the_git_sha_it_was_built_from(
+    frozen_proxy_binary: pathlib.Path,
+) -> None:
+    """Issue #291: a frozen build stamps the git SHA it was frozen from into the
+    binary at freeze time (``packaging/blindfold-proxy.spec``), so a live-verify
+    preflight can tell a stale binary from the repo's current HEAD without a
+    privileged call -- just the existing, unauthenticated ``/v1/status``."""
+    expected_sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, capture_output=True, text=True, check=True
+    ).stdout.strip()
+
+    port = _free_port()
+    proc = subprocess.Popen(
+        [str(frozen_proxy_binary), "serve", "--port", str(port)],
+        env=_toolchain_free_env(),
+        cwd=str(REPO_ROOT.parent),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        _wait_for_port(port)
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/v1/status", timeout=5) as resp:
+            assert resp.status == 200
+            payload = json.loads(resp.read().decode("utf-8"))
+        assert payload["build"]["source"] == "frozen"
+        assert payload["build"]["sha"] == expected_sha
+        assert "dirty" not in payload["build"]
+        assert payload["build"]["path"] == str(frozen_proxy_binary)
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)
+
+
 def test_frozen_binary_refuses_cloud_l3_model_with_scrubbed_stderr(
     frozen_proxy_binary: pathlib.Path,
 ) -> None:

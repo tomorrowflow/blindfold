@@ -58,6 +58,12 @@ class HeaderRecord(_CaptureRecord):
     streamed: bool
     workspace: str
     inbound_payload: dict
+    # Issue #291: the capturing process's own build identity (blindfold.build_info),
+    # so an archived capture stays attributable to a specific build after the fact --
+    # None only for a capture written before this field existed.
+    build_sha: str | None = None
+    build_dirty: bool | None = None
+    build_source: str | None = None
 
 
 @dataclass(frozen=True)
