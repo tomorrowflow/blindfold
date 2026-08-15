@@ -1,4 +1,5 @@
 import os
+import sys
 
 import pytest
 
@@ -24,3 +25,21 @@ os.environ["BLINDFOLD_DATABASE_URL"] = "memory://"
 def anyio_backend():
     # Run anyio-marked ASGI tests on asyncio only (no trio dependency).
     return "asyncio"
+
+
+@pytest.fixture
+def block_import(monkeypatch):
+    """Make ``import <name>`` raise ``ImportError`` for the rest of the test,
+    regardless of whether the package is actually installed in this environment
+    (issue #284) -- so a test asserting "this optional dependency is absent"
+    behavior doesn't depend on ambient venv state. Shared here rather than
+    re-improvised per test file: setting ``sys.modules[name] = None`` is the
+    documented way to force the next ``import name`` to fail closed, and
+    ``monkeypatch.setitem`` reverts it (to whatever was there before, present or
+    absent) at teardown.
+    """
+
+    def _block(name: str) -> None:
+        monkeypatch.setitem(sys.modules, name, None)
+
+    return _block
