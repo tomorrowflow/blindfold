@@ -33,6 +33,7 @@ from .l3 import L3Detector, L3Unavailable, count_capitalized_tokens
 from .l3 import _context_window as _l3_context_window
 from .policy import DEFAULT_WORKSPACE
 from .review import ReviewInbox
+from .store._mint import surrogate_space_match
 from .surrogates import SurrogateMapping
 
 logger = logging.getLogger(__name__)
@@ -148,6 +149,12 @@ class ExchangeSession:
     def __init__(self) -> None:
         self.injected: dict[str, str] = {}  # surrogate -> real
         self.hops: list[HopDetail] = []  # scrubbed per-hop detail (ADR-0035, issue #153)
+        # Issue #292: live surrogates a would-be provisional candidate collided
+        # with this exchange -- one entry per dismissed mint, never the
+        # candidate's own real text (SEC-3: a surrogate value is safe to log,
+        # by construction never a real entity). The app layer turns each into
+        # a scrubbed ``dismissed-surrogate-collision`` audit record.
+        self.dismissed_surrogate_collisions: list[str] = []
 
     def record(self, surrogate: str, real: str) -> None:
         self.injected[surrogate] = real
@@ -686,6 +693,30 @@ def _blindfold_text(
             start = min(extent.start for extent in group)
             end = max(extent.end for extent in group)
             real = result[start:end]
+            # Issue #292: a candidate equal to, a component of, or a substring
+            # of a surrogate already live in this text is not a novel referent
+            # -- it is Blindfold's own prior output re-entering the transcript
+            # (e.g. a doc/glossary hop illustrating a surrogate's component
+            # word). Minting it would put the same string in both namespaces
+            # at once: a restore key in surrogate-space, and a "protected
+            # real" whose ``item.real in outbound_text`` leak-gate check
+            # (issue #287) then fires on every request that legitimately
+            # carries the live surrogate -- the reported deadlock. Scoped to
+            # surrogates *occurring in this text* (``_live_surrogate_values``,
+            # the same scope ``_injected_surrogate_ranges`` uses just above),
+            # never the full process-global vocabulary, so a genuinely novel
+            # real value that merely shares a word with an unrelated,
+            # never-mentioned surrogate still mints (issue #68's own "Vogt"
+            # precedent -- acceptance criterion: no loss of detection).
+            # ``leak_gate``/``resolution_gate`` are untouched by this guard: a
+            # true real value is still caught there exactly as before -- the
+            # fix is this narrower mint-time check, not a widened gate.
+            collision = surrogate_space_match(
+                real, _live_surrogate_values(result, mapping, session, inbox)
+            )
+            if collision is not None:
+                session.dismissed_surrogate_collisions.append(collision)
+                continue
             context, context_offset = _l3_context_window(result, start, end)
             # Issue #167: a coalesced multi-word entity ("Nordwind Logistik")
             # carries ONE type for the whole span, not per-token -- the mint pass
@@ -801,18 +832,37 @@ def _resolve_group_entity_type(types: Iterator[str | None]) -> str | None:
     return None
 
 
-def _injected_surrogate_ranges(
-    result: str, mapping: SurrogateMapping, session: ExchangeSession, inbox: ReviewInbox
-) -> list[tuple[int, int]]:
-    """Character ranges in ``result`` a candidate must fall entirely inside to be
-    refused as a fresh novel candidate — i.e. where an already-injected surrogate
-    literally occurs *in this exchange's text*.
+def _live_surrogate_values(
+    text: str, mapping: SurrogateMapping, session: ExchangeSession, inbox: ReviewInbox
+) -> set[str]:
+    """Every surrogate value that actually occurs at least once in ``text``.
 
     Spans every surrogate namespace an already-injected surrogate can come from
     (ADR-0022, issue #68): surrogates this ``mapping`` has already issued (seed +
     PII-minted), surrogates already recorded in ``session`` for this exchange, and
     provisional surrogates the review inbox has actually minted (this and prior
     exchanges — the inbox is process-global).
+
+    Filtered down to values literally present in ``text`` rather than the full
+    process-global vocabulary: a "Bernhard Vogt" seed surrogate for an unrelated
+    referent, never mentioned anywhere in *this* text, must never suppress a
+    genuinely novel real value that merely shares a word with it (issue #68's
+    own hardening — see :func:`_injected_surrogate_ranges` and the mint-time
+    surrogate-space guard in :func:`_blindfold_text`, both of which key off this
+    same occurs-in-text scope rather than word-level set membership).
+    """
+    values: set[str] = set(mapping.known_surrogates())
+    values.update(session.injected)
+    values.update(item.provisional_surrogate for item in inbox.list())
+    return {value for value in values if value and value in text}
+
+
+def _injected_surrogate_ranges(
+    result: str, mapping: SurrogateMapping, session: ExchangeSession, inbox: ReviewInbox
+) -> list[tuple[int, int]]:
+    """Character ranges in ``result`` a candidate must fall entirely inside to be
+    refused as a fresh novel candidate — i.e. where an already-injected surrogate
+    literally occurs *in this exchange's text*.
 
     Keyed on where those surrogate values actually appear in ``result``, not on a
     global decomposition into individual words: ``select_candidate_spans`` flags
@@ -827,11 +877,8 @@ def _injected_surrogate_ranges(
     surrogate value in ``result`` keeps the multi-word/single-token match without
     that global word-collision risk.
     """
-    values: set[str] = set(mapping.known_surrogates())
-    values.update(session.injected)
-    values.update(item.provisional_surrogate for item in inbox.list())
     ranges: list[tuple[int, int]] = []
-    for value in values:
+    for value in _live_surrogate_values(result, mapping, session, inbox):
         start = 0
         while True:
             idx = result.find(value, start)

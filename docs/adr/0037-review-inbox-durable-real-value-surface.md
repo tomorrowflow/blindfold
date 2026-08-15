@@ -103,6 +103,14 @@ behavior; per-workspace scoping is a possible future slice, not this one.
   implications.
 - When Transit/Postgres are absent the durability promise is unmet (the #149 honesty
   gap persists), but no real value is ever written unencrypted.
+- Issue #292: durability cuts both ways. A store poisoned by a mint-time bug (a
+  candidate that was actually a fragment of surrogate-space, wrongly minted as a
+  provisional real) now also survives a restart, where the pre-#292 in-memory
+  default would have cleared it. `hydrate_review_inbox_from_store`'s optional
+  `mapping` argument sweeps every hydrated item for that collision
+  (`ReviewInbox.purge_surrogate_collisions`) right after hydration, so a
+  poisoned store repairs itself on the next restart instead of requiring one
+  hand-reject per colliding item.
 
 ## Alternatives considered
 

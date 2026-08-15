@@ -131,6 +131,14 @@ class AuditRecord:
                                         (issue #279).
       - ``policy-phone-candidates-enabled``  — an admin reverted that opt-out
                                         (issue #279).
+      - ``dismissed-surrogate-collision`` — an L3-confirmed candidate was NOT
+                                        minted into the review inbox because it
+                                        collided with surrogate-space (equal to,
+                                        a component of, or a substring of a
+                                        surrogate already live in the transcript
+                                        — issue #292). Non-blocking: the request
+                                        proceeds, the candidate is simply never
+                                        minted.
 
     ``ts`` is the record's own recorded-at timestamp (ISO-8601, UTC) — the full audit
     log view (issue #102) sorts and filters on it; mirrors ``BlockRecord.ts``

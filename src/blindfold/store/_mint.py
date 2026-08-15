@@ -16,6 +16,12 @@ contains a known entity's canonical name or a Variation as a substring -- the sa
 closed-world set the pre-egress leak gate (``engine.leak_gate``) checks via
 ``mapping.real_values()``, so mint and gate can never disagree. A rejected entry is
 skipped, never reused for a later referent (:func:`mint_surrogates`).
+
+The mirror-direction guard (issue #292): :func:`surrogate_space_match` keeps a
+newly-L3-confirmed candidate from being minted as a provisional *real* entity
+when the candidate is itself equal to, a component of, or a substring of a
+surrogate already live in the transcript -- Blindfold's own prior output
+re-detected as a novel referent, not an actual one.
 """
 
 from __future__ import annotations
@@ -124,6 +130,29 @@ def collides_with_known_entity(candidate: str, known_values: Iterable[str]) -> b
     Variations -- the same set ``SurrogateMapping.real_values()`` exposes.
     """
     return any(known and known in candidate for known in known_values)
+
+
+def surrogate_space_match(candidate: str, surrogate_values: Iterable[str]) -> str | None:
+    """Return the first ``surrogate_values`` entry ``candidate`` collides with --
+    equal to it, a **surrogate component** of it (CONTEXT.md), or a plain
+    substring of it -- or ``None`` if ``candidate`` shares no span with any of
+    them.
+
+    The mirror-direction check to :func:`collides_with_known_entity`: that
+    function keeps a newly-minted *surrogate* disjoint from known *real*
+    values (issue #80) by testing containment one way; this one keeps a
+    newly-L3-confirmed *real* candidate from being minted when it is actually
+    a fragment of surrogate-space re-entering the transcript (issue #292) --
+    Blindfold's own prior output, not a novel referent -- by testing
+    containment the other way. A single ``in`` test covers all three cases
+    the issue names: equality (a string is a substring of itself), a
+    component word (contiguous inside the surrogate string by construction),
+    and a bare substring.
+    """
+    for value in surrogate_values:
+        if candidate and value and candidate in value:
+            return value
+    return None
 
 
 def mint_surrogates(kind: str, count: int, known_values: Iterable[str] = ()) -> list[str]:

@@ -25,10 +25,11 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 from .policy import DEFAULT_WORKSPACE
-from .store._mint import collides_with_known_entity
+from .store._mint import collides_with_known_entity, surrogate_space_match
 
 if TYPE_CHECKING:
     from .mapping_cipher import MappingCipher
+    from .surrogates import SurrogateMapping
     from .transit import TransitClient
 
 # Plausible fake names used to mint **provisional** surrogates. Kept disjoint from
@@ -388,6 +389,48 @@ class ReviewInbox:
             if self._persistent():
                 self._store.remove_row(item_id)
         return item
+
+    def purge_surrogate_collisions(self, mapping: "SurrogateMapping") -> list[ReviewItem]:
+        """Repair path (issue #292) for a store already poisoned before the
+        mint-time guard existed: drop every item whose ``real`` is equal to, a
+        component of, or a substring of a surrogate live in that item's own
+        recorded ``context`` -- Blindfold's own prior output, wrongly minted as
+        a provisional real entity, not a genuine referent.
+
+        A ``mapping_cipher: none`` inbox is in-memory and a restart clears it,
+        but a persisted inbox (ADR-0037) carries the deadlock across restarts
+        with no way out except hand-rejecting every colliding item one at a
+        time. This sweeps the whole inbox in one call, going through
+        :meth:`remove` for each hit so a persisted row is deleted too.
+
+        Scoped to surrogates occurring in the item's own ``context`` -- the
+        same occurs-in-text scope the mint-time guard uses
+        (``engine._live_surrogate_values``) -- rather than the full
+        process-global surrogate vocabulary, so a genuinely novel item that
+        merely shares a word with an unrelated surrogate never mentioned in
+        its own context survives the sweep (issue #68's "Vogt" precedent).
+        Checked against every *other* item's provisional surrogate too (not
+        just ``mapping``'s), mirroring the mint-time guard's own known-values
+        composition.
+        """
+        items = list(self._items.values())
+        colliding: list[ReviewItem] = []
+        for item in items:
+            other_surrogates = [
+                other.provisional_surrogate
+                for other in items
+                if other.id != item.id
+            ]
+            live = {
+                value
+                for value in list(mapping.known_surrogates()) + other_surrogates
+                if value and value in item.context
+            }
+            if surrogate_space_match(item.real, live) is not None:
+                colliding.append(item)
+        for item in colliding:
+            self.remove(item.id)
+        return colliding
 
 
 class Allowlist:

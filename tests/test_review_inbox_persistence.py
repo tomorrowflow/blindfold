@@ -396,3 +396,67 @@ def test_hydrate_review_inbox_from_store_wires_persistence_for_future_upserts():
     inbox.upsert("Klaus", context="Please brief Klaus tomorrow.")
 
     assert len(store.rows) == 1
+
+
+def test_hydrate_review_inbox_from_store_repairs_a_poisoned_row_when_mapping_supplied():
+    # Issue #292 acceptance criterion: a persisted inbox poisoned before the
+    # mint-time guard existed carries the deadlock across restarts. Passing
+    # ``mapping`` sweeps it clean at hydration time, on the very next restart --
+    # no manual reject-by-hand required.
+    from blindfold.app import hydrate_review_inbox_from_store
+    from blindfold.surrogates import SurrogateMapping
+
+    store = _RecordingReviewInboxStore()
+    transit = _stub_transit()
+    store.upsert_row(
+        "1",
+        "vault:v1:Carla",
+        "blind:Carla",
+        "vault:v1:...abbreviates a surrogate (Carla for Carla Distel)...",
+        0,
+        "Alex Brenner",
+        None,
+        "default",
+    )
+    store.upsert_row(
+        "2",
+        "vault:v1:Priya Nadkarni",
+        "blind:Priya Nadkarni",
+        "vault:v1:Priya Nadkarni sent the update yesterday.",
+        0,
+        "Berta Falke",
+        None,
+        "default",
+    )
+    inbox = ReviewInbox()
+    mapping = SurrogateMapping.from_pairs([("Referent Real", "Carla Distel")])
+
+    hydrate_review_inbox_from_store(inbox, store, transit, mapping)
+
+    remaining_reals = {item.real for item in inbox.list()}
+    assert remaining_reals == {"Priya Nadkarni"}
+    assert store.rows.keys() == {"2"}
+
+
+def test_hydrate_review_inbox_from_store_defaults_mapping_to_none_and_skips_repair():
+    # Every pre-#292 caller of this function keeps working unchanged: no
+    # ``mapping`` argument means hydrate-only, exactly today's behavior.
+    from blindfold.app import hydrate_review_inbox_from_store
+
+    store = _RecordingReviewInboxStore()
+    transit = _stub_transit()
+    store.upsert_row(
+        "1",
+        "vault:v1:Carla",
+        "blind:Carla",
+        "vault:v1:...abbreviates a surrogate (Carla for Carla Distel)...",
+        0,
+        "Alex Brenner",
+        None,
+        "default",
+    )
+    inbox = ReviewInbox()
+
+    hydrate_review_inbox_from_store(inbox, store, transit)
+
+    assert len(inbox.list()) == 1

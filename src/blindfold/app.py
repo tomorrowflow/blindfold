@@ -752,6 +752,7 @@ def hydrate_review_inbox_from_store(
     inbox: ReviewInbox,
     store: "PostgresReviewInboxStore | None",
     mapping_cipher,
+    mapping: "SurrogateMapping | None" = None,
 ) -> None:
     """Wire persistence into ``inbox`` and hydrate every previously-persisted
     item + pool cursor (ADR-0037, issue #169) -- acceptance criteria 1/3.
@@ -762,10 +763,19 @@ def hydrate_review_inbox_from_store(
     mapping cipher (Transit or Local, ADR-0045 §2/§4, issue #231 -- generalized
     from Transit-only) to encrypt, so the in-memory/ephemeral default stays
     byte-identical to before this slice.
+
+    ``mapping`` (issue #292), when supplied, sweeps the freshly-hydrated inbox
+    for already-poisoned items (:meth:`ReviewInbox.purge_surrogate_collisions`)
+    right after hydration -- a store poisoned by the pre-fix mint-time bug
+    carries the #292 leak-gate deadlock across restarts otherwise. Optional
+    and defaulted to ``None`` so every pre-#292 caller of this function keeps
+    its exact hydrate-only behavior.
     """
     if store is None or mapping_cipher is None:
         return
     inbox.attach_store(store, mapping_cipher)
+    if mapping is not None:
+        inbox.purge_surrogate_collisions(mapping)
 
 
 def get_reidentify_store() -> ReIdentificationStore:
@@ -914,7 +924,7 @@ hydrate_allowlist_from_store(_allowlist, get_allowlist_store())
 # specifically) -- a no-op unless BOTH are configured (acceptance criterion 6,
 # #149 graceful degradation).
 hydrate_review_inbox_from_store(
-    _review_inbox, get_review_inbox_store(), get_mapping_cipher()
+    _review_inbox, get_review_inbox_store(), get_mapping_cipher(), _mapping
 )
 
 
@@ -1207,6 +1217,26 @@ async def _mint_or_block(
                 workspace=workspace,
                 event="deterministic-only-pass",
                 reason="workspace opted into deterministic-only mode; L3 skipped",
+            )
+        )
+    # Issue #292: `mint`'s ExchangeSession records every candidate the mint pass
+    # dismissed as a surrogate-space collision (never minted into the review
+    # inbox). One audit record per dismissal, here -- the one place all three
+    # mint call sites (messages / count_tokens / chat_completions) converge --
+    # so the event is written exactly once per request, same as the
+    # deterministic-only-pass record just above. The ref is a live surrogate
+    # value, never the candidate's own real text (SEC-3): a surrogate is safe
+    # to log by construction.
+    _, session = result
+    for ref in session.dismissed_surrogate_collisions:
+        audit_log.append(
+            AuditRecord(
+                workspace=workspace,
+                event="dismissed-surrogate-collision",
+                reason=(
+                    "L3-confirmed candidate collides with surrogate-space "
+                    f"(ref: {ref})"
+                ),
             )
         )
     return result
