@@ -69,6 +69,54 @@ _PROVISIONAL_POOLS: dict[str, tuple[str, ...]] = {
     "organization": _PROVISIONAL_ORG_POOL,
 }
 
+# Trailing legal-form suffixes (issue #289): an organisation mentioned with and
+# without its legal form ("Kestrel Dynamics GmbH" vs "Kestrel Dynamics") is the
+# same referent, not two. Longest-first so "GmbH & Co. KG" matches before the
+# bare "KG" it contains.
+_LEGAL_FORM_SUFFIXES: tuple[str, ...] = (
+    "GmbH & Co. KG",
+    "GmbH",
+    "AG",
+    "KG",
+    "SE",
+    "Ltd.",
+    "Ltd",
+    "LLC",
+    "LLP",
+    "PLC",
+    "Inc.",
+    "Inc",
+    "Corp.",
+    "Corp",
+    "Co.",
+    "S.A.",
+    "SA",
+    "BV",
+    "NV",
+)
+
+
+def _referent_key(real: str, entity_type: str | None) -> str:
+    """The key :meth:`ReviewInbox.upsert` dedups a novel candidate's referent on
+    (issue #289).
+
+    Plain ``real`` for anything not typed ``"organization"``. For an
+    organisation, a trailing legal-form suffix (``GmbH``, ``AG``, ``Ltd``, ...)
+    is stripped first, so the same company mentioned with and without its legal
+    form resolves to one referent -- and therefore one surrogate -- instead of
+    minting a second provisional entity.
+    """
+    if entity_type != "organization":
+        return real
+    stripped = real
+    for suffix in _LEGAL_FORM_SUFFIXES:
+        if stripped == suffix:
+            continue
+        if stripped.endswith(" " + suffix):
+            stripped = stripped[: -(len(suffix) + 1)].rstrip()
+            break
+    return stripped
+
 
 @dataclass(frozen=True)
 class ReviewItem:
@@ -158,9 +206,11 @@ class ReviewInbox:
         mapping_cipher: "MappingCipher | None" = None,
     ) -> None:
         self._items: dict[str, ReviewItem] = {}
-        # real -> id lookup, so re-encountering the same novel value reuses the
-        # existing entry instead of minting a duplicate. Persists across remove()
-        # too: a removed entry has been triaged (confirmed or rejected) and the
+        # referent key (see _referent_key) -> id lookup, so re-encountering the
+        # same novel referent reuses the existing entry instead of minting a
+        # duplicate -- including an organisation mentioned with and without its
+        # trailing legal form (issue #289). Persists across remove() too: a
+        # removed entry has been triaged (confirmed or rejected) and the
         # learning loop's two stores (entity graph / allowlist) own re-detection
         # from then on.
         self._by_real: dict[str, str] = {}
@@ -219,7 +269,7 @@ class ReviewInbox:
                 workspace=workspace,
             )
             self._items[item_id] = item
-            self._by_real[real] = item_id
+            self._by_real[_referent_key(real, entity_type)] = item_id
             self._minted = max(self._minted, int(item_id))
         self._pool_positions.update(store.pool_positions())
 
@@ -233,6 +283,14 @@ class ReviewInbox:
         workspace: str = DEFAULT_WORKSPACE,
     ) -> ReviewItem:
         """Add (or reuse) a provisional inbox entry for ``real`` and return it.
+
+        Reuse is keyed on :func:`_referent_key`, not ``real`` verbatim (issue
+        #289): for an ``"organization"`` candidate, a trailing legal form
+        (``GmbH``, ``AG``, ``Ltd``, ...) is stripped before the lookup, so the
+        same company mentioned with and without its legal form resolves to the
+        one existing item -- and its one surrogate -- instead of minting a
+        second provisional entity. The item's own ``real`` field keeps whichever
+        surface form was encountered first; only the dedup key is normalized.
 
         The provisional surrogate is minted here (not by the engine) so the inbox
         is the single owner of the provisional registry — confirm/reject can
@@ -260,7 +318,8 @@ class ReviewInbox:
         EntityGraph to grow. Falls back to the default workspace slug for a
         caller with no workspace in context.
         """
-        existing_id = self._by_real.get(real)
+        referent_key = _referent_key(real, entity_type)
+        existing_id = self._by_real.get(referent_key)
         if existing_id is not None:
             return self._items[existing_id]
         item_id = str(self._minted + 1)
@@ -286,7 +345,7 @@ class ReviewInbox:
             workspace=workspace,
         )
         self._items[item_id] = item
-        self._by_real[real] = item_id
+        self._by_real[referent_key] = item_id
         if self._persistent():
             self._persist_item(item, pool_key, next_position)
         return item
@@ -325,7 +384,7 @@ class ReviewInbox:
     def remove(self, item_id: str) -> ReviewItem | None:
         item = self._items.pop(item_id, None)
         if item is not None:
-            self._by_real.pop(item.real, None)
+            self._by_real.pop(_referent_key(item.real, item.entity_type), None)
             if self._persistent():
                 self._store.remove_row(item_id)
         return item

@@ -304,12 +304,40 @@ class _FailingUpstream:
 
 
 @pytest.mark.anyio
-async def test_a_real_upstream_boundary_failure_passively_marks_upstream_unhealthy():
-    # Issue #92: `/v1/status`'s upstream health is the passive RecentFailureHealth
-    # signal fed by the existing `_upstream_error_response` funnel (#86) -- no
-    # standalone active probe for the paid provider. Proves the real wiring, not
-    # just the override seam already covered by the degraded-flip parametrized test.
-    upstream_health = RecentFailureHealth(unhealthy_window_seconds=60.0)
+async def test_a_run_of_consecutive_real_upstream_failures_marks_upstream_unhealthy():
+    # Issue #92/#290: `/v1/status`'s upstream health is the passive
+    # RecentFailureHealth signal fed by the existing `_upstream_error_response`
+    # funnel (#86) -- no standalone active probe for the paid provider. Proves the
+    # real wiring (not just the override seam already covered by the degraded-flip
+    # parametrized test) for the corrected, consecutive-failure contract: it takes a
+    # *run* of failures, matching the issue's own "31 consecutive occurrences, 0
+    # successes" report.
+    upstream_health = RecentFailureHealth(unhealthy_after_consecutive_failures=3)
+    app.dependency_overrides[get_upstream_health] = lambda: upstream_health
+    app.dependency_overrides[get_upstream_client] = lambda: _FailingUpstream()
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://proxy.test") as client:
+            for _ in range(3):
+                resp = await client.post(
+                    "/v1/messages",
+                    json={"model": "m", "messages": [{"role": "user", "content": "hi"}]},
+                )
+                assert resp.json()["error"]["type"] == "blindfold_upstream_error"
+
+            status_resp = await client.get("/v1/status")
+    finally:
+        app.dependency_overrides.clear()
+
+    dependency = status_resp.json()["dependencies"]["upstream"]
+    assert dependency == {"healthy": False, "detail": "upstream_unreachable"}
+
+
+@pytest.mark.anyio
+async def test_a_single_real_upstream_failure_does_not_flip_status_to_unhealthy():
+    # Issue #290 AC: a single transient failure must not flap the surface -- proven
+    # through the real request path, not just the RecentFailureHealth primitive.
+    upstream_health = RecentFailureHealth(unhealthy_after_consecutive_failures=3)
     app.dependency_overrides[get_upstream_health] = lambda: upstream_health
     app.dependency_overrides[get_upstream_client] = lambda: _FailingUpstream()
     try:
@@ -326,7 +354,38 @@ async def test_a_real_upstream_boundary_failure_passively_marks_upstream_unhealt
         app.dependency_overrides.clear()
 
     dependency = status_resp.json()["dependencies"]["upstream"]
-    assert dependency == {"healthy": False, "detail": "upstream_unreachable"}
+    assert dependency == {"healthy": True}
+
+
+@pytest.mark.anyio
+async def test_upstream_health_recovers_once_a_real_request_succeeds_again():
+    # Issue #290 AC: recovery once requests succeed again, without a restart.
+    upstream_health = RecentFailureHealth(unhealthy_after_consecutive_failures=3)
+    app.dependency_overrides[get_upstream_health] = lambda: upstream_health
+    app.dependency_overrides[get_upstream_client] = lambda: _FailingUpstream()
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://proxy.test") as client:
+            for _ in range(3):
+                await client.post(
+                    "/v1/messages",
+                    json={"model": "m", "messages": [{"role": "user", "content": "hi"}]},
+                )
+            unhealthy_status = await client.get("/v1/status")
+            assert unhealthy_status.json()["dependencies"]["upstream"]["healthy"] is False
+
+            app.dependency_overrides[get_upstream_client] = _make_stub_upstream
+            recovered_resp = await client.post(
+                "/v1/messages",
+                json={"model": "m", "messages": [{"role": "user", "content": "hi"}]},
+            )
+            assert recovered_resp.status_code == 200
+
+            status_resp = await client.get("/v1/status")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert status_resp.json()["dependencies"]["upstream"] == {"healthy": True}
 
 
 @pytest.mark.anyio

@@ -101,30 +101,39 @@ class CachedHealthProbe:
 
 
 class RecentFailureHealth:
-    """Passive health signal: unhealthy for a bounded window after an observed failure.
+    """Passive health signal driven by real request outcomes (issue #92 / #290).
 
     For a dependency with no cheap standalone active probe of its own (e.g.
-    upstream -- the paid provider), the real signal is "did the last real request to
-    this dependency fail", decaying back to healthy automatically once the window
-    passes rather than requiring every success call site to mark it healthy again.
+    upstream -- the paid provider), the real signal is the outcome of actual
+    requests: a run of ``unhealthy_after_consecutive_failures`` consecutive
+    failures with no success between them flips the surface unhealthy; the next
+    observed success clears it immediately, no restart needed.
+
+    Issue #290: an earlier version flipped unhealthy on a single failure and
+    recovered only via a time-based decay window -- both wrong. A single
+    transient failure among otherwise-succeeding traffic flapped the surface,
+    and decay-by-elapsed-time could report healthy again after a quiet spell
+    even though the upstream was still down and every request was still
+    failing (nothing had actually succeeded). Consecutive-failure counting plus
+    an explicit success reset means the surface always reflects the true
+    outcome of the last requests actually made, not how much time has passed.
     """
 
-    def __init__(
-        self,
-        unhealthy_window_seconds: float,
-        clock: Callable[[], float] = time.monotonic,
-    ) -> None:
-        self._unhealthy_window_seconds = unhealthy_window_seconds
-        self._clock = clock
-        self._unhealthy_until: float | None = None
+    def __init__(self, unhealthy_after_consecutive_failures: int = 3) -> None:
+        self._unhealthy_after_consecutive_failures = unhealthy_after_consecutive_failures
+        self._consecutive_failures = 0
         self._detail: str | None = None
 
-    def mark_unhealthy(self, detail: str) -> None:
-        self._unhealthy_until = self._clock() + self._unhealthy_window_seconds
+    def mark_failure(self, detail: str) -> None:
+        self._consecutive_failures += 1
         self._detail = detail
 
+    def mark_success(self) -> None:
+        self._consecutive_failures = 0
+        self._detail = None
+
     def check(self) -> DependencyHealth:
-        if self._unhealthy_until is not None and self._clock() < self._unhealthy_until:
+        if self._consecutive_failures >= self._unhealthy_after_consecutive_failures:
             return DependencyHealth(healthy=False, detail=self._detail)
         return DependencyHealth(healthy=True)
 

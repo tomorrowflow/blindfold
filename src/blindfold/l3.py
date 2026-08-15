@@ -9,9 +9,18 @@ size — which is what makes the proxy tractable on large code bodies.
 The adjudicator itself (Ollama) is a network-boundary seam: production wires a real
 local-LLM client; tests substitute a recording stub. This module owns candidate-span
 *selection* and *context-windowing*; the adjudicator owns the LLM call. A content
-cache (issue #261 / ADR-0048 corollary 2: keyed on a *group* -- a fixed-size,
-document-order chunk of the candidate list, computed before any cache lookup, never
-on the individual candidate) prevents re-scanning unchanged chunks across agent turns.
+cache, keyed on the individual candidate's own ``(text, context)``, prevents
+re-scanning unchanged chunks across agent turns.
+
+Issue #283 (ADR-0048 corollary 3): batched adjudication (N candidates in one prompt)
+is gone -- one candidate, one prompt, always. #260's measurement showed a batched
+verdict moves with the candidate's position and the batch's size, never agreeing
+reliably with the solo verdict ADR-0048 designates as the reference answer. The
+content cache reverts to per-candidate keying as a consequence (it was moved to
+per-*group* keying by issue #261 specifically to keep batch composition a pure
+function of the hop's inputs; with no batch left to protect, per-candidate keying
+is simply the natural shape and, if anything, serves more cache hits since one
+candidate's miss can no longer force its would-be batch-mates to miss too).
 """
 
 from __future__ import annotations
@@ -24,7 +33,7 @@ from collections import OrderedDict
 from dataclasses import dataclass, field, replace
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from .detection import Entity
 
@@ -36,7 +45,35 @@ if TYPE_CHECKING:
 # is bounded by span count, not payload size.
 _CONTEXT_WINDOW = 40
 
-_CAPITALIZED_RE = re.compile(r"\b[A-ZÄÖÜ][a-zäöüß]+\b")
+# Word run (any script) -- candidacy itself is decided by _is_capitalized_token,
+# not by this character class, so no diacritic needs enumerating here (issue #288:
+# the old [A-ZÄÖÜ][a-zäöüß]+ class special-cased German umlauts/ß only, so a token
+# like "Tomás" -- 'á' isn't German -- broke the continuation run and never matched
+# at all, never becoming an L3 candidate).
+_WORD_RE = re.compile(r"\w+", re.UNICODE)
+
+
+def _is_capitalized_token(token: str) -> bool:
+    """True if ``token`` is Title-Case: one uppercase letter then only lowercase
+    letters, in any script. Matches the intent of the old ``[A-ZÄÖÜ][a-zäöüß]+``
+    class -- excludes ALL-CAPS acronyms, digit/underscore runs, and internal-cap
+    tokens ("GmbH", "FastAPI") -- without hand-enumerating every diacritic a real
+    given/family name might carry.
+    """
+    return (
+        len(token) >= 2
+        and token.isalpha()
+        and token[0].isupper()
+        and token[1:].islower()
+    )
+
+
+def _capitalized_token_matches(text: str):
+    """Yield ``re.Match`` objects for each Title-Case word in ``text`` (see
+    :func:`_is_capitalized_token`) -- the Unicode-general replacement for what
+    used to be ``_CAPITALIZED_RE.finditer(text)``."""
+    return (m for m in _WORD_RE.finditer(text) if _is_capitalized_token(m.group(0)))
+
 
 # Phone-*shaped* candidate matcher (issue #277): `_PHONE_RE` (detection.py, L1) is
 # anchored on a leading `+` for precision, so a NANPA-format number missing it --
@@ -106,12 +143,6 @@ logger = logging.getLogger(__name__)
 # for a single pass, so an operator tailing logs sees forward progress mid-request
 # instead of only after the whole pass completes.
 _DEFAULT_PROGRESS_LOG_INTERVAL = 25
-
-# Issue #142: how many candidates L3Detector.detect() accumulates into a single
-# adjudicate_batch() call, when the wired adjudicator supports the batch seam.
-# Conservative default per the issue's own accuracy note (a batched call loses
-# per-span focus as N grows) -- tunable via BLINDFOLD_L3_BATCH_SIZE.
-_DEFAULT_BATCH_SIZE = 5
 
 
 @lru_cache(maxsize=1)
@@ -208,22 +239,6 @@ class L3Adjudicator(Protocol):
     def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication: ...
 
 
-class BatchL3Adjudicator(Protocol):
-    """Optional extension of :class:`L3Adjudicator` (issue #142): a provider that
-    can adjudicate N candidates in a single call, amortising the HTTP round-trip
-    overhead (connection setup, headers, JSON framing) across every candidate in
-    the batch instead of paying it once per candidate.
-
-    ``L3Detector`` duck-types this seam (``hasattr(adjudicator, "adjudicate_batch")``)
-    rather than requiring it — an adjudicator that only implements ``adjudicate``
-    remains fully valid; ``detect()`` falls back to the single-candidate path for it.
-    """
-
-    def adjudicate_batch(
-        self, candidates: list[CandidateSpan]
-    ) -> list[L3Adjudication]: ...
-
-
 _DEFAULT_CACHE_MAX_ENTRIES = 4096
 
 
@@ -255,86 +270,71 @@ def _window_left(candidate: CandidateSpan) -> int:
     return candidate.start - candidate.context_offset
 
 
-def _group_digest(group: list[CandidateSpan]) -> str:
-    """Digest a whole **group** (issue #261 / ADR-0048 corollary 2) — an ordered
-    list of candidates chunked from the hop's full candidate list before any cache
-    lookup — into a single cache key over its ``(text, context)`` tuples, in order.
+def _candidate_digest(candidate: CandidateSpan) -> str:
+    """Digest a single candidate's ``(text, context)`` pair into a cache key.
 
     Length-prefixing each field (rather than bare concatenation) rules out
     boundary-ambiguity collisions (``"ab"`` + ``"c"`` vs. ``"a"`` + ``"bc"``).
-    Hashing rather than keying on the raw tuples also means the cache no longer
+    Hashing rather than keying on the raw tuple also means the cache no longer
     holds real candidate text in its keys (ADR-0022) — an incidental hardening of
-    the real-value-store note this class already carried.
+    the real-value-store note this class already carried, kept across issue
+    #283's reversion to per-candidate keying.
     """
     digest = hashlib.sha256()
-    for candidate in group:
-        digest.update(f"{len(candidate.text)}:".encode())
-        digest.update(candidate.text.encode("utf-8"))
-        digest.update(f"\x00{len(candidate.context)}:".encode())
-        digest.update(candidate.context.encode("utf-8"))
-        digest.update(b"\x00")
+    digest.update(f"{len(candidate.text)}:".encode())
+    digest.update(candidate.text.encode("utf-8"))
+    digest.update(f"\x00{len(candidate.context)}:".encode())
+    digest.update(candidate.context.encode("utf-8"))
     return digest.hexdigest()
 
 
 @dataclass
 class L3ContentCache:
-    """Cache adjudications keyed by the **group digest**, not the individual
-    candidate (issue #261 / ADR-0048 corollary 2) — a fixed ``batch_size`` chunk of
-    the hop's ordered candidate list, computed before any cache lookup. Unchanged
-    chunks of text — same group, same members, same order — aren't re-scanned
-    across agent turns (ADR-0003); a group in identical content produces an
-    identical set of ``is_entity``/``entity_type`` verdicts.
+    """Cache adjudications keyed by the individual candidate's own ``(text,
+    context)`` digest. Unchanged spans — same span, same surroundings — aren't
+    re-scanned across agent turns (ADR-0003); a candidate in identical context
+    produces an identical ``is_entity``/``entity_type`` verdict.
 
-    Keying on the individual candidate (the pre-#261 shape) cannot coexist with
-    pure batch composition: serving one member from cache is exactly what would
-    remove it from its group and shift everyone after it, making batch membership
-    — and therefore each candidate's position and its batch's size, both of which
-    move an L3 verdict (ADR-0048) — a function of cache state / request history
-    rather than of the hop's own inputs. Moving the cache up to the group is the
-    fix: a group is either served in full or adjudicated in full.
+    Issue #283 (ADR-0048 corollary 3): this is a reversion of issue #261's move to
+    per-*group* keying, which existed only to keep batch composition a pure
+    function of the hop's inputs while batching existed. With batching gone there
+    is no composition left to protect, and per-candidate keying is strictly better
+    for the cache-hit rate: one candidate's cache state can no longer force an
+    unrelated candidate that merely shared its batch to miss too.
 
-    Issue #207 (residual of #179), preserved at the new granularity:
+    Issue #207 (residual of #179), preserved across the reversion:
     ``L3Adjudication.span_start``/``span_end`` are NOT position-independent the
     way ``is_entity``/``entity_type`` are — they are absolute offsets into
-    whichever hop's text first populated this entry. The identical group recurs
-    at a *different* absolute position whenever an agentic transcript re-quotes
-    the same sentence turn over turn (the whole point of caching "across agent
-    turns") — reusing the first occurrence's absolute spans for a later
-    occurrence mis-anchors them. Stored and retrieved values translate each
-    member's span_start/span_end through *that member's own* ``window_left``
-    (``candidate.start - candidate.context_offset``) so every retrieval
-    re-anchors to its own occurrence — exactly what a fresh (uncached)
-    adjudication of that occurrence would have produced.
+    whichever hop's text first populated this entry. The identical local
+    ``(span_text, context)`` pair recurs at a *different* absolute position
+    whenever an agentic transcript re-quotes the same sentence turn over turn
+    (the whole point of caching "across agent turns") — reusing the first
+    occurrence's absolute span for a later occurrence mis-anchors it. Stored and
+    retrieved values translate span_start/span_end through the *querying*
+    candidate's own ``window_left`` (``candidate.start - candidate.context_offset``)
+    so every retrieval re-anchors to its own occurrence — exactly what a fresh
+    (uncached) adjudication of that occurrence would have produced.
 
     Bounded by ``max_entries`` with least-recently-used eviction, so a
     long-running process's memory stays bounded regardless of how many distinct
-    groups it has ever seen. Never persisted to disk.
+    candidates it has ever seen. Never persisted to disk.
     """
 
     max_entries: int = _DEFAULT_CACHE_MAX_ENTRIES
-    _entries: "OrderedDict[str, list[L3Adjudication]]" = field(
+    _entries: "OrderedDict[str, L3Adjudication]" = field(
         default_factory=OrderedDict
     )
 
-    def get(self, group: list[CandidateSpan]) -> list[L3Adjudication] | None:
-        key = _group_digest(group)
+    def get(self, candidate: CandidateSpan) -> L3Adjudication | None:
+        key = _candidate_digest(candidate)
         if key not in self._entries:
             return None
         self._entries.move_to_end(key)
-        stored = self._entries[key]
-        return [
-            _shift_span(decision, _window_left(candidate))
-            for candidate, decision in zip(group, stored)
-        ]
+        return _shift_span(self._entries[key], _window_left(candidate))
 
-    def put(
-        self, group: list[CandidateSpan], decisions: list[L3Adjudication]
-    ) -> None:
-        key = _group_digest(group)
-        self._entries[key] = [
-            _shift_span(decision, -_window_left(candidate))
-            for candidate, decision in zip(group, decisions)
-        ]
+    def put(self, candidate: CandidateSpan, decision: L3Adjudication) -> None:
+        key = _candidate_digest(candidate)
+        self._entries[key] = _shift_span(decision, -_window_left(candidate))
         self._entries.move_to_end(key)
         if len(self._entries) > self.max_entries:
             self._entries.popitem(last=False)
@@ -378,7 +378,7 @@ def select_candidate_spans(
     known_surfaces = _known_surfaces(known_entities)
     capitalized_positions = _capitalized_positions(text)
     candidates: list[CandidateSpan] = []
-    for match in _CAPITALIZED_RE.finditer(text):
+    for match in _capitalized_token_matches(text):
         token = match.group(0)
         if token in _SENTENCE_STOPWORDS:
             continue
@@ -434,7 +434,7 @@ def _capitalized_positions(text: str) -> dict[str, list[int]]:
     occurrence currently being filtered.
     """
     positions: dict[str, list[int]] = {}
-    for match in _CAPITALIZED_RE.finditer(text):
+    for match in _capitalized_token_matches(text):
         positions.setdefault(match.group(0), []).append(match.start())
     return positions
 
@@ -499,7 +499,7 @@ def count_capitalized_tokens(text: str) -> int:
     would later filter (stopwords, known entities, declared tools, positional-case
     noise) — never the already-filtered candidate count.
     """
-    return sum(1 for _ in _CAPITALIZED_RE.finditer(text))
+    return sum(1 for _ in _capitalized_token_matches(text))
 
 
 class L3Detector:
@@ -519,7 +519,6 @@ class L3Detector:
         allowlist: "Allowlist | None" = None,
         dismissal_log_path: str | None = None,
         progress_log_interval: int = _DEFAULT_PROGRESS_LOG_INTERVAL,
-        batch_size: int = _DEFAULT_BATCH_SIZE,
         provider_name: str = "ollama",
     ) -> None:
         self._adjudicator = adjudicator
@@ -544,16 +543,12 @@ class L3Detector:
         self._logged_dismissals: set[str] = set()
         # Issue #134: how many candidates between progress log lines (see detect()).
         self._progress_log_interval = progress_log_interval
-        # Issue #142: how many candidates to accumulate into one adjudicate_batch()
-        # call, when the wired adjudicator supports it (see _adjudicate_batch()).
-        self._batch_size = batch_size
 
     def detect(
         self,
         text: str,
         known_entities: list[Entity],
         declared_tools: frozenset[str] = frozenset(),
-        on_solo_retry: Callable[[CandidateSpan], None] | None = None,
         phone_candidates_enabled: bool = True,
     ) -> list[tuple[CandidateSpan, L3Adjudication]]:
         if self._deterministic_only:
@@ -569,51 +564,37 @@ class L3Detector:
             processed += 1
             self._maybe_log_progress(processed, pass_started_at)
 
-        # Issue #261 / ADR-0048 corollary 2: chunk the full ordered candidate list
-        # into fixed batch_size groups BEFORE any cache lookup, so composition —
-        # which candidates land together, in what order, in a batch of what size
-        # — is a pure function of select_candidate_spans's own output, never of
-        # which groups happen to already be cached. The content cache (keyed on
-        # the group, not the candidate — see L3ContentCache) then serves or
-        # adjudicates each group as a whole.
-        #
         # Issue #277: the phone-shaped producer (select_phone_candidate_spans) is
         # a separate, named pass -- deliberately not folded into
         # select_candidate_spans itself (its capitalized-token candidates and a
         # phone-shaped digit run have nothing in common) -- but still merges into
-        # ONE ordered candidate list before any cache lookup, so #261's invariant
-        # (batch composition is a pure function of the hop's own inputs) covers
-        # both producers identically.
+        # ONE ordered candidate list, in document order.
         #
         # Issue #279: ``phone_candidates_enabled`` is the audited per-workspace
         # opt-out -- its false positives are structurally opaque to a user with no
         # adjudicator wired (unlike a flagged capitalized token, which self-
         # explains). Narrower than ``deterministic_only``: it drops only the
         # phone-shaped producer's output from the merge, never
-        # select_candidate_spans's. A caller's own argument, not ambient state on
-        # this instance, so #261's purity invariant covers it the same way it
-        # already covers ``declared_tools``.
+        # select_candidate_spans's.
         candidates = sorted(
             select_candidate_spans(text, known_entities, self._allowlist, declared_tools)
             + (select_phone_candidate_spans(text) if phone_candidates_enabled else []),
             key=lambda candidate: candidate.start,
         )
-        batch_capable = hasattr(self._adjudicator, "adjudicate_batch")
 
-        for start in range(0, len(candidates), self._batch_size):
-            group = candidates[start : start + self._batch_size]
-            cached = self._cache.get(group)
+        # Issue #283 (ADR-0048 corollary 3): one candidate, one prompt, always --
+        # no chunking, no adjudicate_batch seam. #260 measured a batched verdict
+        # moving with the candidate's position and the batch's size, which
+        # ADR-0048 designates as defective (the solo verdict is the reference
+        # answer); the only conforming fix is to never batch at all.
+        for candidate in candidates:
+            cached = self._cache.get(candidate)
             if cached is not None:
-                for candidate, decision in zip(group, cached):
-                    record(candidate, decision)
+                record(candidate, cached)
                 continue
-            if batch_capable:
-                decisions = self._adjudicate_batch(group, on_solo_retry)
-            else:
-                decisions = [self._adjudicate_one(candidate) for candidate in group]
-            self._cache.put(group, decisions)
-            for candidate, decision in zip(group, decisions):
-                record(candidate, decision)
+            decision = self._adjudicate_one(candidate)
+            self._cache.put(candidate, decision)
+            record(candidate, decision)
         return results
 
     def _adjudicate_one(self, candidate: CandidateSpan) -> L3Adjudication:
@@ -630,94 +611,6 @@ class L3Detector:
             raise L3Unavailable(
                 f"L3 adjudication failed for candidate (ref: hash:{digest}): {exc}"
             ) from exc
-
-    def _adjudicate_batch(
-        self,
-        candidates: list[CandidateSpan],
-        on_solo_retry: Callable[[CandidateSpan], None] | None = None,
-    ) -> list[L3Adjudication]:
-        """Adjudicate one batch (issue #142), fail-closed on both failure modes:
-
-        - the call itself fails (network/daemon down) — same treatment as the
-          single-candidate path: raise ``L3Unavailable``, block by default
-          (ADR-0009). Nothing in this batch has an unresolved verdict slip through.
-        - the call succeeds but returns fewer verdicts than candidates (a
-          malformed or short response) — issue #148 (#142 regression): live
-          testing against a real weak local model showed this is common, not
-          rare, so before over-redacting, retry the missing candidates one at a
-          time through the adjudicator's plain ``adjudicate()`` seam — the same
-          simple, already-reliable prompt/parse path every batch-capable
-          provider (Ollama, oMLX) also implements, predating batching. Only a
-          candidate that *still* has no verdict after that retry (the seam is
-          unavailable, or the retry itself raises) falls back to ``is_entity:
-          true`` (over-redact rather than silently dismiss a candidate nobody
-          actually adjudicated). The warning is logged only for that genuine
-          residual shortfall — never candidate text, count only.
-
-        ``on_solo_retry`` (issue #261, ADR-0035) fires once per candidate
-        actually attempted through the single-candidate retry seam — whether or
-        not that retry recovered a verdict — so the processing trace can record
-        that this hop's verdicts came from two prompt shapes.
-        """
-        try:
-            decisions = list(self._adjudicator.adjudicate_batch(candidates))
-        except Exception as exc:
-            raise L3Unavailable(
-                f"L3 batch adjudication failed for {len(candidates)} candidates: {exc}"
-            ) from exc
-        if len(decisions) < len(candidates):
-            missing_candidates = candidates[len(decisions):]
-            recovered, still_missing = self._retry_missing(
-                missing_candidates, on_solo_retry
-            )
-            decisions = decisions + recovered
-            if still_missing:
-                logger.warning(
-                    "l3_batch_adjudication_short_response: "
-                    "expected=%d received=%d missing=%d",
-                    len(candidates),
-                    len(candidates) - still_missing,
-                    still_missing,
-                )
-        return decisions
-
-    def _retry_missing(
-        self,
-        missing_candidates: list[CandidateSpan],
-        on_solo_retry: Callable[[CandidateSpan], None] | None = None,
-    ) -> tuple[list[L3Adjudication], int]:
-        """Best-effort per-candidate recovery for a batch shortfall (issue #148),
-        position-preserving: returns exactly ``len(missing_candidates)`` verdicts,
-        in the same order, so the caller's positional mapping back to candidates
-        stays correct regardless of which individual retries succeed.
-
-        Only attempted when the adjudicator also exposes the plain single-
-        candidate seam (duck-typed, mirroring ``BatchL3Adjudicator`` itself) —
-        a batch-only adjudicator has no fallback to retry through, so every
-        missing candidate stays genuinely missing (fail-closed), and
-        ``on_solo_retry`` never fires: no solo call was actually attempted. A
-        retry that itself raises (e.g. the same outage that truncated the
-        batch) also fails closed for just that candidate rather than a fresh
-        ``L3Unavailable`` — one flaky candidate in an otherwise-recovered batch
-        doesn't need to block the whole pass — but still counts as attempted
-        for ``on_solo_retry``.
-        """
-        if not hasattr(self._adjudicator, "adjudicate"):
-            return (
-                [L3Adjudication(is_entity=True)] * len(missing_candidates),
-                len(missing_candidates),
-            )
-        resolved: list[L3Adjudication] = []
-        still_missing = 0
-        for candidate in missing_candidates:
-            if on_solo_retry is not None:
-                on_solo_retry(candidate)
-            try:
-                resolved.append(self._adjudicator.adjudicate(candidate))
-            except Exception:
-                resolved.append(L3Adjudication(is_entity=True))
-                still_missing += 1
-        return resolved, still_missing
 
     def _maybe_log_progress(self, processed: int, pass_started_at: float) -> None:
         """Log forward progress every ``progress_log_interval`` candidates (issue #134).

@@ -15,11 +15,11 @@ from pathlib import Path
 
 import pytest
 
+from blindfold import gliner_provisioning
 from blindfold.gliner_provisioning import (
     GLINER_REPO_ID,
     GLINER_REPO_REVISION,
     GlinerDigestMismatchError,
-    HuggingFaceHubClient,
     is_gliner_model_ready,
     provision_gliner_model,
     resolve_gliner_model_path,
@@ -276,23 +276,43 @@ def test_provision_retries_cleanly_after_a_digest_mismatch(tmp_path):
     assert result.status == "downloaded"
 
 
-def test_provisioning_without_the_extra_installed_raises_actionable_error(tmp_path):
+def test_provisioning_without_the_extra_installed_raises_actionable_error(
+    tmp_path, block_import
+):
     # ADR-0034 §6: a missing gliner/onnxruntime extra (huggingface_hub ships
     # transitively via it) must never surface as a raw ImportError at provision
     # time either -- same actionable error as the cascade-activation path
-    # (l3_gliner.py). Relies on huggingface_hub's genuine absence in this
-    # environment (an opt-in extra, not a base dependency).
+    # (l3_gliner.py). Forces huggingface_hub's absence explicitly (issue #284)
+    # rather than relying on it happening not to be installed, so this holds
+    # whether or not `blindfold[gliner]` is present in the environment.
+    block_import("huggingface_hub")
+
     with pytest.raises(GlinerExtraMissingError, match=r"blindfold\[gliner\]"):
         provision_gliner_model(data_dir=str(tmp_path / "data"))
 
 
-def test_huggingface_hub_client_is_the_provision_gliner_model_default(tmp_path):
-    # No hub_client passed -> HuggingFaceHubClient is used, so this raises the
-    # same actionable error rather than silently no-op'ing.
-    with pytest.raises(GlinerExtraMissingError):
-        HuggingFaceHubClient().snapshot_download(
-            repo_id=GLINER_REPO_ID,
-            revision=GLINER_REPO_REVISION,
-            local_dir=str(tmp_path / "data"),
-            allow_patterns=["onnx/model_quint8.onnx"],
-        )
+def test_huggingface_hub_client_is_the_provision_gliner_model_default(tmp_path, monkeypatch):
+    # No hub_client passed -> HuggingFaceHubClient is the default construction.
+    # Asserted by substituting a recording stub for HuggingFaceHubClient itself
+    # (the same GlinerHubClient seam the explicit-hub_client tests above use),
+    # so this proves *which client is constructed* without ever importing
+    # huggingface_hub or reaching the network (issue #284) -- unlike calling
+    # snapshot_download on the real HuggingFaceHubClient, which performs a
+    # genuine ~9s fetch whenever the extra happens to be installed.
+    content = b"fake-onnx-weights-for-test"
+    manifest = {"onnx/model_quint8.onnx": hashlib.sha256(content).hexdigest()}
+    stub_client = _StubHubClient(files={"onnx/model_quint8.onnx": content})
+    monkeypatch.setattr(gliner_provisioning, "HuggingFaceHubClient", lambda: stub_client)
+    data_dir = tmp_path / "data"
+
+    result = provision_gliner_model(
+        data_dir=str(data_dir),
+        manifest=manifest,
+        classifier_factory=_functional_classifier_factory,
+    )
+
+    assert result.status == "downloaded"
+    assert len(stub_client.calls) == 1
+    call = stub_client.calls[0]
+    assert call["repo_id"] == GLINER_REPO_ID
+    assert call["revision"] == GLINER_REPO_REVISION
