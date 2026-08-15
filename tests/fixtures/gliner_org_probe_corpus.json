@@ -3,6 +3,7 @@
     "dataset": "Hand-authored public-software/framework/product probe corpus (issue #281)",
     "measured_against": "knowledgator/gliner-pii-base-v1.0, pinned revision 61726e0ad791dcab3e29339bbec3ad42ded65641 (gliner_provisioning.GLINER_REPO_REVISION), loaded via GlinerOnnxClassifier.classify_span with the shipped two-label set (person, organization) -- l3_gliner._GLINER_LABELS",
     "measured_date": "2026-08-15",
+    "measurement_authenticity": "The agent sandbox that authored this fixture has neither the `gliner` extra installed nor the model provisioned, so it structurally cannot run GlinerOnnxClassifier itself -- an in-sandbox 'measurement' would necessarily be an assumed/guessed label, not a real one. Per issue #281's own maintainer-step instruction ('not completable against a mocked classifier -- stop and escalate'), the actual measurement was taken by a trusted maintainer on real, GLiNER-provisioned hardware (gliner 0.2.27, onnxruntime 1.27.0, pinned revision 61726e0ad791dcab3e29339bbec3ad42ded65641), reproducing this fixture's own stated methodology exactly: each `sentence` through select_candidate_spans (no allowlist), then GlinerOnnxClassifier.classify_span on the resulting CandidateSpan. Result: 37 of 39 recorded gliner_label values were confirmed as-is; 2 were wrong (Kubernetes and Teams, both recorded 'none' but measured 'organization', deterministic across 3 consecutive runs) and have been corrected in this file accordingly. Every other probe, including every 'seeded' decision and every person-labelled exclusion, reproduced exactly and is unchanged.",
     "methodology": "Each token appears in one realistic coding-agent-shaped sentence (the shapes ADR-0049's live finding came from: a prose sentence naming a public tool/product/component). Each sentence was run through select_candidate_spans (no allowlist) to obtain the real CandidateSpan Position A itself would build, then GlinerOnnxClassifier.classify_span(candidate) recorded the actual label -- not a guess, the measurement. 'none' means GLiNER did not flag the token as an entity at all (no false positive to curate). Selection covered two shapes: public-software/product identifiers (the issue's own ask) and common-English-word product names one order riskier (the 'ambiguous-word' category), to find the boundary case the curation rule has to draw.",
     "curation_rule": "ADR-0023/ADR-0032: seeded only if a genuinely public, non-sensitive identifier, implausible as a protected referent when unregistered. A confirmed organization/person false positive is NOT seeded when the bare token is also a common English dictionary word, a known personal surname, or a place name with no single dominant public-brand reading -- seeding is permanent novelty-discovery loss for that literal token in every future context, not just this measurement's sentence. Two probes (Kafka, Jenkins) are the sharpest instance: both are real, common human surnames, and GLiNER's own label ('person') independently corroborates the collision risk this rule exists to catch."
   },
@@ -171,9 +172,9 @@
       "token": "Kubernetes",
       "sentence": "Kubernetes schedules the pods across three nodes.",
       "category": "public-product",
-      "gliner_label": "none",
-      "decision": "no_action",
-      "rationale": "Not flagged by GLiNER in this context -- no false positive to curate."
+      "gliner_label": "organization",
+      "decision": "seeded",
+      "rationale": "Corrected by maintainer re-measurement (2026-08-15, real GlinerOnnxClassifier on provisioned hardware -- this token was not reproducible in the agent sandbox, which has neither the gliner extra nor the model): the agent-authored fixture originally recorded 'none', but the real classifier flags this a confirmed 'organization' false positive, deterministic across 3 consecutive runs. Purpose-coined public brand identifier for the container-orchestration platform -- not a common English word, not a surname, not a place name. Qualifies under the corpus's own curation rule on exactly the same evidence as Docker/Nginx, both seeded."
     },
     {
       "token": "Redis",
@@ -307,9 +308,9 @@
       "token": "Teams",
       "sentence": "Teams hosts the video call for the retro.",
       "category": "ambiguous-word",
-      "gliner_label": "none",
-      "decision": "no_action",
-      "rationale": "Not flagged by GLiNER in this context -- no false positive to curate."
+      "gliner_label": "organization",
+      "decision": "excluded",
+      "rationale": "Corrected by maintainer re-measurement (2026-08-15, real GlinerOnnxClassifier on provisioned hardware -- not reproducible in the agent sandbox, which has neither the gliner extra nor the model): the agent-authored fixture originally recorded 'none', but the real classifier flags this a confirmed 'organization' false positive, deterministic across 3 consecutive runs, and independently corroborated by issue #74's live-verify run 3 (2026-08-15, GLiNER cascade + oMLX, same model), where 'Teams' was flagged on real agentic traffic in a separate session. This is a genuine false positive AND the ambiguous-word category's central case: 'teams' is an ordinary English dictionary word, so the corpus's own curation rule applies the same way it does to Vault/Kafka/Confluence -- seeding it would be permanent novelty-discovery loss for that literal token in every future context. Record the real label; leave it out."
     },
     {
       "token": "Java",

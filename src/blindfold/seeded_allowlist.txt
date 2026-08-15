@@ -67,6 +67,7 @@ Heroku
 Cloudflare
 Bitbucket
 Firefox
+Kubernetes
 #
 # Blindfold's own identifiers (project + tooling), public once shipped
 Blindfold
