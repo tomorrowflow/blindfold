@@ -94,6 +94,46 @@ defensible answer to a miss.
   all) is not a blocker. The asymmetry is what makes that sequencing safe: the flip's
   downside is over-redaction, which lands in the review inbox where a human can see and clear
   it, while the status quo's downside is a miss, which nobody can see.
+  - **Update (issue #281): the cheap half is done.** A probe corpus of public-software/
+    framework/product tokens in coding-agent-shaped sentence context was run through the
+    real `GlinerOnnxClassifier.classify_span` (`gliner-pii-base-v1.0`, 2026-08-15).
+    `Transit` — this ADR's own cited live finding — plus ten other confirmed, unambiguous
+    public-brand false positives (`Docker`, `Nginx`, `Datadog`, `Figma`, `Netlify`,
+    `Heroku`, `Cloudflare`, `Bitbucket`, `Firefox`, `Kubernetes`) are now seeded. Eleven
+    more confirmed false positives were measured and deliberately left unseeded because
+    the bare token collides with a real surname, place name, or generic dictionary word
+    (`Vault`, `Kafka`, `Jenkins`, `Confluence`, `Notion`, `Zoom`, `Stripe`, `Scala`,
+    `Chrome`, `Vercel`, `Teams`) — seeding is permanent novelty-discovery loss for that
+    literal token in every future context, not just the measured sentence. See
+    `tests/fixtures/gliner_org_probe_corpus.json` and `tests/test_gliner_org_seed_audit.py`
+    for the full measurement and the per-token rationale. #280's structural question
+    (whether Position A should survive at all) is untouched by this update.
+  - **Update (issue #281, maintainer re-measurement): two labels corrected.** A trusted
+    maintainer re-ran all 39 probes on real GLiNER-provisioned hardware — the agent
+    sandbox that originally authored the fixture has neither the `gliner` extra nor a
+    provisioned model, so it could not have measured them itself. Result: 37/39 confirmed
+    as recorded; `Kubernetes` and `Teams` were both wrongly recorded `none` (no false
+    positive) when the real classifier flags both `organization`, deterministic across 3
+    runs. `Kubernetes` — a purpose-coined public brand, no dictionary-word or surname
+    collision — is now seeded on the same grounds as `Docker`/`Nginx`. `Teams` — an
+    ordinary English plural noun that is also a product, independently corroborated
+    flagging on real traffic in issue #74's live-verify run 3 — is recorded `organization`
+    but stays unseeded per the corpus's own curation rule (same class as `Vault`/
+    `Confluence`). See `tests/fixtures/gliner_org_probe_corpus.json`'s
+    `_provenance.measurement_authenticity` for the full re-measurement record.
+  - **`Transit`'s seeding is a maintainer instruction, not an agent judgment call — recorded
+    here because a review cycle blocked on it.** `Transit` was rejected once already
+    (`_CURATION_REJECTS`, issue #87, 2026-07-10) as bare generic prose that could plausibly
+    name a deployment's own secret. Issue #281's own **Acceptance Criteria** name the
+    supersession explicitly, by literal token: *"Confirmed public-token false positives are
+    added to `seeded_allowlist.txt`, `Transit` among them."* That sentence is the human
+    ratification of the reversal — the maintainer who filed #281 wrote the token into the
+    issue's acceptance criteria themselves, rather than leaving its seeding to whatever a
+    probe measurement turned up. The distinction matters because the general curation rule
+    (public/coined identifier, no surname or dictionary-word collision) would not by itself
+    settle `Transit` — it is an ordinary English word — and #281 resolves that tension with
+    product-specific context (`Transit` is OpenBao's/Vault's own named key-wrapping engine,
+    not a generic noun in this project's traffic) that only the issue author could supply.
 - **Setup's provisioning flow already exists and is smaller work than it looks.** `Setup.tsx`
   (issue #146) already renders the "Enhanced local detection" checkbox with the ~197MB help
   text, calls `POST …/gliner-provision`, handles failure, and shows a restart screen on

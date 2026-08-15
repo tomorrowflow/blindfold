@@ -48,6 +48,27 @@ Boot
 Grep
 Glob
 #
+# GLiNER cascade ORG-precision audit (ADR-0033 §2 update, issue #281). Evidence:
+# tests/fixtures/gliner_org_probe_corpus.json -- a probe corpus run through the
+# real GlinerOnnxClassifier.classify_span. Each is a confirmed organization/person
+# false positive AND a purpose-coined public brand identifier with no ordinary-
+# English or personal-name collision (see the corpus's per-entry rationale for the
+# excluded counter-examples, e.g. Vault/Kafka/Jenkins, that failed this bar).
+# "Transit" is the issue's own cited live finding (OpenBao's key-wrapping secrets
+# engine) and supersedes the 2026-07-10 #87 rejection, which considered it only as
+# bare generic prose, not this project's own named component.
+Transit
+Docker
+Nginx
+Datadog
+Figma
+Netlify
+Heroku
+Cloudflare
+Bitbucket
+Firefox
+Kubernetes
+#
 # Blindfold's own identifiers (project + tooling), public once shipped
 Blindfold
 Sandcastle
