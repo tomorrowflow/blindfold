@@ -134,23 +134,49 @@ def test_cached_health_probe_re_probes_once_the_ttl_has_elapsed():
 
 
 def test_recent_failure_health_is_healthy_before_any_failure_observed():
-    health = RecentFailureHealth(unhealthy_window_seconds=60.0)
+    health = RecentFailureHealth(unhealthy_after_consecutive_failures=3)
     assert health.check() == DependencyHealth(healthy=True)
 
 
-def test_recent_failure_health_is_unhealthy_within_the_window_after_a_failure():
-    clock = {"now": 0.0}
-    health = RecentFailureHealth(unhealthy_window_seconds=60.0, clock=lambda: clock["now"])
-    health.mark_unhealthy("upstream_unreachable")
-    clock["now"] = 30.0
+def test_recent_failure_health_stays_healthy_after_a_single_transient_failure():
+    # Issue #290 AC: a single transient failure among otherwise-succeeding traffic
+    # must not flap the surface to unhealthy.
+    health = RecentFailureHealth(unhealthy_after_consecutive_failures=3)
+    health.mark_failure("upstream_unreachable")
+    assert health.check() == DependencyHealth(healthy=True)
+
+
+def test_recent_failure_health_becomes_unhealthy_once_consecutive_failures_reach_the_threshold():
+    # Issue #290 AC: after a run of consecutive failures, no longer reports healthy.
+    health = RecentFailureHealth(unhealthy_after_consecutive_failures=3)
+    health.mark_failure("upstream_unreachable")
+    health.mark_failure("upstream_unreachable")
+    health.mark_failure("upstream_unreachable")
     assert health.check() == DependencyHealth(healthy=False, detail="upstream_unreachable")
 
 
-def test_recent_failure_health_recovers_once_the_window_elapses():
-    clock = {"now": 0.0}
-    health = RecentFailureHealth(unhealthy_window_seconds=60.0, clock=lambda: clock["now"])
-    health.mark_unhealthy("upstream_unreachable")
-    clock["now"] = 60.1
+def test_recent_failure_health_recovers_immediately_once_a_success_is_observed():
+    # Issue #290 AC: recovery happens once requests succeed again, with no restart
+    # and no need to wait out a decay window -- the very next success clears it.
+    health = RecentFailureHealth(unhealthy_after_consecutive_failures=3)
+    for _ in range(3):
+        health.mark_failure("upstream_unreachable")
+    assert health.check().healthy is False
+
+    health.mark_success()
+
+    assert health.check() == DependencyHealth(healthy=True)
+
+
+def test_recent_failure_health_a_success_between_failures_resets_the_consecutive_count():
+    # A run of failures interleaved with a success never crosses the threshold --
+    # only genuinely *consecutive* failures do.
+    health = RecentFailureHealth(unhealthy_after_consecutive_failures=3)
+    health.mark_failure("upstream_unreachable")
+    health.mark_failure("upstream_unreachable")
+    health.mark_success()
+    health.mark_failure("upstream_unreachable")
+    health.mark_failure("upstream_unreachable")
     assert health.check() == DependencyHealth(healthy=True)
 
 
