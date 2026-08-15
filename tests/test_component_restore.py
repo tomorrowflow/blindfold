@@ -100,6 +100,29 @@ def test_full_surrogate_pass_takes_precedence_over_the_component_pass():
     assert _restore(text, session) == "Sarah Bergmann called; Sarah will follow up."
 
 
+def test_bare_integer_component_is_never_registered_as_a_restore_key():
+    # issue #286: a provisional surrogate's positional digit ("Provisional
+    # Surrogate 8") carries no entity meaning. Unfiltered, "8" is distinctive
+    # and unambiguous (word-count mismatch means it falls back to the full
+    # real value) so it would be admitted as a Pass-2 restore key and rewrite
+    # any ordinary "8" in a response -- observed live as `utf-8` becoming
+    # `utf-Kestrel Dynamics`.
+    session = _session_with({"Provisional Surrogate 8": "Kestrel Dynamics"})
+
+    text = 'encoding="utf-8"'
+    assert _restore(text, session) == text
+
+
+def test_bare_integer_component_does_not_corrupt_phone_shaped_text():
+    # issue #286: "Provisional Surrogate 41" must not turn its positional digit
+    # into a restore key that clobbers the leading digits of an ordinary phone
+    # number -- observed live as "+41 79 555 0142" becoming "+Transit 79 555 0142".
+    session = _session_with({"Provisional Surrogate 41": "Transit"})
+
+    text = "+41 79 555 0142"
+    assert _restore(text, session) == text
+
+
 def test_component_restores_inside_tool_call_json_the_same_as_prose():
     # ADR-0036 acceptance criterion 8: behavior is identical across all three
     # restore paths — component restore shares _restore_text, so tool-call
