@@ -237,7 +237,10 @@ test.describe("entity list shell — inline rename", () => {
 
   test("dependent rename is a soft warn requiring acknowledge before it commits", async ({
     alicePage,
+    baseURL,
   }) => {
+    const auditCountBeforeRename = await auditEventCount(baseURL!);
+
     await alicePage.goto(`/ui/entities`);
     const row = await rowByCurrentSurrogate(alicePage, ORG_SURROGATE);
     await row.locator('[data-testid^="surrogate-text-"]').click();
@@ -257,6 +260,12 @@ test.describe("entity list shell — inline rename", () => {
     await expect(row.locator('[data-testid^="surrogate-text-"]')).toHaveText(
       "Cascadia Partners"
     );
+
+    // Surrogate rename is surrogate-space structural work, never an audit event
+    // (CONTEXT.md, issue #326): recording it would be history/versioning, a
+    // distinct deferred concept. The audit log's own event count must be
+    // unchanged by the rename.
+    expect(await auditEventCount(baseURL!)).toBe(auditCountBeforeRename);
   });
 });
 

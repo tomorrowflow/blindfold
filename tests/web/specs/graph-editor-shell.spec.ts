@@ -8,6 +8,7 @@ import {
   ORG3_SURROGATE,
   ORG2_SURROGATE,
   auditEventsFor,
+  auditEventCount,
 } from "./fixtures";
 
 // Graph editor shell migration (issue #98). Behavior authority:
@@ -391,7 +392,10 @@ test.describe("graph editor — rename in inspector", () => {
 
   test("dependent warning: ochre banner, acknowledge required before commit", async ({
     alicePage,
+    baseURL,
   }) => {
+    const auditCountBeforeRename = await auditEventCount(baseURL!);
+
     const page = alicePage;
     await page.goto(`/ui/graph`);
     // ORG3 is reserved for graph-editor-shell (not renamed by entity-list-shell).
@@ -419,6 +423,12 @@ test.describe("graph editor — rename in inspector", () => {
 
     // Surrogate updated in inspector
     await expect(inspector.getByTestId("inspector-surrogate")).toHaveText("Glacier Holdings");
+
+    // Surrogate rename is surrogate-space structural work, never an audit event
+    // (CONTEXT.md, issue #326): recording it would be history/versioning, a
+    // distinct deferred concept. The audit log's own event count must be
+    // unchanged by the rename.
+    expect(await auditEventCount(baseURL!)).toBe(auditCountBeforeRename);
   });
 });
 
