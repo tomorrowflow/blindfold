@@ -187,8 +187,8 @@ declared tool names escape the gate only because `_` happens to be a word charac
 | ref | blocks | outcome |
 |---|---|---|
 | item 17 `Agent` (`Provisional Surrogate 9`) | **13** | terminal — the run died, five consecutive 503s |
-| item 9 `Vault` (`Moosburg Analytics`) | 4 | knock-on from #304's restore corruption |
-| item 8 `Store` (`Birkenhain Logistik`) | 1 | **self-healed on retry** |
+| item 9 `Vault` (`Provisional Surrogate 5`) | 4 | knock-on from #304's restore corruption |
+| item 8 `Store` (`Provisional Surrogate 3`) | 1 | **self-healed on retry** |
 
 The `Store` row is the control that shows this ADR working exactly as designed: a value minted
 mid-request left one plaintext occurrence in an already-blinded earlier hop, the next request
@@ -290,7 +290,7 @@ Recorded here because this ADR asked to be told. What follows from it, explicitl
   precision work is now load-bearing at the priority the deadlock had, not that the trade flips.
 - **The accepted cost now has a measured price against it.** 37 of run 7's 43 mints were wrong, and
   under this ADR every one of them is applied payload-wide until a human rejects the row. The
-  session read its own source through a substitution layer (`Vault` → `Moosburg Analytics`), which
+  session read its own source through a substitution layer (`Vault` → `Provisional Surrogate 5`), which
   is the most likely explanation for its confusion about the code it was asked to explain — and,
   via #304, corruption reached the deliverable.
 - **The fix is provenance, not lexis.** The dominant class is not adjudicable by a better prompt:
