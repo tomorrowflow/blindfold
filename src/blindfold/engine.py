@@ -575,6 +575,15 @@ def _blindfold_text(
     if hop_ctx is not None:
         hop_ctx.l2_count += len(spans)
         hop_ctx.l2_duration_ms += (time.monotonic() - l2_started_at) * 1000
+    # ADR-0051 stage 2 (issue #300): apply every already-minted provisional pair
+    # (#299's own deterministic tool-description substitution, :func:`_apply_provisional_pairs`)
+    # to this hop too -- the entity graph (above) always wins by construction, since a
+    # registered Term equal to a provisional real is already rewritten by the time this
+    # runs. Strictly before L1/L3 below: the occurrence is already a surrogate by the
+    # time L3 sees this hop, which is what keeps #292's self-poisoning guard from
+    # depending on L3 happening to re-confirm the same value in this hop too (the
+    # run-6-shaped deadlock this closes for message text, not just tool descriptions).
+    result = _apply_provisional_pairs(result, inbox, session, hop_ctx)
     # L1 deterministic PII (ADR-0003): regex over the full text, reserved-namespace
     # surrogates (ADR-0005). Runs after the dictionary pass so any entity-graph
     # match has already won; PII spans cover what L1 alone is meant to catch.
@@ -1077,21 +1086,30 @@ def _provisional_known_value_set(item: ReviewItem) -> frozenset[str]:
 
 
 def _apply_provisional_pairs(
-    text: str, inbox: ReviewInbox | None, session: ExchangeSession
+    text: str,
+    inbox: ReviewInbox | None,
+    session: ExchangeSession,
+    hop_ctx: "_HopContext | None" = None,
 ) -> str:
     """Rewrite every whole-word occurrence of an already-minted provisional pair's known
-    value surface with that item's existing ``provisional_surrogate`` (ADR-0051 stage 1).
+    value surface with that item's existing ``provisional_surrogate`` (ADR-0051 stage 1,
+    issue #299; extended to every message hop by ADR-0051 stage 2, issue #300).
 
     Deterministic only: reads ``inbox.list()``, never runs L3, never calls
     ``inbox.upsert`` -- a referent that already has a provisional surrogate reuses it,
     never mints a second one (surrogates are stable, ADR-0004/#289). Matched with
     :func:`_real_value_pattern`, the identical matcher :func:`leak_gate` uses, over the
     identical set :func:`_provisional_known_value_set` derives -- so a value this pass
-    rewrites is exactly a value the gate would otherwise have fail-closed on.
+    rewrites is exactly a value the gate would otherwise have fail-closed on. A
+    rejected inbox row is no longer in ``inbox.list()`` (#294's reject already removes
+    it), so it stops being applied here too -- reject remains the recovery path.
 
     Every actual substitution is ``session.record``ed, pairing the surrogate with
     ``item.real`` (never the matched variation text, mirroring #296) so restore stays
-    closed-world and ``resolution_gate`` reports nothing unresolved.
+    closed-world and ``resolution_gate`` reports nothing unresolved. ``hop_ctx``, when
+    provided (issue #300: message hops carry one, tool descriptions don't), gets the
+    same per-hop surrogate-token bookkeeping (ADR-0035) every other injection site
+    already does.
 
     ``inbox`` is ``None`` only for the two callers that deliberately pass no inbox at
     all (devtools replay with no ``l3_detector``, ``count_tokens`` — issue #274/#267);
@@ -1102,13 +1120,23 @@ def _apply_provisional_pairs(
         return text
     result = text
     for item in inbox.list():
-        for value in _provisional_known_value_set(item):
+        # Longest value first (mirrors :func:`_apply_restore_pass`'s own discipline):
+        # a variation surface can contain one value that is a strict prefix of
+        # another (e.g. a legal-form-stripped bare org name, #289/#296 --
+        # ``"Kestrel"`` inside ``"Kestrel LLC"``), each independently a valid
+        # word-boundary match. Substituting the shorter one first would consume
+        # only its own span and strand the remainder (``" LLC"``) glued onto the
+        # surrogate -- the same corruption class #179's containment backstop
+        # guards against at mint time, here avoided by ordering instead.
+        for value in sorted(_provisional_known_value_set(item), key=len, reverse=True):
             rewritten, count = _real_value_pattern(value).subn(
                 item.provisional_surrogate, result
             )
             if count:
                 result = rewritten
                 session.record(item.provisional_surrogate, item.real)
+                if hop_ctx is not None:
+                    hop_ctx.surrogates.append(item.provisional_surrogate)
     return result
 
 
