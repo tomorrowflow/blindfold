@@ -19,3 +19,7 @@ Canonical triage roles map 1:1 to label strings (`needs-triage`, `needs-info`, `
 ### Domain docs
 
 Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+### Codebase questions
+
+If `graphify-out/graph.json` exists, answer architecture and "what connects to what" questions by querying it (`graphify query "<question>"`) before falling back to grep. It is a gitignored local artifact and will NOT exist in Sandcastle worktrees — skip silently when absent. Refresh with `/graphify . --update` after substantial changes; an unrefreshed graph describes the tree as of its last build.
