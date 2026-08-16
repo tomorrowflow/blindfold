@@ -17,10 +17,38 @@ Transit-backed mapping secrecy (leak-audit clause G) are out of scope (issues #3
 from __future__ import annotations
 
 import re
+import threading
 from collections.abc import Iterable
 
 from .detection import Entity
 from .store._mint import collides_with_known_entity, next_replacement_surrogate
+
+# Reserved-namespace pools with a genuinely finite size (issue #312): phone draws
+# from NANPA's fictional `555-01XX` range, exactly 100 slots. A kind absent here
+# (email/iban/id, and any future PII kind) has no natural cardinality limit, so
+# it falls back to `_GENERIC_MAX_MINT_ATTEMPTS` -- a generous bound that exists
+# only so a pathological known-value set can never turn mint_pii into an
+# infinite loop, not one any real traffic is expected to reach.
+_PII_POOL_SIZES: dict[str, int] = {"phone": 100}
+_GENERIC_MAX_MINT_ATTEMPTS = 10_000
+
+
+class MintPoolExhaustedError(Exception):
+    """A reserved-namespace PII pool has no disjoint candidate left to issue.
+
+    Raised instead of silently reissuing an already-issued surrogate (which
+    would hand the same surrogate to two different referents -- ADR-0048
+    unreproducible-miss territory) or looping forever. Fail-closed: the
+    message names only the PII ``kind``, never a real value.
+    """
+
+    def __init__(self, kind: str) -> None:
+        super().__init__(
+            f"the reserved-namespace surrogate pool for PII kind {kind!r} is "
+            "exhausted -- no disjoint candidate remains to issue"
+        )
+        self.kind = kind
+
 
 _RESERVED_NAMESPACE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^pii-user-\d+@blindfold\.invalid$"),
@@ -81,6 +109,12 @@ class SurrogateMapping:
         # replacement pool, shared across every seed() call on this mapping so a
         # skipped/assigned entry is never reused for a later retirement.
         self._replacement_pool_position: int = 0
+        # Issue #312: every mutator below runs from the mint pass's
+        # `run_in_threadpool` worker -- real OS threads, not cooperative
+        # coroutines -- so two concurrent exchanges can interleave inside a
+        # read-modify-write and hand the same surrogate to two different
+        # referents. One lock serializes every mutator; minting is ms-scale.
+        self._lock = threading.Lock()
 
     @classmethod
     def from_pairs(cls, pairs: Iterable[tuple[str, str]]) -> "SurrogateMapping":
@@ -108,25 +142,26 @@ class SurrogateMapping:
         triples so callers/tests can observe what was invalidated; empty when
         ``real`` isn't new or invalidates nothing.
         """
-        is_new_real = real not in self._by_real
-        self._by_real[real] = surrogate
-        self._known_surrogates.add(surrogate)
+        with self._lock:
+            is_new_real = real not in self._by_real
+            self._by_real[real] = surrogate
+            self._known_surrogates.add(surrogate)
 
-        invalidated: list[tuple[str, str, str]] = []
-        if not is_new_real or not real:
+            invalidated: list[tuple[str, str, str]] = []
+            if not is_new_real or not real:
+                return invalidated
+
+            for other_real, other_surrogate in list(self._by_real.items()):
+                if other_real == real or real not in other_surrogate:
+                    continue
+                replacement, self._replacement_pool_position = next_replacement_surrogate(
+                    self._replacement_pool_position, self._by_real.keys()
+                )
+                self._known_surrogates.add(other_surrogate)  # retire: stay recognized
+                self._by_real[other_real] = replacement
+                self._known_surrogates.add(replacement)
+                invalidated.append((other_real, other_surrogate, replacement))
             return invalidated
-
-        for other_real, other_surrogate in list(self._by_real.items()):
-            if other_real == real or real not in other_surrogate:
-                continue
-            replacement, self._replacement_pool_position = next_replacement_surrogate(
-                self._replacement_pool_position, self._by_real.keys()
-            )
-            self._known_surrogates.add(other_surrogate)  # retire: stay recognized
-            self._by_real[other_real] = replacement
-            self._known_surrogates.add(replacement)
-            invalidated.append((other_real, other_surrogate, replacement))
-        return invalidated
 
     def mint_pii(self, kind: str, value: str) -> str:
         """Return a stable reserved-namespace surrogate for L1-detected PII.
@@ -144,18 +179,25 @@ class SurrogateMapping:
         real value is skipped (never reused for a later value), so the surrogate
         this mints can never itself trip ``engine.leak_gate`` once injected.
         """
-        if value not in self._by_real:
-            index = self._pii_counters.get(kind, 0)
-            known_values = self.real_values() + [value]
-            while True:
-                surrogate = _mint_pii_surrogate(kind, index)
-                index += 1
-                if not collides_with_known_entity(surrogate, known_values):
+        with self._lock:
+            if value not in self._by_real:
+                index = self._pii_counters.get(kind, 0)
+                known_values = self.real_values() + [value]
+                max_attempts = _PII_POOL_SIZES.get(kind, _GENERIC_MAX_MINT_ATTEMPTS)
+                for _ in range(max_attempts):
+                    surrogate = _mint_pii_surrogate(kind, index)
+                    index += 1
+                    if collides_with_known_entity(surrogate, known_values):
+                        continue
+                    if surrogate in self._known_surrogates:
+                        continue
                     break
-            self._pii_counters[kind] = index
-            self._by_real[value] = surrogate
-            self._known_surrogates.add(surrogate)
-        return self._by_real[value]
+                else:
+                    raise MintPoolExhaustedError(kind)
+                self._pii_counters[kind] = index
+                self._by_real[value] = surrogate
+                self._known_surrogates.add(surrogate)
+            return self._by_real[value]
 
     def surrogate_for(self, real: str) -> str | None:
         return self._by_real.get(real)
@@ -186,7 +228,8 @@ class SurrogateMapping:
         the engine does not attempt to re-blindfold it if seen in an outbound prompt
         (e.g. carried over from a past exchange).
         """
-        self._known_surrogates.add(surrogate)
+        with self._lock:
+            self._known_surrogates.add(surrogate)
 
     def real_values(self) -> list[str]:
         return list(self._by_real.keys())

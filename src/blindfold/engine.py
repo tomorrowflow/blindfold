@@ -18,6 +18,7 @@ import functools
 import hashlib
 import logging
 import re
+import threading
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
@@ -528,10 +529,14 @@ class DeclaredToolVocabulary:
 
     def __init__(self) -> None:
         self._by_workspace: dict[str, set[str]] = {}
+        # Issue #312: `record` runs from the mint pass's `run_in_threadpool`
+        # worker -- real OS threads -- same as the two mint-state seams above.
+        self._lock = threading.Lock()
 
     def record(self, workspace: str, tool_names: frozenset[str]) -> None:
         """Union ``tool_names`` (already #297-decomposed) into ``workspace``'s set."""
-        self._by_workspace.setdefault(workspace, set()).update(tool_names)
+        with self._lock:
+            self._by_workspace.setdefault(workspace, set()).update(tool_names)
 
     def for_workspace(self, workspace: str) -> frozenset[str]:
         """Every tool name (and component) ever recorded for ``workspace``."""
