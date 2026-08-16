@@ -59,7 +59,12 @@ still gets the same structured JSON response instead of a 200-then-broken-stream
 bytes are flowing, a mid-stream transport error inside ``_stream_restored`` is caught,
 logged, and audited (``upstream-stream-disconnected``) — the stream just ends cleanly
 rather than raising a raw traceback through the ASGI stack, and the resolution gate
-still runs over whatever was actually emitted.
+still runs over whatever was actually emitted. A mid-stream UTF-8 decode failure
+(issue #313) is caught and audited the same way (``upstream-stream-decode-error``);
+network chunks from ``aiter_bytes()`` aren't codepoint-aligned, so a multi-byte
+character split across a chunk boundary is reassembled by an incremental decoder
+rather than raising in the first place — this branch only fires for bytes that are
+genuinely malformed, not merely split.
 
 Upstream client *construction* errors (issue #101): #86's mapping only covered
 request-time failures on an already-built ``UpstreamClient``. ``get_upstream_client``/
@@ -89,6 +94,7 @@ is harmless, so the absence is the considered answer, not a gap.
 
 from __future__ import annotations
 
+import codecs
 import json
 import logging
 import time
@@ -2039,12 +2045,19 @@ async def _stream_restored(
     text_block_indices: set[int] = set()
     emitted: list[bytes] = []
     buffer = ""
+    # Issue #313: network chunks from aiter_bytes() are transport-sized, not
+    # codepoint-aligned -- a multi-byte character (German umlaut, emoji) routinely
+    # splits across two chunks. An incremental decoder buffers a trailing incomplete
+    # sequence internally and only raises once bytes are asserted as final, so a
+    # legitimately split codepoint reassembles across chunks instead of raising
+    # UnicodeDecodeError on the first, incomplete chunk.
+    decoder = codecs.getincrementaldecoder("utf-8")()
     disconnected = False
     disconnect_reason = ""
     consume_start = time.monotonic()
     try:
         async for raw in upstream_response.aiter_bytes():
-            buffer += raw.decode("utf-8")
+            buffer += decoder.decode(raw)
             while "\n\n" in buffer:
                 event, buffer = buffer.split("\n\n", 1)
                 async for out in _process_sse_event(
@@ -2052,6 +2065,11 @@ async def _stream_restored(
                 ):
                     emitted.append(out)
                     yield out
+        # final=True flushes any bytes the decoder is still holding and raises
+        # UnicodeDecodeError if they don't form a complete codepoint -- genuinely
+        # malformed trailing bytes, not a chunk-boundary split (those already
+        # reassembled above), still surface as a decode failure here.
+        buffer += decoder.decode(b"", final=True)
         if buffer.strip():
             async for out in _process_sse_event(
                 buffer, restorer, tool_use_buffers, text_block_indices, session
@@ -2066,23 +2084,37 @@ async def _stream_restored(
             out = _emit_text_delta(tail)
             emitted.append(out)
             yield out
-    except httpx.HTTPError as exc:
-        # Mid-stream disconnect (issue #86): bytes were already flowing to the
-        # client (the 200 + SSE headers are long committed), so there is no
-        # structured-JSON-error seam left to use -- unlike the connect/TTFB failure
+    except (httpx.HTTPError, UnicodeDecodeError) as exc:
+        # Mid-stream disconnect (issue #86) or mid-stream decode failure (issue #313,
+        # e.g. genuinely malformed trailing bytes the incremental decoder's final
+        # flush rejected -- a legitimately chunk-split codepoint never reaches this
+        # branch, it reassembles above): bytes were already flowing to the client
+        # (the 200 + SSE headers are long committed), so there is no structured-
+        # JSON-error seam left to use -- unlike the connect/TTFB failure
         # UpstreamClient.open_stream reports before this generator ever starts. The
-        # stream just ends cleanly here instead of letting the transport error raise
+        # stream just ends cleanly here instead of letting the exception raise
         # through the ASGI stack as a raw traceback; whatever was actually emitted
-        # still goes through the resolution gate below.
-        logger.warning(
-            "blindfold_upstream_stream_disconnected: workspace=%s reason=%s",
-            workspace,
-            exc,
-        )
+        # still goes through the resolution gate below, and this same path still
+        # produces the exchange's one processing-trace record (ADR-0035 decision 1)
+        # -- a decode failure must not make the exchange vanish untraced.
+        if isinstance(exc, UnicodeDecodeError):
+            event = "upstream-stream-decode-error"
+            logger.warning(
+                "blindfold_upstream_stream_decode_error: workspace=%s reason=%s",
+                workspace,
+                exc,
+            )
+        else:
+            event = "upstream-stream-disconnected"
+            logger.warning(
+                "blindfold_upstream_stream_disconnected: workspace=%s reason=%s",
+                workspace,
+                exc,
+            )
         audit_log.append(
             AuditRecord(
                 workspace=workspace,
-                event="upstream-stream-disconnected",
+                event=event,
                 reason=str(exc),
             )
         )
