@@ -91,7 +91,6 @@ name = "blindfold"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
-    { name = "asyncpg" },
     { name = "cryptography" },
     { name = "fastapi" },
     { name = "httpx" },
@@ -111,6 +110,7 @@ gliner = [
 [package.dev-dependencies]
 dev = [
     { name = "anyio" },
+    { name = "asyncpg" },
     { name = "playwright" },
     { name = "pytest" },
     { name = "testcontainers" },
@@ -124,7 +124,6 @@ freeze = [
 
 [package.metadata]
 requires-dist = [
-    { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "cryptography", specifier = ">=42.0" },
     { name = "fastapi", specifier = ">=0.115" },
     { name = "gliner", marker = "extra == 'gliner'", specifier = ">=0.2.13" },
@@ -141,6 +140,7 @@ provides-extras = ["gliner"]
 [package.metadata.requires-dev]
 dev = [
     { name = "anyio", specifier = ">=4" },
+    { name = "asyncpg", specifier = ">=0.31.0" },
     { name = "playwright", specifier = ">=1.61.0" },
     { name = "pytest", specifier = ">=8" },
     { name = "testcontainers", specifier = ">=4.14.2" },

@@ -107,3 +107,18 @@ store**, and demote in-memory to an explicit dev/demo mode.
 - Interim honesty slice: a Setup/console banner fires whenever the effective backend is
   in-memory — a permanent "you've opted out of persistence" indicator, shippable ahead
   of the full port.
+
+> **Update (2026-08-16, issue #319).** The "ETL `seeded_pairs()` read path speaks async
+> `asyncpg`" text above described the shipped store's own read (this ADR predates issue
+> #319). It no longer does: `blindfold.store.postgres` (the async `asyncpg` repository)
+> and `blindfold.store.etl` (the `asyncpg`-based migration/seed loader) were both moved
+> to `tests/support/` — neither had a single shipped importer; their only consumers were
+> the Docker-gated Postgres tests. `asyncpg` is now a `dev`-group-only dependency and is
+> asserted absent from the frozen binary (`packaging/absence_gate.py`'s
+> `FORBIDDEN_MODULES`). §3's "thin dialect seam" and "`asyncpg` stays Postgres-only"
+> claims stand for the *SQLite-vs-Postgres* split they were making; read "Postgres-only"
+> as "Postgres-only, and test-only" now. `psycopg[binary]` was considered for the same
+> extras treatment and deliberately kept a base dependency (`pyproject.toml`'s own
+> comment): `blindfold.store.dialect` imports it unconditionally regardless of backend,
+> including the default `sqlite:///` DSN, so demoting it would need a lazy-import
+> refactor this issue did not make.

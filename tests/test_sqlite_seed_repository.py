@@ -2,10 +2,11 @@
 the SQLite backend (ADR-0043 §3, issue #203).
 
 The only async (asyncpg) store path is the ETL seeded_pairs() read
-(:mod:`blindfold.store.postgres`'s ``PostgresSeedRepository``); asyncpg stays
-Postgres-only. On the SQLite backend the same read runs synchronous stdlib ``sqlite3``
-via the dialect seam (:mod:`blindfold.store.dialect`, issue #200) instead -- a
-startup/Setup path, not the request hot path.
+(``tests/support/postgres_seed_repository.py``'s ``PostgresSeedRepository`` -- moved out
+of ``src/blindfold/store`` in issue #319, test-only since nothing shipped ever imported
+it); asyncpg stays Postgres-only. On the SQLite backend the same read runs synchronous
+stdlib ``sqlite3`` via the dialect seam (:mod:`blindfold.store.dialect`, issue #200)
+instead -- a startup/Setup path, not the request hot path.
 
 No SQLite ETL-loading path is introduced: the SQLite schema is populated the same way
 production already populates it (``PostgresEntityGraphStore``, issue #200, which

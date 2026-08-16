@@ -4,7 +4,6 @@ version = "0.1.0"
 description = "Blindfold — reversible LLM-anonymization proxy (blindfold/restore)."
 requires-python = ">=3.12"
 dependencies = [
-    "asyncpg>=0.31.0",
     "cryptography>=42.0",
     "fastapi>=0.115",
     "httpx>=0.27",
@@ -16,6 +15,14 @@ dependencies = [
     # transitioned from Microsoft to the community data-privacy-stack org in
     # 2026, so it's treated as a pinned utility library, not a rolling platform.
     "presidio-analyzer==2.2.364",
+    # issue #319: deliberately kept as a BASE dependency, not demoted to an extra like
+    # `gliner`. Unlike GLiNER's genuinely opt-in ~197 MB weights, `psycopg` is imported
+    # unconditionally at module scope by `blindfold.store.dialect` -- reached by every
+    # store class (entity_graph_store, rbac_store, review_inbox_store, allowlist_store,
+    # reidentify_store, activation_settings) regardless of backend, including the
+    # default `sqlite:///` DSN (ADR-0043 §1). Making it an extra would need a lazy-import
+    # refactor of `dialect.py` gated on the DSN scheme -- out of this issue's scope, and
+    # a behavior change to the default (no-Postgres) path this issue must not touch.
     "psycopg[binary]>=3.1",
     "unidecode>=1.4.0",
     "uvicorn>=0.30",
@@ -40,6 +47,12 @@ blindfold = "blindfold.__main__:main"
 dev = [
     "pytest>=8",
     "anyio>=4",
+    # issue #319: asyncpg's only consumers are tests/support/etl.py and
+    # tests/support/postgres_seed_repository.py, both exercised solely by the
+    # Docker-gated Postgres tests (testcontainers, right below) -- never a base
+    # dependency, since the shipped Postgres path speaks synchronous `psycopg`
+    # (blindfold.store.dialect) throughout.
+    "asyncpg>=0.31.0",
     "testcontainers>=4.14.2",
     "playwright>=1.61.0",
 ]

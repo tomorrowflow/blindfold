@@ -1,11 +1,12 @@
 """SQLite-backed seed repository: the ETL ``seeded_pairs()`` read, synchronous sqlite3
 on the SQLite backend (ADR-0043 §3, issue #203).
 
-Mirrors the same ``seeded_pairs()`` seam as
-:class:`~blindfold.store.postgres.PostgresSeedRepository`, but reads via the dialect
-seam's synchronous stdlib ``sqlite3`` (:mod:`blindfold.store.dialect`, issue #200)
-instead of ``asyncpg`` -- the one async read ADR-0043 moves off ``asyncpg`` on this
-backend; ``asyncpg`` stays Postgres-only. Reads the same ``migrations_sqlite.sql``
+Mirrors the same ``seeded_pairs()`` seam as ``tests/support/postgres_seed_repository.py``'s
+``PostgresSeedRepository`` (test-only since issue #319 -- nothing shipped ever imported
+it), but reads via the dialect seam's synchronous stdlib ``sqlite3``
+(:mod:`blindfold.store.dialect`, issue #200) instead of ``asyncpg`` -- the one async read
+ADR-0043 moves off ``asyncpg`` on this backend; ``asyncpg`` stays Postgres-only (and, per
+issue #319, test-only). Reads the same ``migrations_sqlite.sql``
 schema that :class:`~blindfold.store.entity_graph_store.PostgresEntityGraphStore`
 already writes on a ``sqlite:///`` DSN, so the hermetic seed round-trip and the
 persisted SQLite graph agree on every surrogate.

@@ -6,8 +6,9 @@ of a hardcoded dict. Two implementations share the ``seeded_pairs()`` seam:
 
 - :class:`VendoredSeedRepository` — in-process, reads the vendored seed artifact, NO DB.
   Keeps the fast request-path test hermetic.
-- the Postgres-backed repository (see :mod:`blindfold.store.postgres`) — reads the same
-  graph after the ETL has loaded it.
+- the Postgres-backed repository (test-only since issue #319 --
+  ``tests/support/postgres_seed_repository.py``, nothing shipped ever imported it) —
+  reads the same graph after the ETL has loaded it.
 """
 
 from __future__ import annotations
