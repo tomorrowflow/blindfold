@@ -148,6 +148,7 @@ from .l3 import (
     L3Adjudication,
     L3Adjudicator,
     L3Detector,
+    L3DetectionInternalError,
     L3Unavailable,
 )
 from .gliner_provisioning import (
@@ -213,10 +214,17 @@ class _UnconfiguredAdjudicator:
     unscanned, fail-*open* by contradiction of ADR-0009. The mint pass's existing
     L3Unavailable handling (:func:`L3Detector.detect`) turns this into the actionable,
     scrubbed 503 block.
+
+    Raises ``L3Unavailable`` directly (issue #315) rather than a bare
+    ``RuntimeError`` -- an unconfigured adjudicator is unambiguously the
+    availability case, not a Blindfold code defect, and
+    ``L3Detector._adjudicate_one`` reraises an ``L3Unavailable`` it already
+    received unchanged rather than reclassifying it via its generic-exception
+    fallback.
     """
 
     def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
-        raise RuntimeError("no L3 adjudicator is configured")
+        raise L3Unavailable("no L3 adjudicator is configured")
 
 
 def _build_l3_adjudicator(settings: Settings) -> L3Adjudicator:
@@ -969,6 +977,7 @@ _DEFAULT_REMEDY = (
 # reshaping the funnel.
 _MANAGEMENT_URL_PATH_BY_SUB_REASON = {
     "l3_unavailable": "/ui/status",
+    "detection_internal": "/ui/status",
     "leak_detected": "/ui/status",
     "unresolved_surrogate": "/ui/status",
 }
@@ -995,6 +1004,18 @@ _L3_UNAVAILABLE_REMEDY = (
     "the logged per-workspace deterministic-only degrade (ADR-0009; known "
     "entities via L1+L2 stay protected, novelty discovery is the documented "
     "loss), or configure L3."
+)
+
+# Issue #315: a distinct remedy for an internal Blindfold defect (the #179
+# span-containment backstop, or an uncaught bug inside the adjudicator cascade) --
+# deliberately never names the deterministic-only degrade or any other
+# protection-reducing on-ramp, since none of those fix a code bug. Naming them
+# here would invite an operator to weaken protection in response to Blindfold's
+# own defect, exactly the conflation this issue exists to remove.
+_L3_DETECTION_INTERNAL_REMEDY = (
+    "This is a Blindfold defect, not an adjudicator availability problem -- the "
+    "payload was not sent. Please report it, along with the scrubbed reason "
+    "below."
 )
 
 
@@ -1232,6 +1253,24 @@ async def _mint_or_block(
             sub_reason="l3_unavailable",
             block_history=block_history,
             remedy=_L3_UNAVAILABLE_REMEDY,
+        )
+    except L3DetectionInternalError as exc:
+        # Issue #315: distinct from L3Unavailable -- an internal invariant
+        # violation (the #179 span-containment backstop, or an uncaught bug in
+        # the adjudicator cascade) is a Blindfold defect, never an availability
+        # signal, so it must never render as `blocked-l3-unavailable` with a
+        # remedy that suggests degrading protection.
+        return _blocked_response(
+            event="blocked-detection-internal",
+            reason=(
+                f"L3 detection hit an internal defect while adjudicating the "
+                f"payload: {exc}"
+            ),
+            workspace=workspace,
+            audit_log=audit_log,
+            sub_reason="detection_internal",
+            block_history=block_history,
+            remedy=_L3_DETECTION_INTERNAL_REMEDY,
         )
     if policy_deterministic_only:
         audit_log.append(

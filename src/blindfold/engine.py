@@ -26,7 +26,7 @@ from typing import Any, NoReturn
 from .detection import detect_l2, detect_pii
 from .l3 import _capitalized_token_matches
 from .l3 import _SENTENCE_STOPWORDS as _COMPONENT_STOPWORDS
-from .l3 import L3Detector, L3Unavailable, count_capitalized_tokens
+from .l3 import L3Detector, L3DetectionInternalError, count_capitalized_tokens
 # Reused to re-window context around a *coalesced* multi-token span (issue #162):
 # no single candidate's ``.context`` covers the merged run, so the inbox item's
 # context/offset are recomputed from the group's start/end via the same windowing
@@ -938,11 +938,17 @@ def _blindfold_text(
                 # issue's own live repro: a real-value fragment mis-slices into
                 # the clear. Block the whole request rather than slice on an
                 # unanchored span.
+                #
+                # Issue #315: this is a Blindfold-internal invariant violation, not
+                # an adjudicator-availability problem -- raise the distinct
+                # ``L3DetectionInternalError`` (not ``L3Unavailable``), so the
+                # proxy's remedy never tells an operator to degrade protection in
+                # response to what is actually a Blindfold bug.
                 if not (
                     0 <= start <= candidate.start
                     and candidate.end <= end <= len(result)
                 ):
-                    raise L3Unavailable(
+                    raise L3DetectionInternalError(
                         "L3 adjudicator span for a confirmed candidate could not "
                         "be re-anchored against the hop text"
                     )

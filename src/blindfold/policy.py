@@ -110,6 +110,12 @@ class AuditRecord:
     alerts) can route on it without parsing free-form reasons:
 
       - ``blocked-l3-unavailable``    — L3 (Ollama) was down; novel candidate present.
+      - ``blocked-detection-internal`` — L3 detection hit an internal Blindfold
+                                        defect (the #179 span-containment backstop,
+                                        or an uncaught bug in the adjudicator
+                                        cascade) -- distinct from availability
+                                        (issue #315): the remedy never suggests
+                                        degrading protection for a code bug.
       - ``blocked-leak``              — leak_gate found a real value in the outbound
                                           payload before it egressed.
       - ``blocked-unresolved-surrogate`` — resolution_gate found an injected surrogate

@@ -375,7 +375,13 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   **mapping cipher**.
 - **Fail-closed** — when the full detection pipeline can't run, block by default;
   deterministic L1+L2 still protect known entities. A per-workspace opt-in allows
-  degrading to deterministic-only.
+  degrading to deterministic-only. Two distinct triggers, never conflated (ADR-0009
+  amendment, issue #315): a genuine adjudicator-**availability** problem
+  (`L3Unavailable`/`blocked-l3-unavailable`, remedy names the deterministic-only
+  opt-in) versus an **internal detection defect** — the #179 span-containment
+  backstop firing, or any other Blindfold-internal bug (`L3DetectionInternalError`/
+  `blocked-detection-internal`, remedy says "report this defect", never suggests
+  degrading protection, since that fixes nothing for a code bug).
 - **Unprotected mode** — a temporary, **local**, operator-invoked override that
   **suspends all blindfolding**: the detection pipeline does not run, nothing is
   surrogate-replaced, and real **entities** egress to the provider as a pure relay.

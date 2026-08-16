@@ -35,6 +35,8 @@ from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
+import httpx
+
 from .detection import Entity
 
 if TYPE_CHECKING:
@@ -173,6 +175,25 @@ class L3Unavailable(Exception):
     Fail-closed by default (ADR-0009 / leak-audit clause F): the proxy translates
     this into a clear block rather than letting a novel candidate egress unscanned.
     The per-workspace ``deterministic_only`` opt-in is the documented escape valve.
+
+    Issue #315: scoped to genuine adjudicator-availability failures only --
+    transport/protocol errors (``httpx.HTTPError``/``OSError``: connection refused,
+    timeout, a non-2xx response). A bug in Blindfold's own detection code is
+    :class:`L3DetectionInternalError` instead; the two must never render
+    identically, since the deterministic-only remedy this exception's block
+    suggests does nothing for a code defect.
+    """
+
+
+class L3DetectionInternalError(Exception):
+    """Raised when L3 detection itself hits an internal Blindfold defect, not an
+    adjudicator availability problem (issue #315) -- the #179 span-containment
+    backstop firing, or any other uncaught bug inside the adjudicator cascade
+    (a ``KeyError``/``TypeError`` regression in GLiNER classification or
+    re-anchoring). Distinct from :class:`L3Unavailable` so the fail-closed block's
+    remedy never tells an operator to degrade protection in response to a
+    Blindfold bug -- the payload still never egresses unscanned, but the remedy
+    says "report this defect", not "configure L3" or "opt into deterministic-only".
     """
 
 
@@ -662,18 +683,38 @@ class L3Detector:
         return results
 
     def _adjudicate_one(self, candidate: CandidateSpan) -> L3Adjudication:
+        # SEC-7 (issue #48): the candidate is, by definition, unresolved -- it may
+        # be a real entity value never minted a surrogate. Reference it by a
+        # hashed id (ADR-0009's scrub fallback), never the plaintext, in either
+        # exception below.
+        digest = hashlib.sha256(candidate.text.encode("utf-8")).hexdigest()[:12]
         try:
             return self._adjudicator.adjudicate(candidate)
-        except Exception as exc:
+        except L3Unavailable:
+            # An adjudicator that already signals its own unavailability (e.g.
+            # ``_UnconfiguredAdjudicator``, app.py) is reraised unchanged --
+            # never reclassified as an internal defect by the fallback below.
+            raise
+        except (httpx.HTTPError, OSError) as exc:
             # Fail-closed (ADR-0009): a novel candidate we couldn't adjudicate
             # is exactly the case where letting the payload through would risk
-            # leaking an undiscovered entity. Block.
-            # SEC-7 (issue #48): the candidate is, by definition, unresolved —
-            # it may be a real entity value never minted a surrogate. Reference
-            # it by a hashed id (ADR-0009's scrub fallback), never the plaintext.
-            digest = hashlib.sha256(candidate.text.encode("utf-8")).hexdigest()[:12]
+            # leaking an undiscovered entity. Block. Scoped to transport/protocol
+            # errors only (issue #315) -- a connection refused, a timeout, or a
+            # non-2xx response is a genuine "the adjudicator is down" signal.
             raise L3Unavailable(
                 f"L3 adjudication failed for candidate (ref: hash:{digest}): {exc}"
+            ) from exc
+        except Exception as exc:
+            # Issue #315: everything else here is a Blindfold code defect (e.g. a
+            # KeyError/TypeError in the GLiNER cascade or a malformed adjudicator
+            # verdict), not an availability problem -- previously this blanket
+            # except Exception rendered a code bug identically to Ollama being
+            # down, whose suggested remedy (deterministic-only degrade) does
+            # nothing for a code defect. Still fail-closed: block rather than
+            # let an un-adjudicated candidate through, but distinctly labeled.
+            raise L3DetectionInternalError(
+                f"L3 detection hit an internal defect for candidate "
+                f"(ref: hash:{digest}): {exc}"
             ) from exc
 
     def _maybe_log_progress(self, processed: int, pass_started_at: float) -> None:
