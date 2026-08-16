@@ -444,6 +444,14 @@ def _blindfold_tool_descriptions(
     registered Term equal to a provisional real still resolves via the entity graph's
     own (already-applied) surrogate, not the provisional one -- by the time this scan
     runs, that occurrence's real text is no longer present to match.
+
+    ADR-0051 amendment (issue #303 -> #308): the same treatment also reaches every
+    free-text ``description`` nested inside ``input_schema``/``parameters`` --
+    ``properties.*.description``, ``properties.*.items.description``,
+    ``$defs.*.description``, arbitrarily nested -- via :func:`_blindfold_schema_prose`.
+    JSON-Schema structural tokens (property keys, ``type``, ``required``, ``enum``
+    values) are never visited: the recursion only ever rewrites the value under a
+    ``"description"`` key, never a dict key or any other value.
     """
     if not isinstance(tools, list):
         return
@@ -451,11 +459,43 @@ def _blindfold_tool_descriptions(
         if not isinstance(tool, dict):
             continue
         container = get_container(tool)
-        if isinstance(container, dict) and isinstance(container.get("description"), str):
+        if not isinstance(container, dict):
+            continue
+        if isinstance(container.get("description"), str):
             description = _blindfold_text(container["description"], mapping, session)
             container["description"] = _apply_provisional_pairs(
                 description, inbox, session
             )
+        _blindfold_schema_prose(container.get("input_schema"), mapping, session, inbox)
+        _blindfold_schema_prose(container.get("parameters"), mapping, session, inbox)
+
+
+def _blindfold_schema_prose(
+    schema: Any,
+    mapping: SurrogateMapping,
+    session: ExchangeSession,
+    inbox: ReviewInbox | None,
+) -> None:
+    """Rewrite every free-text ``description`` string nested inside ``schema``, in place.
+
+    Deterministic-only, same as :func:`_blindfold_tool_descriptions` (no ``l3_detector``,
+    ADR-0023 section 3) and the same ADR-0051 stage 1 provisional-pair pass. Recurses
+    through dicts and lists so ``properties.*.description``, ``properties.*.items.description``,
+    ``$defs.*.description`` and any other nesting are all reached, but only ever rewrites
+    the value under a ``"description"`` key -- every other key (property names, ``type``,
+    ``required``, ``enum`` values) is recursed into for further ``description`` fields but
+    never itself rewritten, so structural tokens stay byte-identical.
+    """
+    if isinstance(schema, dict):
+        for key, value in schema.items():
+            if key == "description" and isinstance(value, str):
+                rewritten = _blindfold_text(value, mapping, session)
+                schema[key] = _apply_provisional_pairs(rewritten, inbox, session)
+            else:
+                _blindfold_schema_prose(value, mapping, session, inbox)
+    elif isinstance(schema, list):
+        for item in schema:
+            _blindfold_schema_prose(item, mapping, session, inbox)
 
 
 def _blindfold_system(

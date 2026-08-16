@@ -79,7 +79,11 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   (issue #299, tool descriptions) and stage 2 (issue #300, every message hop) — the
   same deterministic provisional-pair pass, so a referent's bare and legal-form-
   suffixed surface forms are never treated as invisible to each other before a human
-  ever reviews the candidate, in any of those surfaces.
+  ever reviews the candidate, in any of those surfaces. The #303 amendment (issue
+  #308) widens the tool-description surface to every free-text `description` nested
+  inside `input_schema`/`parameters` (`properties.*.description`,
+  `properties.*.items.description`, `$defs.*.description`) — same pass, same
+  deterministic-only scope, no new surface class.
 - **Merge** — the curator action that collapses two separate canonical **entities**
   discovered to be the same referent into one. The surviving entity absorbs the
   other's **variations**, **relationships**, and role assignments; the absorbed
