@@ -77,6 +77,15 @@ test.describe("Connect page", () => {
     );
   });
 
+  test("Good to know notes don't claim count_tokens is unimplemented (issue #267 shipped it)", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto("/ui/connect");
+    const notes = alicePage.getByTestId("connect-claude-code-notes");
+    await expect(notes).not.toContainText("doesn't implement");
+    await expect(notes).not.toContainText("count_tokens");
+  });
+
   test("Codex CLI card shows the not-supported pill and an issue link with correct attributes (never navigated)", async ({
     alicePage,
   }) => {

@@ -167,7 +167,10 @@ npm run build                # writes straight into ../src/blindfold/ui_dist/
 
 Commit the resulting `src/blindfold/ui_dist/` changes alongside your `frontend/` source
 change — packaging (`uv build` / CI) does not rebuild the frontend itself, it just picks
-up whatever is already committed there.
+up whatever is already committed there. Forgetting is caught by the
+`ui-dist-freshness` CI job (`.github/workflows/ui-dist-freshness.yml`,
+`packaging/ui_dist_freshness.py`, issue #321), which rebuilds `frontend/` on every push
+and fails if the result diverges from what's committed.
 
 **Freezing the proxy** (ADR-0039, macOS menu bar `.app`): a PyInstaller onefile spec at
 [`packaging/blindfold-proxy.spec`](packaging/blindfold-proxy.spec) bundles `blindfold

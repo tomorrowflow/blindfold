@@ -60,8 +60,8 @@ collision during the migration window.
   install time — `uv run pytest` and a `pip install` of a released sdist/wheel both see
   it as an ordinary tracked file, no build step required. Changing `frontend/src/` and
   forgetting to rebuild is a real failure mode; documented in `README.md`'s dev-loop
-  section as the thing to remember (no CI check added yet — flagged as follow-up, not
-  this slice's scope).
+  section as the thing to remember. A CI gate now catches this — see the issue #321
+  update below.
 - The dev loop (`npm run dev` in `frontend/`, proxying `/v1/*` to a `blindfold serve`
   running on `127.0.0.1:8000`) is separate from the served-bundle path — a developer
   iterating on the shell never needs to rebuild+restart the Python process.
@@ -89,3 +89,21 @@ collision during the migration window.
   proprietary icon bundle) — rejected outright: violates the proxy's own local-only,
   no-third-party-egress posture (CONTEXT.md's **Egress** concept) for the one surface
   that's supposed to be trustworthy by construction.
+
+## Update (issue #321): ui_dist freshness gate
+
+The predicted failure mode above landed for real: the committed bundle's Connect page
+kept telling users Blindfold doesn't implement `POST /v1/messages/count_tokens` for
+several cycles after #267 shipped that endpoint — source and vendored bundle drifted
+apart with nothing to notice.
+
+`packaging/ui_dist_freshness.py` rebuilds `frontend/` into a scratch directory (Vite's
+own `--outDir`/`--emptyOutDir` flags, never touching the committed tree) and diffs a
+normalized content manifest (relative path → sha256) against `src/blindfold/ui_dist/`.
+Manifest, not a raw `git status`/byte-tree diff: rebuilds proved byte-reproducible
+across repeated runs in the sandbox this was developed in, but nothing has verified
+reproducibility *across* environments, and a manifest gives a readable per-file diff
+either way. `.github/workflows/ui-dist-freshness.yml` runs it on every push/PR,
+independent of `web-verify.yml` — a stale-but-internally-consistent bundle still
+renders and behaves correctly (a live server is exactly what `web-verify.yml` drives),
+so the freshness question needed its own gate rather than piggybacking on that one.
