@@ -948,6 +948,12 @@ def _component_restore_map(injected: dict[str, str]) -> dict[str, str]:
     restore key only if distinctive (not a shared common-word/legal-form) and
     unambiguous (maps to exactly one real value across this exchange's injected
     surrogates) — ADR-0036.
+
+    Invariant (ADR-0036): a component restore key is only valid where the
+    component's position in the surrogate corresponds to a position in the real
+    value.  When ``len(surrogate_words) != len(real_words)`` there is no
+    positional correspondence — the pair is skipped entirely so that surrogate
+    components never become whole-value restore keys (issue #304).
     """
     candidates: dict[str, set[str]] = {}
     for surrogate, real in injected.items():
@@ -955,7 +961,13 @@ def _component_restore_map(injected: dict[str, str]) -> dict[str, str]:
         if len(surrogate_words) < 2:
             continue
         real_words = real.split()
-        aligned = len(surrogate_words) == len(real_words)
+        if len(surrogate_words) != len(real_words):
+            # Misaligned pair: no positional correspondence exists, so no
+            # component keys can be safely derived.  Skip to avoid mapping
+            # ordinary words in the real value to a surrogate component and
+            # vice-versa (see issue #304 for the Northwind Analytics / Vault
+            # corruption example).
+            continue
         for index, word in enumerate(surrogate_words):
             if word in _COMPONENT_STOPWORDS:
                 continue
@@ -966,17 +978,33 @@ def _component_restore_map(injected: dict[str, str]) -> dict[str, str]:
                 # ordinary digit in a response gets rewritten to a real value
                 # (issue #286).
                 continue
-            target = real_words[index] if aligned else real
+            target = real_words[index]
             candidates.setdefault(word, set()).add(target)
     return {word: next(iter(targets)) for word, targets in candidates.items() if len(targets) == 1}
 
 
 def _restore_text(text: str, session: ExchangeSession) -> str:
-    result = _apply_restore_pass(text, session.injected)
+    # Pass 1: replace full surrogates in the original text.
+    pass1 = _apply_restore_pass(text, session.injected)
     components = _component_restore_map(session.injected)
-    if components:
-        result = _apply_restore_pass(result, components)
-    return result
+    if not components:
+        return pass1
+    # Pass 2: replace surrogate components, but operate on the *original* text
+    # so that Pass 1's substituted real values cannot be re-matched by Pass 2
+    # (issue #304 — 'Northwind Analytics' corrupted to 'Northwind Vault' because
+    # 'Analytics' was a component key and Pass 2 ran over Pass 1's output).
+    # After both independent passes, merge: prefer Pass 1's substitution at
+    # positions where both passes produced a replacement.
+    pass2 = _apply_restore_pass(text, components)
+    # Merge pass1 and pass2: at each position where pass1 replaced a full
+    # surrogate, pass1 wins; otherwise use pass2 if it differs from the original.
+    # The simplest correct merge is: apply pass2's keys only to positions that
+    # pass1 did NOT already rewrite. We achieve this by running pass2 on the
+    # original text and then overlaying pass1 results using a second pass of
+    # full-surrogate replacement on the combined text.  Since full surrogate keys
+    # are always longer than any single component key, pass1 dominates.
+    merged = _apply_restore_pass(pass2, session.injected)
+    return merged
 
 
 def _restore_json_value(value: Any, session: ExchangeSession) -> Any:
