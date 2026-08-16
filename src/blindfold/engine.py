@@ -166,12 +166,14 @@ def _replay_inbox(
     ``upsert`` can never call through to persistence (``_persistent()`` is False) --
     scoped to this one call and never returned to the caller, so a provisional
     surrogate it mints is exactly as harmless as an in-memory L1/L2 mint: it cannot
-    reach the real review inbox, the entity graph, or any store. Two production
-    callers pass ``inbox=None`` deliberately: devtools replay (this route,
-    ADR-0047 §6) and ``POST /v1/messages/count_tokens`` (issue #267) — a
-    count-only request must never grow the durable review inbox. Both
-    ``/v1/messages`` and ``/v1/chat/completions`` always pass the DI-injected
-    ``ReviewInbox``, so this never fires for a real inference exchange.
+    reach the real review inbox, the entity graph, or any store. Devtools replay
+    (this route, ADR-0047 §6) passes ``inbox=None`` deliberately — a replayed test
+    payload must never grow the durable review inbox. ``POST /v1/messages/count_tokens``
+    used to as well (issue #267), but since #322 it passes a non-persistent
+    :meth:`~blindfold.review.ReviewInbox.read_only_view` seeded from the durable
+    inbox, so this substitution no longer fires for it. Both ``/v1/messages`` and
+    ``/v1/chat/completions`` always pass the DI-injected ``ReviewInbox``, so this
+    never fires for a real inference exchange.
     """
     if l3_detector is not None and inbox is None:
         return ReviewInbox()
@@ -1449,10 +1451,12 @@ def _apply_provisional_pairs(
     #300: message hops carry one, tool descriptions don't), gets the same per-hop
     surrogate-token bookkeeping (ADR-0035) every other injection site already does.
 
-    ``inbox`` is ``None`` only for the two callers that deliberately pass no inbox at
-    all (devtools replay with no ``l3_detector``, ``count_tokens`` — issue #274/#267);
-    left alone rather than erroring, matching :func:`leak_gate`'s own ``inbox is None``
-    handling.
+    ``inbox`` is ``None`` only for devtools replay with no ``l3_detector`` (issue
+    #274): ``count_tokens`` used to pass ``inbox=None`` too, but since #322 it passes
+    a :meth:`~blindfold.review.ReviewInbox.read_only_view` seeded from the durable
+    inbox, so this pass reapplies its already-minted provisional pairs like any real
+    exchange. ``None`` is left alone rather than erroring, matching
+    :func:`leak_gate`'s own ``inbox is None`` handling.
     """
     if inbox is None:
         return text
