@@ -15,6 +15,11 @@ Leak-audit clauses: F (fail-closed body shape) is the only clause this slice tou
 it doesn't change blindfold/restore/surrogate-mint mechanics (A-E, G N/A). The new
 `message` field must obey the identical scrubbed-reason invariant as the existing body,
 asserted directly below (leak-audit-style, per the issue's acceptance criteria).
+
+Request-path exemplar for the shared ``wired_app`` fixture (issue #318): the stub
+upstream client and mapping come from ``wired_app`` instead of a hand-rolled
+``dependency_overrides`` + ``try/finally: app.dependency_overrides.clear()`` pair --
+the autouse snapshot/restore fixture in conftest.py handles cleanup instead.
 """
 
 from __future__ import annotations
@@ -24,13 +29,11 @@ import pytest
 
 from blindfold.app import (
     app,
-    get_audit_log,
     get_l3_detector,
     get_mapping,
     get_upstream_client,
     get_workspace_policies,
 )
-from blindfold.config import Settings, get_settings
 from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
 from blindfold.policy import WorkspacePolicies
 from blindfold.store import vendored_seed_repository
@@ -43,10 +46,10 @@ class _UnavailableAdjudicator:
         raise ConnectionError("ollama unreachable")
 
 
-def _make_stub_upstream(recorded: list[httpx.Request]) -> UpstreamClient:
+def _make_stub_upstream_returning(body: dict, recorded: list[httpx.Request]) -> UpstreamClient:
     def handler(request: httpx.Request) -> httpx.Response:
         recorded.append(request)
-        return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}]})
+        return httpx.Response(200, json=body)
 
     client = httpx.AsyncClient(
         base_url="http://upstream.test", transport=httpx.MockTransport(handler)
@@ -56,27 +59,22 @@ def _make_stub_upstream(recorded: list[httpx.Request]) -> UpstreamClient:
 
 @pytest.mark.anyio
 async def test_l3_unavailable_block_carries_a_management_url_derived_from_settings(
-    monkeypatch,
+    monkeypatch, wired_app
 ):
     monkeypatch.setenv("BLINDFOLD_HOST", "127.0.0.1")
     monkeypatch.setenv("BLINDFOLD_PORT", "8000")
-    recorded: list[httpx.Request] = []
-    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(recorded)
     app.dependency_overrides[get_l3_detector] = lambda: L3Detector(_UnavailableAdjudicator())
-    try:
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(
-            transport=transport, base_url="http://proxy.test"
-        ) as client:
-            resp = await client.post(
-                "/v1/messages",
-                json={
-                    "model": "m",
-                    "messages": [{"role": "user", "content": "Please brief Quentin."}],
-                },
-            )
-    finally:
-        app.dependency_overrides.clear()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://proxy.test"
+    ) as client:
+        resp = await client.post(
+            "/v1/messages",
+            json={
+                "model": "m",
+                "messages": [{"role": "user", "content": "Please brief Quentin."}],
+            },
+        )
 
     assert resp.status_code == 503
     error = resp.json()["error"]
@@ -86,50 +84,42 @@ async def test_l3_unavailable_block_carries_a_management_url_derived_from_settin
 
 @pytest.mark.anyio
 async def test_management_url_reflects_a_non_default_configured_host_and_port(
-    monkeypatch,
+    monkeypatch, wired_app
 ):
     monkeypatch.setenv("BLINDFOLD_HOST", "0.0.0.0")
     monkeypatch.setenv("BLINDFOLD_PORT", "9000")
-    recorded: list[httpx.Request] = []
-    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(recorded)
     app.dependency_overrides[get_l3_detector] = lambda: L3Detector(_UnavailableAdjudicator())
-    try:
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(
-            transport=transport, base_url="http://proxy.test"
-        ) as client:
-            resp = await client.post(
-                "/v1/messages",
-                json={
-                    "model": "m",
-                    "messages": [{"role": "user", "content": "Please brief Quentin."}],
-                },
-            )
-    finally:
-        app.dependency_overrides.clear()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://proxy.test"
+    ) as client:
+        resp = await client.post(
+            "/v1/messages",
+            json={
+                "model": "m",
+                "messages": [{"role": "user", "content": "Please brief Quentin."}],
+            },
+        )
 
     assert resp.json()["error"]["management_url"] == "http://0.0.0.0:9000/ui/status"
 
 
 @pytest.mark.anyio
-async def test_l3_unavailable_block_carries_a_human_actionable_message_with_the_deep_link():
-    recorded: list[httpx.Request] = []
-    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(recorded)
+async def test_l3_unavailable_block_carries_a_human_actionable_message_with_the_deep_link(
+    wired_app,
+):
     app.dependency_overrides[get_l3_detector] = lambda: L3Detector(_UnavailableAdjudicator())
-    try:
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(
-            transport=transport, base_url="http://proxy.test"
-        ) as client:
-            resp = await client.post(
-                "/v1/messages",
-                json={
-                    "model": "m",
-                    "messages": [{"role": "user", "content": "Please brief Quentin."}],
-                },
-            )
-    finally:
-        app.dependency_overrides.clear()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://proxy.test"
+    ) as client:
+        resp = await client.post(
+            "/v1/messages",
+            json={
+                "model": "m",
+                "messages": [{"role": "user", "content": "Please brief Quentin."}],
+            },
+        )
 
     error = resp.json()["error"]
     # Claude Code and most clients render API error `message` verbatim -- the
@@ -148,29 +138,24 @@ async def test_l3_unavailable_block_carries_a_human_actionable_message_with_the_
 
 
 @pytest.mark.anyio
-async def test_leak_detected_block_also_carries_message_and_management_url():
+async def test_leak_detected_block_also_carries_message_and_management_url(wired_app):
     class _LeakyMapping(SurrogateMapping):
         def real_values(self) -> list[str]:
             return ["Quentin"]
 
-    recorded: list[httpx.Request] = []
     policies = WorkspacePolicies()
     policies.opt_in_deterministic_only("gamma")
-    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(recorded)
     app.dependency_overrides[get_mapping] = lambda: _LeakyMapping()
     app.dependency_overrides[get_workspace_policies] = lambda: policies
-    try:
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(
-            transport=transport, base_url="http://proxy.test"
-        ) as client:
-            resp = await client.post(
-                "/v1/messages",
-                json={"model": "m", "messages": [{"role": "user", "content": "Brief Quentin now."}]},
-                headers={"x-blindfold-workspace": "gamma"},
-            )
-    finally:
-        app.dependency_overrides.clear()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://proxy.test"
+    ) as client:
+        resp = await client.post(
+            "/v1/messages",
+            json={"model": "m", "messages": [{"role": "user", "content": "Brief Quentin now."}]},
+            headers={"x-blindfold-workspace": "gamma"},
+        )
 
     error = resp.json()["error"]
     assert error["sub_reason"] == "leak_detected"
@@ -184,19 +169,8 @@ def _seeded_mapping() -> SurrogateMapping:
     return SurrogateMapping.from_pairs(vendored_seed_repository().seeded_pairs())
 
 
-def _make_stub_upstream_returning(body: dict, recorded: list[httpx.Request]) -> UpstreamClient:
-    def handler(request: httpx.Request) -> httpx.Response:
-        recorded.append(request)
-        return httpx.Response(200, json=body)
-
-    client = httpx.AsyncClient(
-        base_url="http://upstream.test", transport=httpx.MockTransport(handler)
-    )
-    return UpstreamClient(base_url="http://upstream.test", client=client)
-
-
 @pytest.mark.anyio
-async def test_unresolved_surrogate_block_also_carries_message_and_management_url():
+async def test_unresolved_surrogate_block_also_carries_message_and_management_url(wired_app):
     # The buffered path's resolution gate (SEC-6): restore_response only rewrites
     # "text"/"tool_use" content blocks (ADR-0006 scope), so a "thinking" block that
     # echoes an injected surrogate verbatim is left unresolved -- caught here, not
@@ -207,35 +181,32 @@ async def test_unresolved_surrogate_block_also_carries_message_and_management_ur
     martin_surrogate = mapping.surrogate_for(martin)
     assert martin_surrogate is not None and martin_surrogate != martin
 
-    recorded: list[httpx.Request] = []
     policies = WorkspacePolicies()
     policies.opt_in_deterministic_only("epsilon")
-    app.dependency_overrides[get_mapping] = lambda: mapping
-    app.dependency_overrides[get_workspace_policies] = lambda: policies
-    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream_returning(
+    stub_upstream = _make_stub_upstream_returning(
         {
             "content": [
                 {"type": "thinking", "thinking": martin_surrogate},
                 {"type": "text", "text": "ok"},
             ]
         },
-        recorded,
+        wired_app.upstream_requests,
     )
-    try:
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(
-            transport=transport, base_url="http://proxy.test"
-        ) as client:
-            resp = await client.post(
-                "/v1/messages",
-                json={
-                    "model": "m",
-                    "messages": [{"role": "user", "content": f"Greet {martin} for me."}],
-                },
-                headers={"x-blindfold-workspace": "epsilon"},
-            )
-    finally:
-        app.dependency_overrides.clear()
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_workspace_policies] = lambda: policies
+    app.dependency_overrides[get_upstream_client] = lambda: stub_upstream
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://proxy.test"
+    ) as client:
+        resp = await client.post(
+            "/v1/messages",
+            json={
+                "model": "m",
+                "messages": [{"role": "user", "content": f"Greet {martin} for me."}],
+            },
+            headers={"x-blindfold-workspace": "epsilon"},
+        )
 
     assert resp.status_code == 503
     error = resp.json()["error"]
@@ -251,28 +222,23 @@ async def test_unresolved_surrogate_block_also_carries_message_and_management_ur
 
 
 @pytest.mark.anyio
-async def test_streaming_request_blocked_before_headers_carries_the_same_fields():
+async def test_streaming_request_blocked_before_headers_carries_the_same_fields(wired_app):
     # AC: a block surfaced before headers (the mint pass / leak gate both run before
     # upstream.open_stream) must carry the identical message + management_url shape
     # as the buffered path -- the client never even sees a 200 to begin with.
-    recorded: list[httpx.Request] = []
-    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(recorded)
     app.dependency_overrides[get_l3_detector] = lambda: L3Detector(_UnavailableAdjudicator())
-    try:
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(
-            transport=transport, base_url="http://proxy.test"
-        ) as client:
-            resp = await client.post(
-                "/v1/messages",
-                json={
-                    "model": "m",
-                    "stream": True,
-                    "messages": [{"role": "user", "content": "Please brief Quentin."}],
-                },
-            )
-    finally:
-        app.dependency_overrides.clear()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://proxy.test"
+    ) as client:
+        resp = await client.post(
+            "/v1/messages",
+            json={
+                "model": "m",
+                "stream": True,
+                "messages": [{"role": "user", "content": "Please brief Quentin."}],
+            },
+        )
 
     assert resp.status_code == 503
     assert resp.headers["content-type"].startswith("application/json")
@@ -280,11 +246,11 @@ async def test_streaming_request_blocked_before_headers_carries_the_same_fields(
     assert error["sub_reason"] == "l3_unavailable"
     assert error["management_url"] == "http://127.0.0.1:25463/ui/status"
     assert error["message"].startswith("Blindfold blocked this request:")
-    assert recorded == []
+    assert wired_app.upstream_requests == []
 
 
 @pytest.mark.anyio
-async def test_upstream_error_response_is_unaffected_by_the_blocked_shape_change():
+async def test_upstream_error_response_is_unaffected_by_the_blocked_shape_change(wired_app):
     # AC: `blindfold_upstream_error` responses are out of scope and unchanged --
     # they are an availability/contract failure (#86), not a privacy block, and
     # must never grow a `management_url`/ADR-0027 shape of their own.
@@ -293,18 +259,15 @@ async def test_upstream_error_response_is_unaffected_by_the_blocked_shape_change
             raise UpstreamError(status_code=502, sub_reason="upstream_unreachable", message="boom")
 
     app.dependency_overrides[get_upstream_client] = lambda: _FailingUpstream()
-    try:
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(
-            transport=transport, base_url="http://proxy.test"
-        ) as client:
-            resp = await client.post(
-                "/v1/messages",
-                json={"model": "m", "messages": [{"role": "user", "content": "hi"}]},
-                headers={"x-blindfold-workspace": "zzz-unaffected"},
-            )
-    finally:
-        app.dependency_overrides.clear()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://proxy.test"
+    ) as client:
+        resp = await client.post(
+            "/v1/messages",
+            json={"model": "m", "messages": [{"role": "user", "content": "hi"}]},
+            headers={"x-blindfold-workspace": "zzz-unaffected"},
+        )
 
     error = resp.json()["error"]
     assert error["type"] == "blindfold_upstream_error"

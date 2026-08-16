@@ -16,6 +16,15 @@ Leak-audit clause analysis:
     count) and does not require re-identifier.
   G (mapping secrecy) — covered: entity details endpoint returns no canonical
     (real) names; the real name never flows to the SPA without re-identifier.
+
+Management-API exemplar for the shared ``wired_app`` fixture (issue #318): every
+test in this file needs exactly the standard stub graph (RBAC, mapping, entity
+graph, audit log) ``wired_app`` provides, populated per test via
+``wired_app.rbac.grant(...)`` / ``wired_app.entity_graph.add_entity(...)`` /
+``wired_app.mapping.seed(...)`` instead of constructing fresh instances and
+wiring them into ``app.dependency_overrides`` by hand -- and the autouse
+snapshot/restore fixture retires the ``try/finally: app.dependency_overrides.clear()``
+pattern this file used to repeat once per test.
 """
 
 from __future__ import annotations
@@ -23,11 +32,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from blindfold.app import app, get_audit_log, get_entity_graph, get_mapping, get_rbac
-from blindfold.entity_graph import EntityGraph
-from blindfold.policy import AuditLog
-from blindfold.rbac import RbacRegistry
-from blindfold.surrogates import SurrogateMapping
+from blindfold.app import app
 
 
 def _make_client() -> httpx.AsyncClient:
@@ -36,50 +41,29 @@ def _make_client() -> httpx.AsyncClient:
     )
 
 
-def _admin_rbac(identity: str = "curator", workspace: str = "acme") -> RbacRegistry:
-    rbac = RbacRegistry()
-    rbac.grant(identity, workspace, "admin")
-    return rbac
-
-
-def _curator_role_rbac(identity: str = "curator", workspace: str = "acme") -> RbacRegistry:
-    rbac = RbacRegistry()
-    rbac.grant(identity, workspace, "curator")
-    return rbac
-
-
 # ---------------------------------------------------------------------------
 # 1. Merge endpoint accepts entity IDs as winner/loser specifiers
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.anyio
-async def test_merge_endpoint_accepts_entity_ids_as_winner_loser():
-    rbac = _curator_role_rbac()
-    graph = EntityGraph()
-    mapping = SurrogateMapping()
-    winner = graph.add_entity("person", "acme", "Alice Real", surrogate="Alice Sur")
-    loser = graph.add_entity("person", "acme", "Bob Real", surrogate="Bob Sur")
-    mapping.seed("Alice Real", "Alice Sur")
-    mapping.seed("Bob Real", "Bob Sur")
+async def test_merge_endpoint_accepts_entity_ids_as_winner_loser(wired_app):
+    wired_app.rbac.grant("curator", "acme", "curator")
+    winner = wired_app.entity_graph.add_entity("person", "acme", "Alice Real", surrogate="Alice Sur")
+    loser = wired_app.entity_graph.add_entity("person", "acme", "Bob Real", surrogate="Bob Sur")
+    wired_app.mapping.seed("Alice Real", "Alice Sur")
+    wired_app.mapping.seed("Bob Real", "Bob Sur")
 
-    app.dependency_overrides[get_rbac] = lambda: rbac
-    app.dependency_overrides[get_entity_graph] = lambda: graph
-    app.dependency_overrides[get_mapping] = lambda: mapping
-    app.dependency_overrides[get_audit_log] = lambda: AuditLog()
-    try:
-        async with _make_client() as client:
-            resp = await client.post(
-                "/v1/management/entities/merge",
-                json={
-                    "workspace": "acme",
-                    "winner": {"entity_id": winner.entity_id},
-                    "loser": {"entity_id": loser.entity_id},
-                },
-                headers={"x-blindfold-identity": "curator"},
-            )
-    finally:
-        app.dependency_overrides.clear()
+    async with _make_client() as client:
+        resp = await client.post(
+            "/v1/management/entities/merge",
+            json={
+                "workspace": "acme",
+                "winner": {"entity_id": winner.entity_id},
+                "loser": {"entity_id": loser.entity_id},
+            },
+            headers={"x-blindfold-identity": "curator"},
+        )
 
     assert resp.status_code == 200
     body = resp.json()
@@ -93,32 +77,23 @@ async def test_merge_endpoint_accepts_entity_ids_as_winner_loser():
 
 
 @pytest.mark.anyio
-async def test_merge_by_entity_id_cross_kind_rejected():
-    rbac = _curator_role_rbac()
-    graph = EntityGraph()
-    mapping = SurrogateMapping()
-    person = graph.add_entity("person", "acme", "Alice Real", surrogate="Alice Sur")
-    term = graph.add_entity("term", "acme", "Project X", surrogate="Project Y")
-    mapping.seed("Alice Real", "Alice Sur")
-    mapping.seed("Project X", "Project Y")
+async def test_merge_by_entity_id_cross_kind_rejected(wired_app):
+    wired_app.rbac.grant("curator", "acme", "curator")
+    person = wired_app.entity_graph.add_entity("person", "acme", "Alice Real", surrogate="Alice Sur")
+    term = wired_app.entity_graph.add_entity("term", "acme", "Project X", surrogate="Project Y")
+    wired_app.mapping.seed("Alice Real", "Alice Sur")
+    wired_app.mapping.seed("Project X", "Project Y")
 
-    app.dependency_overrides[get_rbac] = lambda: rbac
-    app.dependency_overrides[get_entity_graph] = lambda: graph
-    app.dependency_overrides[get_mapping] = lambda: mapping
-    app.dependency_overrides[get_audit_log] = lambda: AuditLog()
-    try:
-        async with _make_client() as client:
-            resp = await client.post(
-                "/v1/management/entities/merge",
-                json={
-                    "workspace": "acme",
-                    "winner": {"entity_id": person.entity_id},
-                    "loser": {"entity_id": term.entity_id},
-                },
-                headers={"x-blindfold-identity": "curator"},
-            )
-    finally:
-        app.dependency_overrides.clear()
+    async with _make_client() as client:
+        resp = await client.post(
+            "/v1/management/entities/merge",
+            json={
+                "workspace": "acme",
+                "winner": {"entity_id": person.entity_id},
+                "loser": {"entity_id": term.entity_id},
+            },
+            headers={"x-blindfold-identity": "curator"},
+        )
 
     assert resp.status_code == 422
 
@@ -129,29 +104,20 @@ async def test_merge_by_entity_id_cross_kind_rejected():
 
 
 @pytest.mark.anyio
-async def test_merge_by_entity_id_unknown_entity_returns_404():
-    rbac = _curator_role_rbac()
-    graph = EntityGraph()
-    mapping = SurrogateMapping()
-    winner = graph.add_entity("person", "acme", "Alice Real", surrogate="Alice Sur")
+async def test_merge_by_entity_id_unknown_entity_returns_404(wired_app):
+    wired_app.rbac.grant("curator", "acme", "curator")
+    winner = wired_app.entity_graph.add_entity("person", "acme", "Alice Real", surrogate="Alice Sur")
 
-    app.dependency_overrides[get_rbac] = lambda: rbac
-    app.dependency_overrides[get_entity_graph] = lambda: graph
-    app.dependency_overrides[get_mapping] = lambda: mapping
-    app.dependency_overrides[get_audit_log] = lambda: AuditLog()
-    try:
-        async with _make_client() as client:
-            resp = await client.post(
-                "/v1/management/entities/merge",
-                json={
-                    "workspace": "acme",
-                    "winner": {"entity_id": winner.entity_id},
-                    "loser": {"entity_id": "nonexistent-id"},
-                },
-                headers={"x-blindfold-identity": "curator"},
-            )
-    finally:
-        app.dependency_overrides.clear()
+    async with _make_client() as client:
+        resp = await client.post(
+            "/v1/management/entities/merge",
+            json={
+                "workspace": "acme",
+                "winner": {"entity_id": winner.entity_id},
+                "loser": {"entity_id": "nonexistent-id"},
+            },
+            headers={"x-blindfold-identity": "curator"},
+        )
 
     assert resp.status_code == 404
 
@@ -162,59 +128,41 @@ async def test_merge_by_entity_id_unknown_entity_returns_404():
 
 
 @pytest.mark.anyio
-async def test_merge_by_entity_id_denied_without_curator_role():
-    rbac = RbacRegistry()
-    rbac.grant("curator", "acme", "viewer")
-    graph = EntityGraph()
-    winner = graph.add_entity("person", "acme", "Alice Real", surrogate="Alice Sur")
-    loser = graph.add_entity("person", "acme", "Bob Real", surrogate="Bob Sur")
+async def test_merge_by_entity_id_denied_without_curator_role(wired_app):
+    wired_app.rbac.grant("curator", "acme", "viewer")
+    winner = wired_app.entity_graph.add_entity("person", "acme", "Alice Real", surrogate="Alice Sur")
+    loser = wired_app.entity_graph.add_entity("person", "acme", "Bob Real", surrogate="Bob Sur")
 
-    app.dependency_overrides[get_rbac] = lambda: rbac
-    app.dependency_overrides[get_entity_graph] = lambda: graph
-    app.dependency_overrides[get_mapping] = lambda: SurrogateMapping()
-    app.dependency_overrides[get_audit_log] = lambda: AuditLog()
-    try:
-        async with _make_client() as client:
-            resp = await client.post(
-                "/v1/management/entities/merge",
-                json={
-                    "workspace": "acme",
-                    "winner": {"entity_id": winner.entity_id},
-                    "loser": {"entity_id": loser.entity_id},
-                },
-                headers={"x-blindfold-identity": "curator"},
-            )
-    finally:
-        app.dependency_overrides.clear()
+    async with _make_client() as client:
+        resp = await client.post(
+            "/v1/management/entities/merge",
+            json={
+                "workspace": "acme",
+                "winner": {"entity_id": winner.entity_id},
+                "loser": {"entity_id": loser.entity_id},
+            },
+            headers={"x-blindfold-identity": "curator"},
+        )
 
     assert resp.status_code == 403
 
 
 @pytest.mark.anyio
-async def test_merge_by_entity_id_admin_without_curator_is_denied():
-    rbac = RbacRegistry()
-    rbac.grant("curator", "acme", "admin")  # admin, not curator -- roles are flat (ADR-0028)
-    graph = EntityGraph()
-    winner = graph.add_entity("person", "acme", "Alice Real", surrogate="Alice Sur")
-    loser = graph.add_entity("person", "acme", "Bob Real", surrogate="Bob Sur")
+async def test_merge_by_entity_id_admin_without_curator_is_denied(wired_app):
+    wired_app.rbac.grant("curator", "acme", "admin")  # admin, not curator -- roles are flat (ADR-0028)
+    winner = wired_app.entity_graph.add_entity("person", "acme", "Alice Real", surrogate="Alice Sur")
+    loser = wired_app.entity_graph.add_entity("person", "acme", "Bob Real", surrogate="Bob Sur")
 
-    app.dependency_overrides[get_rbac] = lambda: rbac
-    app.dependency_overrides[get_entity_graph] = lambda: graph
-    app.dependency_overrides[get_mapping] = lambda: SurrogateMapping()
-    app.dependency_overrides[get_audit_log] = lambda: AuditLog()
-    try:
-        async with _make_client() as client:
-            resp = await client.post(
-                "/v1/management/entities/merge",
-                json={
-                    "workspace": "acme",
-                    "winner": {"entity_id": winner.entity_id},
-                    "loser": {"entity_id": loser.entity_id},
-                },
-                headers={"x-blindfold-identity": "curator"},
-            )
-    finally:
-        app.dependency_overrides.clear()
+    async with _make_client() as client:
+        resp = await client.post(
+            "/v1/management/entities/merge",
+            json={
+                "workspace": "acme",
+                "winner": {"entity_id": winner.entity_id},
+                "loser": {"entity_id": loser.entity_id},
+            },
+            headers={"x-blindfold-identity": "curator"},
+        )
 
     assert resp.status_code == 403
 
@@ -231,32 +179,23 @@ async def test_merge_by_entity_id_admin_without_curator_is_denied():
 
 
 @pytest.mark.anyio
-async def test_merge_by_entity_id_response_omits_real_names():
-    rbac = _curator_role_rbac()
-    graph = EntityGraph()
-    mapping = SurrogateMapping()
-    winner = graph.add_entity("person", "acme", "Alice Real", surrogate="Alice Sur")
-    loser = graph.add_entity("person", "acme", "Bob Real", surrogate="Bob Sur")
-    mapping.seed("Alice Real", "Alice Sur")
-    mapping.seed("Bob Real", "Bob Sur")
+async def test_merge_by_entity_id_response_omits_real_names(wired_app):
+    wired_app.rbac.grant("curator", "acme", "curator")
+    winner = wired_app.entity_graph.add_entity("person", "acme", "Alice Real", surrogate="Alice Sur")
+    loser = wired_app.entity_graph.add_entity("person", "acme", "Bob Real", surrogate="Bob Sur")
+    wired_app.mapping.seed("Alice Real", "Alice Sur")
+    wired_app.mapping.seed("Bob Real", "Bob Sur")
 
-    app.dependency_overrides[get_rbac] = lambda: rbac
-    app.dependency_overrides[get_entity_graph] = lambda: graph
-    app.dependency_overrides[get_mapping] = lambda: mapping
-    app.dependency_overrides[get_audit_log] = lambda: AuditLog()
-    try:
-        async with _make_client() as client:
-            resp = await client.post(
-                "/v1/management/entities/merge",
-                json={
-                    "workspace": "acme",
-                    "winner": {"entity_id": winner.entity_id},
-                    "loser": {"entity_id": loser.entity_id},
-                },
-                headers={"x-blindfold-identity": "curator"},
-            )
-    finally:
-        app.dependency_overrides.clear()
+    async with _make_client() as client:
+        resp = await client.post(
+            "/v1/management/entities/merge",
+            json={
+                "workspace": "acme",
+                "winner": {"entity_id": winner.entity_id},
+                "loser": {"entity_id": loser.entity_id},
+            },
+            headers={"x-blindfold-identity": "curator"},
+        )
 
     assert resp.status_code == 200
     body = resp.json()
@@ -283,26 +222,17 @@ async def test_merge_by_entity_id_response_omits_real_names():
 
 
 @pytest.mark.anyio
-async def test_edit_surrogate_response_omits_real_names():
-    rbac = _admin_rbac()
-    graph = EntityGraph()
-    mapping = SurrogateMapping()
-    entity = graph.add_entity("person", "acme", "Alice Real", surrogate="Alice Sur")
-    mapping.seed("Alice Real", "Alice Sur")
+async def test_edit_surrogate_response_omits_real_names(wired_app):
+    wired_app.rbac.grant("curator", "acme", "admin")
+    entity = wired_app.entity_graph.add_entity("person", "acme", "Alice Real", surrogate="Alice Sur")
+    wired_app.mapping.seed("Alice Real", "Alice Sur")
 
-    app.dependency_overrides[get_rbac] = lambda: rbac
-    app.dependency_overrides[get_entity_graph] = lambda: graph
-    app.dependency_overrides[get_mapping] = lambda: mapping
-    app.dependency_overrides[get_audit_log] = lambda: AuditLog()
-    try:
-        async with _make_client() as client:
-            resp = await client.patch(
-                f"/v1/management/entities/{entity.entity_id}/surrogate",
-                json={"workspace": "acme", "new_surrogate": "Alice-New"},
-                headers={"x-blindfold-identity": "curator"},
-            )
-    finally:
-        app.dependency_overrides.clear()
+    async with _make_client() as client:
+        resp = await client.patch(
+            f"/v1/management/entities/{entity.entity_id}/surrogate",
+            json={"workspace": "acme", "new_surrogate": "Alice-New"},
+            headers={"x-blindfold-identity": "curator"},
+        )
 
     assert resp.status_code == 200
     body = resp.json()
@@ -324,14 +254,12 @@ async def test_edit_surrogate_response_omits_real_names():
 
 
 @pytest.mark.anyio
-async def test_edit_surrogate_dependents_omit_real_names():
-    rbac = _admin_rbac()
-    graph = EntityGraph()
-    mapping = SurrogateMapping()
+async def test_edit_surrogate_dependents_omit_real_names(wired_app):
+    wired_app.rbac.grant("curator", "acme", "admin")
     # Org (target of the edit) and a person dependent whose relationship targets it.
-    org = graph.add_entity("term", "acme", "Acme Corp Real", surrogate="Org Sur")
-    person = graph.add_entity("person", "acme", "Alice Real", surrogate="Alice Sur")
-    graph.add_relationship(
+    org = wired_app.entity_graph.add_entity("term", "acme", "Acme Corp Real", surrogate="Org Sur")
+    person = wired_app.entity_graph.add_entity("person", "acme", "Alice Real", surrogate="Alice Sur")
+    wired_app.entity_graph.add_relationship(
         workspace="acme",
         source_id=person.entity_id,
         source_kind="person",
@@ -339,22 +267,15 @@ async def test_edit_surrogate_dependents_omit_real_names():
         target_id=org.entity_id,
         target_kind="term",
     )
-    mapping.seed("Acme Corp Real", "Org Sur")
-    mapping.seed("Alice Real", "Alice Sur")
+    wired_app.mapping.seed("Acme Corp Real", "Org Sur")
+    wired_app.mapping.seed("Alice Real", "Alice Sur")
 
-    app.dependency_overrides[get_rbac] = lambda: rbac
-    app.dependency_overrides[get_entity_graph] = lambda: graph
-    app.dependency_overrides[get_mapping] = lambda: mapping
-    app.dependency_overrides[get_audit_log] = lambda: AuditLog()
-    try:
-        async with _make_client() as client:
-            resp = await client.patch(
-                f"/v1/management/entities/{org.entity_id}/surrogate",
-                json={"workspace": "acme", "new_surrogate": "Org-New"},
-                headers={"x-blindfold-identity": "curator"},
-            )
-    finally:
-        app.dependency_overrides.clear()
+    async with _make_client() as client:
+        resp = await client.patch(
+            f"/v1/management/entities/{org.entity_id}/surrogate",
+            json={"workspace": "acme", "new_surrogate": "Org-New"},
+            headers={"x-blindfold-identity": "curator"},
+        )
 
     assert resp.status_code == 200
     body = resp.json()

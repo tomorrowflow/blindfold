@@ -1,6 +1,8 @@
 import os
 import sys
+from dataclasses import dataclass, field
 
+import httpx
 import pytest
 
 # Pin the whole suite to the explicit in-memory sentinel by default (ADR-0043 §1,
@@ -43,3 +45,121 @@ def block_import(monkeypatch):
         monkeypatch.setitem(sys.modules, name, None)
 
     return _block
+
+
+def _docker_available() -> bool:
+    """Single source for the Docker-gate check (issue #318) -- was copy-pasted
+    verbatim into 9 ``tests/test_postgres_*.py`` / ``test_entity_graph_postgres.py`` /
+    ``test_transit_ciphertext_columns.py`` / ``test_bootstrap_wiring.py`` files.
+    Those files now do ``from conftest import _docker_available``.
+    """
+    try:
+        import docker
+
+        docker.from_env().ping()
+        return True
+    except Exception:
+        return False
+
+
+@pytest.fixture(autouse=True)
+def _dependency_overrides_snapshot():
+    """Snapshot ``app.dependency_overrides`` before each test and restore it after,
+    regardless of what the test did to it (issue #318).
+
+    Before this fixture, every test that set an override had to pair it with a
+    ``try: ... finally: app.dependency_overrides.clear()`` -- ~290 of them across the
+    suite -- because ``dependency_overrides`` is a single dict on the process-wide
+    ``app`` singleton, shared by every test. A test no longer needs its own
+    ``.clear()`` call: whatever it adds, changes, or removes is undone here at
+    teardown, restoring exactly the overrides that were in place when the test
+    started (usually none). This is what makes a shared autouse fixture like
+    ``wired_app`` below safe to add incrementally, file by file, without a
+    stray blanket ``.clear()`` elsewhere wiping it mid-test.
+    """
+    from blindfold.app import app
+
+    original = dict(app.dependency_overrides)
+    yield
+    app.dependency_overrides.clear()
+    app.dependency_overrides.update(original)
+
+
+@dataclass
+class WiredApp:
+    """The standard stub graph a ``wired_app``-consuming test gets for free.
+
+    Fresh, in-memory instances of the five seams the leak-audit discipline names
+    (RBAC, upstream client, mapping, entity graph, audit log) -- isolated from every
+    other test and from the process-wide real singletons. ``upstream_requests``
+    records every request the stub upstream received, so a test can assert on
+    what actually crossed egress (the leak-audit property) without hand-rolling its
+    own recording ``httpx.MockTransport`` handler. A test needing a different stub
+    for one of these five, or an additional override (``get_l3_detector``,
+    ``get_review_inbox``, ...), sets ``app.dependency_overrides[...]`` itself --
+    the snapshot/restore fixture above cleans it up regardless.
+    """
+
+    rbac: "RbacRegistry"
+    upstream_client: "UpstreamClient"
+    mapping: "SurrogateMapping"
+    entity_graph: "EntityGraph"
+    audit_log: "AuditLog"
+    upstream_requests: list = field(default_factory=list)
+
+
+@pytest.fixture
+def wired_app() -> WiredApp:
+    """Wire ``blindfold.app.app`` with the standard stub graph (issue #318).
+
+    Overrides ``get_rbac`` / ``get_upstream_client`` / ``get_mapping`` /
+    ``get_entity_graph`` / ``get_audit_log`` with fresh stub instances, returned as a
+    :class:`WiredApp` so a test can reach into them (grant a role, seed a mapping
+    pair, inspect ``upstream_requests``) without re-importing the getters itself.
+    Restoration is handled by the autouse ``_dependency_overrides_snapshot`` fixture
+    above, not by this fixture -- no ``.clear()`` call needed here or in the test.
+    """
+    from blindfold.app import (
+        app,
+        get_audit_log,
+        get_entity_graph,
+        get_mapping,
+        get_rbac,
+        get_upstream_client,
+    )
+    from blindfold.entity_graph import EntityGraph
+    from blindfold.policy import AuditLog
+    from blindfold.rbac import RbacRegistry
+    from blindfold.surrogates import SurrogateMapping
+    from blindfold.upstream import UpstreamClient
+
+    upstream_requests: list[httpx.Request] = []
+
+    def _stub_upstream_handler(request: httpx.Request) -> httpx.Response:
+        upstream_requests.append(request)
+        return httpx.Response(200, json={"content": [{"type": "text", "text": "ok"}]})
+
+    upstream_client = UpstreamClient(
+        base_url="http://upstream.test",
+        client=httpx.AsyncClient(
+            base_url="http://upstream.test",
+            transport=httpx.MockTransport(_stub_upstream_handler),
+        ),
+    )
+
+    stubs = WiredApp(
+        rbac=RbacRegistry(),
+        upstream_client=upstream_client,
+        mapping=SurrogateMapping(),
+        entity_graph=EntityGraph(),
+        audit_log=AuditLog(),
+        upstream_requests=upstream_requests,
+    )
+
+    app.dependency_overrides[get_rbac] = lambda: stubs.rbac
+    app.dependency_overrides[get_upstream_client] = lambda: stubs.upstream_client
+    app.dependency_overrides[get_mapping] = lambda: stubs.mapping
+    app.dependency_overrides[get_entity_graph] = lambda: stubs.entity_graph
+    app.dependency_overrides[get_audit_log] = lambda: stubs.audit_log
+
+    return stubs

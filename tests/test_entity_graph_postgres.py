@@ -24,15 +24,7 @@ import json
 import httpx
 import pytest
 
-
-def _docker_available() -> bool:
-    try:
-        import docker
-
-        docker.from_env().ping()
-        return True
-    except Exception:
-        return False
+from conftest import _docker_available
 
 
 pytestmark = [

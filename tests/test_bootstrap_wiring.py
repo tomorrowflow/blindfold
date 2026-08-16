@@ -33,16 +33,7 @@ from blindfold.policy import DEFAULT_WORKSPACE
 from blindfold.rbac import RbacRegistry
 from blindfold.store import vendored_seed_repository
 from blindfold.transit import TransitClient
-
-
-def _docker_available() -> bool:
-    try:
-        import docker
-
-        docker.from_env().ping()
-        return True
-    except Exception:
-        return False
+from conftest import _docker_available
 
 
 def _make_client() -> httpx.AsyncClient:
