@@ -138,10 +138,9 @@ def entity_variations(real: str, entity_type: str | None) -> frozenset[str]:
     **provisional** review-inbox entity had none -- ``_referent_key`` above only
     used the legal-form-stripped form as a dedupe key, never exposing it to
     anything else. This is the one helper that derives it, so the blinder
-    (``engine._blindfold_text``, full-coverage blinding at mint time),
-    ``engine.leak_gate`` (the backstop), and #293's mint-time coverage check
-    (``engine._real_value_occurs_outside_ranges``) all agree on what "this
-    referent's surface forms" means and cannot silently drift apart again.
+    (``engine._blindfold_text``, full-coverage blinding at mint time, issue #295)
+    and ``engine.leak_gate`` (the backstop) agree on what "this referent's
+    surface forms" means and cannot silently drift apart again.
 
     Always includes ``real`` itself. For an ``"organization"`` candidate whose
     ``real`` carries a trailing legal-form suffix, also includes the

@@ -695,32 +695,33 @@ def _blindfold_text(
                 extent.entity_type for extent in group
             )
             group_infos.append((start, end, real, context, context_offset, entity_type))
-        # Issue #293: refuse to mint a candidate whose real value the blinder is
-        # about to leave standing, un-blinded, elsewhere in this same hop -- minting
-        # it guarantees leak_gate deadlocks on the very next payload that carries
-        # this hop's text back around (the confirmed occurrence gets a surrogate,
-        # the untouched one keeps the plaintext word live forever). Scoped per
-        # distinct real value across every confirmed group this pass, since the
-        # same real can be independently confirmed at more than one position in
-        # one hop (a repeated entity, fully covered, must still mint normally).
+        # Issue #293 minted a confirmed candidate unconditionally; issue #295 found
+        # that #293's own follow-up (refuse the mint outright whenever the real
+        # value's word-boundary occurrences in this hop weren't fully covered by
+        # confirmed spans) discarded the L3 confirmation itself -- for a *true*
+        # positive (the same real confirmed at one occurrence, not confirmed at
+        # another -- real hardware disagreeing with itself across contexts, not a
+        # hypothetical), that left the CONFIRMED occurrence in plaintext too,
+        # trading a loud fail-closed 503 for a silent leak. The fix (ADR-0050
+        # amendment): never refuse a confirmed candidate's mint. Mint it, then blind
+        # every word-boundary occurrence of its real value anywhere in this hop --
+        # not just the span(s) L3 happened to confirm -- so the confirmation's own
+        # verdict about the referent, not the character range, is what decides
+        # coverage. This is deliberately narrower than #293's rejected Option 1
+        # (blind every occurrence of every *known* real across every hop): it only
+        # ever widens coverage for a value L3 just confirmed as an entity in *this*
+        # hop's own pass.
         #
-        # An occurrence inside ``injected_surrogate_ranges`` is pre-covered too:
-        # that's a coincidental substring of an unrelated live surrogate (issue
-        # #68/#292's own territory -- e.g. novel real "Kurt" sharing a word with
-        # surrogate "Kurt Steinmetz"), not this hop's own un-blinded prose. That
-        # collision stays fail-closed via leak_gate's existing word-boundary check,
-        # unchanged and out of scope here -- conflating it with this coverage
-        # check would refuse minting a genuinely novel, unrelated real.
-        covered_by_real: dict[str, list[tuple[int, int]]] = {}
-        for start, end, real, *_rest in group_infos:
-            covered_by_real.setdefault(real, list(injected_surrogate_ranges)).append(
-                (start, end)
-            )
+        # An occurrence inside ``injected_surrogate_ranges`` is still pre-covered,
+        # not swept: that's a coincidental substring of an unrelated live surrogate
+        # (issue #68/#292's own territory -- e.g. novel real "Kurt" sharing a word
+        # with surrogate "Kurt Steinmetz"), not this hop's own un-blinded prose.
+        # That collision stays fail-closed via leak_gate's existing word-boundary
+        # check, unchanged and out of scope here -- conflating it with this sweep
+        # would rewrite a surrogate's own text for an unrelated referent.
         minted_ranges_by_item: dict[str, list[tuple[int, int]]] = {}
         minted_items_by_id: dict[str, ReviewItem] = {}
         for start, end, real, context, context_offset, entity_type in group_infos:
-            if _real_value_occurs_outside_ranges(real, result, covered_by_real[real]):
-                continue
             # ADR-0037 hardening: also exclude provisional surrogates already
             # active in the inbox from mint candidacy, not just known real
             # values -- defense-in-depth so a stale/reset pool cursor (e.g. a
@@ -751,27 +752,27 @@ def _blindfold_text(
         # offered) the bare "Kestrel Dynamics" elsewhere in this same hop, so
         # relying on a confirmed candidate for every variation left the bare form
         # standing in plaintext. Once a referent is minted, blind every occurrence
-        # of every OTHER variation unconditionally -- the detector's verdict is
-        # about the referent, not the character range. Reuses #293's own
-        # word-boundary pattern (_real_value_pattern) so this scan and the
-        # mint-time coverage check above cannot silently drift out of agreement on
-        # what "occurs" means. Deliberately scoped to the closed, derived variation
-        # set (not a blanket widen of every known real, #293's rejected Option 1):
-        # an ordinary word colliding with `real` itself stays governed by the
-        # coverage-refusal check above, unchanged.
+        # of every variation unconditionally -- the detector's verdict is about the
+        # referent, not the character range. Reuses #293's own word-boundary
+        # pattern (_real_value_pattern) so this scan and the mint decision above
+        # cannot silently drift out of agreement on what "occurs" means.
+        # Deliberately scoped to the closed, derived variation set (not a blanket
+        # widen of every known real, #293's rejected Option 1).
         #
-        # A variation is, by construction, a strict prefix of a longer confirmed
-        # occurrence's own literal text (the legal-form suffix stripped off the
-        # end) -- so a match starting at the same position as an already-confirmed
-        # span for THIS SAME referent is that span itself, not a second occurrence
-        # ("Kestrel Dynamics" is a whole-word prefix of "Kestrel Dynamics GmbH").
-        # Skip any match fully contained in a range already confirmed (or already
-        # injected) for this referent to avoid re-slicing inside it.
+        # Issue #295: this loop now also sweeps ``item.real`` itself (``variations``
+        # always includes it, ``review.entity_variations``) -- not just its OTHER
+        # surface forms -- so a confirmed candidate's own real value is blinded at
+        # every occurrence in this hop, not only the span(s) L3 happened to confirm.
+        # A variation/real match is, by construction, either the confirmed
+        # occurrence's own literal text or a strict prefix of it (the legal-form
+        # suffix stripped off the end) -- so a match starting at the same position
+        # as an already-confirmed span for THIS SAME referent is that span itself,
+        # not a second occurrence. Skip any match fully contained in a range
+        # already confirmed (or already injected) for this referent to avoid
+        # re-slicing inside it.
         for item_id, item in minted_items_by_id.items():
             already_covered = minted_ranges_by_item[item_id] + list(injected_surrogate_ranges)
             for variation in item.variations:
-                if variation == item.real:
-                    continue
                 for match in _real_value_pattern(variation).finditer(result):
                     m_start, m_end = match.start(), match.end()
                     if any(s <= m_start and m_end <= e for s, e in already_covered):
@@ -1026,25 +1027,10 @@ def _real_value_pattern(value: str) -> re.Pattern[str]:
     right back inside ``"Prompts"``/``"PromptCache"`` -- exactly the over-match this
     issue reports, just moved from a bare substring test to a suffixed one. A real
     value's own bare word-boundary occurrence is all :func:`leak_gate` and the
-    mint-time coverage check (:func:`_real_value_occurs_outside_ranges`) need to catch.
+    mint-time full-coverage sweep (:func:`_blindfold_text`'s variation-blinding loop,
+    issue #295) need to catch.
     """
     return re.compile(rf"(?<!\w){re.escape(value)}(?!\w)")
-
-
-def _real_value_occurs_outside_ranges(
-    real: str, text: str, covered: list[tuple[int, int]]
-) -> bool:
-    """True if some word-boundary occurrence of ``real`` in ``text`` falls outside
-    every range in ``covered`` (issue #293) -- i.e. minting a provisional entity for
-    ``real`` would leave at least one occurrence of it standing, un-blinded, elsewhere
-    in this same hop. That is exactly what deadlocks the very next :func:`leak_gate`
-    check on this same text: the confirmed occurrence gets a surrogate, the untouched
-    one keeps the plaintext substring live in the outbound payload forever.
-    """
-    for match in _real_value_pattern(real).finditer(text):
-        if not any(start <= match.start() and match.end() <= end for start, end in covered):
-            return True
-    return False
 
 
 def _apply_restore_pass(text: str, restore_map: dict[str, str]) -> str:

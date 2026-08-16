@@ -10,11 +10,12 @@ One helper (``review.entity_variations``) derives the variation set (starting wi
 three surfaces that need to agree on "this referent's surface forms":
 
 - the blinder (``engine._blindfold_text``): blinds every occurrence of every variation
-  once the referent is minted, not only the confirmed span;
-- ``leak_gate``: the backstop -- fails closed on a variation even if the blinder missed it;
-- the mint-time coverage check (#293, ``engine._real_value_occurs_outside_ranges``): reuses
-  the same word-boundary pattern (``engine._real_value_pattern``) the blinder's variation
-  scan does, so the two cannot silently drift out of agreement on what "occurs" means.
+  (including ``real`` itself, issue #295) once the referent is minted, not only the
+  confirmed span;
+- ``leak_gate``: the backstop -- fails closed on a variation even if the blinder missed it.
+
+Both consume the same word-boundary pattern (``engine._real_value_pattern``), so the two
+cannot silently drift out of agreement on what "occurs" means.
 
 Leak-audit clauses:
 - A: the stub upstream (here, the blindfolded payload itself) never receives any surface

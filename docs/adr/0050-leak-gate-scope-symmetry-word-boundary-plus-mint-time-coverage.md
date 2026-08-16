@@ -1,6 +1,6 @@
 # ADR-0050: Leak-gate scope symmetry — word-boundary matching + mint-time coverage refusal
 
-**Status:** Accepted
+**Status:** Accepted (Option 3 amended 2026-08-16 by issue #295 — see "Amendment" below)
 **Date:** 2026-08-16
 
 ## Context
@@ -128,3 +128,62 @@ the class of mint that would have required it.
 - **leak_gate's known-real-value checks (`mapping.real_values()`, `inbox.list()`) are
   otherwise unchanged** — same two sets, same scrubbing discipline, only the match rule and
   the inbox-branch reason format moved.
+
+## Amendment (issue #295): Option 3's refusal traded fail-closed for fail-open on a true positive
+
+**Status: this amendment supersedes the "Option 3" section above.** The original text
+asserted the refusal-to-mint trade was free — "refusing to mint loses nothing a partial mint
+would have protected." That assertion is wrong for a true positive, and it was the
+trusted-maintainer's own note (which this ADR was built from) that had made the same wrong
+assertion in the first place.
+
+The failure the original text missed: the refusal fires on *coverage*, not on *correctness*.
+It cannot distinguish "the candidate is a false positive that recurs as ordinary vocabulary"
+(the `Prompt`/`Store directory` case this ADR was written for) from "the candidate is a
+genuine entity and the adjudicator simply didn't confirm every one of its occurrences" (real
+hardware disagreeing with itself across contexts — the exact shape `test_mint_time_coverage_
+refusal.py`'s own stub adjudicator was built to reproduce, per this ADR's own text above).
+For the first case, refusing to mint costs nothing: the word was always going to reach the
+provider in the clear at the uncovered occurrence regardless. For the second, refusing to
+mint discards L3's own confirmation and lets the **confirmed** occurrence's plaintext reach
+the provider too — a value the pipeline had just identified as sensitive, sent anyway.
+Measured against the immediately preceding build on identical input, that is new plaintext
+reaching egress: leak-audit clause A is a claim about what crosses egress, not about which
+internal set a value belongs to.
+
+**Revised decision: never refuse a confirmed candidate's mint.** Mint it, then blind every
+word-boundary occurrence of its real value (via `entity_variations`'s `variations` set,
+issue #296, which always includes `real` itself) anywhere in this hop — not only the span(s)
+L3 happened to confirm. The confirmation is a verdict about the *referent*, not about the one
+character range that triggered it, so once L3 says "this is an entity," every literal
+occurrence of its text in this hop is treated as that same entity and blinded with it.
+
+This is **not** a reinstatement of the ADR's own rejected Option 1 (blind every occurrence of
+every *known* real value, across every hop, unconditionally). It is scoped strictly narrower:
+only a value L3 *just confirmed* in *this hop's own pass* gets swept, and only within that
+hop. A false-positive common word that L3 never confirms in a given hop is completely
+unaffected — Option 1's rejected failure mode (silently mangling ordinary prose/source tokens
+project-wide) does not apply here, because nothing is rewritten unless L3 itself confirmed an
+occurrence of it first.
+
+**The honest residual, stated plainly:** a false positive that L3 *does* confirm even once
+(the `Prompt` scenario) is now blinded at every one of its whole-word occurrences in that hop,
+not just left standing. This over-redacts more than the original Option 3 did for that specific
+case — trading some additional, otherwise-avoidable over-redaction of ordinary vocabulary for
+closing the true-positive leak. Per this project's own invariant (`CONTEXT.md`, "Key
+invariants"): over-redaction is a quality bug (privacy-safe, though not costless — a
+mismatched surrogate degrades the provider's answer); an un-blindfolded real entity is a
+privacy bug. Between the two, the leak-audit property (clause A) governs: a true positive
+must never reach the provider in the clear, even at the cost of a false positive occasionally
+being redacted more aggressively than before. The learning loop (review inbox → reject →
+allowlist) is the intended remedy for a recurring false positive, not a wider un-redacted
+window for it.
+
+**No refusal path remains for a confirmed candidate.** Because minting is unconditional now,
+there is nothing left to make "observable as a refusal" for this scenario — the acceptance
+criterion asking for an observable refusal is conditional on a refusal still existing
+("if a refusal must still be possible for a confirmed candidate"), and this amendment chooses
+the branch where it no longer is. `leak_gate` can, as before this whole ADR existed, still
+fail closed (503) on a *later*, separate hop where an already-inbox-known real recurs and L3
+declines to confirm it there — that is the pipeline's ordinary fail-closed behavior for a
+known real, unchanged by this issue, recoverable by a human reject (#294) same as ever.
