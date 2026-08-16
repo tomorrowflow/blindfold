@@ -21,6 +21,7 @@ the dismissal log / processing trace.
 from __future__ import annotations
 
 import re
+import threading
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
@@ -270,6 +271,11 @@ class ReviewInbox:
         self._pool_positions: dict[str, int] = {}
         self._store = store
         self._cipher = mapping_cipher or transit
+        # Issue #312: upsert() runs from the mint pass's `run_in_threadpool`
+        # worker -- real OS threads -- so the `_minted` counter and
+        # `_pool_positions` cursor need the same serialization the mapping's
+        # mint-time critical section gets (surrogates.SurrogateMapping._lock).
+        self._lock = threading.Lock()
 
     def _persistent(self) -> bool:
         return self._store is not None and self._cipher is not None
@@ -374,41 +380,42 @@ class ReviewInbox:
         EntityGraph to grow. Falls back to the default workspace slug for a
         caller with no workspace in context.
         """
-        referent_key = _referent_key(real, entity_type)
-        existing_id = self._by_real.get(referent_key)
-        if existing_id is not None:
-            return self._items[existing_id]
-        item_id = str(self._minted + 1)
-        self._minted += 1
-        pool_key = (
-            entity_type if entity_type in _PROVISIONAL_POOLS
-            else _DEFAULT_PROVISIONAL_POOL_KEY
-        )
-        start_position = self._pool_positions.get(pool_key, 0)
-        surrogate, next_position = _next_provisional(
-            pool_key,
-            start_position,
-            known_values,
-            corpus_text if corpus_text is not None else context,
-        )
-        self._pool_positions[pool_key] = next_position
-        if context_offset is None:
-            context_offset = max(0, context.find(real))
-        item = ReviewItem(
-            id=item_id,
-            real=real,
-            provisional_surrogate=surrogate,
-            context=context,
-            context_offset=context_offset,
-            entity_type=entity_type,
-            workspace=workspace,
-            variations=entity_variations(real, entity_type),
-        )
-        self._items[item_id] = item
-        self._by_real[referent_key] = item_id
-        if self._persistent():
-            self._persist_item(item, pool_key, next_position)
-        return item
+        with self._lock:
+            referent_key = _referent_key(real, entity_type)
+            existing_id = self._by_real.get(referent_key)
+            if existing_id is not None:
+                return self._items[existing_id]
+            item_id = str(self._minted + 1)
+            self._minted += 1
+            pool_key = (
+                entity_type if entity_type in _PROVISIONAL_POOLS
+                else _DEFAULT_PROVISIONAL_POOL_KEY
+            )
+            start_position = self._pool_positions.get(pool_key, 0)
+            surrogate, next_position = _next_provisional(
+                pool_key,
+                start_position,
+                known_values,
+                corpus_text if corpus_text is not None else context,
+            )
+            self._pool_positions[pool_key] = next_position
+            if context_offset is None:
+                context_offset = max(0, context.find(real))
+            item = ReviewItem(
+                id=item_id,
+                real=real,
+                provisional_surrogate=surrogate,
+                context=context,
+                context_offset=context_offset,
+                entity_type=entity_type,
+                workspace=workspace,
+                variations=entity_variations(real, entity_type),
+            )
+            self._items[item_id] = item
+            self._by_real[referent_key] = item_id
+            if self._persistent():
+                self._persist_item(item, pool_key, next_position)
+            return item
 
     def _persist_item(self, item: ReviewItem, pool_key: str, next_position: int) -> None:
         """Write ``item`` through the store seam as mapping-cipher ciphertext
@@ -442,12 +449,13 @@ class ReviewInbox:
         return self._items.get(item_id)
 
     def remove(self, item_id: str) -> ReviewItem | None:
-        item = self._items.pop(item_id, None)
-        if item is not None:
-            self._by_real.pop(_referent_key(item.real, item.entity_type), None)
-            if self._persistent():
-                self._store.remove_row(item_id)
-        return item
+        with self._lock:
+            item = self._items.pop(item_id, None)
+            if item is not None:
+                self._by_real.pop(_referent_key(item.real, item.entity_type), None)
+                if self._persistent():
+                    self._store.remove_row(item_id)
+            return item
 
     def purge_surrogate_collisions(self, mapping: "SurrogateMapping") -> list[ReviewItem]:
         """Repair path (issue #292) for a store already poisoned before the

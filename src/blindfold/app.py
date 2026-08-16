@@ -190,7 +190,7 @@ from .status import (
     compute_state,
 )
 from .store import VendoredSeedRepository, vendored_seed_repository
-from .surrogates import SurrogateMapping
+from .surrogates import MintPoolExhaustedError, SurrogateMapping
 from .ui import shell_router, ui_assets_app
 from .unprotected_mode import (
     CapabilityDisabledError,
@@ -962,6 +962,19 @@ _DEFAULT_REMEDY = (
     "are still protected; novelty discovery is the documented loss."
 )
 
+# Issue #312: the reserved-namespace PII pool for one kind (currently only
+# `phone`, NANPA's fictional `555-01XX` range -- exactly 100 slots) has no
+# disjoint surrogate left to issue. There is no headroom to extend a reserved
+# namespace without emitting a non-reserved (real-routable-risk) surrogate, so
+# this blocks rather than reuse an already-issued one or loop forever.
+_MINT_POOL_EXHAUSTED_REMEDY = (
+    "A reserved-namespace surrogate pool is exhausted for this workspace's "
+    "mapping, so the request is blocked rather than risk reissuing an "
+    "already-assigned surrogate to a second, different real value. Curate or "
+    "merge existing entities in the review inbox to free up disjoint "
+    "surrogates, or contact an administrator."
+)
+
 # ADR-0027 (issue #91): every current sub_reason routes a block to the management
 # app's Home/Status page -- the review inbox is never a block target (novel entities
 # are protected non-blocking by design, ADR-0010). Keyed by sub_reason (rather than a
@@ -971,6 +984,7 @@ _MANAGEMENT_URL_PATH_BY_SUB_REASON = {
     "l3_unavailable": "/ui/status",
     "leak_detected": "/ui/status",
     "unresolved_surrogate": "/ui/status",
+    "mint_pool_exhausted": "/ui/status",
 }
 _DEFAULT_MANAGEMENT_URL_PATH = "/ui/status"
 
@@ -1232,6 +1246,18 @@ async def _mint_or_block(
             sub_reason="l3_unavailable",
             block_history=block_history,
             remedy=_L3_UNAVAILABLE_REMEDY,
+        )
+    except MintPoolExhaustedError as exc:
+        return _blocked_response(
+            event="blocked-mint-pool-exhausted",
+            # `exc`'s own message names only the PII `kind` (never a real value,
+            # never the candidate surrogate) -- safe to surface verbatim.
+            reason=f"{exc}",
+            workspace=workspace,
+            audit_log=audit_log,
+            sub_reason="mint_pool_exhausted",
+            block_history=block_history,
+            remedy=_MINT_POOL_EXHAUSTED_REMEDY,
         )
     if policy_deterministic_only:
         audit_log.append(
