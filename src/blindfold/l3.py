@@ -9,8 +9,8 @@ size — which is what makes the proxy tractable on large code bodies.
 The adjudicator itself (Ollama) is a network-boundary seam: production wires a real
 local-LLM client; tests substitute a recording stub. This module owns candidate-span
 *selection* and *context-windowing*; the adjudicator owns the LLM call. A content
-cache, keyed on the individual candidate's own ``(text, context)``, prevents
-re-scanning unchanged chunks across agent turns.
+cache, keyed on the individual candidate's own ``(text, context, context_offset)``,
+prevents re-scanning unchanged chunks across agent turns.
 
 Issue #283 (ADR-0048 corollary 3): batched adjudication (N candidates in one prompt)
 is gone -- one candidate, one prompt, always. #260's measurement showed a batched
@@ -292,7 +292,7 @@ def _window_left(candidate: CandidateSpan) -> int:
 
 
 def _candidate_digest(candidate: CandidateSpan) -> str:
-    """Digest a single candidate's ``(text, context)`` pair into a cache key.
+    """Digest a candidate's ``(text, context, context_offset)`` into a cache key.
 
     Length-prefixing each field (rather than bare concatenation) rules out
     boundary-ambiguity collisions (``"ab"`` + ``"c"`` vs. ``"a"`` + ``"bc"``).
@@ -300,21 +300,33 @@ def _candidate_digest(candidate: CandidateSpan) -> str:
     holds real candidate text in its keys (ADR-0022) — an incidental hardening of
     the real-value-store note this class already carried, kept across issue
     #283's reversion to per-candidate keying.
+
+    ``context_offset`` (issue #311) is part of the key, not just ``(text,
+    context)``: whenever the ±40-char context window is clipped at both text
+    edges (a hop shorter than the window), two distinct occurrences of the same
+    token share a byte-identical context but sit at a different position within
+    it. Omitting that position from the digest collided the two occurrences into
+    one cache entry, and the second occurrence's authoritative span then replayed
+    re-anchored to the first occurrence's position — wrong for its own extent,
+    and caught (as it should be) by the #179 containment backstop, which raised a
+    spurious L3-unavailable 503 instead of the genuine cache miss this is.
     """
     digest = hashlib.sha256()
     digest.update(f"{len(candidate.text)}:".encode())
     digest.update(candidate.text.encode("utf-8"))
     digest.update(f"\x00{len(candidate.context)}:".encode())
     digest.update(candidate.context.encode("utf-8"))
+    digest.update(f"\x00{candidate.context_offset}:".encode())
     return digest.hexdigest()
 
 
 @dataclass
 class L3ContentCache:
     """Cache adjudications keyed by the individual candidate's own ``(text,
-    context)`` digest. Unchanged spans — same span, same surroundings — aren't
-    re-scanned across agent turns (ADR-0003); a candidate in identical context
-    produces an identical ``is_entity``/``entity_type`` verdict.
+    context, context_offset)`` digest. Unchanged spans — same span, same
+    surroundings, same position within that window — aren't re-scanned across
+    agent turns (ADR-0003); a candidate in identical context produces an
+    identical ``is_entity``/``entity_type`` verdict.
 
     Issue #283 (ADR-0048 corollary 3): this is a reversion of issue #261's move to
     per-*group* keying, which existed only to keep batch composition a pure

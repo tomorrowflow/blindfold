@@ -17,7 +17,7 @@ from dataclasses import dataclass
 import pytest
 
 from blindfold.detection import Entity
-from blindfold.engine import blindfold_payload
+from blindfold.engine import blindfold_payload, resolution_gate, restore_response
 from blindfold.l3 import (
     CandidateSpan,
     L3Adjudication,
@@ -29,6 +29,7 @@ from blindfold.l3 import (
     count_capitalized_tokens,
     select_candidate_spans,
 )
+from blindfold.review import ReviewInbox
 from blindfold.surrogates import SurrogateMapping
 
 # Mirrors the shape L3 candidate detection matches on (an initial-cap word) — used
@@ -731,6 +732,94 @@ def test_content_cache_reanchors_a_cached_span_to_each_occurrences_own_position(
     assert decision.span_start == kestrel_start_turn_two
     assert decision.span_end == kestrel_start_turn_two + (span_end - span_start)
     assert turn_two[decision.span_start : decision.span_end] == org_text
+
+
+def test_content_cache_key_distinguishes_two_occurrences_sharing_a_double_edge_clipped_context():
+    # Issue #311: the ±40-char context window is clipped at BOTH text edges
+    # whenever the whole hop is shorter than the window, so two occurrences of the
+    # same token end up with byte-identical (text, context) -- the pre-fix digest's
+    # only inputs -- but a different position *within* that shared window
+    # (context_offset). "Klaus met Klaus at noon." is short enough that both
+    # "Klaus" occurrences' contexts are the full text.
+    text = "Klaus met Klaus at noon."
+
+    candidates = [c for c in select_candidate_spans(text, known_entities=[]) if c.text == "Klaus"]
+    assert len(candidates) == 2
+    first, second = candidates
+    # The shape this test pins: identical content, different window position.
+    assert first.context == second.context
+    assert first.context_offset != second.context_offset
+
+    cache = L3ContentCache()
+    cache.put(
+        first,
+        L3Adjudication(
+            is_entity=True, entity_type="person", span_start=first.start, span_end=first.end
+        ),
+    )
+
+    # Pre-fix, this collided with `first`'s entry (same digest) and replayed a span
+    # re-anchored to `first`'s position -- wrong for `second`'s own occurrence. A
+    # cache keyed on window position too must treat this as a fresh candidate.
+    assert cache.get(second) is None
+
+
+class _EchoSpanAdjudicator:
+    """Confirms every candidate as a person, echoing back its own exact span --
+    models a real per-call adjudicator (e.g. GLiNER) that always reports the
+    correct authoritative extent for whichever occurrence it's actually asked
+    about, so a stale cache re-anchoring is the only way this could go wrong.
+    """
+
+    def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
+        return L3Adjudication(
+            is_entity=True,
+            entity_type="person",
+            span_start=candidate.start,
+            span_end=candidate.end,
+        )
+
+
+def test_repeated_candidate_in_a_double_edge_clipped_short_hop_round_trips_clean():
+    # Issue #311 acceptance criterion: a short hop containing the same Title-Case
+    # candidate token twice must round-trip without L3-unavailable, with both
+    # occurrences adjudicated (and minted) correctly. Pre-fix, the second "Klaus"
+    # collided with the first's content-cache entry (see the digest test above),
+    # replayed the first occurrence's span, and tripped engine.py's #179
+    # containment backstop -- a spurious fail-closed 503 for ordinary short-hop
+    # traffic, undiagnosable from the logs as anything but an adjudicator outage.
+    text = "Klaus met Klaus at noon."
+    detector = L3Detector(_EchoSpanAdjudicator())
+    mapping = SurrogateMapping.from_pairs([])
+    inbox = ReviewInbox()
+    payload = {"model": "m", "messages": [{"role": "user", "content": text}]}
+
+    # Must not raise L3Unavailable -- the spurious-503 shape this issue fixes.
+    blinded, session = blindfold_payload(payload, mapping, detector, inbox)
+
+    blinded_text = blinded["messages"][0]["content"]
+    # Leak-audit clause A: neither occurrence's real value crosses egress.
+    assert "Klaus" not in blinded_text
+    person_items = [item for item in inbox.list() if item.entity_type == "person"]
+    assert len(person_items) == 1
+    assert person_items[0].real == "Klaus"
+    surrogate = person_items[0].provisional_surrogate
+    # Both occurrences minted the identical surrogate (clause E: stable mapping).
+    assert blinded_text.count(surrogate) == 2
+
+    response = {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": blinded_text}],
+    }
+    restored = restore_response(response, session)
+    restored_text = restored["content"][0]["text"]
+    # Leak-audit clause B: the client gets back the real value at both positions.
+    assert restored_text == text
+    assert surrogate not in restored_text
+
+    resolution_gate(restored, session)  # clause D: verify pass clean
 
 
 class _UnavailableAdjudicator:
