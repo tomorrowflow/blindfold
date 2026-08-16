@@ -141,6 +141,37 @@ key is only valid where the component's position in the surrogate corresponds to
 a position in the real value** — an unaligned pair has no such correspondence for
 *any* of its words, so it contributes none.
 
+## Update (issue #306): the same rule, mirrored onto the blinding side
+
+Live verify (#74 run 7) found the *inverse* gap: a two-word person's full name was
+mint-time blinded to a provisional surrogate; a later hop's bare occurrence of
+just that person's first name was invisible to the deterministic provisional-pair
+pass (`engine._apply_provisional_pairs`, ADR-0051), so it reached L3 as a fresh
+candidate and minted a *second* referent — one person counted twice in the same
+review inbox (six of run 7's 43 rows were three people minted this way).
+
+This ADR's positional-alignment rule already decided the shape of the fix; #306
+just runs it in the other direction. `engine._provisional_component_map` builds
+the same `candidates` structure this ADR's `_component_restore_map` does — equal
+word counts, non-stopword, alphabetic-content guards, ambiguity-across-rows
+filtering — except keyed by the review inbox's live `(real, provisional_surrogate)`
+pairs instead of the exchange's injected `(surrogate, real)` pairs, and mapping
+real word → surrogate word instead of surrogate word → real word. One added guard
+with no restore-side analogue: the *target* (surrogate) word must also carry an
+alphabetic character, not just the *source* (real) word — because a component
+match on the blinding side calls `session.record`, which plants the target as a
+Pass 1 restore key; admitting a bare digit target (the `Provisional Surrogate {N}`
+fallback's own digit) would reintroduce this ADR's #286 corruption from the
+blinding side instead of the restore side.
+
+`engine._provisional_pair_map` combines this new component map with the existing
+whole-value/variation map (`_provisional_known_value_set`, ADR-0051) into the one
+derivation both `leak_gate` and the blinder read — ADR-0051's own invariant, now
+covering a component surface too.
+
+`_component_restore_map` itself is untouched; this update adds a mirror-image
+sibling, not a modification to the restore path.
+
 ## Alternatives considered
 
 - **Component → full real value only** (`Erika`→`Sarah Bergmann`) — simpler, no

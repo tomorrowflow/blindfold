@@ -1,0 +1,305 @@
+"""Issue #306 (#74 run 7): mirror #304's positional-alignment rule onto the
+*blinding* side. #304 taught restore that a two-word surrogate/real pair decomposes
+into aligned word components (``_component_restore_map``, ``engine.py:1436``);
+nothing taught the blinder the inverse, so a later bare component of an already-
+provisional referent's real value (bare "Priya" once "Priya Nadkarni" -> "Alex
+Brenner" is in the review inbox) was genuinely novel to L2/the deterministic
+provisional-pair pass, reached L3 as a fresh candidate, and minted a second referent
+with an independently drawn surrogate -- one person counted twice in the same inbox.
+
+ADR-0036 (amended by #304) supplies the rule; this issue mirrors it, sharing
+ADR-0051's single-derivation discipline: ``leak_gate`` and
+``engine._apply_provisional_pairs`` both read ``engine._provisional_pair_map`` --
+the gate checks its keys, the blinder rewrites source to target -- so the gate's
+checked surface and the blinder's rewritten surface can never drift apart.
+
+Leak-audit clauses:
+- A: proven directly -- a bare component of an already-provisional real value never
+  egresses, and (via the run-before-L3 ordering #300 already established) never
+  even reaches the adjudicator as a fresh candidate.
+- E (stable): reproven -- one person, one referent, one surrogate; run 7's defect
+  (a second referent minted for the same person) does not recur.
+- F: leak_gate's checked surface is proven to widen in lockstep with the blinder's
+  (ADR-0051 symmetry), pinned the same way #299/#300 pinned their own single
+  derivation.
+N/A this slice: B/C/D/G -- restore (`_component_restore_map` itself), the mapping
+store, and mint-time collision-avoidance are all unchanged code paths; B/C are
+exercised generically here (restore round-trip) but not newly implemented.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+from blindfold import engine
+from blindfold.engine import LeakError, blindfold_payload, leak_gate, restore_response
+from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
+from blindfold.review import ReviewInbox
+from blindfold.surrogates import SurrogateMapping
+
+
+class _ConfirmPriya:
+    """Would confirm bare "Priya" as a fresh person candidate -- stands in to prove
+    L3 never gets the chance, mirroring
+    ``test_the_provisional_substitution_runs_before_l3_so_the_hop_never_re_mints_a_second_row``'s
+    own precedent (#300): if the provisional-pair substitution didn't run first,
+    this detector WOULD confirm the bare token and mint a second row.
+    """
+
+    def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
+        if candidate.text != "Priya":
+            return L3Adjudication(is_entity=False)
+        return L3Adjudication(is_entity=True, entity_type="person")
+
+
+def test_bare_first_name_blinds_to_the_aligned_surrogate_component_no_second_mint():
+    mapping = SurrogateMapping()
+    inbox = ReviewInbox()
+    inbox.upsert(
+        "Priya Nadkarni",
+        context="...Priya Nadkarni signed off on the deploy...",
+        entity_type="person",
+    )
+    item = inbox.list()[0]
+    assert item.provisional_surrogate == "Alex Brenner"  # pool's first person entry
+
+    detector = L3Detector(_ConfirmPriya())
+    later_payload = {
+        "model": "claude-3-5-sonnet",
+        "messages": [{"role": "user", "content": "Ask Priya to review the mapping."}],
+    }
+
+    blinded, _session = blindfold_payload(later_payload, mapping, detector, inbox)
+
+    text = blinded["messages"][0]["content"]
+    assert "Priya" not in text
+    assert "Alex" in text
+    # E-stable (run 7's own defect): one person, one referent -- not a second row.
+    assert len(inbox.list()) == 1
+
+
+class _ConfirmTheFullNameOccurrence:
+    """Confirms the candidate token "Priya" only where its context shows the full
+    "Priya Nadkarni" occurrence (mirrors ``_ConfirmOnlyTheSuffixedOccurrence`` in
+    ``test_provisional_variation_surface.py``) -- so a *later* hop's bare "Priya"
+    is never independently (re-)confirmed by L3; it must be caught by the
+    deterministic component pass instead.
+    """
+
+    def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
+        full = "Priya Nadkarni"
+        if candidate.text != "Priya":
+            return L3Adjudication(is_entity=False)
+        occurrence = candidate.context[
+            candidate.context_offset : candidate.context_offset + len(full)
+        ]
+        if occurrence != full:
+            return L3Adjudication(is_entity=False)
+        span_start = candidate.start
+        return L3Adjudication(
+            is_entity=True, entity_type="person",
+            span_start=span_start, span_end=span_start + len(full),
+        )
+
+
+def test_restore_round_trips_both_the_bare_component_and_the_full_surrogate_in_one_response():
+    # Acceptance criterion 2: "Alex" in the response comes back as "Priya", and
+    # "Alex Brenner" still comes back as "Priya Nadkarni", in the same response.
+    # Both pairs get recorded within one exchange: the first hop's full-name
+    # occurrence mints item 1 (and records the whole pair, #299/#300, unchanged);
+    # the later hop's bare "Priya" is caught by #306's new component pass.
+    mapping = SurrogateMapping()
+    inbox = ReviewInbox()
+    detector = L3Detector(_ConfirmTheFullNameOccurrence())
+    payload = {
+        "model": "claude-3-5-sonnet",
+        "messages": [
+            {"role": "user", "content": "Priya Nadkarni signed off on the deploy."},
+            {"role": "assistant", "content": "Noted, thanks."},
+            {"role": "user", "content": "Ask Priya to review the mapping too."},
+        ],
+    }
+    _blinded, session = blindfold_payload(payload, mapping, detector, inbox)
+
+    assert len(inbox.list()) == 1
+    item = inbox.list()[0]
+    assert item.provisional_surrogate == "Alex Brenner"
+
+    third_hop_text = _blinded["messages"][2]["content"]
+    assert "Priya" not in third_hop_text
+    assert "Alex" in third_hop_text
+
+    response = {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [
+            {
+                "type": "text",
+                "text": "Sure, I'll ping Alex now -- Alex Brenner signed off already.",
+            }
+        ],
+        "model": "claude-3-5-sonnet",
+        "stop_reason": "end_turn",
+    }
+    restored = restore_response(response, session)
+
+    assert restored["content"][0]["text"] == (
+        "Sure, I'll ping Priya now -- Priya Nadkarni signed off already."
+    )
+
+
+def test_leak_gate_fails_closed_on_a_bare_real_word_component_of_a_provisional_referent():
+    # Acceptance criterion 3 (ADR-0051 symmetry): bare "Priya" is in leak_gate's
+    # checked set for item 1, from the same derivation the blinder uses.
+    mapping = SurrogateMapping()
+    inbox = ReviewInbox()
+    inbox.upsert(
+        "Priya Nadkarni",
+        context="...Priya Nadkarni signed off on the deploy...",
+        entity_type="person",
+    )
+
+    leaky_outbound = {
+        "messages": [{"role": "user", "content": "Priya asked for an update."}]
+    }
+
+    with pytest.raises(LeakError):
+        leak_gate(leaky_outbound, mapping, inbox)
+
+
+def test_a_provisional_surrogate_fallback_label_contributes_no_components():
+    # Acceptance criterion 5 (#286): the numbered "Provisional Surrogate {N}"
+    # fallback's positional digit carries no entity meaning -- mirroring the
+    # exact corruption class #286 fixed on the restore side. If a real word were
+    # allowed to align to the digit ("Holdings" -> "8"), blinding would inject a
+    # bare "8" into the outbound payload AND `session.record("8", "Holdings")`
+    # would poison restore with a stray digit key, corrupting ordinary numeric
+    # text in the response ("utf-8" -> "utf-Holdings") the same way #286 did.
+    mapping = SurrogateMapping()
+    inbox = ReviewInbox()
+    for i in range(8):
+        inbox.upsert(
+            f"Filler Person {i}",
+            context=f"...Filler Person {i} joined the call...",
+            entity_type="person",
+        )
+    inbox.upsert(
+        "Kestrel Dynamics Holdings",
+        context="...Kestrel Dynamics Holdings reported record profits...",
+        entity_type="person",
+    )
+    item = inbox.list()[-1]
+    assert item.real == "Kestrel Dynamics Holdings"
+    assert item.provisional_surrogate == "Provisional Surrogate 8"
+
+    payload = {
+        "model": "claude-3-5-sonnet",
+        "messages": [{"role": "user", "content": "Ask Holdings for the report."}],
+    }
+    blinded, _session = blindfold_payload(payload, mapping, None, inbox)
+
+    text = blinded["messages"][0]["content"]
+    assert text == "Ask Holdings for the report."
+
+
+def test_a_component_ambiguous_across_two_live_rows_contributes_nothing():
+    # Acceptance criterion 6: two live inbox rows share the real word "Priya"
+    # but align to two different surrogate words -- ambiguous, so neither
+    # registers it as a blinding component. The bare token is left untouched
+    # (mirroring test_component_shared_by_two_surrogates_is_left_untouched on
+    # the restore side, #304/ADR-0036 acceptance criterion 5).
+    mapping = SurrogateMapping()
+    inbox = ReviewInbox()
+    inbox.upsert(
+        "Priya Nadkarni",
+        context="...Priya Nadkarni signed off on the deploy...",
+        entity_type="person",
+    )
+    inbox.upsert(
+        "Priya Shah",
+        context="...Priya Shah reviewed the contract...",
+        entity_type="person",
+    )
+    real_items = {item.real: item for item in inbox.list()}
+    assert real_items["Priya Nadkarni"].provisional_surrogate == "Alex Brenner"
+    assert real_items["Priya Shah"].provisional_surrogate == "Berta Falke"
+
+    payload = {
+        "model": "claude-3-5-sonnet",
+        "messages": [{"role": "user", "content": "Ask Priya to review the mapping."}],
+    }
+    blinded, _session = blindfold_payload(payload, mapping, None, inbox)
+
+    text = blinded["messages"][0]["content"]
+    assert text == "Ask Priya to review the mapping."
+    assert len(inbox.list()) == 2
+
+
+def test_widening_the_shared_component_derivation_widens_both_the_blinder_and_the_gate(
+    monkeypatch,
+):
+    # Pinned exactly like #299/#300's own single-derivation test
+    # (test_the_message_hop_substitution_set_is_derived_from_the_same_shared_function_leak_gate_uses):
+    # this fails if a component is ever added to one side only -- widening
+    # ``_provisional_component_map`` (the shared derivation) must move the
+    # blinder's rewritten surface and leak_gate's checked surface together.
+    mapping = SurrogateMapping()
+    inbox = ReviewInbox()
+    inbox.upsert(
+        "Priya Nadkarni",
+        context="...Priya Nadkarni signed off on the deploy...",
+        entity_type="person",
+    )
+
+    def _widened(items):
+        return {"Nadkarni": "Brenner"}
+
+    monkeypatch.setattr(engine, "_provisional_component_map", _widened)
+
+    payload = {
+        "model": "claude-3-5-sonnet",
+        "messages": [{"role": "user", "content": "Tell Nadkarni the plan changed."}],
+    }
+    blinded, _session = blindfold_payload(payload, mapping, None, inbox)
+    text = blinded["messages"][0]["content"]
+    assert "Nadkarni" not in text
+    assert "Brenner" in text
+
+    with pytest.raises(LeakError):
+        leak_gate(
+            {"messages": [{"role": "user", "content": "Nadkarni called."}]},
+            mapping,
+            inbox,
+        )
+
+
+def test_a_length_mismatched_pair_contributes_no_components():
+    # Acceptance criterion 4: "Kestrel Dynamics GmbH" -> "Rheinblick Consulting" is
+    # length-mismatched (3 real words vs. 2 surrogate words) -- a later bare
+    # "Kestrel" is left to #289/#296's existing legal-form path (which only ever
+    # adds the suffix-stripped bare *organization name*, "Kestrel Dynamics", never
+    # a single word alone), not to this issue's new mechanism. Unchanged from
+    # before #306: bare "Kestrel" alone was never blinded.
+    mapping = SurrogateMapping()
+    inbox = ReviewInbox()
+    inbox.upsert(
+        "Acme Corp", context="...Acme Corp is our vendor...", entity_type="organization"
+    )
+    inbox.upsert(
+        "Kestrel Dynamics GmbH",
+        context="...signed with Kestrel Dynamics GmbH last week...",
+        entity_type="organization",
+    )
+    item = inbox.list()[1]
+    assert item.real == "Kestrel Dynamics GmbH"
+    assert item.provisional_surrogate == "Rheinblick Consulting"
+
+    payload = {
+        "model": "claude-3-5-sonnet",
+        "messages": [{"role": "user", "content": "Kestrel called about the invoice."}],
+    }
+    blinded, _session = blindfold_payload(payload, mapping, None, inbox)
+
+    text = blinded["messages"][0]["content"]
+    assert text == "Kestrel called about the invoice."

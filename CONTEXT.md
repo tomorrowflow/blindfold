@@ -83,7 +83,15 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   #308) widens the tool-description surface to every free-text `description` nested
   inside `input_schema`/`parameters` (`properties.*.description`,
   `properties.*.items.description`, `$defs.*.description`) — same pass, same
-  deterministic-only scope, no new surface class.
+  deterministic-only scope, no new surface class. Issue #306 extends the same pass
+  once more, mirroring restore's own positional-alignment rule (ADR-0036, amended
+  by #304) onto the blinding side: when a provisional referent's `real` and
+  `provisional_surrogate` have equal word counts, a bare occurrence of one of
+  `real`'s own words blinds to the aligned surrogate word at the same position —
+  the inverse of `engine._component_restore_map`, guarded the same way (stopwords,
+  alphabetic content, cross-row ambiguity) and read by both `leak_gate` and the
+  blinder from one shared derivation (`engine._provisional_pair_map`), per
+  ADR-0051.
 - **Merge** — the curator action that collapses two separate canonical **entities**
   discovered to be the same referent into one. The surviving entity absorbs the
   other's **variations**, **relationships**, and role assignments; the absorbed

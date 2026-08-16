@@ -20,7 +20,7 @@ import logging
 import re
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass, field
 from typing import Any, NoReturn
 
@@ -1339,6 +1339,86 @@ def _provisional_known_value_set(item: ReviewItem) -> frozenset[str]:
     return frozenset({item.real, *item.variations})
 
 
+def _provisional_component_map(items: Iterable[ReviewItem]) -> dict[str, str]:
+    """Mirror :func:`_component_restore_map` onto the *blinding* side (issue #306).
+
+    #304's positional-alignment rule, inverted: when a provisional referent's
+    ``real`` and ``provisional_surrogate`` have equal word counts, each real word
+    aligns with the surrogate word at the same position -- a later bare occurrence
+    of just that real word (``"Priya"``, once ``"Priya Nadkarni"`` -> ``"Alex
+    Brenner"`` is in the inbox) is exactly as blindable as the referent's full
+    name. Guards mirrored from :func:`_component_restore_map` exactly: unequal
+    word counts contribute nothing (``"Kestrel Dynamics GmbH"`` ->
+    ``"Rheinblick Consulting"`` stays on the #289/#296 legal-form path only), a
+    component with no alphabetic character contributes nothing (#286's
+    numbered-label guard), ``_COMPONENT_STOPWORDS`` contributes nothing, and a
+    real word ambiguous across the inbox's live rows -- aligning to more than one
+    distinct surrogate word -- contributes nothing.
+
+    Deliberately keyed off word counts, never ``entity_type`` (see #306: run 7
+    typed ``Agent``/``Slurm``/``Exfil``/``Edit`` as ``"person"``, and this rule
+    must not inherit that error rate).
+    """
+    candidates: dict[str, set[str]] = {}
+    for item in items:
+        real_words = item.real.split()
+        surrogate_words = item.provisional_surrogate.split()
+        if len(real_words) != len(surrogate_words):
+            continue
+        for real_word, surrogate_word in zip(real_words, surrogate_words):
+            if real_word in _COMPONENT_STOPWORDS:
+                continue
+            if not any(char.isalpha() for char in real_word):
+                continue
+            if not any(char.isalpha() for char in surrogate_word):
+                # The fallback "Provisional Surrogate {N}" label's own digit
+                # (#286): a purely positional surrogate word must never become a
+                # blinding *target* either -- session.record would then plant that
+                # bare digit as a Pass-1 restore key (_component_restore_map),
+                # reintroducing #286's corruption ("utf-8" -> "utf-<real word>")
+                # from the blinding side instead of the restore side.
+                continue
+            candidates.setdefault(real_word, set()).add(surrogate_word)
+    return {word: next(iter(targets)) for word, targets in candidates.items() if len(targets) == 1}
+
+
+def _provisional_pair_map(
+    item: ReviewItem, component_map: dict[str, str]
+) -> dict[str, tuple[str, str]]:
+    """The full blinding-side substitution map for one provisional referent (#306).
+
+    ADR-0051: both :func:`leak_gate` and :func:`_apply_provisional_pairs` read
+    this one derivation -- the gate checks its keys, the blinder rewrites source
+    text to the mapped target text -- so the invariant ("every surface the gate
+    checks is a surface the blinder rewrites") is enforced by construction, not by
+    keeping two call sites in sync by hand. ``component_map`` is
+    :func:`_provisional_component_map`'s inbox-wide, ambiguity-resolved result,
+    computed once by the caller and shared across every item in the same pass.
+
+    Maps each known source text to ``(target_text, recorded_real)`` -- the second
+    element is what :func:`_apply_provisional_pairs` hands ``session.record`` on a
+    match, kept distinct from the matched source text itself because a whole-value
+    match must always record the referent's canonical ``item.real`` (#296), never
+    the matched variation surface:
+
+    - ``item.real`` and every :func:`entity_variations` entry map to
+      ``(item.provisional_surrogate, item.real)`` (today's whole-value behaviour,
+      #299/#300).
+    - each of ``item.real``'s own words that survived into ``component_map`` maps
+      to ``(aligned_surrogate_word, that_same_real_word)`` -- the inverse of
+      :func:`_component_restore_map`'s Pass 2 rule, amended by #304.
+    """
+    pairs: dict[str, tuple[str, str]] = {
+        value: (item.provisional_surrogate, item.real)
+        for value in _provisional_known_value_set(item)
+    }
+    for word in item.real.split():
+        target = component_map.get(word)
+        if target is not None:
+            pairs[word] = (target, word)
+    return pairs
+
+
 def _apply_provisional_pairs(
     text: str,
     inbox: ReviewInbox | None,
@@ -1346,24 +1426,28 @@ def _apply_provisional_pairs(
     hop_ctx: "_HopContext | None" = None,
 ) -> str:
     """Rewrite every whole-word occurrence of an already-minted provisional pair's known
-    value surface with that item's existing ``provisional_surrogate`` (ADR-0051 stage 1,
-    issue #299; extended to every message hop by ADR-0051 stage 2, issue #300).
+    value surface -- or, since #306, one of its positionally-aligned real-word
+    components -- with the text :func:`_provisional_pair_map` says it should become
+    (ADR-0051 stage 1, issue #299; extended to every message hop by ADR-0051 stage 2,
+    issue #300; extended to real-word components by #306).
 
     Deterministic only: reads ``inbox.list()``, never runs L3, never calls
     ``inbox.upsert`` -- a referent that already has a provisional surrogate reuses it,
     never mints a second one (surrogates are stable, ADR-0004/#289). Matched with
     :func:`_real_value_pattern`, the identical matcher :func:`leak_gate` uses, over the
-    identical set :func:`_provisional_known_value_set` derives -- so a value this pass
+    identical map :func:`_provisional_pair_map` derives -- so a value this pass
     rewrites is exactly a value the gate would otherwise have fail-closed on. A
     rejected inbox row is no longer in ``inbox.list()`` (#294's reject already removes
     it), so it stops being applied here too -- reject remains the recovery path.
 
-    Every actual substitution is ``session.record``ed, pairing the surrogate with
-    ``item.real`` (never the matched variation text, mirroring #296) so restore stays
-    closed-world and ``resolution_gate`` reports nothing unresolved. ``hop_ctx``, when
-    provided (issue #300: message hops carry one, tool descriptions don't), gets the
-    same per-hop surrogate-token bookkeeping (ADR-0035) every other injection site
-    already does.
+    Every actual substitution is ``session.record``ed, pairing whatever text was
+    matched with whatever text replaced it -- ``item.real``/``item.provisional_surrogate``
+    for a whole-value or variation match (never the matched variation text itself,
+    mirroring #296), or a single aligned real/surrogate word pair for a #306 component
+    match (e.g. ``"Alex"`` -> ``"Priya"``) -- so restore stays closed-world and
+    ``resolution_gate`` reports nothing unresolved. ``hop_ctx``, when provided (issue
+    #300: message hops carry one, tool descriptions don't), gets the same per-hop
+    surrogate-token bookkeeping (ADR-0035) every other injection site already does.
 
     ``inbox`` is ``None`` only for the two callers that deliberately pass no inbox at
     all (devtools replay with no ``l3_detector``, ``count_tokens`` — issue #274/#267);
@@ -1372,8 +1456,11 @@ def _apply_provisional_pairs(
     """
     if inbox is None:
         return text
+    items = inbox.list()
+    component_map = _provisional_component_map(items)
     result = text
-    for item in inbox.list():
+    for item in items:
+        pairs = _provisional_pair_map(item, component_map)
         # Longest value first (mirrors :func:`_apply_restore_pass`'s own discipline):
         # a variation surface can contain one value that is a strict prefix of
         # another (e.g. a legal-form-stripped bare org name, #289/#296 --
@@ -1382,15 +1469,14 @@ def _apply_provisional_pairs(
         # only its own span and strand the remainder (``" LLC"``) glued onto the
         # surrogate -- the same corruption class #179's containment backstop
         # guards against at mint time, here avoided by ordering instead.
-        for value in sorted(_provisional_known_value_set(item), key=len, reverse=True):
-            rewritten, count = _real_value_pattern(value).subn(
-                item.provisional_surrogate, result
-            )
+        for value in sorted(pairs, key=len, reverse=True):
+            target, recorded_real = pairs[value]
+            rewritten, count = _real_value_pattern(value).subn(target, result)
             if count:
                 result = rewritten
-                session.record(item.provisional_surrogate, item.real)
+                session.record(target, recorded_real)
                 if hop_ctx is not None:
-                    hop_ctx.surrogates.append(item.provisional_surrogate)
+                    hop_ctx.surrogates.append(target)
     return result
 
 
@@ -1753,12 +1839,20 @@ def leak_gate(
         logger.warning("leak_gate: %s", reason)
         raise LeakError(reason)
 
+    items = inbox.list() if inbox is not None else ()
+    # ADR-0051 + #306: ``_provisional_pair_map`` is the same derivation
+    # :func:`_apply_provisional_pairs` uses for the deterministic tool-description
+    # pass -- one function, not two call sites that could drift apart. The gate
+    # only ever needs its keys (the surfaces the blinder rewrites); the blinder is
+    # the only side that also needs the map's values.
+    component_map = _provisional_component_map(items)
+
     gate_view, forbidden_text = _gate_excluded_view(blinded_outbound)
     outbound_text = _collect_text(gate_view)
     for real in mapping.real_values():
         if _real_value_pattern(real).search(outbound_text):
             _raise_leak(scrub_entity_reference(real, mapping))
-    for item in inbox.list() if inbox is not None else ():
+    for item in items:
         # Issue #296: a provisional referent's variation surface (currently #289's
         # legal-form-suffix strip) is a distinct literal string from ``item.real``
         # (e.g. bare "Kestrel Dynamics" vs "Kestrel Dynamics GmbH") -- the backstop
@@ -1767,11 +1861,7 @@ def leak_gate(
         # includes ``item.real``, but this is the fail-closed backstop: check
         # ``item.real`` explicitly rather than trust the (defaultable) ``variations``
         # field to carry it, so the real-value check can never silently go quiet.
-        #
-        # ADR-0051: ``_provisional_known_value_set`` is the same derivation
-        # :func:`_apply_provisional_pairs` uses for the deterministic tool-description
-        # pass -- one function, not two call sites that could drift apart.
-        for variation in _provisional_known_value_set(item):
+        for variation in _provisional_pair_map(item, component_map):
             if _real_value_pattern(variation).search(outbound_text):
                 _raise_leak(
                     f"review-inbox item {item.id} (surrogate: {item.provisional_surrogate})"
@@ -1783,10 +1873,10 @@ def leak_gate(
             collisions.append(
                 _declared_collision_reason(scrub_entity_reference(real, mapping))
             )
-    for item in inbox.list() if inbox is not None else ():
+    for item in items:
         if any(
             _real_value_pattern(variation).search(forbidden_text)
-            for variation in _provisional_known_value_set(item)
+            for variation in _provisional_pair_map(item, component_map)
         ):
             collisions.append(
                 _declared_collision_reason(
