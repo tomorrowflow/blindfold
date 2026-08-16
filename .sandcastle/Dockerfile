@@ -108,6 +108,21 @@ ENV UV_HTTP_TIMEOUT=60
 # Pre-provision the interpreter the project requires so the first `uv sync` is fast.
 RUN /home/agent/.local/bin/uv python install 3.12
 
+# Install graphify — the knowledge-graph CLI used to answer "what connects to what"
+# questions about this codebase without grepping the tree (see CLAUDE.md § Codebase
+# questions). Installed as a uv *tool*, so it gets its own isolated environment and
+# never contaminates the project's `.venv` that `uv sync` builds in the worktree.
+# The `sql` extra pulls tree_sitter_sql, without which the repo's .sql files are
+# silently dropped from extraction. Lands in ~/.local/bin, already on PATH above.
+# Pinned like the Swift/.NET toolchains for a reproducible image.
+#
+# NOTE: this provides the CLI only. `graphify-out/` is gitignored (.gitignore:25),
+# so a freshly-created Sandcastle worktree has no graph to query — an agent that
+# wants one must build it in-sandbox first. AST-only extraction over the code is
+# deterministic and free (no LLM calls); the semantic pass over docs is not.
+ARG GRAPHIFY_VERSION=0.9.44
+RUN /home/agent/.local/bin/uv tool install "graphifyy[sql]==${GRAPHIFY_VERSION}"
+
 # Download the Chromium browser binary for the agent user (system libs installed
 # as root above). Lands in /home/agent/.cache/ms-playwright. Used by the
 # web-verify stage's scripted Playwright tests once the SPA exists.
