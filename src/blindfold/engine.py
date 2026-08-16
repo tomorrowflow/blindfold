@@ -309,8 +309,9 @@ def extract_declared_tools_messages(payload: dict[str, Any]) -> frozenset[str]:
 def extract_declared_tools_chat_completions(payload: dict[str, Any]) -> frozenset[str]:
     """Extract the declared tool vocabulary from an OpenAI Chat Completions ``payload``.
 
-    Reads ``tools[].function.name``. Same defensive handling as
-    :func:`extract_declared_tools_messages`.
+    Reads ``tools[].function.name``. Same defensive handling and ``_``/``.``/``-``
+    component decomposition (issue #297) as :func:`extract_declared_tools_messages`,
+    since both share :func:`_extract_declared_tools`.
     """
 
     def _name(tool: dict[str, Any]) -> Any:
