@@ -120,6 +120,7 @@ from .entity_graph import (
 from .reidentify import InMemoryReIdentificationStore, ReIdentificationStore
 from .transit import TransitClient
 from .engine import (
+    DeclaredToolVocabulary,
     ExchangeSession,
     LeakError,
     StreamingRestorer,
@@ -321,6 +322,15 @@ _l3_detector = _build_l3_detector(get_settings(), _allowlist)
 # RBAC-scoped audit access are out of scope this slice — see policy.py.
 _workspace_policies = WorkspacePolicies()
 _audit_log = AuditLog()
+
+# Process-wide, workspace-scoped declared-tool vocabulary (ADR-0023 amendment,
+# issue #302): remembers every tool name (+ #297 component) a workspace's
+# requests have EVER declared, so suppression outlives the single request that
+# declared it -- the #74 run-7 unblocker (a value minted from a tools-less
+# sub-agent hop before the main request ever declared the same tool name).
+# In-memory only, like `_workspace_policies` above. Tests substitute their own
+# via dependency_overrides[get_declared_tool_vocabulary].
+_declared_tool_vocabulary = DeclaredToolVocabulary()
 
 # Process-wide Unprotected-mode state (ADR-0038, issue #180): capability flag +
 # active/bound/expiry timer. Deliberately a singleton scoped to this proxy process
@@ -541,6 +551,10 @@ def get_l3_detector() -> L3Detector:
 
 def get_workspace_policies() -> WorkspacePolicies:
     return _workspace_policies
+
+
+def get_declared_tool_vocabulary() -> DeclaredToolVocabulary:
+    return _declared_tool_vocabulary
 
 
 def get_audit_log() -> AuditLog:
@@ -1481,6 +1495,7 @@ async def messages(
     inbox: ReviewInbox = Depends(get_review_inbox),
     l3_detector: L3Detector = Depends(get_l3_detector),
     policies: WorkspacePolicies = Depends(get_workspace_policies),
+    declared_tool_vocabulary: DeclaredToolVocabulary = Depends(get_declared_tool_vocabulary),
     audit_log: AuditLog = Depends(get_audit_log),
     block_history: BlockHistory = Depends(get_block_history),
     upstream_health: RecentFailureHealth = Depends(get_upstream_health),
@@ -1509,6 +1524,7 @@ async def messages(
                 payload, mapping, effective_l3_detector, inbox, declared_tools,
                 workspace=workspace,
                 phone_candidates_enabled=policy.phone_candidates_enabled,
+                declared_tool_vocabulary=declared_tool_vocabulary,
             ),
             workspace,
             policy.deterministic_only,
@@ -1629,6 +1645,12 @@ async def count_tokens(
     differently. This is arguably the correct number (it's what the provider
     bills and what fills the context window), but it means Claude Code's context
     meter reflects the blindfolded prompt, not the real one.
+
+    No ``declared_tool_vocabulary`` (issue #302) is passed to ``blindfold_payload``
+    below, deliberately, for the same reason ``inbox=None`` is: a measurement is
+    not a use, so this endpoint never grows durable, workspace-scoped state —
+    only ``/v1/messages``/``/v1/chat/completions`` teach the workspace's declared-
+    tool vocabulary.
     """
     start = time.monotonic()
     payload = await request.json()
@@ -1704,6 +1726,7 @@ async def chat_completions(
     inbox: ReviewInbox = Depends(get_review_inbox),
     l3_detector: L3Detector = Depends(get_l3_detector),
     policies: WorkspacePolicies = Depends(get_workspace_policies),
+    declared_tool_vocabulary: DeclaredToolVocabulary = Depends(get_declared_tool_vocabulary),
     audit_log: AuditLog = Depends(get_audit_log),
     block_history: BlockHistory = Depends(get_block_history),
     upstream_health: RecentFailureHealth = Depends(get_upstream_health),
@@ -1729,6 +1752,7 @@ async def chat_completions(
                 payload, mapping, effective_l3_detector, inbox, declared_tools,
                 workspace=workspace,
                 phone_candidates_enabled=policy.phone_candidates_enabled,
+                declared_tool_vocabulary=declared_tool_vocabulary,
             ),
             workspace,
             policy.deterministic_only,

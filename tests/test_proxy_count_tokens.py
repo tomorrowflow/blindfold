@@ -43,6 +43,7 @@ import pytest
 from blindfold.app import (
     app,
     get_audit_log,
+    get_declared_tool_vocabulary,
     get_l3_detector,
     get_review_inbox,
     get_unprotected_mode,
@@ -272,6 +273,39 @@ async def test_count_tokens_never_grows_the_real_review_inbox():
     egressed = recorded[0].content.decode("utf-8")
     assert "Zzyzxplorp" not in egressed
     assert len(inbox.list()) == before
+
+
+@pytest.mark.anyio
+async def test_count_tokens_never_grows_the_declared_tool_vocabulary():
+    # Issue #302: a measurement is not a use, mirroring the review-inbox test
+    # above -- this route must never teach the process-wide, workspace-scoped
+    # DeclaredToolVocabulary a tool name, unlike /v1/messages and
+    # /v1/chat/completions, which do.
+    recorded: list[httpx.Request] = []
+    vocabulary = get_declared_tool_vocabulary()
+    before = vocabulary.for_workspace(DEFAULT_WORKSPACE)
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(
+        {"input_tokens": 3}, recorded
+    )
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            resp = await client.post(
+                "/v1/messages/count_tokens",
+                json={
+                    "model": "m",
+                    "tools": [{"name": "Zzyzxplorp", "description": "a tool"}],
+                    "messages": [{"role": "user", "content": "hello"}],
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert vocabulary.for_workspace(DEFAULT_WORKSPACE) == before
+    assert "Zzyzxplorp" not in vocabulary.for_workspace(DEFAULT_WORKSPACE)
 
 
 @pytest.mark.anyio
