@@ -97,6 +97,12 @@ the offending row without reverse-engineering the provisional pool by hand (the 
 
 ## Rejected option: widen the blinder to rewrite every occurrence
 
+> **This section is reversed by [ADR-0051](0051-deterministic-blinder-set-equals-leak-gate-set.md)**
+> (issue #298). The rejection below weighed a deadlock it assumed negligible; #74 run 6 measured
+> that deadlock at 11 consecutive fail-closed exchanges on essentially every agentic session. The
+> live content of Option 1 — adding the review inbox's provisional pairs to the deterministic
+> blinding pass — is now accepted. The rest of this ADR stands.
+
 Option 1 (blind every occurrence of every known real value, word-boundary-scoped, on every
 hop — not just L2/L3-detected spans) is **rejected as a standalone fix**, per the
 trusted-maintainer note. It keeps fail-closed strictly intact in principle, but a
