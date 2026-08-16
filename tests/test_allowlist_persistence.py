@@ -12,6 +12,10 @@ Leak-audit clauses for this slice:
 - E N/A -- stable-surrogate reuse is unaffected; the allowlist never mints surrogates.
 - F N/A -- fail-closed (L3Unavailable) is untouched.
 - G N/A -- this store never touches the re-identify mapping.
+
+Store-area exemplar for issue #318: the one ASGI test below relies on the autouse
+dependency_overrides snapshot/restore fixture (conftest.py) instead of its own
+``try/finally: app.dependency_overrides.clear()``.
 """
 
 from __future__ import annotations
@@ -94,16 +98,13 @@ async def test_reject_persists_the_token_through_the_store_seam():
     app.dependency_overrides[get_review_inbox] = lambda: inbox
     app.dependency_overrides[get_allowlist] = lambda: allowlist
     app.dependency_overrides[get_allowlist_store] = lambda: store
-    try:
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(
-            transport=transport, base_url="http://proxy.test"
-        ) as client:
-            resp = await client.post(
-                f"/v1/management/review-inbox/{item.id}/reject"
-            )
-    finally:
-        app.dependency_overrides.clear()
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(
+        transport=transport, base_url="http://proxy.test"
+    ) as client:
+        resp = await client.post(
+            f"/v1/management/review-inbox/{item.id}/reject"
+        )
 
     assert resp.status_code == 200
     assert store.added == ["Helga"]
