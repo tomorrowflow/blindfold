@@ -134,8 +134,41 @@ const UV_SYNC =
   "for i in 1 2 3; do timeout 180 uv sync && exit 0; " +
   'echo "uv sync attempt $i timed out/failed; retrying" >&2; done; ' +
   'echo "uv sync failed after 3 attempts" >&2; exit 1';
+
+// Build the code knowledge graph the CLAUDE.md "Codebase questions" rule points
+// agents at. `graphify update` is the AST-only path: deterministic tree-sitter
+// extraction over the worktree's source, **zero LLM calls** and therefore zero
+// token cost. Measured cold on this repo's tracked tree: ~9s for 7,083 nodes /
+// 16,710 edges. The semantic layer over docs/ADRs is NOT built here — that one
+// does cost tokens, and a slice-scoped implement agent doesn't need it.
+//
+// Why this has to exist at all: `graphify-out/` is gitignored (.gitignore:25),
+// so every freshly-created worktree starts with no graph. Building it here is
+// also what keeps the ignore correct — the artifact is regenerated per worktree
+// in ~9s, so committing a ~10 MB graph.json (and re-diffing it on every branch)
+// would buy nothing.
+//
+// Strictly best-effort. A missing CLI, a build failure, or a timeout must never
+// block a slice: agents just fall back to grep, which is what they did before
+// this hook existed. Hence the `command -v` guard (older images predate the
+// Dockerfile's graphify layer), the hard in-container `timeout` — same discipline
+// as UV_SYNC above, since onSandboxReady is synchronous — and the terminal
+// `exit 0` that swallows every failure path.
+const GRAPHIFY_BUILD =
+  "if command -v graphify >/dev/null 2>&1; then " +
+  "timeout 180 graphify update . >/dev/null 2>&1 " +
+  "&& echo 'graphify: code graph ready (graphify-out/graph.json)' >&2 " +
+  "|| echo 'graphify: code-graph build failed/timed out — agents fall back to grep' >&2; " +
+  "else echo 'graphify: CLI absent (rebuild the sandbox image) — skipping' >&2; fi; " +
+  "exit 0";
+
 const hooks = {
-  sandbox: { onSandboxReady: [{ command: UV_SYNC, timeoutMs: 600_000 }] },
+  sandbox: {
+    onSandboxReady: [
+      { command: UV_SYNC, timeoutMs: 600_000 },
+      { command: GRAPHIFY_BUILD, timeoutMs: 240_000 },
+    ],
+  },
 };
 
 // Nothing to pre-copy from the host: the only node_modules in this repo is the
