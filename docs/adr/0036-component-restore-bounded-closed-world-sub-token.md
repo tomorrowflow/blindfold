@@ -98,11 +98,57 @@ buffer growth.
 - Ambiguous or generic components are left as synthetic tokens — a bounded,
   non-leaking quality cost, never a block.
 
+## Update (issue #304): drop the whole-value fallback; restore is a single scan
+
+Live verify (#74 run 7) found a real value corrupted in the deliverable:
+`Northwind Analytics` came back as `Northwind Vault`. Two compounding defects, both
+in this ADR's own restore path:
+
+1. **A length-mismatched pair donated whole-value component keys.** The original
+   decision (above) explicitly falls back to the *full real value* when
+   `len(surrogate_words) != len(real_words)`: a 2-word surrogate ending in the
+   ordinary English word `Analytics`, mapped to a 1-word real value, made *every*
+   surrogate word — including `Analytics` itself — a restore key mapping to that
+   one real value. Alignment carries the positional information that makes a
+   component key meaningful; without it, *any* word in the surrogate is an
+   equally arbitrary choice of key, so this update replaces the fallback with
+   **no key at all** for an unaligned pair. The
+   bare abbreviated component (e.g. `Erika` when `Erika → Sarah Katharina
+   Bergmann` can't align) is now left as a synthetic token rather than risk a
+   wrong whole-value donation — the same accepted, non-leaking transparency cost
+   this ADR already names for generic/ambiguous components, just widened to
+   cover the unaligned case too.
+2. **Pass 2 matched inside Pass 1's own output.** `_restore_text` ran Pass 1 (full
+   surrogates) and Pass 2 (components) as two sequential scans, the second over
+   the *first's substituted result* — so a component key could match a real
+   value Pass 1 had just inserted (`…Analytics` from `Northwind Analytics`
+   matching the `Analytics` component key from an unrelated pair). Restore was
+   not protected against its own output. Fixed by merging both passes' keys into
+   one `restore_map` and running `_apply_restore_pass` exactly **once**, as a
+   single left-to-right, non-overlapping scan of the *original* text — a
+   substituted real value is never re-examined as input, structurally, not by a
+   guard that could be forgotten at a future call site.
+
+Both fixes compose: the first shrinks the component key set to genuinely
+positional-only keys; the second guarantees that whatever keys remain can never
+match text a prior substitution produced. Aligned-pair behavior (positional
+mapping, distinctiveness/ambiguity filtering, digit-token exclusion) is
+unchanged — this update only removes the unaligned whole-value fallback and the
+two-scan structure, not the alignment-eligible path.
+
+The invariant, stated explicitly per this issue's request: **a component restore
+key is only valid where the component's position in the surrogate corresponds to
+a position in the real value** — an unaligned pair has no such correspondence for
+*any* of its words, so it contributes none.
+
 ## Alternatives considered
 
 - **Component → full real value only** (`Erika`→`Sarah Bergmann`) — simpler, no
   alignment, but verbose (`"Hallo Sarah Bergmann!"` where the provider wrote a first
-  name). Kept as the fallback for unequal word counts, not the default.
+  name). Considered as the fallback for unequal word counts; **reversed by the
+  #304 update above** — the whole-value fallback is what let an unrelated
+  ordinary word become a restore key, so an unaligned pair now contributes no
+  component key at all, not a full-value one.
 - **Fix on the surrogate-generation side** (mononym surrogates, no coalescing) —
   rejected: unwinds #162's coherent multi-word surrogates and produces unnatural
   names.

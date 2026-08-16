@@ -1191,19 +1191,42 @@ def _apply_provisional_pairs(
 
 
 def _apply_restore_pass(text: str, restore_map: dict[str, str]) -> str:
-    """Substitute every key of ``restore_map`` for its value, longest key first.
+    """Substitute every key of ``restore_map``, longest key first, in a single
+    left-to-right, non-overlapping scan of ``text``.
 
     Shared by both restore passes (ADR-0036): Pass 1 (full surrogates) and Pass 2
     (surrogate components) are the same matching strategy — exact, word-boundary,
     closed-world — applied to different key sets, never a new algorithm.
+
+    issue #304: this scans ``text`` exactly once. The previous implementation ran
+    one ``.sub()`` per key over the cumulative result of the prior key's
+    substitution, so a shorter key applied later in the loop (e.g. a Pass 2
+    component) could match a real value a longer key (Pass 1's full surrogate)
+    had *just inserted* -- restore is never protected against its own output. A
+    single scan over the untouched ``text`` makes that structurally impossible:
+    at each position we try every key longest-first and advance past whichever
+    one matches, so an inserted ``real`` is never re-examined as input.
     """
-    result = text
-    for key, real in sorted(restore_map.items(), key=lambda kv: len(kv[0]), reverse=True):
-        result = _surrogate_pattern(key).sub(
-            lambda m, real=real, key=key: real + m.group(0)[len(key):],
-            result,
-        )
-    return result
+    if not restore_map:
+        return text
+    patterns = [
+        (real, key, _surrogate_pattern(key))
+        for key, real in sorted(restore_map.items(), key=lambda kv: len(kv[0]), reverse=True)
+    ]
+    pieces: list[str] = []
+    i = 0
+    n = len(text)
+    while i < n:
+        for real, key, pattern in patterns:
+            match = pattern.match(text, i)
+            if match:
+                pieces.append(real + match.group(0)[len(key):])
+                i = match.end()
+                break
+        else:
+            pieces.append(text[i])
+            i += 1
+    return "".join(pieces)
 
 
 def _component_restore_map(injected: dict[str, str]) -> dict[str, str]:
@@ -1213,6 +1236,14 @@ def _component_restore_map(injected: dict[str, str]) -> dict[str, str]:
     restore key only if distinctive (not a shared common-word/legal-form) and
     unambiguous (maps to exactly one real value across this exchange's injected
     surrogates) — ADR-0036.
+
+    issue #304 amendment: a component key requires **positional alignment** --
+    unequal word counts between the surrogate and the real value carry no
+    correspondence between a component's position and any single real word, so an
+    unaligned pair contributes NO component keys at all (never a whole-value
+    fallback). The prior whole-value fallback let an ordinary word donated by one
+    pair (e.g. "Analytics" from a 2-word surrogate mapped to a 1-word real) become
+    a restore key that matched an unrelated real value elsewhere in the response.
     """
     candidates: dict[str, set[str]] = {}
     for surrogate, real in injected.items():
@@ -1220,7 +1251,8 @@ def _component_restore_map(injected: dict[str, str]) -> dict[str, str]:
         if len(surrogate_words) < 2:
             continue
         real_words = real.split()
-        aligned = len(surrogate_words) == len(real_words)
+        if len(surrogate_words) != len(real_words):
+            continue
         for index, word in enumerate(surrogate_words):
             if word in _COMPONENT_STOPWORDS:
                 continue
@@ -1231,17 +1263,24 @@ def _component_restore_map(injected: dict[str, str]) -> dict[str, str]:
                 # ordinary digit in a response gets rewritten to a real value
                 # (issue #286).
                 continue
-            target = real_words[index] if aligned else real
-            candidates.setdefault(word, set()).add(target)
+            candidates.setdefault(word, set()).add(real_words[index])
     return {word: next(iter(targets)) for word, targets in candidates.items() if len(targets) == 1}
 
 
 def _restore_text(text: str, session: ExchangeSession) -> str:
-    result = _apply_restore_pass(text, session.injected)
-    components = _component_restore_map(session.injected)
-    if components:
-        result = _apply_restore_pass(result, components)
-    return result
+    """Restore both passes (ADR-0036) in one combined, single-scan call (issue #304).
+
+    Pass 1 (full surrogates, ``session.injected``) and Pass 2 (components,
+    :func:`_component_restore_map`) are merged into one ``restore_map`` -- full
+    surrogates are seeded last so they win any (practically impossible) key
+    collision with a component -- and applied via one call to
+    :func:`_apply_restore_pass`, so the whole restore is a single scan of the
+    original ``text``. Never two sequential scans, which is what let Pass 2 match
+    inside Pass 1's own just-inserted output.
+    """
+    restore_map = dict(_component_restore_map(session.injected))
+    restore_map.update(session.injected)
+    return _apply_restore_pass(text, restore_map)
 
 
 def _restore_json_value(value: Any, session: ExchangeSession) -> Any:

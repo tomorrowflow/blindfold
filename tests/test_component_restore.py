@@ -48,13 +48,18 @@ def test_bare_first_name_component_restores_by_positional_alignment():
     assert _restore("Hallo Carla!", session) == "Hallo Sarah!"
 
 
-def test_component_with_unequal_word_counts_falls_back_to_the_full_real_value():
-    # ADR-0036 acceptance criterion 2: when the surrogate and real value have
-    # different word counts, positional alignment is meaningless, so a
-    # restored component falls back to the full real value.
+def test_component_with_unequal_word_counts_is_not_registered_as_a_restore_key():
+    # issue #304 (ADR-0036 amendment): when the surrogate and real value have
+    # different word counts, positional alignment is meaningless -- there is no
+    # correspondence between a component's position and any single real word, so
+    # the pair contributes NO component keys at all. The prior behavior (falling
+    # back to the *whole* real value) is exactly the defect #304 reports: it lets
+    # an ordinary word like "Analytics" become a restore key for an unrelated real
+    # value. The bare abbreviated component is left untouched (a synthetic-name
+    # quality cost, never a leak) rather than risk a wrong whole-value donation.
     session = _session_with({"Carla Distel": "Sarah Katharina Bergmann"})
 
-    assert _restore("Hallo Carla!", session) == "Hallo Sarah Katharina Bergmann!"
+    assert _restore("Hallo Carla!", session) == "Hallo Carla!"
 
 
 def test_org_component_restores_by_positional_alignment():
@@ -69,11 +74,12 @@ def test_org_component_restores_by_positional_alignment():
 def test_generic_legal_form_component_is_not_registered_as_a_restore_key():
     # ADR-0036 acceptance criterion 4: a generic legal-form word ("Corporation")
     # is not distinctive, so it is never registered as a component restore key —
-    # a response using it generically elsewhere must be left untouched. Unequal
-    # word counts (3 real words vs. 2 surrogate words) mean an unfiltered
-    # "Corporation" key would fall back to the full real value, so this would
-    # visibly fail if the distinctiveness filter were missing.
-    session = _session_with({"Baumgart Corporation": "Acme Global Holdings"})
+    # a response using it generically elsewhere must be left untouched. Word
+    # counts are equal (2 vs. 2) on purpose -- alignment alone would otherwise
+    # register "Corporation" -> "Holdings", so this exercises the distinctiveness
+    # filter specifically rather than incidentally passing via #304's
+    # unaligned-pair exclusion.
+    session = _session_with({"Baumgart Corporation": "Acme Holdings"})
 
     text = "Every Corporation must file its report."
     assert _restore(text, session) == text
@@ -91,6 +97,59 @@ def test_component_shared_by_two_surrogates_is_left_untouched():
     assert _restore(text, session) == text
 
 
+def test_run_7_shape_restores_to_northwind_analytics_never_northwind_vault():
+    # issue #304 acceptance criterion 1: replaying run 7's exact live shape.
+    # Injected pairs "Nordkap Systeme GmbH" -> "Northwind Analytics" and
+    # "Moosburg Analytics" -> "Vault" in the same exchange; the model's output
+    # contains the full first surrogate. The client must see exactly
+    # "Northwind Analytics" -- never "Northwind Vault".
+    session = _session_with(
+        {
+            "Nordkap Systeme GmbH": "Northwind Analytics",
+            "Moosburg Analytics": "Vault",
+        }
+    )
+
+    text = "Prepared by Priya Nadkarni, Lead architect -- Nordkap Systeme GmbH"
+    restored = _restore(text, session)
+
+    assert restored == "Prepared by Priya Nadkarni, Lead architect -- Northwind Analytics"
+    assert "Vault" not in restored
+
+
+def test_analytics_is_not_a_restore_key_for_vault():
+    # issue #304 acceptance criterion: the live run-7 shape. "Moosburg
+    # Analytics" (2-word surrogate) -> "Vault" (1-word real) is length-mismatched,
+    # so neither "Moosburg" nor "Analytics" is ever registered as a component
+    # restore key -- an ordinary word ("Analytics") must never become a restore
+    # key for an unrelated real value ("Vault").
+    session = _session_with({"Moosburg Analytics": "Vault"})
+
+    text = "Please review the Analytics summary before the Moosburg call."
+    assert _restore(text, session) == text
+
+
+def test_pass_2_does_not_match_inside_pass_1s_own_output():
+    # issue #304 acceptance criterion: Pass 2 must never re-scan text Pass 1 has
+    # already produced. Two *independent*, individually valid pairs: pair A's full
+    # surrogate "Nordkap Systeme" restores to real "Northwind Analytics" (Pass 1).
+    # Pair B is a genuinely aligned pair contributing a legitimate component key
+    # "Analytics" -> "Baz" (Pass 2). "Analytics" never occurs in the model's actual
+    # output -- it only exists in the text because Pass 1 just inserted it as part
+    # of pair A's real value. Pass 2 must not treat that inserted occurrence as a
+    # match, or the correctly restored "Northwind Analytics" gets corrupted into
+    # "Northwind Baz" -- exactly the "Northwind Vault" defect this issue reports.
+    session = _session_with(
+        {
+            "Nordkap Systeme": "Northwind Analytics",
+            "Foo Analytics": "Bar Baz",
+        }
+    )
+
+    text = "Nordkap Systeme provided the report."
+    assert _restore(text, session) == "Northwind Analytics provided the report."
+
+
 def test_full_surrogate_pass_takes_precedence_over_the_component_pass():
     # ADR-0036: Pass 1 (full surrogates) runs first so a full match is never
     # clobbered by Pass 2 (components) — both occurring in the same response.
@@ -102,12 +161,14 @@ def test_full_surrogate_pass_takes_precedence_over_the_component_pass():
 
 def test_bare_integer_component_is_never_registered_as_a_restore_key():
     # issue #286: a provisional surrogate's positional digit ("Provisional
-    # Surrogate 8") carries no entity meaning. Unfiltered, "8" is distinctive
-    # and unambiguous (word-count mismatch means it falls back to the full
-    # real value) so it would be admitted as a Pass-2 restore key and rewrite
-    # any ordinary "8" in a response -- observed live as `utf-8` becoming
-    # `utf-Kestrel Dynamics`.
-    session = _session_with({"Provisional Surrogate 8": "Kestrel Dynamics"})
+    # Surrogate 8") carries no entity meaning. Word counts are equal (3 vs. 3,
+    # aligned) on purpose -- since #304 an unaligned pair is already excluded
+    # for a different reason (no positional correspondence at all), so this
+    # keeps exercising the digit-token guard itself: unfiltered, "8" is
+    # distinctive and unambiguous, so it would be admitted as a Pass-2 restore
+    # key and rewrite any ordinary "8" in a response -- observed live as
+    # `utf-8` becoming `utf-Kestrel Dynamics`.
+    session = _session_with({"Provisional Surrogate 8": "Kestrel Dynamics Holdings"})
 
     text = 'encoding="utf-8"'
     assert _restore(text, session) == text
@@ -117,7 +178,8 @@ def test_bare_integer_component_does_not_corrupt_phone_shaped_text():
     # issue #286: "Provisional Surrogate 41" must not turn its positional digit
     # into a restore key that clobbers the leading digits of an ordinary phone
     # number -- observed live as "+41 79 555 0142" becoming "+Transit 79 555 0142".
-    session = _session_with({"Provisional Surrogate 41": "Transit"})
+    # Aligned (3 vs. 3) for the same reason as the sibling test above.
+    session = _session_with({"Provisional Surrogate 41": "Transit Systems Holdings"})
 
     text = "+41 79 555 0142"
     assert _restore(text, session) == text
