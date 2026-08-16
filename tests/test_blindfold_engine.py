@@ -4,7 +4,7 @@ Per ADR-0002, every hop (system prompt, user turns, tool-result messages) is
 blindfolded — not just the first prompt.
 """
 
-from blindfold.engine import blindfold_payload
+from blindfold.engine import blindfold_payload, leak_gate
 from blindfold.surrogates import SurrogateMapping
 
 
@@ -113,6 +113,40 @@ def test_blindfold_uses_l2_token_boundaries_and_does_not_overredact_substrings()
     text = blinded["messages"][0]["content"]
     assert text == "Annapolis hosts the offsite this year."
     assert session.injected == {}
+
+
+def test_l2_does_not_swallow_an_emails_dot_into_a_mixed_surrogate_at_domain_string():
+    # issue #310: L2's multi-token window used to space-join adjacent tokens
+    # unconditionally, so "stefan.wegner@enervia.ch" (the entity's two-token
+    # surface split by the local-part "." rather than a space) matched as one
+    # span and swallowed the "." -- yielding "Bernhard Vogt@enervia.ch". L1 then
+    # re-detected "Vogt@enervia.ch" as an email and minted a *second* surrogate
+    # over a fragment of the first one (a live L2->L1 ordering hazard). Confirmed
+    # this exact corrupted output on the pre-fix code before writing this test.
+    mapping = SurrogateMapping.from_pairs([("Stefan Wegner", "Bernhard Vogt")])
+    payload = {
+        "model": "m",
+        "messages": [
+            {"role": "user", "content": "Contact: stefan.wegner@enervia.ch"}
+        ],
+    }
+
+    blinded, session = blindfold_payload(payload, mapping)
+
+    text = blinded["messages"][0]["content"]
+    assert "Bernhard Vogt@" not in text
+    assert "stefan" not in text.lower()
+    assert "wegner" not in text.lower()
+    # Exactly one surrogate injected -- the whole email swallowed by L1 in one
+    # shot, never a second surrogate minted over a fragment of the first.
+    assert len(session.injected) == 1
+    ((only_surrogate, only_real),) = session.injected.items()
+    assert only_real == "stefan.wegner@enervia.ch"
+    assert only_surrogate in text
+
+    # Blinder and leak gate stay set-symmetric (ADR-0051): the span the blinder
+    # declined to join across is not a real value the gate now blocks as a leak.
+    leak_gate(blinded, mapping)
 
 
 def test_blindfold_records_per_hop_detail_on_session():

@@ -227,3 +227,54 @@ def test_variations_of_one_entity_resolve_to_one_surrogate_coreference():
     # Every match resolves to the same surrogate (coreference).
     assert {span.surrogate for span in spans} == {"Projekt Polarstern"}
     assert {span.real for span in spans} == {"Enervia"}
+
+
+def test_multi_token_window_does_not_join_tokens_split_across_a_newline():
+    # issue #310: the multi-token window walk space-joined adjacent tokens
+    # unconditionally, ignoring what actually separated them in the text. A
+    # known two-token surface split across two list lines ("- Stefan\n- Wegner")
+    # must not be treated as one "Stefan Wegner" match -- that swallows the list
+    # markers and the newline between them, collapsing two list items into one.
+    stefan = Entity(
+        canonical="Stefan Wegner",
+        variations=("Stefan", "Wegner"),
+        surrogate="Bernhard Vogt",
+    )
+    text = "- Stefan\n- Wegner\n- Klaus"
+
+    spans = detect_l2(text, [stefan])
+
+    surface_forms = sorted(text[s.start : s.end] for s in spans)
+    assert surface_forms == ["Stefan", "Wegner"]
+    assert {s.surrogate for s in spans} == {"Bernhard Vogt"}
+
+
+def test_multi_token_window_does_not_join_tokens_split_across_a_table_pipe():
+    # issue #310: table cells ("| Stefan | Wegner |") must not merge -- the
+    # gap between the two tokens is " | ", not plain same-line whitespace, so
+    # the two-token surface must not match across it.
+    stefan = Entity(
+        canonical="Stefan Wegner",
+        variations=("Stefan", "Wegner"),
+        surrogate="Bernhard Vogt",
+    )
+    text = "| Stefan | Wegner |"
+
+    spans = detect_l2(text, [stefan])
+
+    surface_forms = sorted(text[s.start : s.end] for s in spans)
+    assert surface_forms == ["Stefan", "Wegner"]
+
+
+def test_multi_token_window_still_joins_across_repeated_same_line_spaces():
+    # issue #310 acceptance criterion: genuine same-line multi-token matches must
+    # keep blindfolding exactly as before -- single OR repeated spaces are still
+    # plain same-line whitespace, just not a newline/other separator.
+    enervia = _enervia()
+    text = "Meeting with Enervia    AG tomorrow."
+
+    spans = detect_l2(text, [enervia])
+
+    surface_forms = sorted(text[s.start : s.end] for s in spans)
+    assert surface_forms == ["Enervia    AG"]
+    assert {s.surrogate for s in spans} == {"Projekt Polarstern"}
