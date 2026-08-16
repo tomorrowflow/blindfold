@@ -1,6 +1,13 @@
 """Idempotent ETL: apply the entity-graph migrations and load the vendored cold-start
 seed into Postgres, minting + storing one stable surrogate per real referent.
 
+Test-only (issue #319): moved out of ``src/blindfold/store`` because nothing shipped
+ever imports it -- the shipped Postgres path (``blindfold.store.entity_graph_store``)
+applies the same ``migrations.sql`` synchronously via ``psycopg``. This module's only
+consumers are the Docker-gated Postgres tests (``tests/test_entity_graph_postgres.py``,
+``tests/test_transit_ciphertext_columns.py``), which exercise the real async ``asyncpg``
+driver against an ephemeral testcontainers Postgres.
+
 Idempotency (re-running adds no duplicate rows and keeps the same surrogate) comes from:
 - migrations being CREATE ... IF NOT EXISTS / ADD COLUMN IF NOT EXISTS, and
 - every load using the voice-diary-style ``ON CONFLICT`` upsert against a UNIQUE
@@ -23,18 +30,22 @@ ciphertext-only now, so there is nothing left it can populate without a cipher. 
 from __future__ import annotations
 
 from collections.abc import Iterable
-from pathlib import Path
+from importlib.resources import files as _pkg_files
 from typing import TYPE_CHECKING, Any
 
 import asyncpg
 
-from ._mint import mint_surrogate
-from ._seed import load_vendored_seed
+from blindfold.store._mint import mint_surrogate
+from blindfold.store._seed import load_vendored_seed
 
 if TYPE_CHECKING:
     from blindfold.mapping_cipher import MappingCipher
 
-_MIGRATIONS_SQL = Path(__file__).with_name("migrations.sql").read_text(encoding="utf-8")
+# Same migrations.sql the shipped `PostgresEntityGraphStore` applies synchronously via
+# psycopg (blindfold.store.entity_graph_store) -- read from the installed package
+# rather than a `__file__`-relative sibling, since this module no longer lives next to
+# it.
+_MIGRATIONS_SQL = (_pkg_files("blindfold.store") / "migrations.sql").read_text(encoding="utf-8")
 
 _KIND_TABLE = {"person": "persons", "term": "terms", "org_unit": "org_units"}
 _KIND_BLIND_INDEX_COL = {

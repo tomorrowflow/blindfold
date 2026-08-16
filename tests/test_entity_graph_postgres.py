@@ -94,7 +94,7 @@ def _make_stub_transit():
 async def test_migrations_create_the_entity_graph_schema(pg_dsn):
     import asyncpg
 
-    from blindfold.store.etl import apply_migrations
+    from support.etl import apply_migrations
 
     conn = await asyncpg.connect(pg_dsn)
     try:
@@ -125,7 +125,7 @@ async def test_etl_populates_persons_variations_org_units_and_terms(pg_dsn):
     import asyncpg
 
     from blindfold.store._seed import load_vendored_seed
-    from blindfold.store.etl import run_etl_with_transit
+    from support.etl import run_etl_with_transit
 
     # Persons require a mapping cipher to persist at all (ADR-0045 §5, issue #229) --
     # the plain run_etl path no longer has a plaintext column to insert them into.
@@ -174,7 +174,7 @@ async def test_etl_mints_one_surrogate_per_referent_never_equal_to_the_real_valu
     import asyncpg
 
     from blindfold.store._seed import load_vendored_seed
-    from blindfold.store.etl import run_etl_with_transit
+    from support.etl import run_etl_with_transit
 
     transit = _make_stub_transit()
     await run_etl_with_transit(pg_dsn, transit)
@@ -214,7 +214,7 @@ async def test_etl_mints_one_surrogate_per_referent_never_equal_to_the_real_valu
 async def test_rerunning_the_etl_is_idempotent_and_keeps_the_same_surrogate(pg_dsn):
     import asyncpg
 
-    from blindfold.store.etl import run_etl_with_transit
+    from support.etl import run_etl_with_transit
 
     transit = _make_stub_transit()
     await run_etl_with_transit(pg_dsn, transit)
@@ -266,8 +266,8 @@ async def test_postgres_repository_seeded_pairs_match_the_vendored_seam(pg_dsn):
     import asyncpg
 
     from blindfold.store import vendored_seed_repository
-    from blindfold.store.etl import run_etl_with_transit
-    from blindfold.store.postgres import PostgresSeedRepository
+    from support.etl import run_etl_with_transit
+    from support.postgres_seed_repository import PostgresSeedRepository
 
     # Persons require a mapping cipher to persist at all (ADR-0045 §5, issue #229).
     transit = _make_stub_transit()

@@ -89,7 +89,7 @@ def _make_stub_transit() -> "blindfold.transit.TransitClient":
 async def test_migration_adds_ciphertext_and_blind_index_columns(pg_dsn):
     import asyncpg
 
-    from blindfold.store.etl import apply_migrations
+    from support.etl import apply_migrations
 
     conn = await asyncpg.connect(pg_dsn)
     try:
@@ -109,7 +109,7 @@ async def test_migration_adds_ciphertext_and_blind_index_columns(pg_dsn):
 async def test_migration_adds_ciphertext_columns_to_person_variations(pg_dsn):
     import asyncpg
 
-    from blindfold.store.etl import apply_migrations
+    from support.etl import apply_migrations
 
     conn = await asyncpg.connect(pg_dsn)
     try:
@@ -129,7 +129,7 @@ async def test_migration_adds_ciphertext_columns_to_person_variations(pg_dsn):
 async def test_migration_adds_ciphertext_columns_to_terms(pg_dsn):
     import asyncpg
 
-    from blindfold.store.etl import apply_migrations
+    from support.etl import apply_migrations
 
     conn = await asyncpg.connect(pg_dsn)
     try:
@@ -149,7 +149,7 @@ async def test_migration_adds_ciphertext_columns_to_terms(pg_dsn):
 async def test_migration_adds_ciphertext_columns_to_term_variations(pg_dsn):
     import asyncpg
 
-    from blindfold.store.etl import apply_migrations
+    from support.etl import apply_migrations
 
     conn = await asyncpg.connect(pg_dsn)
     try:
@@ -171,7 +171,7 @@ async def test_migration_adds_ciphertext_columns_to_org_units(pg_dsn):
     columns for the first time -- there is no prior nullable version to promote."""
     import asyncpg
 
-    from blindfold.store.etl import apply_migrations
+    from support.etl import apply_migrations
 
     conn = await asyncpg.connect(pg_dsn)
     try:
@@ -198,7 +198,7 @@ async def test_etl_with_transit_writes_ciphertext_not_plaintext_to_ciphertext_co
 ):
     import asyncpg
 
-    from blindfold.store.etl import run_etl_with_transit
+    from support.etl import run_etl_with_transit
 
     transit = _make_stub_transit()
     await run_etl_with_transit(pg_dsn, transit)
@@ -231,7 +231,7 @@ async def test_etl_with_transit_writes_ciphertext_not_plaintext_to_ciphertext_co
 async def test_blind_index_enables_equality_lookup_by_real_value(pg_dsn):
     import asyncpg
 
-    from blindfold.store.etl import run_etl_with_transit
+    from support.etl import run_etl_with_transit
 
     transit = _make_stub_transit()
     await run_etl_with_transit(pg_dsn, transit)
@@ -262,7 +262,7 @@ async def test_org_unit_blind_index_enables_equality_lookup_by_real_name(pg_dsn)
     import asyncpg
 
     from blindfold.store._seed import load_vendored_seed
-    from blindfold.store.etl import run_etl_with_transit
+    from support.etl import run_etl_with_transit
 
     transit = _make_stub_transit()
     await run_etl_with_transit(pg_dsn, transit)
@@ -293,7 +293,7 @@ async def test_org_unit_blind_index_enables_equality_lookup_by_real_name(pg_dsn)
 async def test_transit_etl_is_idempotent(pg_dsn):
     import asyncpg
 
-    from blindfold.store.etl import run_etl_with_transit
+    from support.etl import run_etl_with_transit
 
     transit = _make_stub_transit()
     await run_etl_with_transit(pg_dsn, transit)
@@ -320,8 +320,8 @@ async def test_transit_etl_is_idempotent(pg_dsn):
 async def test_postgres_repository_with_transit_returns_decrypted_real_values(pg_dsn):
     import asyncpg
 
-    from blindfold.store.etl import run_etl_with_transit
-    from blindfold.store.postgres import PostgresSeedRepository
+    from support.etl import run_etl_with_transit
+    from support.postgres_seed_repository import PostgresSeedRepository
 
     transit = _make_stub_transit()
     await run_etl_with_transit(pg_dsn, transit)

@@ -1,18 +1,24 @@
 """Postgres-backed entity-graph repository.
 
+Test-only (issue #319): moved out of ``src/blindfold/store`` because nothing shipped
+ever imports it -- the shipped Postgres path (``blindfold.store.entity_graph_store``)
+speaks synchronous ``psycopg``, never ``asyncpg``. This module's only consumers are the
+Docker-gated Postgres tests (``tests/test_entity_graph_postgres.py``,
+``tests/test_transit_ciphertext_columns.py``).
+
 Implements the same ``seeded_pairs()`` seam as the in-process
 :class:`~blindfold.store.repository.VendoredSeedRepository`, but reads (real -> surrogate)
 pairs — canonical values AND every coreference variation — from the graph after the ETL
-has populated it. The in-process and DB-backed implementations therefore yield identical
-pairs, so the hermetic round-trip and the persisted graph agree on every surrogate.
+(``tests/support/etl.py``) has populated it. The in-process and DB-backed implementations
+therefore yield identical pairs, so the hermetic round-trip and the persisted graph agree
+on every surrogate.
 
 Mapping cipher (ADR-0045 §5, issue #229/#230): persons, terms, and both variation tables
 are now ciphertext-only in the DB (no plaintext column exists for any of them). Pass
 ``mapping_cipher`` (or the backward-compat ``transit`` alias) to decrypt every real
 value -- mirrors :class:`~blindfold.store.sqlite.SQLiteSeedRepository` exactly (same
-query shape, asyncpg instead of stdlib sqlite3). Without a cipher, persons and terms are
-both absent from the DB (they are ephemeral when no cipher is configured, ADR-0045 §8,
-extended from persons to terms by issue #230) so ``seeded_pairs()`` returns nothing.
+query shape, asyncpg instead of stdlib sqlite3). Without a cipher, ``seeded_pairs()``
+returns nothing.
 """
 
 from __future__ import annotations

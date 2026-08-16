@@ -46,7 +46,14 @@ _absence_check_spec.loader.exec_module(absence_check)
 # change can make pydantic's own lazy import go away). The real invariant -- rich never
 # installed in the freeze environment in the first place -- is asserted as a precondition
 # in the freeze job, before PyInstaller runs; see packaging/freeze_env_check.py.
-FORBIDDEN_MODULES = ("blindfold_devtools",)
+#
+# `asyncpg` (issue #319) joined this tuple once its only two importers
+# (`tests/support/etl.py`, `tests/support/postgres_seed_repository.py`) moved out of
+# `src/blindfold`: unlike `rich`, `asyncpg` is genuinely installed in the freeze
+# environment (it lives in the `dev` group, which `uv sync --group freeze` pulls in
+# alongside `freeze` -- see the comment above), so this containment check is a real,
+# non-vacuous proof of unreachability, not a pass-because-absent-from-the-env check.
+FORBIDDEN_MODULES = ("blindfold_devtools", "asyncpg")
 
 
 def render_canary_spec(
