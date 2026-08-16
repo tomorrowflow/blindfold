@@ -1273,9 +1273,11 @@ def leak_gate(
         # legal-form-suffix strip) is a distinct literal string from ``item.real``
         # (e.g. bare "Kestrel Dynamics" vs "Kestrel Dynamics GmbH") -- the backstop
         # here must fail closed on it too, even when the blinder's own variation
-        # scan (engine._blindfold_text) missed it. ``item.variations`` always
-        # includes ``item.real`` itself.
-        for variation in item.variations:
+        # scan (engine._blindfold_text) missed it. ``entity_variations`` always
+        # includes ``item.real``, but this is the fail-closed backstop: check
+        # ``item.real`` explicitly rather than trust the (defaultable) ``variations``
+        # field to carry it, so the real-value check can never silently go quiet.
+        for variation in {item.real, *item.variations}:
             if _real_value_pattern(variation).search(outbound_text):
                 _raise_leak(
                     f"review-inbox item {item.id} (surrogate: {item.provisional_surrogate})"
