@@ -20,7 +20,7 @@ import logging
 import re
 import threading
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any, NoReturn
 
@@ -776,6 +776,211 @@ def _blindfold_json_value(
     return value
 
 
+@dataclass(frozen=True)
+class ReplacementSpan:
+    """One collected blinding replacement (issue #325): a ``[start, end)`` range in
+    a frozen text to splice ``surrogate`` into, the ``real`` value it stands for
+    (for ``session``/``hop_ctx`` bookkeeping), and which detection ``layer``
+    produced it (``"l2"``, ``"provisional_pair"``, ``"l1:<kind>"``, ``"l3"``) --
+    descriptive only, never read for dispatch.
+
+    Every ``_blindfold_text`` stage now *collects* a list of these against a
+    stable input text instead of mutating a shared accumulator mid-detection;
+    :func:`_apply_spans` is the one place a span's ``surrogate`` actually gets
+    spliced in. A stage's own offsets are therefore valid for as long as the text
+    it detected against is valid -- never contingent on *where* some other
+    stage's splice happened to land, which is the offset-arithmetic bug class
+    #310 (L2 window)/#311 (L3 cache re-anchoring) both independently patched
+    around.
+    """
+
+    start: int
+    end: int
+    surrogate: str
+    real: str
+    layer: str
+
+
+def _apply_spans(
+    text: str, spans: Sequence[ReplacementSpan], *, assert_no_overlap: bool = True
+) -> str:
+    """Splice every collected :class:`ReplacementSpan` into ``text`` in one pass
+    (issue #325's single conflict-resolution + splice phase).
+
+    Right-to-left by ``start`` (a stable sort, so two spans tied on ``start``
+    keep ``spans``' own relative order) so an earlier span's own offset is
+    never invalidated by a later splice -- the one piece of offset arithmetic
+    this module still does, now concentrated in a single, directly testable
+    place instead of repeated ad hoc at every mutation point.
+
+    ``assert_no_overlap`` (default True): the L2/provisional-pair/L1 combined
+    splice in :func:`_blindfold_text` collects spans that are non-overlapping
+    *by construction* -- every stage excludes ranges an earlier-precedence
+    stage already claimed (L2 wins over the provisional-pair pass wins over
+    L1) -- so an overlap there means that exclusion logic itself has a bug;
+    raising surfaces it immediately instead of silently splicing at a stale
+    offset, the exact failure mode #179's containment backstop and #289's
+    line-clipping guard were retrofitted to catch after the fact.
+
+    L3's own final splice passes ``assert_no_overlap=False``: unlike the
+    deterministic passes, two *different* novel-entity mints can legitimately
+    produce overlapping spans today (issue #292's own test fixture is a live
+    repro -- a coalesced "Alex Brenner" mint and a separate bare-"Alex" mint's
+    #295 coverage sweep both claim the same "Alex" substring). That is a
+    pre-existing quirk of L3's mint/coverage-sweep interaction, not something
+    #325 introduces or is scoped to fix (a behavior-preserving refactor, per
+    the issue's own framing) -- so it keeps the pre-#325 tie-break (stable
+    sort order) instead of failing closed on it.
+    """
+    ordered = sorted(spans, key=lambda span: span.start, reverse=True)
+    if assert_no_overlap:
+        for later, earlier in zip(ordered, ordered[1:]):
+            if earlier.end > later.start:
+                raise AssertionError(
+                    f"overlapping replacement spans: {earlier!r} and {later!r}"
+                )
+    result = text
+    for span in ordered:
+        result = result[: span.start] + span.surrogate + result[span.end :]
+    return result
+
+
+def _overlaps_any(start: int, end: int, ranges: Sequence[tuple[int, int]]) -> bool:
+    """True if ``[start, end)`` overlaps any range in ``ranges`` (issue #325):
+    the frozen-text generalization of "this text was already consumed by an
+    earlier, higher-precedence stage" -- partial overlap counts, mirroring how
+    a sequential mutate-in-place pass would have found the underlying
+    characters already replaced, not just a fully-contained hit.
+    """
+    return any(start < r_end and r_start < end for r_start, r_end in ranges)
+
+
+def _collect_l2_spans(text: str, mapping: SurrogateMapping) -> list[ReplacementSpan]:
+    """Collect L2 dictionary-match replacement spans against frozen ``text``
+    (ADR-0003/0004) -- pure detection, no mutation, directly testable against an
+    arbitrary frozen string (issue #325). ``text`` is always the untouched hop
+    text: nothing precedes L2 in the pipeline, so "frozen" and "as passed to
+    :func:`_blindfold_text`" coincide for this stage.
+    """
+    return [
+        ReplacementSpan(span.start, span.end, span.surrogate, span.real, "l2")
+        for span in detect_l2(text, mapping.entities())
+    ]
+
+
+def _collect_provisional_pair_spans(
+    text: str,
+    inbox: ReviewInbox | None,
+    session: ExchangeSession,
+    hop_ctx: "_HopContext | None",
+    exclude: Sequence[tuple[int, int]] = (),
+) -> list[ReplacementSpan]:
+    """Collect ADR-0051 provisional-pair replacement spans against frozen ``text``
+    (issue #299/#300, extended to real-word components by #306) -- the
+    :func:`_blindfold_text` message-hop pipeline's replacement for calling
+    :func:`_apply_provisional_pairs` inline, which mutated a local accumulator
+    once per ``(item, value)`` via ``.subn()``. ``_apply_provisional_pairs``
+    itself is unchanged and still used as-is by the ADR-0051 stage 1 tool-
+    description/schema-prose pass (:func:`_blindfold_tool_descriptions` /
+    :func:`_blindfold_schema_prose`), which sits outside this issue's scope --
+    #325 restructures ``_blindfold_text``'s own pipeline only. Deterministic
+    only: reads ``inbox.list()``, never runs L3, never calls ``inbox.upsert``.
+
+    ``exclude`` holds ranges an earlier-precedence stage (L2) already claimed in
+    this same pass -- a match overlapping one is skipped exactly as it would
+    have been invisible to a sequential mutate-in-place scan once that range had
+    already been rewritten. Matches found by this stage itself are folded into
+    ``exclude`` incrementally, in the same (item, then value-longest-first)
+    order the original nested loop used, so an earlier, longer value's match
+    still wins over a shorter one nested inside it (e.g. a legal-form-stripped
+    bare org name inside its own longer surface, #289/#296) -- the identical
+    precedence a sequential ``.subn()`` scan enforced by consuming the text as
+    it went.
+
+    Every surviving ``(item, value)`` match is ``session.record``ed once (target,
+    recorded_real) and its surrogate appended to ``hop_ctx.surrogates`` once,
+    matching the pre-#325 behaviour: ``.subn()`` replaced every occurrence of
+    one value in a single call, so a repeated value was one bookkeeping entry
+    covering several spans, never one per occurrence.
+    """
+    if inbox is None:
+        return []
+    items = inbox.list()
+    component_map = _provisional_component_map(items)
+    claimed = list(exclude)
+    spans: list[ReplacementSpan] = []
+    for item in items:
+        pairs = _provisional_pair_map(item, component_map)
+        for value in sorted(pairs, key=len, reverse=True):
+            target, recorded_real = pairs[value]
+            occurrences = [
+                (match.start(), match.end())
+                for match in _real_value_pattern(value).finditer(text)
+                if not _overlaps_any(match.start(), match.end(), claimed)
+            ]
+            if not occurrences:
+                continue
+            claimed.extend(occurrences)
+            session.record(target, recorded_real)
+            if hop_ctx is not None:
+                hop_ctx.surrogates.append(target)
+            for start, end in occurrences:
+                spans.append(
+                    ReplacementSpan(start, end, target, recorded_real, "provisional_pair")
+                )
+    return spans
+
+
+def _collect_l1_spans(
+    text: str, mapping: SurrogateMapping, exclude: Sequence[tuple[int, int]] = ()
+) -> list[ReplacementSpan]:
+    """Collect L1 deterministic-PII replacement spans against frozen ``text``
+    (ADR-0003) -- pure detection (aside from ``mapping.mint_pii``'s unavoidable
+    pool-state side effect), no session/hop_ctx dependency, directly testable
+    against an arbitrary frozen string (issue #325).
+
+    ``exclude`` holds ranges an earlier-precedence stage (L2, the
+    provisional-pair pass) already claimed in this same pass; an occurrence
+    overlapping one is skipped -- the frozen-text generalization of the
+    pre-#325 loop's ``if span.value not in result: continue`` guard, which
+    relied on that text having already been overwritten.
+
+    ``mapping.mint_pii`` is stable/idempotent per value (surrogates are
+    stable), so a value with several surviving occurrences gets the same
+    surrogate spliced into every one of them -- one :class:`ReplacementSpan`
+    per occurrence, deliberately not deduplicated here: bookkeeping dedup
+    (once per distinct value, mirroring the pre-#325 loop's ``.replace()``
+    consuming every occurrence in one call) is the caller's job, since this
+    function takes no ``session``/``hop_ctx`` to bookkeep into.
+    """
+    spans: list[ReplacementSpan] = []
+    seen_values: set[str] = set()
+    for pii_span in detect_pii(text):
+        if pii_span.value in seen_values:
+            continue
+        seen_values.add(pii_span.value)
+        # Reserved-namespace surrogates are themselves PII-shaped (an
+        # `.invalid` email is still an email). Skip re-blindfolding L1's own
+        # already-issued surrogate (this hop's own literal quoting of a value
+        # already minted -- from an earlier exchange, or, via `exclude`
+        # instead of this check, from L2/the provisional-pair pass this hop).
+        if mapping.is_known_surrogate(pii_span.value):
+            continue
+        occurrences = [
+            (match.start(), match.end())
+            for match in re.finditer(re.escape(pii_span.value), text)
+            if not _overlaps_any(match.start(), match.end(), exclude)
+        ]
+        if not occurrences:
+            continue
+        surrogate = mapping.mint_pii(pii_span.kind, pii_span.value)
+        for start, end in occurrences:
+            spans.append(
+                ReplacementSpan(start, end, surrogate, pii_span.value, f"l1:{pii_span.kind}")
+            )
+    return spans
+
+
 def _blindfold_text(
     text: str,
     mapping: SurrogateMapping,
@@ -789,6 +994,15 @@ def _blindfold_text(
     system_confined_tokens: frozenset[str] = frozenset(),
 ) -> str:
     """Rewrite ``text`` by replacing every L2-detected entity span with its surrogate.
+
+    Architecture (issue #325): L2, the provisional-pair pass, and L1 each
+    *collect* a ``list[ReplacementSpan]`` against ``text`` (see
+    :func:`_collect_l2_spans` / :func:`_collect_provisional_pair_spans` /
+    :func:`_collect_l1_spans`), combined into one splice via
+    :func:`_apply_spans`; L3 then runs candidate-span adjudication against that
+    result and does its own (already collect-then-apply) final splice. Two
+    total rebinds of ``result``, replacing the pre-#325 pipeline's four ad hoc
+    mutation points.
 
     L2 (ADR-0003) flags candidate spans at token boundaries — no substring over-
     redaction. Variations of one entity share its surrogate (coreference, ADR-0004),
@@ -809,49 +1023,67 @@ def _blindfold_text(
     :meth:`L3Detector.detect` unchanged, for every hop including ``system``'s
     own — see :func:`blindfold_payload`.
     """
-    result = text
+    # Issue #325: stages 1 (L2), 1.5 (the provisional-pair pass, ADR-0051) and 2
+    # (L1) each *collect* replacement spans against ``text`` -- the untouched,
+    # frozen hop text -- instead of mutating a shared accumulator mid-detection.
+    # Precedence (L2 wins over the provisional-pair pass wins over L1, matching
+    # the pre-#325 mutate-in-place order) is enforced by excluding ranges an
+    # earlier stage already claimed, not by a later stage failing to find text
+    # that has already been overwritten. All three are combined into ONE
+    # conflict-resolution + splice phase below (:func:`_apply_spans`) -- the
+    # first of this function's now-two total rebinds of ``result`` (down from
+    # the four ad hoc rebind points #325 reports), the second being L3's own
+    # final splice further down, which was already collect-then-apply before
+    # this issue.
     l2_started_at = time.monotonic()
-    spans = detect_l2(result, mapping.entities())
-    if spans:
-        # Replace right-to-left so earlier spans' offsets stay valid mid-rewrite.
-        for span in sorted(spans, key=lambda s: s.start, reverse=True):
-            result = result[: span.start] + span.surrogate + result[span.end :]
-            session.record(span.surrogate, span.real)
-            if hop_ctx is not None:
-                hop_ctx.surrogates.append(span.surrogate)
+    l2_spans = _collect_l2_spans(text, mapping)
     if hop_ctx is not None:
-        hop_ctx.l2_count += len(spans)
+        hop_ctx.l2_count += len(l2_spans)
         hop_ctx.l2_duration_ms += (time.monotonic() - l2_started_at) * 1000
-    # ADR-0051 stage 2 (issue #300): apply every already-minted provisional pair
-    # (#299's own deterministic tool-description substitution, :func:`_apply_provisional_pairs`)
-    # to this hop too -- the entity graph (above) always wins by construction, since a
-    # registered Term equal to a provisional real is already rewritten by the time this
-    # runs. Strictly before L1/L3 below: the occurrence is already a surrogate by the
-    # time L3 sees this hop, which is what keeps #292's self-poisoning guard from
-    # depending on L3 happening to re-confirm the same value in this hop too (the
-    # run-6-shaped deadlock this closes for message text, not just tool descriptions).
-    result = _apply_provisional_pairs(result, inbox, session, hop_ctx)
-    # L1 deterministic PII (ADR-0003): regex over the full text, reserved-namespace
-    # surrogates (ADR-0005). Runs after the dictionary pass so any entity-graph
-    # match has already won; PII spans cover what L1 alone is meant to catch.
-    l1_started_at = time.monotonic()
-    for span in detect_pii(result):
-        if span.value not in result:
-            continue
-        # Reserved-namespace surrogates are themselves PII-shaped (an `.invalid`
-        # email is still an email). On a later hop the dict pass replaces a real
-        # value with its surrogate; L1 would then re-detect that surrogate and mint
-        # a second surrogate for the same entity, breaking clause E-stable. Skip.
-        if mapping.is_known_surrogate(span.value):
-            continue
-        surrogate = mapping.mint_pii(span.kind, span.value)
-        result = result.replace(span.value, surrogate)
-        session.record(surrogate, span.value)
+    for span in sorted(l2_spans, key=lambda s: s.start, reverse=True):
+        session.record(span.surrogate, span.real)
         if hop_ctx is not None:
-            hop_ctx.l1_counts[span.kind] = hop_ctx.l1_counts.get(span.kind, 0) + 1
-            hop_ctx.surrogates.append(surrogate)
+            hop_ctx.surrogates.append(span.surrogate)
+    l2_ranges = [(span.start, span.end) for span in l2_spans]
+
+    # ADR-0051 stage 2 (issue #300): every already-minted provisional pair
+    # (#299's own deterministic tool-description substitution) applies to this
+    # hop too -- the entity graph (L2, above) always wins by construction, since
+    # a registered Term equal to a provisional real is already excluded via
+    # ``l2_ranges``. Strictly before L1/L3 below: the occurrence is already a
+    # surrogate by the time L3 sees this hop's applied text, which is what keeps
+    # #292's self-poisoning guard from depending on L3 happening to re-confirm
+    # the same value in this hop too (the run-6-shaped deadlock this closes for
+    # message text, not just tool descriptions).
+    pp_spans = _collect_provisional_pair_spans(
+        text, inbox, session, hop_ctx, exclude=l2_ranges
+    )
+    pp_ranges = [(span.start, span.end) for span in pp_spans]
+
+    # L1 deterministic PII (ADR-0003): regex over the full text, reserved-
+    # namespace surrogates (ADR-0005). Excludes L2 + the provisional-pair pass's
+    # ranges so any entity-graph/provisional match has already won; PII spans
+    # cover what L1 alone is meant to catch.
+    l1_started_at = time.monotonic()
+    l1_spans = _collect_l1_spans(text, mapping, exclude=l2_ranges + pp_ranges)
     if hop_ctx is not None:
         hop_ctx.l1_duration_ms += (time.monotonic() - l1_started_at) * 1000
+    seen_l1_values: set[str] = set()
+    for span in l1_spans:
+        # Bookkeeping is deduplicated per distinct real value, not per
+        # occurrence -- mirrors the pre-#325 loop, where the first occurrence's
+        # whole-string ``.replace()`` had already consumed every later
+        # occurrence of the same value by the time the loop reached it.
+        if span.real in seen_l1_values:
+            continue
+        seen_l1_values.add(span.real)
+        session.record(span.surrogate, span.real)
+        if hop_ctx is not None:
+            kind = span.layer.split(":", 1)[1]
+            hop_ctx.l1_counts[kind] = hop_ctx.l1_counts.get(kind, 0) + 1
+            hop_ctx.surrogates.append(span.surrogate)
+
+    result = _apply_spans(text, l2_spans + pp_spans + l1_spans)
     # L3 candidate-span adjudication (ADR-0003 / ADR-0010): novel capitalized tokens
     # the deterministic passes couldn't resolve. Confirmed candidates get a
     # **provisional** surrogate minted by the inbox (NOT the main mapping — keeping
@@ -1077,13 +1309,26 @@ def _blindfold_text(
                     # bare-form variation text, so restore fidelity doesn't depend
                     # on which surface form happened to be encountered where.
                     spans.append((m_start, m_end, item.provisional_surrogate, item.real))
-        for start, end, surrogate, real in sorted(
-            spans + pii_spans, key=lambda s: s[0], reverse=True
-        ):
-            result = result[:start] + surrogate + result[end:]
-            session.record(surrogate, real)
+        # Issue #325: L3 was already collect-then-apply before this issue (every
+        # candidate above is appended to ``spans``/``pii_spans``, never spliced
+        # immediately) -- the one change here is routing that single splice
+        # through the same :func:`_apply_spans` primitive the L2/provisional-
+        # pair/L1 phase above now uses, this function's second and last rebind
+        # of ``result``. L3's own three legacy span guards -- #179's containment
+        # backstop, #289's line-clipping (:func:`_clip_span_to_candidate_line`),
+        # and #293/#295/#296's coverage sweep -- are unaffected: they already
+        # ran as assertions/filters over this collected span set (``spans``),
+        # before any splice, not over a mutated accumulator, so #325 does not
+        # need to touch them.
+        l3_spans = [
+            ReplacementSpan(start, end, surrogate, real, "l3")
+            for start, end, surrogate, real in spans + pii_spans
+        ]
+        for span in sorted(l3_spans, key=lambda s: s.start, reverse=True):
+            session.record(span.surrogate, span.real)
             if hop_ctx is not None:
-                hop_ctx.surrogates.append(surrogate)
+                hop_ctx.surrogates.append(span.surrogate)
+        result = _apply_spans(result, l3_spans, assert_no_overlap=False)
     return result
 
 
