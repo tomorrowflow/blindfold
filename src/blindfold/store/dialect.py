@@ -28,6 +28,11 @@ _SQLITE_BUSY_TIMEOUT_MS = 5000
 # `ALTER TABLE ... ADD COLUMN IF NOT EXISTS` (unlike Postgres) -- migrations_sqlite.sql
 # still writes it for a 1:1 read against migrations.sql, so apply_sqlite_migrations()
 # rewrites each such statement into an existence check + a plain ADD COLUMN.
+#
+# migrations.sql and migrations_sqlite.sql are maintained 1:1 by hand -- nothing else
+# enforces that they stay in sync (issue #320). tests/test_migrations_parity.py is the
+# gate: it parses both files into normalized structural sets (tables/columns/unique
+# constraints) and fails on any asymmetry, in the default no-Docker suite.
 _ALTER_ADD_COLUMN_IF_NOT_EXISTS_RE = re.compile(
     r"ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+IF\s+NOT\s+EXISTS\s+(\w+)\s+(.+)",
     re.IGNORECASE | re.DOTALL,
