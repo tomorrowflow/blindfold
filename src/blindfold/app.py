@@ -1725,23 +1725,33 @@ async def count_tokens(
     own count endpoint. There is no restore side — the response is a bare token
     count, never surrogate text — so no resolution gate runs here.
 
-    The mint pass below always passes ``inbox=None``, so ``blindfold_payload``
-    substitutes the ephemeral, unattached inbox :func:`~blindfold.engine._replay_inbox`
-    already provides for a wired-detector/no-inbox caller (issue #274) — a
-    confirmed novel candidate is still minted (so it's blindfolded out of this
-    request), but the mint can never reach the durable review inbox or grow the
-    entity graph. A measurement is not a use; determinism of the shared
-    ``mapping`` singleton means the same real value still gets the same surrogate
-    when the same content is actually sent moments later.
+    The mint pass below passes ``inbox.read_only_view()`` (issue #322), never the
+    DI-injected ``ReviewInbox`` itself:
+    :meth:`~blindfold.review.ReviewInbox.read_only_view` returns a fresh,
+    unattached inbox seeded with the durable inbox's *current* items, so the
+    ADR-0051 stage-2 deterministic provisional-pair pass
+    (:func:`~blindfold.engine._apply_provisional_pairs`) can see and reapply an
+    already-minted provisional pair — see the next paragraph — while a genuinely
+    novel candidate this call's own L3 pass confirms is still minted (so it's
+    blindfolded out of this request) into that seeded copy only: the mint can
+    never reach the durable review inbox or grow the entity graph. A measurement
+    is not a use; determinism of the shared ``mapping`` singleton means the same
+    real value still gets the same surrogate when the same content is actually
+    sent moments later.
 
-    The real, DI-injected ``ReviewInbox`` IS read here, though (issue #287): a
-    provisional entity minted on an earlier ``/v1/messages``/``/v1/chat/completions``
-    exchange lives only in that durable inbox, never in ``mapping.real_values()``,
-    and a count-tokens body carrying its real value back (the same transcript-
-    replay exposure as any other endpoint) must still be caught by the pre-egress
-    leak gate. Reading the inbox's existing items is not a "use" that needs
-    withholding the way minting into it would be — only the write side is
-    deliberately skipped above.
+    Before #322: the mint pass instead passed ``inbox=None``, so
+    ``blindfold_payload`` substituted the *empty* ephemeral inbox
+    :func:`~blindfold.engine._replay_inbox` provides for a wired-detector/no-inbox
+    caller (issue #274) — the deterministic pass never saw a provisional pair
+    minted on an earlier exchange, even though the leak gate below (issue #287)
+    always consulted the real, DI-injected ``ReviewInbox``. Restore hands a
+    provisional entity's real value back to the client on the turn it is
+    discovered, so the client's own transcript carries it on every later turn;
+    a count-tokens call replaying that transcript hit a blinder that could not
+    see the pair and a gate that could — every such call 503'd for the rest of
+    the session, the ADR-0051 blinder-set-equals-gate-set invariant violated by
+    construction on this one route. ``read_only_view()`` restores the symmetry:
+    same read access as the gate, same write suppression as before.
 
     The returned count is of the *surrogate* text that would actually be sent,
     not the user's real text — those can differ when a surrogate tokenizes
@@ -1750,10 +1760,10 @@ async def count_tokens(
     meter reflects the blindfolded prompt, not the real one.
 
     No ``declared_tool_vocabulary`` (issue #302) is passed to ``blindfold_payload``
-    below, deliberately, for the same reason ``inbox=None`` is: a measurement is
-    not a use, so this endpoint never grows durable, workspace-scoped state —
-    only ``/v1/messages``/``/v1/chat/completions`` teach the workspace's declared-
-    tool vocabulary.
+    below, deliberately, for the same reason the mint pass never reaches the
+    durable review inbox: a measurement is not a use, so this endpoint never
+    grows durable, workspace-scoped state — only ``/v1/messages``/
+    ``/v1/chat/completions`` teach the workspace's declared-tool vocabulary.
     """
     start = time.monotonic()
     payload = await request.json()
@@ -1776,7 +1786,8 @@ async def count_tokens(
         system_confined_tokens = extract_system_confined_tokens_messages(payload)
         result = await _mint_or_block(
             lambda: blindfold_payload(
-                payload, mapping, effective_l3_detector, None, declared_tools,
+                payload, mapping, effective_l3_detector, inbox.read_only_view(),
+                declared_tools,
                 workspace=workspace,
                 phone_candidates_enabled=policy.phone_candidates_enabled,
                 system_confined_tokens=system_confined_tokens,

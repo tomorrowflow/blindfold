@@ -45,6 +45,7 @@ from blindfold.app import (
     get_audit_log,
     get_declared_tool_vocabulary,
     get_l3_detector,
+    get_mapping,
     get_review_inbox,
     get_unprotected_mode,
     get_upstream_client,
@@ -52,6 +53,7 @@ from blindfold.app import (
 )
 from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
 from blindfold.policy import DEFAULT_WORKSPACE, WorkspacePolicies
+from blindfold.review import ReviewInbox
 from blindfold.store import vendored_seed_repository
 from blindfold.surrogates import SurrogateMapping
 from blindfold.unprotected_mode import UnprotectedMode
@@ -273,6 +275,125 @@ async def test_count_tokens_never_grows_the_real_review_inbox():
     egressed = recorded[0].content.decode("utf-8")
     assert "Zzyzxplorp" not in egressed
     assert len(inbox.list()) == before
+
+
+class _ConfirmNothing:
+    """Stubbed-Ollama that never confirms a candidate -- models a detector that
+    would otherwise MISS a provisional entity's replayed real value, so a pass
+    on this test proves the deterministic provisional-pair pass caught it, not
+    a lucky re-confirmation.
+    """
+
+    def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
+        return L3Adjudication(is_entity=False)
+
+
+def _make_two_route_stub_upstream(recorded: list[httpx.Request]) -> UpstreamClient:
+    """Serves both ``/v1/messages`` (turn 1, the mint) and
+    ``/v1/messages/count_tokens`` (turn 2, the regression) off the one client,
+    mirroring how a real ``UpstreamClient`` backs both routes.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        recorded.append(request)
+        if request.url.path == "/v1/messages/count_tokens":
+            return httpx.Response(200, json={"input_tokens": 9})
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Noted."}],
+                "model": "claude-3-5-sonnet",
+                "stop_reason": "end_turn",
+            },
+        )
+
+    client = httpx.AsyncClient(
+        base_url="http://upstream.test",
+        transport=httpx.MockTransport(handler),
+    )
+    return UpstreamClient(base_url="http://upstream.test", client=client)
+
+
+@pytest.mark.anyio
+async def test_count_tokens_blindfolds_a_provisional_real_value_minted_on_messages():
+    # Issue #322: count_tokens' mint pass runs against an empty, ephemeral inbox
+    # (AC2, by design), but its leak gate consults the durable one (#287). A
+    # provisional real value discovered on an earlier /v1/messages exchange is
+    # restored to the client, so the client's own transcript carries it back --
+    # and a later count_tokens call replays that transcript verbatim. Before the
+    # fix, the blinder never saw the durable inbox's provisional pair while the
+    # gate did, blocking every count_tokens call for the rest of the session
+    # (the ADR-0051 blinder-set != gate-set deadlock, reintroduced on this one
+    # route). AC1: the read side must blindfold to the reused provisional
+    # surrogate and return 200, not a blocked-leak 503.
+    mapping = _seeded_mapping()
+    inbox = ReviewInbox()
+    novel = "Kestrel Dynamics"
+
+    recorded: list[httpx.Request] = []
+    app.dependency_overrides[get_upstream_client] = lambda: _make_two_route_stub_upstream(
+        recorded
+    )
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_review_inbox] = lambda: inbox
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            # Turn 1: L3 confirms the novel org on /v1/messages -- auto-blindfolded
+            # and minted into the durable review inbox as a provisional entity.
+            app.dependency_overrides[get_l3_detector] = lambda: L3Detector(
+                _AlwaysConfirmAdjudicator()
+            )
+            first = await client.post(
+                "/v1/messages",
+                json={
+                    "model": "m",
+                    "messages": [
+                        {"role": "user", "content": f"Please brief {novel} tomorrow."}
+                    ],
+                },
+            )
+            assert first.status_code == 200
+            items = inbox.list()
+            assert len(items) == 1
+            surrogate = items[0].provisional_surrogate
+
+            # Turn 2: the client's own transcript (Claude Code's count_tokens call)
+            # carries the restored real value straight back. Detection would MISS
+            # it this time if it ever ran (_ConfirmNothing) -- the fix must not
+            # depend on L3 re-confirming.
+            app.dependency_overrides[get_l3_detector] = lambda: L3Detector(
+                _ConfirmNothing()
+            )
+            second = await client.post(
+                "/v1/messages/count_tokens",
+                json={
+                    "model": "m",
+                    "messages": [
+                        {"role": "user", "content": f"Please brief {novel} tomorrow."}
+                    ],
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    # No blocked-leak 503 -- the provisional pair was blindfolded before the gate.
+    assert second.status_code == 200
+    assert second.json() == {"input_tokens": 9}
+    # Clause A: the count_tokens request carried the reused provisional surrogate,
+    # never the real value.
+    count_tokens_request = recorded[-1]
+    assert count_tokens_request.url.path == "/v1/messages/count_tokens"
+    egressed = count_tokens_request.content.decode("utf-8")
+    assert novel not in egressed
+    assert surrogate in egressed
+    # AC2 (unchanged): count_tokens still never grows the durable review inbox.
+    assert len(inbox.list()) == 1
 
 
 @pytest.mark.anyio
