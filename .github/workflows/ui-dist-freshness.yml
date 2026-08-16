@@ -1,0 +1,45 @@
+# ui-dist-freshness — CI gate for the committed management-SPA bundle (issue #321).
+#
+# ADR-0026 vendors frontend/'s build output into the repo (src/blindfold/ui_dist/) so a
+# clean checkout installs and serves /ui/ with no Node at install or run time -- but that
+# ADR shipped with no CI check that the vendored bundle still matches frontend/src/, and
+# it drifted: the Connect page's compiled bundle kept telling users Blindfold doesn't
+# implement POST /v1/messages/count_tokens for several cycles after #267 shipped that
+# endpoint, because nothing rebuilds the SPA and compares it against what's committed.
+#
+# packaging/ui_dist_freshness.py does the actual rebuild-and-diff (same script
+# tests/test_ui_dist_freshness.py exercises directly, skip-guarded there on
+# frontend/node_modules being installed) -- gates on a normalized content manifest
+# (relative path -> sha256), not a raw git diff, so a divergence reads as "these files
+# changed" rather than "the trees differ".
+#
+# Own job, not folded into web-verify.yml: that workflow's Playwright suite drives the
+# already-committed bundle through a live server: an unrebuilt-but-stale bundle can be
+# perfectly self-consistent (every UI affordance still renders and behaves) and still
+# say something false, exactly the failure mode #321 found. Rebuilding is a distinct
+# question from "does the served bundle behave correctly".
+
+name: ui-dist-freshness
+
+"on":
+  push: {}
+  pull_request: {}
+  workflow_dispatch: {}
+
+jobs:
+  ui-dist-freshness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Rebuild the SPA and diff it against the committed bundle
+        run: python3 packaging/ui_dist_freshness.py

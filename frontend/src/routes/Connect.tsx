@@ -140,11 +140,6 @@ export function Connect() {
           <h3>Good to know</h3>
           <ul>
             <li>
-              Blindfold doesn't implement <code>POST /v1/messages/count_tokens</code>. Claude
-              Code counts context usage through inference requests instead -- still fully
-              blindfolded, just an extra inference request per count.
-            </li>
-            <li>
               Claude Code sends a harmless <code>HEAD /api/hello</code> connection probe at
               startup; nothing to do about it. Leave{" "}
               <code>CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY</code> unset -- Blindfold
