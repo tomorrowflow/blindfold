@@ -17,8 +17,10 @@ export function eventKind(event: string): CardKind | null {
   if (event === "re-identify-denied" || event === "re-identify-failed") return "reveal";
   if (event === "entity-list-searched") return "lookup";
   if (event.startsWith("blocked-")) return "block";
-  // deterministic-only-pass, entity-merged, surrogate-edited, upstream-* — structural
-  // or non-real-space events, omitted from the reveal/lookup/block kind set.
+  // deterministic-only-pass, upstream-* — structural or non-real-space events,
+  // omitted from the reveal/lookup/block kind set. Surrogate-space structural
+  // work (merge, surrogate rename) is never an audit event at all (CONTEXT.md,
+  // issue #326), so no event name for it exists here to classify.
   return null;
 }
 

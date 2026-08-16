@@ -2906,12 +2906,12 @@ def _apply_merge_side_effects(
     audit_log: AuditLog,
     identity: str,
 ) -> None:
-    """Sync the surrogate mapping and audit a completed entity merge.
+    """Sync the surrogate mapping for a completed entity merge.
 
     Shared by both merge endpoints (by-canonical-name and by-id, ADR-0016) so the
-    seed/retire/audit block is defined once. The audit reason carries only
-    ``winner_id``/``loser_id`` — never real canonical names (SEC-4): an admin without
-    the re-identifier role must not learn real entity names via the audit log.
+    seed/retire block is defined once. Merge is surrogate-space structural work and
+    is never an audit event (CONTEXT.md, issue #326) -- recording it would be
+    history/versioning, a distinct deferred concept.
     """
     # Sync the surrogate mapping: loser's canonical + inherited variations now
     # map to the winner's active surrogate (for future blindfold passes).
@@ -2925,15 +2925,6 @@ def _apply_merge_side_effects(
     # via their own ExchangeSession.injected dict (closed-world restore, ADR-0006).
     for retired in merged.retired_surrogates:
         mapping.retire_surrogate(retired)
-
-    audit_log.append(
-        AuditRecord(
-            workspace=workspace,
-            event="entity-merged",
-            reason=f"winner_id={winner_id!r}, loser_id={loser_id!r}",
-            identity=identity,
-        )
-    )
 
 
 @app.post("/v1/management/entities/merge")
@@ -3221,14 +3212,9 @@ async def edit_entity_surrogate(
     for retired in entity.retired_surrogates:
         mapping.retire_surrogate(retired)
 
-    audit_log.append(
-        AuditRecord(
-            workspace=workspace,
-            event="surrogate-edited",
-            reason=f"entity_id={entity_id!r}, new_surrogate={new_surrogate!r}",
-            identity=_caller_identity(request),
-        )
-    )
+    # Surrogate rename is surrogate-space structural work, never an audit event
+    # (CONTEXT.md, issue #326): recording it would be history/versioning, a
+    # distinct deferred concept.
 
     # Return only surrogate-space data. canonical_name is a real entity name;
     # this endpoint requires only admin (not re-identifier), so including it

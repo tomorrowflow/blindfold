@@ -10,6 +10,7 @@ import {
   ORG2_SURROGATE,
   ORG3_SURROGATE,
   auditEventsFor,
+  auditEventCount,
   rowByCurrentSurrogate,
 } from "./fixtures";
 
@@ -305,6 +306,8 @@ test.describe("entity list shell — merge", () => {
     alicePage,
     baseURL,
   }) => {
+    const auditCountBeforeMerge = await auditEventCount(baseURL!);
+
     await alicePage.goto(`/ui/entities`);
     const row = alicePage.locator("tr", { hasText: PERSON_SURROGATE });
     await row.locator('[data-testid^="merge-trigger-"]').click();
@@ -326,8 +329,10 @@ test.describe("entity list shell — merge", () => {
     await expect(dialog).toBeHidden();
     await expect(alicePage.locator("tr", { hasText: PERSON2_SURROGATE })).toHaveCount(0);
 
-    const merges = await auditEventsFor(baseURL!, "entity-merged", "alice");
-    expect(merges.length).toBeGreaterThan(0);
+    // Merge is surrogate-space structural work, never an audit event (CONTEXT.md,
+    // issue #326): recording it would be history/versioning, a distinct deferred
+    // concept. The audit log's own event count must be unchanged by the merge.
+    expect(await auditEventCount(baseURL!)).toBe(auditCountBeforeMerge);
   });
 });
 

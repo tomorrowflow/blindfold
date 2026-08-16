@@ -276,3 +276,41 @@ async def test_edit_surrogate_denied_without_admin_role():
         app.dependency_overrides.clear()
 
     assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# 7. A surrogate edit (surrogate-space structural work) produces no audit record
+#    (issue #326)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_edit_surrogate_produces_no_audit_record():
+    rbac = _admin_rbac()
+    graph = EntityGraph()
+    mapping = SurrogateMapping()
+    entity = graph.add_entity(
+        kind="person", workspace="acme", canonical_name="Alice Smith", surrogate="S1"
+    )
+    mapping.seed("Alice Smith", "S1")
+    audit_log = AuditLog()
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_entity_graph] = lambda: graph
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_audit_log] = lambda: audit_log
+    try:
+        async with _make_client() as client:
+            resp = await client.patch(
+                f"/v1/management/entities/{entity.entity_id}/surrogate",
+                json={"workspace": "acme", "new_surrogate": "Alice-New"},
+                headers={"x-blindfold-identity": "alice"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    # Surrogate rename is surrogate-space structural work, never an audit event
+    # (CONTEXT.md, issue #326): recording it would be history/versioning, a
+    # distinct deferred concept.
+    assert audit_log.records == []
