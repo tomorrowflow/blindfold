@@ -225,6 +225,11 @@ proxy.
 - **Skip L3 over the `system` region** — rejected: the live verify proved that
   region carries the user's own protected entities (embedded `CLAUDE.md` +
   memory files); novelty discovery must not be blind exactly there.
+  *(Still rejected as a region skip — but read "Update (issue #301)" below
+  before relying on its premise: on the client #74 run 7 measured, `CLAUDE.md`
+  and memory arrive in `messages`, not `system`. The update adds a
+  token-granularity heuristic that uses the region as evidence; it does not
+  reinstate this rejected option.)*
 - **Code-fence skipping** — rejected for v1: region-granularity with no
   deterministic backstop beyond L1/L2, and the flood evidence points at prose
   system text, not fences. May return as a *reprioritization* input, never a
@@ -237,3 +242,112 @@ proxy.
   set becomes a provenance structure) with no v1 behavior difference.
 - **Scraped mega seed list** — rejected: every entry is a blind spot; the
   learned allowlist and declared vocabulary mop up the tail.
+
+## Update (issue #301): a fourth suppression layer — payload-region confinement
+
+### Context premise 1 is no longer true of the measured client
+
+This ADR's Context opens with:
+
+> **The `system` field is not framework boilerplate.** Claude Code embeds the user's `CLAUDE.md`
+> and memory files — containing real protected entities — into `system`. Any "skip L3 over the
+> system prompt" strategy would blind novelty discovery in exactly the region where this client
+> concentrates personal data.
+
+That was measured against the #57 live verify in July 2026. It does not hold on the client #74
+run 7 measured (Claude Code `2.1.233`). Grepping run 7's 46 inbound captures for the injection
+markers:
+
+```
+claudeMd            messages 46   system 0
+Memory Index        messages 54   system 0
+f.wolf@enersis.ch   messages 46   system 0
+```
+
+`CLAUDE.md` contents, `MEMORY.md` contents and the operator's own email address all arrive as
+`<system-reminder>` blocks in the **user message stream**. `system[]` mentions the string
+`MEMORY.md` only inside the memory-tool *instructions*. The run-7 audit's remark that
+`pii-user-0000` came "from the harness system prompt" is loose in the same way — that address is in
+`messages`, and L1 caught it there.
+
+`system[]` is **not** unconditionally free of operator data, and this ADR will not claim it is: run
+7's own security-monitor subagent ships a system block carrying ``**User identity**: `florianwolf` ``
+in 8 requests. So the premise is stale, not inverted — which is exactly why the decision below is a
+token-granularity heuristic and not the region skip this ADR's Alternatives still rejects.
+
+### The evidence
+
+Run 7's inbox (43 mints) with every real value matched word-boundary against every string leaf of
+every inbound capture, bucketed by payload region:
+
+| | n | verdict |
+|---|---|---|
+| occurs **only** in `system[]` | **25** | every one a false positive |
+| occurs in `messages[]` | 17 | includes **all 6** genuine referents |
+| occurs nowhere inbound (minted from the model's own output) | 1 | #304 artifact |
+
+Suppressing these would have removed 58% of run 7's mints at a cost of zero true positives —
+including item 17 (`Agent`), whose 13 blocks killed the run.
+
+Two candidate explanations were tested against this data and **falsified**, recorded so they are
+not re-proposed:
+
+- **Extend the ADR-0033 positional case heuristic** to heading-/bullet-/list-initial position.
+  `_is_positional_case_noise` suppresses a token only when it is *never* capitalized mid-sentence
+  in the hop, and these terms all are (`"…are covered by Production Reads and Remote Shell Writes
+  instead."`, `"…is Sensitive-Source Provenance's to judge…"`, `"…that is Git Destructive's
+  business.)"`). The positional gate is already disqualified by design; widening which *other*
+  positions it recognises changes nothing for this class.
+- **Seed the observed words.** Open-class: the next harness revision ships a different taxonomy.
+
+An adjudicator-side fix was also weighed and is not sufficient on its own: `Docker Swarm`,
+`Azure Blob`, `Slurm`, `Nomad` and `Let's Encrypt` *are* real product names, and no prompt can tell
+a product name from a company name without knowing whose data is being protected. ADR-0032 already
+said this in passing — "a permanent novelty-discovery blind spot until v2 provenance lands."
+
+### Amended decision
+
+A fourth suppression condition joins the three in Decision 2, at the same granularity:
+
+> A candidate token **every one of whose occurrences in the payload falls inside `system[]`** is
+> suppressed from L3 novelty discovery. A token that occurs even once in `messages[]` or in
+> `tools[].description` stays a full candidate everywhere, `system[]` included.
+
+This is **not** the region skip rejected in Alternatives, and Decision 1's guardrail is intact: the
+region is evidence *about a token*, never a switch on a subtree. Nothing is skipped — every hop is
+still adjudicated, and a token that appears on both sides of the boundary is adjudicated in
+`system[]` too. Checked row by row against run 7, it suppresses all 25 system-confined rows and
+leaves `Org`, `Store`, `Vault`, `Cytoscape`, `Agent`, `Edit` and `Artifact` as candidates, because
+they all occur in `messages` as well — those need the "Update (issue #302)" layer and the seed, not
+this one.
+
+Mechanically it is the same shape as the declared-tool layer and inherits its discipline: a
+per-request `frozenset` computed at the app boundary before any hop is blinded, threaded down to
+`select_candidate_spans` as a plain parameter, never state on the detector. `blindfold_payload`
+already blinds `system` before `messages`, so the scan must run on the untouched payload. Candidate
+selection therefore stays a pure function of its inputs (#261's invariant) — it depends on this
+request's payload, never on history or process state, which is what separates this from
+`DeclaredToolVocabulary`'s deliberately remembered set.
+
+Scope discipline unchanged: suppression removes **L3 novelty discovery only**. L1 and L2 run over
+`system[]` exactly as before, so PII-shaped values and any registered Term or entity-graph surface
+are still blindfolded there, and protection still wins (`known_surfaces` is checked first).
+
+### Consequences
+
+- **The residual, stated plainly:** a novel real referent placed **only** in the system prompt,
+  which is neither PII-shaped nor a registered Term, is no longer discovered. Registering it as a
+  Term restores full protection. Per Decision 1, a wrongly-suppressed token has the risk profile of
+  a human "reject" in the review inbox — but this layer's suppressed set is larger than the
+  declared-tool set's, so this is the widest such residual the ADR carries and it is named as that
+  rather than folded into the others.
+- **This residual is client-shaped and will need re-measuring**, because premise 1 above already
+  changed once. A harness revision that moves `CLAUDE.md` back into `system[]` silently widens the
+  blind spot. The re-measurement belongs to #74's live-verify loop, and the marker grep above is
+  the check.
+- **It composes with, and does not subsume, the other layers.** #302 covers protocol vocabulary
+  declared in the traffic; this covers prose confined to the vendor's own instructions; the seed
+  and the learned allowlist cover the tail.
+- **ADR-0051's governing-risk condition is what this answers.** See that ADR's "Amendment
+  (issue #301)": the trade it accepted was conditional on this precision rate coming down, and
+  14% is the measurement that made it due.

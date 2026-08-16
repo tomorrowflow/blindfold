@@ -170,3 +170,133 @@ Consequences.
 - **Refuse the mint instead (ADR-0050's original option 3).** Already superseded by #295's
   amendment: refusal fires on coverage, not correctness, so it discards L3's own confirmation and
   lets a true positive's confirmed occurrence egress.
+
+## Amendment (issue #303): the invariant constrains both directions
+
+**Status: this amendment extends the Decision above. Nothing in it is retracted.**
+
+The Decision states the invariant as a *symmetry* — "the two scopes move together; neither may be
+widened alone" — but delivery only ever moved one of them. Stages 1 and 2 (#299, #300) widened the
+**blinder** to match the gate. Nobody asked what happens when a surface the gate checks is one the
+blinder *cannot* be widened to reach, and the Decision's own text half-noticed it: the "one further
+detail, recorded because the current behaviour depends on it by accident" paragraph observes that
+declared tool names escape the gate only because `_` happens to be a word character.
+
+#74 **run 7** stopped it being an accident. Post stages 1+2, on `bb6108e`:
+
+| ref | blocks | outcome |
+|---|---|---|
+| item 17 `Agent` (`Provisional Surrogate 9`) | **13** | terminal — the run died, five consecutive 503s |
+| item 9 `Vault` (`Moosburg Analytics`) | 4 | knock-on from #304's restore corruption |
+| item 8 `Store` (`Birkenhain Logistik`) | 1 | **self-healed on retry** |
+
+The `Store` row is the control that shows this ADR working exactly as designed: a value minted
+mid-request left one plaintext occurrence in an already-blinded earlier hop, the next request
+carried the pair from the start, and the proxy recovered unattended. Egress on that build was also
+clean for the first time in seven runs — zero real values across 38 sent payloads. **The gate is
+not what failed.**
+
+Item 17 cannot self-heal. The payload declares `tools[].name == "Agent"`; `leak_gate` collects its
+text with `_collect_text` → `walk_string_leaves`, which walks every string leaf including tool
+names; and `_blindfold_tool_descriptions` rewrites `description` only, because rewriting a tool's
+`name` breaks dispatch outright. So the invariant above **is already violated today**, in the
+direction nobody wrote down: a surface the gate checks that the blinder is structurally forbidden
+to rewrite.
+
+### The rule
+
+> The leak gate checks exactly the surfaces the deterministic blinder can rewrite. When the two
+> disagree, **the field decides the direction of the fix**: prose the blinder *could* rewrite is
+> added to the blinder; a field the blinder is *structurally forbidden* to rewrite is removed from
+> the gate's checked set.
+
+Removing such a field is **not** a narrowing of clause A dressed up as a technicality, and this ADR
+declines to record it as one. The gate exists to catch a **blinder miss**. A field the blinder was
+never permitted to enter cannot contain a miss — nothing was missed; the field was out of scope by
+construction. What a match there actually reports is a different fact ("this client declared a tool
+whose name collides with a protected referent"), and a control whose only two reachable states are
+*pass* and *block every request forever* is not a privacy control — it is an outage wearing a
+privacy-shaped error message. Run 7 is the demonstration.
+
+### The forbidden set is closed and enumerated
+
+The exclusion applies **only** to fields whose rewriting would break the protocol:
+
+- `tools[].name` / `tools[].function.name` — breaks tool dispatch.
+- JSON-Schema structural tokens inside `input_schema` / `parameters`: property **keys**, `type`,
+  `required`, `enum` values — breaks schema validation and argument binding.
+
+It does **not** apply to `input_schema.properties.*.description` and the other free-text prose
+carried inside a tool schema. That prose is several hundred words per tool in a real agentic
+payload, the blinder does not touch it today, and nothing stops it: rewriting it is exactly as safe
+and as coherent as rewriting `tools[].description`, which ADR-0023 §3 already permits. For that
+class the symmetry is restored by **widening the blinder**, not by narrowing the gate. Excluding it
+would silently drop a real, blindable prose surface out of clause A — and it is a surface where a
+registered Term genuinely can appear.
+
+This list is closed. Adding a field to it requires this same argument, made in this ADR, with
+evidence: it is never "whatever the blinder happened to miss."
+
+### The residual is real, and it is made observable rather than assumed away
+
+If an operator registers a Term whose exact string equals a declared tool name, that string
+egresses in `tools[].name`. That is a genuine clause-A event as measured, and this ADR does not
+claim otherwise. Two things bound it, neither of which is "it can't happen":
+
+- L2 still blinds that Term everywhere the blinder runs, so only the protocol field itself ships in
+  the clear.
+- The name is chosen by the **client** and is a protocol necessity — the request cannot function
+  without it. Blindfold's only alternative is to refuse to serve that client permanently.
+
+So the exclusion is paired with issue #303's option 3 rather than replacing it: a gate match
+confined to a forbidden field is recorded as a distinguishable, scrubbed **declared-collision**
+event (WARNING + audit record + ADR-0047 trace) instead of being dropped on the floor. The residual
+then has an evidence trail and someone can find out whether it ever mattered, rather than it
+remaining an assumption in an ADR. Option 2 alone — "keep the gate, rely on #302's suppression" —
+was rejected: #302 stops *future* mints, but a value minted before the tool was ever declared still
+deadlocks, which is precisely how run 7 died.
+
+### Consequences of this amendment
+
+- After the change, run 7's payload goes through **already correctly protected**: stage 2 (#300)
+  blinds `Agent` in all of its message-text occurrences, leaving it literal only in `tools[].name`.
+  That is the "a tool's description and its name can disagree" consequence this ADR already
+  accepted knowingly — the amendment does not create it, it stops that accepted state from also
+  being a permanent 503.
+- The coupling in the final Consequences bullet now reads in both directions. A future change that
+  adds a value class to `leak_gate` without adding it to the blinder recreates the run-6 deadlock;
+  a future change that adds a *field* to the gate's walk that the blinder cannot reach recreates
+  run 7's. Both belong in the request-path review checklist.
+- `_collect_text` / `walk_string_leaves` stay the single traversal primitive (ARCH-4). The
+  exclusion is expressed as a gate-specific view of the payload, not as a second walker.
+
+## Amendment (issue #301): the precision condition named in Consequences has failed its own test
+
+The Consequences section above names detection precision as "the governing risk" and commits to a
+test: *"With a clean adjudicator this decision is nearly free; at run 6's false-positive rate it is
+not… If that rate does not come down, this ADR should be reopened, not worked around."*
+
+**It came down on nothing. It went up.** Run 7's review inbox (43 minted items) and ADR-0032
+dismissal log (401 dismissed candidates) give the first real confirm/dismiss split on live agentic
+traffic: **6 of 43 mints are genuine referents — 14% precision.** Of the rest, 20 are Title-Case
+defined terms from the agent harness's own policy prose, 9 are public product names, 3 are this
+repo's own domain vocabulary, 3 are bare given names of people already minted under their full name
+(#306), and 2 are artifacts of #304's restore corruption re-entering as novel text.
+
+Recorded here because this ADR asked to be told. What follows from it, explicitly:
+
+- **This ADR is not reverted.** The alternative it replaced is run 6's deadlock, which is strictly
+  worse than over-redaction on both the privacy and the availability axis. "Reopen" means the
+  precision work is now load-bearing at the priority the deadlock had, not that the trade flips.
+- **The accepted cost now has a measured price against it.** 37 of run 7's 43 mints were wrong, and
+  under this ADR every one of them is applied payload-wide until a human rejects the row. The
+  session read its own source through a substitution layer (`Vault` → `Moosburg Analytics`), which
+  is the most likely explanation for its confusion about the code it was asked to explain — and,
+  via #304, corruption reached the deliverable.
+- **The fix is provenance, not lexis.** The dominant class is not adjudicable by a better prompt:
+  `Docker Swarm`, `Azure Blob`, `Slurm`, `Nomad` and `Let's Encrypt` *are* real product names, and
+  an adjudicator asked "is this a protected referent?" cannot separate a product name from a
+  company name without being told whose data it is. 25 of the 43 mints occur **only** inside
+  `system[]` and every one of them is a false positive, while all 6 genuine referents are
+  messages-only. That decision is taken in ADR-0023's "Update (issue #301)" section, as a fourth
+  token-granularity suppression layer.
