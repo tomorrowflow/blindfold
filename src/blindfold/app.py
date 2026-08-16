@@ -2897,14 +2897,9 @@ async def retry_gliner_detection(
 
 def _apply_merge_side_effects(
     *,
-    workspace: str,
-    winner_id: str,
-    loser_id: str,
     loser_canonical: str,
     merged: EntityRecord,
     mapping: SurrogateMapping,
-    audit_log: AuditLog,
-    identity: str,
 ) -> None:
     """Sync the surrogate mapping for a completed entity merge.
 
@@ -2934,7 +2929,6 @@ async def merge_entities(
     rbac: RbacRegistry = Depends(get_rbac),
     entity_graph: EntityGraph = Depends(get_entity_graph),
     mapping: SurrogateMapping = Depends(get_mapping),
-    audit_log: AuditLog = Depends(get_audit_log),
 ) -> dict:
     """Merge two same-kind entities (person↔person or term↔term) in a workspace.
 
@@ -2999,14 +2993,9 @@ async def merge_entities(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     _apply_merge_side_effects(
-        workspace=workspace,
-        winner_id=merged.entity_id,
-        loser_id=loser_id,
         loser_canonical=loser_canonical,
         merged=merged,
         mapping=mapping,
-        audit_log=audit_log,
-        identity=_caller_identity(request),
     )
 
     # Surrogate-space response always: canonical_name/variations are real entity
@@ -3169,7 +3158,6 @@ async def edit_entity_surrogate(
     rbac: RbacRegistry = Depends(get_rbac),
     entity_graph: EntityGraph = Depends(get_entity_graph),
     mapping: SurrogateMapping = Depends(get_mapping),
-    audit_log: AuditLog = Depends(get_audit_log),
 ) -> dict:
     """Edit an entity's active surrogate; retire the previous value (issue #28).
 
@@ -3248,7 +3236,6 @@ async def merge_entities_by_id(
     rbac: RbacRegistry = Depends(get_rbac),
     entity_graph: EntityGraph = Depends(get_entity_graph),
     mapping: SurrogateMapping = Depends(get_mapping),
-    audit_log: AuditLog = Depends(get_audit_log),
 ) -> dict:
     """Merge two same-kind entities by entity_id (issue #34 / ADR-0016).
 
@@ -3298,14 +3285,9 @@ async def merge_entities_by_id(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     _apply_merge_side_effects(
-        workspace=slug,
-        winner_id=winner_id,
-        loser_id=loser_id,
         loser_canonical=loser_canonical,
         merged=merged,
         mapping=mapping,
-        audit_log=audit_log,
-        identity=_caller_identity(request),
     )
 
     # Real-value fields (canonical_name, variations) are withheld: the entity-list SPA
