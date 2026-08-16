@@ -271,7 +271,7 @@ def _window_left(candidate: CandidateSpan) -> int:
 
 
 def _candidate_digest(candidate: CandidateSpan) -> str:
-    """Digest a single candidate's ``(text, context)`` pair into a cache key.
+    """Digest a candidate's ``(text, context, context_offset)`` into a cache key.
 
     Length-prefixing each field (rather than bare concatenation) rules out
     boundary-ambiguity collisions (``"ab"`` + ``"c"`` vs. ``"a"`` + ``"bc"``).
@@ -279,12 +279,23 @@ def _candidate_digest(candidate: CandidateSpan) -> str:
     holds real candidate text in its keys (ADR-0022) — an incidental hardening of
     the real-value-store note this class already carried, kept across issue
     #283's reversion to per-candidate keying.
+
+    ``context_offset`` (issue #311) is part of the key, not just ``(text,
+    context)``: whenever the ±40-char context window is clipped at both text
+    edges (a hop shorter than the window), two distinct occurrences of the same
+    token share a byte-identical context but sit at a different position within
+    it. Omitting that position from the digest collided the two occurrences into
+    one cache entry, and the second occurrence's authoritative span then replayed
+    re-anchored to the first occurrence's position — wrong for its own extent,
+    and caught (as it should be) by the #179 containment backstop, which raised a
+    spurious L3-unavailable 503 instead of the genuine cache miss this is.
     """
     digest = hashlib.sha256()
     digest.update(f"{len(candidate.text)}:".encode())
     digest.update(candidate.text.encode("utf-8"))
     digest.update(f"\x00{len(candidate.context)}:".encode())
     digest.update(candidate.context.encode("utf-8"))
+    digest.update(f"\x00{candidate.context_offset}:".encode())
     return digest.hexdigest()
 
 
