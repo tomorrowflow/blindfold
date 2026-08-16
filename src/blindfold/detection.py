@@ -26,6 +26,8 @@ from dataclasses import dataclass
 
 from unidecode import unidecode
 
+from .l1_presidio import detect_presidio_pii, is_valid_email_domain
+
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 
 # E.164-flavoured international phone: leading `+`, then 7-15 digits with optional
@@ -33,21 +35,19 @@ _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 # (bare digit runs in source code, bug numbers, etc. would otherwise false-positive).
 _PHONE_RE = re.compile(r"\+\d[\d \-.()]{6,18}\d")
 
-# IBAN: 2 letters + 2 check digits + up to 30 alphanumerics, optionally grouped in
-# 4-char chunks (the canonical printed format). Anchored on word boundaries.
-_IBAN_RE = re.compile(
-    r"\b[A-Z]{2}\d{2}(?:[ ]?[A-Z0-9]{4}){3,7}(?:[ ]?[A-Z0-9]{1,4})?\b"
-)
-
 # ID: structured marker (`ID:` / `ID-` with optional whitespace) followed by 6+ digits.
 # The explicit prefix gates precision: free-form numbers (line numbers, sizes, ports)
 # stay out of L1; ambiguous numeric tokens are L2/L3's job, not L1's.
 _ID_RE = re.compile(r"\bID[:\-][ ]?\d{6,}\b")
 
+# IBAN detection is presidio-analyzer's IbanRecognizer (mod-97 checksum, issue
+# #317/l1_presidio.py) -- not a home-grown regex. The naive `[A-Z]{2}\d{2}...`
+# shape this used to be flagged any IBAN-shaped lookalike regardless of
+# checksum; the validator is exactly the precision this L1 layer adopted
+# presidio-analyzer for.
 _PII_REGEXES: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("email", _EMAIL_RE),
     ("phone", _PHONE_RE),
-    ("iban", _IBAN_RE),
     ("id", _ID_RE),
 )
 
@@ -61,12 +61,35 @@ class PiiSpan:
 
 
 def detect_pii(text: str) -> list[PiiSpan]:
-    """Return L1 PII spans found in ``text`` (deterministic regex, full-payload)."""
-    return [
+    """Return L1 PII spans found in ``text`` (regex + presidio pattern layer, full-payload).
+
+    One :class:`PiiSpan` per occurrence, not per distinct value (relied on by
+    ``blindfold_devtools.replay``'s offset re-derivation) -- every source below
+    preserves that by construction: regex ``finditer`` already yields one match
+    per occurrence, and :func:`detect_presidio_pii`'s recognizers do too (proven
+    directly, not assumed: presidio's ``PatternRecognizer`` runs its own
+    ``finditer`` internally).
+
+    Regex covers what presidio's mounted pattern layer doesn't detect standalone
+    (the anchored international phone shape, the structured-prefix ID marker,
+    and email -- see below); ``detect_presidio_pii`` (issue #317) covers the
+    checksum/check-digit validated set (IBAN, credit card, the four validated
+    German ID kinds). Email is a deliberate middle case: L1's own anchored regex
+    stays the sole *detector* (one match per occurrence), narrowed by presidio's
+    offline-pinned FQDN validator (:func:`is_valid_email_domain`) -- running
+    presidio's ``EmailRecognizer.analyze`` as a second independent detector over
+    the same text would double-count every genuine occurrence instead.
+    """
+    spans = [
         PiiSpan(kind=kind, value=match.group())
         for kind, regex in _PII_REGEXES
         for match in regex.finditer(text)
+        if kind != "email" or is_valid_email_domain(match.group())
     ]
+    spans += [
+        PiiSpan(kind=kind, value=value) for kind, value in detect_presidio_pii(text)
+    ]
+    return spans
 
 
 # Token = a contiguous run of word characters (Unicode letters, digits, underscore).

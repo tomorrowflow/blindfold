@@ -106,7 +106,10 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   consistent: a person's fake email domain equals their employer's fake domain;
   locales match; dates are **date-shifted** by a stable per-entity offset.
 - **Detection layers**:
-  - **L1** — deterministic regex/PII detection (emails, phones, IBANs, IDs).
+  - **L1** — deterministic regex/PII detection (emails, phones, IBANs, IDs). Checksum
+    and check-digit validated kinds (IBAN, credit card, the four validated German
+    `DE_*` IDs) are mounted from presidio-analyzer's **pattern recognizers only** —
+    never its NER recognizers (ADR-0003 "Update (issue #317)").
   - **L2** — the curated entity-graph dictionary, matched 4-pass (exact, normalized,
     fuzzy, first-name ambiguity), German-aware.
   - **L3** — **candidate-span adjudication**, run only on spans the deterministic
