@@ -445,6 +445,28 @@ class ReviewInbox:
     def list(self) -> list[ReviewItem]:
         return list(self._items.values())
 
+    def read_only_view(self) -> "ReviewInbox":
+        """A fresh, unattached :class:`ReviewInbox` seeded with this inbox's
+        current items -- read reflects the durable inbox's provisional pairs at
+        the moment of the call, but ``upsert`` on the returned view can never
+        reach this inbox's store or grow it (issue #322: ``count_tokens``'s "can't
+        write" contract, not "can't see").
+
+        Same no-store/no-cipher shape :func:`_replay_inbox` already substitutes
+        for a bare ``inbox=None`` -- ``_persistent()`` is False on the view, so a
+        novel candidate minted into it during that one call stays exactly as
+        harmless as an in-memory L1/L2 mint. Seeding (rather than returning
+        ``self``) is what keeps that mint from being visible to this inbox's own
+        ``list()`` afterward.
+        """
+        view = ReviewInbox()
+        for item in self.list():
+            view._items[item.id] = item
+            view._by_real[_referent_key(item.real, item.entity_type)] = item.id
+        view._minted = self._minted
+        view._pool_positions.update(self._pool_positions)
+        return view
+
     def get(self, item_id: str) -> ReviewItem | None:
         return self._items.get(item_id)
 
