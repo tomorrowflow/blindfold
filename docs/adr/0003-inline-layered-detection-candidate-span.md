@@ -95,3 +95,27 @@ slim install path, since `spacy` is a hard (non-extra) dependency of
 `presidio-analyzer` itself, not something this integration chooses to pull in. Cold
 import + per-call cost measured well under the issue's ~2.6 s / ~3 ms estimates
 (calling recognizers directly, bypassing `AnalyzerEngine`, avoids its own overhead).
+
+## Update (issue #327): the email FQDN gate is reverted, live leak
+
+#317's email member was mounted for its *validator* only: `is_valid_email_domain`
+narrowed L1's own anchored email regex to domains presidio's offline-pinned
+`tldextract` snapshot recognizes as a valid public suffix. That gate silently
+dropped every email whose domain is a reserved (RFC 2606: `.example`, `.test`,
+`.invalid`) or special-use/internal (RFC 6762/8375, plus common conventions like
+`.corp`/`.lan`) TLD — ordinary internal mail domains at real organizations. Caught
+live (#74 run 8): three real employee addresses at a `.example`-domain fixture
+egressed unblindfolded, with no 503 and nothing in the review inbox, because the
+value was never detected as PII in the first place — `leak_gate` had no known real
+to check it against either. Fails open and silent, on an entire class of domain.
+
+The gate is removed. L1's anchored `_EMAIL_RE` (`detection.py`) is the sole,
+unconditional email detector again, per this ADR's own invariant: a precision
+filter must never remove a value from L1 detection (over-redaction is a quality
+bug; an un-blindfolded real entity is a privacy bug, and the cost of being wrong
+is asymmetric). `_OfflineEmailRecognizer` stays mounted in `PRESIDIO_RECOGNIZERS`
+(`l1_presidio.py`) purely so the NER-exclusion test keeps covering it — it is no
+longer consulted for detection or validation. Nothing else #317 mounted changes:
+the checksum/check-digit-backed IBAN, credit card, and German-ID recognizers stay,
+and `detect_pii`'s one-`PiiSpan`-per-occurrence contract is re-pinned
+(`test_l1_email_detection_yields_one_span_per_occurrence_not_per_value`).

@@ -26,7 +26,7 @@ from dataclasses import dataclass
 
 from unidecode import unidecode
 
-from .l1_presidio import detect_presidio_pii, is_valid_email_domain
+from .l1_presidio import detect_presidio_pii
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 
@@ -74,17 +74,23 @@ def detect_pii(text: str) -> list[PiiSpan]:
     (the anchored international phone shape, the structured-prefix ID marker,
     and email -- see below); ``detect_presidio_pii`` (issue #317) covers the
     checksum/check-digit validated set (IBAN, credit card, the four validated
-    German ID kinds). Email is a deliberate middle case: L1's own anchored regex
-    stays the sole *detector* (one match per occurrence), narrowed by presidio's
-    offline-pinned FQDN validator (:func:`is_valid_email_domain`) -- running
-    presidio's ``EmailRecognizer.analyze`` as a second independent detector over
-    the same text would double-count every genuine occurrence instead.
+    German ID kinds). Email's own anchored regex is the sole, unconditional
+    *detector* (one match per occurrence) -- issue #327 (LEAK, #74 run 8):
+    #317 narrowed it with presidio's offline-pinned FQDN validator, which
+    silently dropped every email whose domain is a reserved (RFC 2606) or
+    internal (RFC 6762/8375, `.corp`/`.lan`) TLD. A precision filter must
+    never remove a value from L1 detection -- a domain that fails an FQDN
+    check is not evidence the string isn't an email, and the cost of being
+    wrong is asymmetric and lands on the privacy side (CONTEXT.md: over-
+    redaction is a quality bug, an un-blindfolded real entity is a privacy
+    bug). #317's precision goal stays met for the checksum-validated kinds
+    it actually owns (IBAN, credit card, German IDs) -- see
+    ``detect_presidio_pii`` below.
     """
     spans = [
         PiiSpan(kind=kind, value=match.group())
         for kind, regex in _PII_REGEXES
         for match in regex.finditer(text)
-        if kind != "email" or is_valid_email_domain(match.group())
     ]
     spans += [
         PiiSpan(kind=kind, value=value) for kind, value in detect_presidio_pii(text)

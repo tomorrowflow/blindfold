@@ -10,8 +10,10 @@ range, unassigned ISO 3166 country code for IBANs, an explicit `RESERVED` ID pre
 That way Blindfold never mints a routable lookalike of a real third party's contact value.
 """
 
+import pytest
+
 from blindfold.detection import detect_pii
-from blindfold.engine import blindfold_payload
+from blindfold.engine import blindfold_payload, leak_gate
 from blindfold.surrogates import SurrogateMapping
 
 
@@ -65,14 +67,32 @@ def test_l1_email_detection_yields_one_span_per_occurrence_not_per_value():
     assert all(e.value == "alice@example.org" for e in emails)
 
 
-def test_l1_does_not_flag_an_email_lookalike_with_an_invalid_suffix():
-    """Validator precision via presidio's offline-pinned tldextract FQDN check
-    (issue #317): a syntactically email-shaped string whose domain has no valid
-    public suffix is not contactable PII."""
-    spans = detect_pii("Reach me at alice@nota.realtld for review.")
+@pytest.mark.parametrize(
+    "address",
+    [
+        "p.nadkarni@northwind-analytics.example",  # RFC 2606 reserved
+        "a@host.local",  # RFC 6762 special-use
+        "a@corp.internal",  # RFC 8375 special-use
+        "a@x.test",  # RFC 2606 reserved
+        "a@x.invalid",  # RFC 2606 reserved
+        "a@intranet.corp",  # common internal mail suffix
+        "a@x.lan",  # common internal mail suffix
+    ],
+)
+def test_l1_detects_email_on_reserved_and_internal_tlds(address):
+    """Issue #327 (LEAK, #74 run 8): a precision filter must never remove a value
+    from L1 detection. #317's FQDN validator silently dropped every email whose
+    domain is a reserved (RFC 2606) or internal (RFC 6762/8375, `.corp`/`.lan`)
+    TLD -- real addresses at ordinary internal mail domains egressed unblindfolded,
+    unlogged, with no leak_gate check possible (the value was never a known real
+    to check against). L1 restores its unconditional regex as the sole email
+    detector: a domain that fails an FQDN check is not evidence the string isn't
+    an email, and over-inclusion here is a quality-bug risk, not a privacy one."""
+    spans = detect_pii(f"Reach me at {address} for review.")
 
     emails = [s for s in spans if s.kind == "email"]
-    assert emails == []
+    assert len(emails) == 1
+    assert emails[0].value == address
 
 
 def test_l1_detects_international_phone_number():
@@ -334,3 +354,55 @@ def test_presidio_detected_german_id_never_egresses_and_stays_stable_across_hops
     assert surrogate in user_text
     # L1 does not re-detect its own reserved-namespace surrogate as fresh PII.
     assert mapping.surrogate_for(surrogate) is None
+
+
+def test_reserved_tld_emails_never_egress_end_to_end_through_blindfold_payload():
+    """Issue #327 (LEAK, #74 run 8): the request-path proof, not just the detector.
+
+    Three real addresses at reserved/internal-TLD domains crossed egress in the
+    clear because #317's FQDN gate silently dropped them from L1 before
+    ``blindfold_payload`` ever saw them as PII. Drives the full request path
+    (not just ``detect_pii``) with addresses on the reserved TLD from the live
+    leak (``.example``) plus an internal-suffix domain (``.corp``), across both
+    the system hop and a user-turn hop, and re-attests leak-audit clause A.
+    """
+    mapping = SurrogateMapping()
+    reserved_email = "p.nadkarni@northwind-analytics.example"
+    internal_email = "t.ficker@birkenhain-logistik.corp"
+    payload = {
+        "model": "claude-3-5-sonnet",
+        "system": f"Roster contact: {reserved_email}.",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": f"Also loop in {internal_email} on this thread.",
+                    }
+                ],
+            }
+        ],
+    }
+
+    blinded, _session = blindfold_payload(payload, mapping)
+
+    reserved_surrogate = mapping.surrogate_for(reserved_email)
+    internal_surrogate = mapping.surrogate_for(internal_email)
+    system_text = blinded["system"]
+    user_text = blinded["messages"][0]["content"][0]["text"]
+
+    # Clause A: neither real address survives on any hop -- the actual leak this
+    # issue reports.
+    assert reserved_surrogate is not None
+    assert internal_surrogate is not None
+    assert reserved_email not in system_text
+    assert internal_email not in user_text
+    # Each hop egresses its own surrogate, not the other's.
+    assert reserved_surrogate in system_text
+    assert internal_surrogate in user_text
+    # Clause A, re-attested at the pre-egress gate itself: the blinded payload
+    # passes leak_gate clean -- before this fix, leak_gate had nothing to check
+    # these values against (they were never detected, so never a known real),
+    # which is exactly how they crossed egress unblindfolded and unlogged.
+    leak_gate(blinded, mapping)

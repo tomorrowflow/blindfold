@@ -64,20 +64,19 @@ class _OfflineEmailRecognizer(EmailRecognizer):
         return _OFFLINE_TLD_EXTRACTOR(pattern_text).fqdn != ""
 
 
-# The email member is mounted for its *validator* only (see is_valid_email_domain
-# below) -- L1 keeps its own anchored `_EMAIL_RE` (detection.py) as the sole
-# per-occurrence email detector, rather than also running EmailRecognizer.analyze()
-# as an independent detector. detect_pii() has a documented one-PiiSpan-per-
-# occurrence contract (blindfold_devtools/replay.py re-derives offsets by
-# occurrence count); running two independent detectors over the same text would
-# double-count every genuine email occurrence, not just widen precision.
+# Issue #327 (LEAK, #74 run 8): this recognizer used to back is_valid_email_domain,
+# a gate that narrowed detection.py's own regex to FQDN-valid domains only --
+# which silently dropped every email on a reserved (RFC 2606) or internal
+# (RFC 6762/8375, `.corp`/`.lan`) TLD. That gate is removed; L1's anchored
+# `_EMAIL_RE` (detection.py) is the sole, unconditional email detector again.
+# Kept mounted here, unused for detection, purely so the NER-exclusion test
+# below covers every presidio class this module touches (including the one
+# most tempting to wire back in as a "precision" filter).
 _OFFLINE_EMAIL_RECOGNIZER = _OfflineEmailRecognizer()
 
 # The whitelist itself: every entry is checksum/check-digit backed and
 # structurally excludes NER (see the module docstring and
 # test_l1_presidio_registry.py, which pins this against accidental drift).
-# Includes the email validator (not used for independent detection -- see above)
-# so the NER-exclusion test covers every presidio class this module touches.
 PRESIDIO_RECOGNIZERS: tuple[PatternRecognizer, ...] = (
     IbanRecognizer(),
     CreditCardRecognizer(),
@@ -90,8 +89,11 @@ PRESIDIO_RECOGNIZERS: tuple[PatternRecognizer, ...] = (
 
 # The recognizers actually used to *detect* candidate spans, one PiiSpan per
 # occurrence (see detect_presidio_pii) -- everything in PRESIDIO_RECOGNIZERS
-# except the email validator, which only ever narrows detection.py's own regex
-# matches via is_valid_email_domain.
+# except the email recognizer, which is mounted only for NER-exclusion test
+# coverage (see above) and must never independently detect: running it
+# alongside detection.py's own regex would double-count every genuine email
+# occurrence, breaking detect_pii()'s one-PiiSpan-per-occurrence contract that
+# blindfold_devtools/replay.py's offset re-derivation depends on.
 _DETECTING_RECOGNIZERS: tuple[PatternRecognizer, ...] = tuple(
     r for r in PRESIDIO_RECOGNIZERS if r is not _OFFLINE_EMAIL_RECOGNIZER
 )
@@ -123,13 +125,3 @@ def detect_presidio_pii(text: str) -> list[tuple[str, str]]:
         for entity_type in recognizer.supported_entities
         for result in recognizer.analyze(text, [entity_type], nlp_artifacts=None)
     ]
-
-
-def is_valid_email_domain(value: str) -> bool:
-    """True if presidio's offline-pinned FQDN validator accepts ``value``'s domain.
-
-    Reuses the same tldextract validator :class:`_OfflineEmailRecognizer` mounts
-    (never a live public-suffix-list fetch) to add domain-validity precision to
-    L1's own anchored email regex, without running a second, duplicate detector.
-    """
-    return _OFFLINE_EMAIL_RECOGNIZER.validate_result(value)
