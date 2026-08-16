@@ -73,6 +73,12 @@ def detect_pii(text: str) -> list[PiiSpan]:
 # German letters (ä, ö, ü, ß) match ``\w`` under Python's default Unicode rules.
 _TOKEN_RE = re.compile(r"\w+", re.UNICODE)
 
+# A multi-token window may only extend across plain same-line horizontal whitespace
+# (single or repeated spaces/tabs) -- never a newline or any other separator
+# (issue #310). Anything else between two tokens means they are not the one
+# contiguous surface a multi-token surface's canonical form describes.
+_SAME_LINE_GAP_RE = re.compile(r"[ \t]+")
+
 
 @dataclass(frozen=True)
 class Entity:
@@ -373,10 +379,23 @@ def _walk_token_windows(text: str, max_window_tokens: int):
     detector to consider windows of adjacent tokens, separated by single spaces in
     the canonical surface form. Capping window length at ``max_window_tokens`` turns
     the walk from O(n^3) into O(n * max_window_tokens).
+
+    A window only extends past a token when the *actual* text between it and the
+    next token is plain same-line whitespace (issue #310): joining unconditionally
+    with a single space -- regardless of what really separated the tokens --
+    let a window swallow a newline (collapsing list items), a table pipe, or an
+    email's ``.``/``@`` into the replaced span. Same fix shape as #289's
+    line-clamp for L3's adjudicator-authoritative spans, applied here to the pass
+    that runs on every hop unconditionally.
     """
     tokens = [(m.group(0), m.start(), m.end()) for m in _TOKEN_RE.finditer(text)]
     for i in range(len(tokens)):
         end_j = min(i + max_window_tokens, len(tokens))
-        for j in range(i, end_j):
-            joined = " ".join(t[0] for t in tokens[i : j + 1])
-            yield joined, tokens[i][1], tokens[j][2]
+        words = [tokens[i][0]]
+        yield tokens[i][0], tokens[i][1], tokens[i][2]
+        for j in range(i + 1, end_j):
+            gap = text[tokens[j - 1][2] : tokens[j][1]]
+            if not _SAME_LINE_GAP_RE.fullmatch(gap):
+                break
+            words.append(tokens[j][0])
+            yield " ".join(words), tokens[i][1], tokens[j][2]
