@@ -9,8 +9,8 @@ size — which is what makes the proxy tractable on large code bodies.
 The adjudicator itself (Ollama) is a network-boundary seam: production wires a real
 local-LLM client; tests substitute a recording stub. This module owns candidate-span
 *selection* and *context-windowing*; the adjudicator owns the LLM call. A content
-cache, keyed on the individual candidate's own ``(text, context)``, prevents
-re-scanning unchanged chunks across agent turns.
+cache, keyed on the individual candidate's own ``(text, context, context_offset)``,
+prevents re-scanning unchanged chunks across agent turns.
 
 Issue #283 (ADR-0048 corollary 3): batched adjudication (N candidates in one prompt)
 is gone -- one candidate, one prompt, always. #260's measurement showed a batched
@@ -302,9 +302,10 @@ def _candidate_digest(candidate: CandidateSpan) -> str:
 @dataclass
 class L3ContentCache:
     """Cache adjudications keyed by the individual candidate's own ``(text,
-    context)`` digest. Unchanged spans — same span, same surroundings — aren't
-    re-scanned across agent turns (ADR-0003); a candidate in identical context
-    produces an identical ``is_entity``/``entity_type`` verdict.
+    context, context_offset)`` digest. Unchanged spans — same span, same
+    surroundings, same position within that window — aren't re-scanned across
+    agent turns (ADR-0003); a candidate in identical context produces an
+    identical ``is_entity``/``entity_type`` verdict.
 
     Issue #283 (ADR-0048 corollary 3): this is a reversion of issue #261's move to
     per-*group* keying, which existed only to keep batch composition a pure
