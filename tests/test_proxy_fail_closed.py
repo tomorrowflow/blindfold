@@ -331,6 +331,69 @@ async def test_l3_unavailable_scrubs_the_candidate_value_from_body_audit_and_log
     assert any(body_reason in m for m in log_messages), log_messages
 
 
+class _BuggyAdjudicator:
+    """Stub for a Blindfold code defect inside the adjudicator cascade (issue #315)
+    -- e.g. a `KeyError`/`TypeError` regression in GLiNER classification or
+    re-anchoring -- never an availability signal (`_UnavailableAdjudicator` above
+    covers that case).
+    """
+
+    def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
+        raise TypeError("boom: not the shape adjudicate() is documented to return")
+
+
+@pytest.mark.anyio
+async def test_an_internal_detection_defect_blocks_distinctly_from_l3_unavailable():
+    # Issue #315 acceptance criterion: an internal Blindfold defect (here, an
+    # injected TypeError standing in for the #179 backstop / a cascade bug) must
+    # render as its own `blocked-detection-internal` event with a remedy that
+    # tells the operator to report a defect -- never the l3-unavailable event,
+    # whose remedy (curate the inbox / degrade to deterministic-only / configure
+    # L3) does nothing for a code bug and would misdirect the operator.
+    recorded: list[httpx.Request] = []
+    audit_log = get_audit_log()
+    audit_log.records.clear()
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(recorded)
+    app.dependency_overrides[get_l3_detector] = lambda: L3Detector(_BuggyAdjudicator())
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            resp = await client.post(
+                "/v1/messages",
+                json={
+                    "model": "m",
+                    "messages": [
+                        {"role": "user", "content": "Please brief Quentin tomorrow."}
+                    ],
+                },
+                headers={"x-blindfold-workspace": "gamma"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 503
+    error = resp.json()["error"]
+    assert error["event"] == "blocked-detection-internal"
+    assert error["event"] != "blocked-l3-unavailable"
+    assert error["sub_reason"] != "l3_unavailable"
+    assert "defect" in error["remedy"].lower()
+    # Never invites the operator to reduce protection in response to our own bug.
+    assert "deterministic-only" not in error["remedy"]
+    # SEC-7: scrubbed, same invariant as the l3-unavailable path.
+    assert "Quentin" not in error["reason"]
+    assert "Quentin" not in error["message"]
+    # Block came BEFORE egress.
+    assert recorded == []
+    audit_record = next(
+        r
+        for r in audit_log.records
+        if r.workspace == "gamma" and r.event == "blocked-detection-internal"
+    )
+    assert "Quentin" not in audit_record.reason
+
+
 class _LeakyMapping(SurrogateMapping):
     """Test double: ``real_values()`` knows about an entity that ``entities()`` does
     NOT expose as a detection surface. Simulates an engine miss — the real value

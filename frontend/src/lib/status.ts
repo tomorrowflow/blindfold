@@ -68,6 +68,10 @@ export const DEPENDENCY_LABELS: Record<DependencyKey, string> = {
 export const BLOCK_REMEDY_BY_SUB_REASON: Record<string, string> = {
   l3_unavailable:
     "Restart or configure the local L3 adjudicator (Ollama), or opt this workspace into deterministic-only mode.",
+  // Issue #315: deliberately never suggests restarting L3 or opting into
+  // deterministic-only -- this is a Blindfold defect, not an availability
+  // problem, and neither on-ramp fixes a code bug.
+  detection_internal: "This is a Blindfold defect, not an availability problem. Please report it.",
   leak_detected:
     "The pre-egress leak gate caught a real value about to cross egress. Review the audit log for details.",
   unresolved_surrogate:

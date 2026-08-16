@@ -23,6 +23,7 @@ from blindfold.l3 import (
     L3Adjudication,
     L3ContentCache,
     L3Detector,
+    L3DetectionInternalError,
     L3Unavailable,
     _SENTENCE_STOPWORDS,
     count_capitalized_tokens,
@@ -750,6 +751,32 @@ def test_l3_unavailable_blocks_by_default_fail_closed():
 
     with pytest.raises(L3Unavailable):
         detector.detect(text, known_entities=[])
+
+
+class _BuggyAdjudicator:
+    """Stub for a code bug inside the adjudicator cascade -- e.g. a `KeyError`/
+    `TypeError` regression in the GLiNER cascade or re-anchoring code (issue #315),
+    never an availability signal. `TypeError` is neither an `httpx.HTTPError` nor
+    an `OSError`, so it must NOT be conflated with an adjudicator outage.
+    """
+
+    def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
+        raise TypeError("boom: not the shape adjudicate() is documented to return")
+
+
+def test_an_internal_defect_in_the_adjudicator_surfaces_distinctly_from_unavailable():
+    # Issue #315: a `TypeError` regression inside the adjudicator cascade must
+    # surface as a distinct `L3DetectionInternalError`, never `L3Unavailable` --
+    # conflating the two invites an operator to "fix" a Blindfold bug by opting
+    # into the deterministic-only degrade, which does nothing for a code defect.
+    detector = L3Detector(_BuggyAdjudicator())
+    text = "Please brief Klaus tomorrow."
+
+    with pytest.raises(L3DetectionInternalError) as excinfo:
+        detector.detect(text, known_entities=[])
+    # SEC-7 scrubbed-reason invariant: the candidate's own text never appears in
+    # the internal-defect reason, same as the existing L3Unavailable contract.
+    assert "Klaus" not in str(excinfo.value)
 
 
 def test_l3_unavailable_is_silent_when_no_candidate_spans_exist():

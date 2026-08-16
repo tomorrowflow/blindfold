@@ -44,6 +44,28 @@ feedback explaining why and how to opt in.
   localhost degrade-by-default carve-out — the operator flips the documented opt-in
   explicitly; existing L1/L2-only test suites now do so too (they have no L3 to lose).
 
+- **Update (issue #315):** `L3Unavailable`/`blocked-l3-unavailable` had conflated two
+  distinct failures: a genuine adjudicator-availability problem (connection refused,
+  timeout, a non-2xx response) and an internal Blindfold defect (the #179
+  span-containment backstop firing, or an uncaught bug inside the adjudicator
+  cascade — a `KeyError`/`TypeError` regression was indistinguishable in the logs
+  from Ollama being down). Both rendered as the same event with the same
+  three-on-ramp remedy, whose deterministic-only suggestion invites an operator to
+  *reduce protection* in response to a Blindfold bug — none of the three on-ramps
+  fixes a code defect. Split: `L3Detector._adjudicate_one`'s blanket
+  `except Exception` around the adjudicator call now only maps `httpx.HTTPError`/
+  `OSError` (transport/protocol failures) to `L3Unavailable`; every other exception
+  — plus the #179 backstop's own raise site (`engine.py`) — is the new
+  `L3DetectionInternalError`, surfaced as `blocked-detection-internal` with its own
+  remedy ("this is a Blindfold defect — report it; the payload was not sent"),
+  never naming the deterministic-only degrade. Both stay fail-closed (the payload
+  is still never sent) and still carry only a scrubbed reason; only the label and
+  remedy differ. `_UnconfiguredAdjudicator` (the no-L3-wired default) now raises
+  `L3Unavailable` directly rather than a bare `RuntimeError`, since "no L3
+  configured" is unambiguously the availability case — `_adjudicate_one` reraises
+  an `L3Unavailable` it already received unchanged, never reclassifying it via the
+  generic-exception fallback.
+
 ## Alternatives considered
 
 - **Fail-open (send unscanned on outage)** — rejected: unacceptable leak risk.

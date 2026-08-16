@@ -165,6 +165,57 @@ async def test_l3_unavailable_block_produces_a_blocked_record_with_the_scrubbed_
     assert record.upstream_duration_ms is None
 
 
+class _BuggyAdjudicator:
+    """Stub for a Blindfold code defect inside the adjudicator cascade (issue #315),
+    never an availability signal.
+    """
+
+    def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
+        raise TypeError("boom: not the shape adjudicate() is documented to return")
+
+
+@pytest.mark.anyio
+async def test_internal_detection_defect_block_produces_a_distinctly_reasoned_record():
+    # Issue #315 acceptance criterion: the processing trace must distinguish an
+    # internal-defect block from an l3-unavailable block -- both are `outcome ==
+    # "blocked"` (ADR-0035 decision 7's 3-bucket outcome set is unchanged), but
+    # the reason string threaded through must never read like the l3-unavailable
+    # case, so an operator scanning the trace can tell the two apart.
+    recorded: list[httpx.Request] = []
+    trace = ProcessingTraceBuffer()
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(
+        {"content": [{"type": "text", "text": "ok"}]}, recorded
+    )
+    app.dependency_overrides[get_l3_detector] = lambda: L3Detector(_BuggyAdjudicator())
+    app.dependency_overrides[get_processing_trace] = lambda: trace
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            resp = await client.post(
+                "/v1/messages",
+                json={
+                    "model": "m",
+                    "messages": [
+                        {"role": "user", "content": "Please brief Quentin tomorrow."}
+                    ],
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 503
+    records = trace.recent()
+    assert len(records) == 1
+    record = records[0]
+    assert record.outcome == "blocked"
+    assert record.reason == resp.json()["error"]["reason"]
+    assert "internal defect" in record.reason
+    assert "L3 candidate-span adjudication is unavailable" not in record.reason
+    assert record.upstream_duration_ms is None
+
+
 @pytest.mark.anyio
 async def test_leak_gate_block_produces_a_blocked_record_with_the_scrubbed_reason():
     recorded: list[httpx.Request] = []

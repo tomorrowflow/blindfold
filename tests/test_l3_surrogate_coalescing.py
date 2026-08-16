@@ -30,7 +30,12 @@ from blindfold.app import (
     get_upstream_client,
 )
 from blindfold.engine import blindfold_payload
-from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector, L3Unavailable
+from blindfold.l3 import (
+    CandidateSpan,
+    L3Adjudication,
+    L3Detector,
+    L3DetectionInternalError,
+)
 from blindfold.l3_gliner import GlinerCascadeAdjudicator
 from blindfold.review import ReviewInbox
 from blindfold.surrogates import SurrogateMapping
@@ -228,6 +233,11 @@ def test_span_that_does_not_cover_the_confirming_candidate_fails_closed_instead_
     # reports a corrupted extent. Minting with it verbatim is exactly the live
     # repro: a real-value fragment mis-slices into the clear. The engine must
     # fail closed (ADR-0009) instead of slicing on an unanchored span.
+    #
+    # Issue #315: this backstop is a Blindfold-internal invariant violation, not
+    # an adjudicator-availability problem -- it must raise ``L3DetectionInternalError``
+    # (not ``L3Unavailable``), so the proxy's 503 never suggests the deterministic-
+    # only degrade as a remedy for what is actually a Blindfold defect.
     mapping = SurrogateMapping.from_pairs([])
     inbox = ReviewInbox()
     text = "Hi, ich bin Sarah Bergmann von Nordwind Logistik heute."
@@ -240,7 +250,7 @@ def test_span_that_does_not_cover_the_confirming_candidate_fails_closed_instead_
     )
     payload = {"model": "m", "messages": [{"role": "user", "content": text}]}
 
-    with pytest.raises(L3Unavailable):
+    with pytest.raises(L3DetectionInternalError):
         blindfold_payload(payload, mapping, detector, inbox)
 
 
