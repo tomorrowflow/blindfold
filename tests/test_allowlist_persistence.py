@@ -140,3 +140,26 @@ def test_hydrate_allowlist_from_store_is_a_no_op_when_store_is_none():
     hydrate_allowlist_from_store(allowlist, None)  # must not raise
 
     assert allowlist.tokens() == frozenset()
+
+
+def test_reject_of_a_multiword_item_persists_and_round_trips_the_whole_phrase():
+    # Issue #294 acceptance criterion 5: a persisted reject of a multi-word/
+    # coalesced review item (issue #162/#167) round-trips as one phrase, not
+    # split into per-word tokens -- the store column is a bare TEXT value with
+    # no word-splitting anywhere in the seam, so the whole phrase must survive
+    # a reject -> "restart" cycle and still suppress span-wise, not just by
+    # single-token equality.
+    from blindfold.app import hydrate_allowlist_from_store
+
+    store = _RecordingAllowlistStore()
+    store.add("Apple Development")  # the reject from "before the restart"
+
+    allowlist = Allowlist()
+    hydrate_allowlist_from_store(allowlist, store)
+
+    assert allowlist.phrases() == frozenset({"Apple Development"})
+
+    text = "Please review the Apple Development proposal again."
+    candidates = select_candidate_spans(text, known_entities=[], allowlist=allowlist)
+
+    assert {c.text for c in candidates} == set()

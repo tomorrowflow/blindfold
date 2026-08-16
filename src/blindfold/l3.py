@@ -374,9 +374,23 @@ def select_candidate_spans(
     would eat real names ("mark this as done" would suppress "Mark" the
     person too); the positional gate protects any token that is ever
     capitalized mid-sentence, regardless of which suppression signal fired.
+
+    Issue #294: a rejected review item's real value can itself be a multi-word/
+    coalesced span ("Apple Development", #162/#167) — the allowlist's unit of
+    suppression must match L3's minting unit, the *span*, not just the seed
+    token. ``allowlist.phrases()`` entries are matched against ``text`` as a
+    literal, case-/whitespace-normalized occurrence (:func:`_allowlisted_phrase_ranges`);
+    any token whose position falls inside such a range is suppressed too —
+    this is how a phrase like "Store directory" (whose second word is
+    lowercase and would never itself become a candidate token) suppresses its
+    leading token "Store". Deliberately exact-phrase-only: rejecting
+    "Apple Development" does NOT suppress a standalone later occurrence of
+    "Apple" or "Development" alone — components are not implicitly
+    non-sensitive just because one phrase containing them was rejected.
     """
     known_surfaces = _known_surfaces(known_entities)
     capitalized_positions = _capitalized_positions(text)
+    phrase_ranges = _allowlisted_phrase_ranges(text, allowlist)
     candidates: list[CandidateSpan] = []
     for match in _capitalized_token_matches(text):
         token = match.group(0)
@@ -385,6 +399,8 @@ def select_candidate_spans(
         if token in known_surfaces:
             continue
         if allowlist is not None and allowlist.contains(token):
+            continue
+        if any(start <= match.start() < end for start, end in phrase_ranges):
             continue
         if token in declared_tools:
             continue
@@ -425,6 +441,31 @@ def select_phone_candidate_spans(text: str) -> list[CandidateSpan]:
             )
         )
     return candidates
+
+
+def _allowlisted_phrase_ranges(
+    text: str, allowlist: "Allowlist | None"
+) -> list[tuple[int, int]]:
+    """Char ranges in ``text`` where a multi-word :meth:`Allowlist.phrases` entry
+    literally occurs (issue #294), case- and whitespace-normalized: each phrase's
+    own words are matched in order, joined by ``\\s+`` (so "Apple  Development"
+    or a differently-cased occurrence still matches), case-insensitively. A
+    span-granular reject must be checked at the span about to be adjudicated,
+    not only at the single seed token — this is the pre-scan that makes that
+    possible without threading the allowlist through the coalescing pass in
+    engine.py.
+    """
+    if allowlist is None:
+        return []
+    ranges: list[tuple[int, int]] = []
+    for phrase in allowlist.phrases():
+        words = phrase.split()
+        if len(words) < 2:
+            continue
+        pattern = r"\s+".join(re.escape(word) for word in words)
+        for phrase_match in re.finditer(pattern, text, re.IGNORECASE):
+            ranges.append((phrase_match.start(), phrase_match.end()))
+    return ranges
 
 
 def _capitalized_positions(text: str) -> dict[str, list[int]]:

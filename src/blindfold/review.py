@@ -20,6 +20,7 @@ the dismissal log / processing trace.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
@@ -453,11 +454,23 @@ class ReviewInbox:
         return colliding
 
 
+_WHITESPACE_RE = re.compile(r"\s")
+
+
 class Allowlist:
     """Tokens learned to be NOT sensitive (e.g. a code identifier mis-flagged).
 
     Once a token is on the allowlist, L3 must not re-flag it on subsequent
     requests — over-redaction is a quality bug the learning loop fixes.
+
+    Entries are single tokens (checked by exact equality, ``contains``) or
+    **phrases** — an entry carrying internal whitespace, e.g. a rejected
+    multi-word/coalesced review item ("Apple Development", issue #162/#167).
+    A phrase is consulted at the *span* level (``phrases()``, issue #294): the
+    granularity mismatch where minting is span-granular but suppression was
+    only ever token-granular meant a multi-word reject was silently undone on
+    the very next hop, re-flagging both components and re-coalescing them into
+    the same entity. Single-token semantics are unchanged either way.
     """
 
     def __init__(self) -> None:
@@ -471,6 +484,12 @@ class Allowlist:
 
     def tokens(self) -> frozenset[str]:
         return frozenset(self._tokens)
+
+    def phrases(self) -> frozenset[str]:
+        """Entries carrying internal whitespace — multi-word allowlist values,
+        consulted span-wise rather than by single-token equality (issue #294).
+        """
+        return frozenset(token for token in self._tokens if _WHITESPACE_RE.search(token))
 
 
 def _provisional_pool_entry(pool_key: str, position: int) -> str:

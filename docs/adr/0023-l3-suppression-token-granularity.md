@@ -105,6 +105,55 @@ as a sibling issue, not inside #59.
   - A per-request **context object** bundling `session`/`declared_tools`
     instead of parameter threading.
 
+## Update (issue #294): the allowlist gets one span-granular exception
+
+The #74 live-verify run 5b proved Decision 1's "suppression is token-granularity
+only" rule has a hole specifically for **learned rejects**: `reject_review_item`
+(app.py) stores the rejected item's whole `real` value — which, since #162/#167,
+can be a coalesced multi-word/multi-type span ("Apple Development",
+"Store directory") — as one `Allowlist` entry, but `select_candidate_spans`
+only ever consulted the allowlist by exact single-token equality
+(`allowlist.contains(token)`). A phrase entry can never equal a single token,
+so a multi-word reject was silently undone on the very next hop: both
+components re-flag, L3 re-coalesces them (#162) into the same entity, and the
+row re-mints with a fresh id — with no manual escape from the #293 leak-gate
+deadlock a stuck multi-word false positive causes.
+
+**Amended decision:** suppression stays token-granularity for every condition
+in this ADR (seeded singles, stopwords, declared tool vocabulary, positional
+case heuristic) *except* one: a **multi-word allowlist entry** (learned or, in
+principle, seeded — the mechanism doesn't distinguish provenance) is now
+matched against the hop text as its own literal span
+(`l3._allowlisted_phrase_ranges`, case- and whitespace-normalized), and every
+token whose position falls inside that span is excluded from candidacy — run
+*before* L3 ever adjudicates, so the acceptance test asserts zero adjudicator
+calls for the rejected span, not just zero re-mint. This is still not
+region-granularity (Decision 1's actual guardrail): the suppressed span is
+exactly the phrase the allowlist names, never a system-prompt-wide or
+code-fence-wide skip, and it is reachable only through an existing entry, never
+inferred from context.
+
+**Component-suppression is explicitly NOT implicit.** Rejecting "Apple
+Development" does not add "Apple" or "Development" to the allowlist on their
+own — a standalone later occurrence of either word alone still mints normally
+(pinned by `test_rejecting_a_multiword_phrase_does_not_implicitly_suppress_a_lone_component`,
+tests/test_multi_word_allowlist_reject.py). `Bergmann` alone is not obviously
+non-sensitive just because "Sarah Bergmann" was rejected in one context — the
+same reasoning issue #292 already applied on the mint-time-collision side.
+
+**Seeded-allowlist file contract is unaffected.** `seeded_allowlist.txt`'s
+loader (`allowlist_seed.py`) already treats each whole line — whitespace
+included — as one token/phrase; no parsing change was needed to make a phrase
+representable there. Its header comment gains a one-line note that a line may
+itself be a multi-word phrase, but the "one token per line" *file* contract
+(one entry per line) is unchanged.
+
+Protection-always-wins (a registered Term or entity-graph surface beats any
+allowlist entry) is unaffected: `select_candidate_spans` still checks
+`known_surfaces` before either allowlist condition, and L2's dictionary pass
+(`detect_l2`) has already rewritten any registered entity's text to its
+surrogate before L3 candidate selection ever sees it.
+
 ## Alternatives considered
 
 - **Skip L3 over the `system` region** — rejected: the live verify proved that

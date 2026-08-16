@@ -224,22 +224,28 @@ to add it via `/grill-with-docs`, not to invent a synonym.
 - **Learning loop** — review actions feed the system: **confirm** grows the entity
   graph; **reject** grows the **allowlist**. Bidirectional; makes detection more
   deterministic over time.
-- **Allowlist** — tokens marked NOT sensitive (e.g. a code identifier
-  mis-flagged as a name), so they're never flagged as candidates again. Entries
-  arrive two ways: **learned** (a reject verdict from the review inbox) and
-  **seeded** (a curated list of common framework/code tokens shipped with
-  Blindfold). Both carry identical semantics; a registered **Term** always wins
-  over an allowlist entry — the allowlist suppresses novelty discovery, never
-  protection.
+- **Allowlist** — tokens (or, since issue #294, **phrases** — a rejected
+  multi-word/coalesced entity, e.g. "Apple Development") marked NOT sensitive,
+  so they're never flagged as candidates again. Entries arrive two ways:
+  **learned** (a reject verdict from the review inbox) and **seeded** (a
+  curated list of common framework/code tokens shipped with Blindfold). Both
+  carry identical semantics; a registered **Term** always wins over an
+  allowlist entry — the allowlist suppresses novelty discovery, never
+  protection. A phrase entry is matched against the hop text span-wise, case-
+  and whitespace-normalized (issue #294) — it never implicitly suppresses one
+  of its own component words occurring standalone elsewhere.
 - **Declared tool vocabulary** — the tool names a request itself declares in its
   tool schemas. Suppressed from L3 candidacy for that request only —
   session-scoped, never persisted into the **allowlist** (a request must not be
   able to permanently poison learning by declaring a tool named after a person).
 - **Suppression** — ruling a token out of L3 adjudication (allowlist, declared
-  tool vocabulary, stopwords, **positional case heuristic**). Always
-  token-granularity: a region (system prompt, code fence) may inform heuristics
-  but is never skipped wholesale. Suppression never affects L1/L2 protection —
-  a suppressed token that is a known entity is still blindfolded.
+  tool vocabulary, stopwords, **positional case heuristic**). Token-granularity
+  by default: a region (system prompt, code fence) may inform heuristics but is
+  never skipped wholesale. The one span-granular exception (issue #294): a
+  multi-word **allowlist** phrase suppresses exactly its own literal
+  occurrence — still a bounded span the allowlist itself names, never a
+  region. Suppression never affects L1/L2 protection — a suppressed token
+  that is a known entity is still blindfolded.
 - **Positional case heuristic** — a **Suppression** condition (ADR-0033) that
   eliminates English positional-capitalization noise from L3 candidacy before
   any model call. A capitalized token is suppressed when (b) it appears only
