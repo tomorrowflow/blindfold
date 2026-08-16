@@ -296,6 +296,12 @@ def extract_declared_tools_messages(payload: dict[str, Any]) -> frozenset[str]:
     Reads ``tools[].name``. Defensive: a missing/non-list ``tools``, a non-dict
     entry, or an entry without a string ``name`` is ignored — an empty vocabulary
     reproduces today's behavior exactly (ADR-0023, issue #72).
+
+    Issue #297: each name is also decomposed on ``_``, ``__``, ``.`` and ``-``
+    into its components, which are suppressed alongside the whole name — an
+    MCP tool name like ``mcp__claude_ai_Asana__authenticate`` carries a vendor
+    token (``Asana``) that a whole-name comparison alone can never see, since
+    the declared name and the token are never equal as strings.
     """
     return _extract_declared_tools(payload, lambda tool: tool.get("name"))
 
@@ -316,6 +322,9 @@ def extract_declared_tools_chat_completions(payload: dict[str, Any]) -> frozense
     return _extract_declared_tools(payload, _name)
 
 
+_DECLARED_TOOL_NAME_COMPONENT_RE = re.compile(r"[_.\-]+")
+
+
 def _extract_declared_tools(
     payload: dict[str, Any], get_name: Callable[[dict[str, Any]], Any]
 ) -> frozenset[str]:
@@ -329,6 +338,11 @@ def _extract_declared_tools(
         name = get_name(tool)
         if isinstance(name, str):
             names.add(name)
+            names.update(
+                part
+                for part in _DECLARED_TOOL_NAME_COMPONENT_RE.split(name)
+                if part
+            )
     return frozenset(names)
 
 

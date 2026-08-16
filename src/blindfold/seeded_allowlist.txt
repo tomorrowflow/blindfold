@@ -70,6 +70,30 @@ Bitbucket
 Firefox
 Kubernetes
 #
+# MCP / collaboration-tool vendors (issue #297). Evidence: the #74 live-verify
+# run 6 egress audit -- these public product names, named in the harness's own
+# safety-rules text, minted provisional surrogates in some hops (e.g. Jira,
+# Asana) while the same names egressed in plaintext in other hops. Slack,
+# Linear, Figma and Datadog were already seeded by earlier issues (#137/#87);
+# this batch adds the rest of run 6's named set -- except "Notion" (run 6's
+# own list names it too), which the issue #281 GLiNER audit
+# (tests/fixtures/gliner_org_probe_corpus.json) already measured and
+# explicitly excluded under this same ADR-0023 curation rule: an ordinary
+# English dictionary word ("an idea/notion") with no single dominant
+# public-brand reading, plausible as a generic project/codename -- the same
+# collision class as Vault/Confluence/Zoom/Stripe, left out there for the
+# identical reason. Seeding it here would silently re-litigate that decision
+# without new evidence; flagged in this issue's handoff notes for a human call
+# instead of resolved unilaterally.
+Asana
+Jira
+Canva
+Intercom
+HubSpot
+Atlassian
+PagerDuty
+Box
+#
 # Blindfold's own identifiers (project + tooling), public once shipped
 Blindfold
 Sandcastle

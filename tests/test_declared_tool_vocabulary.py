@@ -109,6 +109,28 @@ def test_extract_declared_tools_messages_ignores_malformed_entries():
     assert extract_declared_tools_messages(payload) == frozenset({"Edit"})
 
 
+def test_extract_declared_tools_messages_decomposes_mcp_tool_name_components():
+    # Issue #297: the declared name is mcp__claude_ai_Asana__authenticate --
+    # ADR-0023's suppression compared whole names only, so the vendor token
+    # "Asana" living inside the name (and inside the tool's own description)
+    # was invisible to it. Decomposing on _, __, ., - surfaces "Asana" as its
+    # own suppressed component, for this request only.
+    payload = {
+        "model": "m",
+        "tools": [
+            {
+                "name": "mcp__claude_ai_Asana__authenticate",
+                "description": "Authenticate with Asana.",
+            }
+        ],
+        "messages": [],
+    }
+
+    declared = extract_declared_tools_messages(payload)
+
+    assert "Asana" in declared
+
+
 def test_extract_declared_tools_messages_missing_or_non_list_tools_is_empty():
     assert extract_declared_tools_messages({"model": "m", "messages": []}) == frozenset()
     assert (
@@ -250,6 +272,108 @@ def test_blindfold_chat_completions_payload_suppresses_declared_tool():
     )
 
     assert "Bash" not in adjudicator.calls
+
+
+def test_blindfold_payload_never_mints_vendor_token_inside_an_mcp_tool_name():
+    # Issue #297 acceptance criterion 1: a request whose tools[].name is
+    # mcp__claude_ai_Asana__authenticate, with a description containing the
+    # bare word "Asana", must not mint "Asana" as a novel entity from any hop.
+    mapping = _seeded_mapping()
+    adjudicator = _RecordingAdjudicator()
+    detector = L3Detector(adjudicator)
+    inbox = ReviewInbox()
+    payload = {
+        "model": "m",
+        "tools": [
+            {
+                "name": "mcp__claude_ai_Asana__authenticate",
+                "description": "Authenticate with Asana.",
+            }
+        ],
+        "messages": [
+            {"role": "user", "content": "Please connect my Asana account."}
+        ],
+    }
+    declared_tools = extract_declared_tools_messages(payload)
+
+    blindfold_payload(payload, mapping, detector, inbox, declared_tools=declared_tools)
+
+    assert "Asana" not in adjudicator.calls
+    assert inbox.list() == []
+
+
+def test_mcp_tool_name_component_suppression_does_not_persist_to_a_later_request():
+    # Acceptance criterion 2: request-scoped only -- a later request that
+    # doesn't declare the mcp__claude_ai_Asana__authenticate tool adjudicates
+    # "Asana" normally, same as the existing whole-name test for "Bash".
+    mapping = _seeded_mapping()
+    adjudicator = _RecordingAdjudicator()
+    detector = L3Detector(adjudicator)
+    inbox = ReviewInbox()
+
+    first_payload = {
+        "model": "m",
+        "tools": [
+            {
+                "name": "mcp__claude_ai_Asana__authenticate",
+                "description": "Authenticate with Asana.",
+            }
+        ],
+        "messages": [{"role": "user", "content": "Please connect Asana."}],
+    }
+    blindfold_payload(
+        first_payload,
+        mapping,
+        detector,
+        inbox,
+        declared_tools=extract_declared_tools_messages(first_payload),
+    )
+    assert "Asana" not in adjudicator.calls
+
+    second_payload = {
+        "model": "m",
+        "messages": [{"role": "user", "content": "Please connect Asana."}],
+    }
+    blindfold_payload(
+        second_payload,
+        mapping,
+        detector,
+        inbox,
+        declared_tools=extract_declared_tools_messages(second_payload),
+    )
+
+    assert "Asana" in adjudicator.calls
+
+
+def test_registered_term_equal_to_a_decomposed_tool_name_component_is_still_blindfolded():
+    # Acceptance criterion 4: protection still wins over suppression. A
+    # workspace that has registered "Asana" as its own protected Term must
+    # still see it blindfolded, even though "Asana" is also a suppressed
+    # component of a declared mcp__claude_ai_Asana__authenticate tool name.
+    mapping = SurrogateMapping.from_pairs([("Asana", "Northwind Tasks")])
+    adjudicator = _RecordingAdjudicator()
+    detector = L3Detector(adjudicator)
+    inbox = ReviewInbox()
+    payload = {
+        "model": "m",
+        "tools": [
+            {
+                "name": "mcp__claude_ai_Asana__authenticate",
+                "description": "Authenticate with Asana.",
+            }
+        ],
+        "messages": [{"role": "user", "content": "Please connect my Asana account."}],
+    }
+    declared_tools = extract_declared_tools_messages(payload)
+
+    blinded, _session = blindfold_payload(
+        payload, mapping, detector, inbox, declared_tools=declared_tools
+    )
+
+    surrogate = mapping.surrogate_for("Asana")
+    assert surrogate is not None
+    assert "Asana" not in blinded["messages"][0]["content"]
+    assert surrogate in blinded["messages"][0]["content"]
 
 
 def test_declared_tool_name_equal_to_registered_term_is_still_blindfolded():

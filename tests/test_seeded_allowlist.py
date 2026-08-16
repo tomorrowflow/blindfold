@@ -99,6 +99,75 @@ def test_seeded_allowlist_contains_the_issue_137_dismissal_batch():
     assert tokens.isdisjoint({"Don", "Darwin"})
 
 
+def test_seeded_allowlist_contains_the_issue_297_mcp_vendor_batch():
+    # Acceptance criterion (issue #297): the MCP/collaboration-tool vendor set
+    # from the #74 live-verify run 6 egress audit -- Jira and Asana minted
+    # provisional surrogates in some hops while the same public vendor names
+    # egressed in plaintext in others. Slack/Linear/Figma/Datadog were already
+    # seeded by earlier issues; this batch adds the rest of run 6's named set,
+    # EXCEPT "Notion" -- see test_issue_297_run_6_vendor_batch_excludes_notion
+    # below for why that one name is deliberately not seeded here.
+    tokens = load_seeded_allowlist_tokens()
+
+    assert {
+        "Asana",
+        "Slack",
+        "Jira",
+        "Linear",
+        "Figma",
+        "Canva",
+        "Intercom",
+        "HubSpot",
+        "Atlassian",
+        "PagerDuty",
+        "Datadog",
+        "Box",
+    } <= tokens
+
+
+def test_issue_297_run_6_vendor_batch_excludes_notion():
+    # Run 6's own named set (issue #297) includes "Notion", but the issue #281
+    # GLiNER audit (tests/test_gliner_org_seed_audit.py,
+    # tests/fixtures/gliner_org_probe_corpus.json) already measured and
+    # excluded it under this same ADR-0023 curation rule: an ordinary English
+    # dictionary word with no single dominant public-brand reading, the same
+    # collision class as Vault/Confluence/Zoom/Stripe. Seeding it here would
+    # silently re-litigate that recorded decision without new evidence -- left
+    # for a human/ADR call rather than resolved unilaterally in this slice.
+    tokens = load_seeded_allowlist_tokens()
+
+    assert "Notion" not in tokens
+
+
+def test_issue_297_mcp_vendor_batch_is_never_flagged_as_an_l3_candidate_span():
+    allowlist = Allowlist()
+    for token in load_seeded_allowlist_tokens():
+        allowlist.add(token)
+
+    text = (
+        "Jira and Asana both integrate with Linear, Figma, Canva, "
+        "Intercom, HubSpot, Atlassian, PagerDuty, Datadog, and Box."
+    )
+    candidates = select_candidate_spans(text, known_entities=[], allowlist=allowlist)
+
+    flagged = {c.text for c in candidates}
+    assert flagged.isdisjoint(
+        {
+            "Jira",
+            "Asana",
+            "Linear",
+            "Figma",
+            "Canva",
+            "Intercom",
+            "HubSpot",
+            "Atlassian",
+            "PagerDuty",
+            "Datadog",
+            "Box",
+        }
+    )
+
+
 def test_seeded_token_is_never_flagged_as_an_l3_candidate_span():
     # Acceptance criterion: seeded tokens are never flagged as L3 candidate spans.
     allowlist = Allowlist()
