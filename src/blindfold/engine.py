@@ -184,6 +184,7 @@ def blindfold_payload(
     declared_tools: frozenset[str] = frozenset(),
     workspace: str = DEFAULT_WORKSPACE,
     phone_candidates_enabled: bool = True,
+    declared_tool_vocabulary: "DeclaredToolVocabulary | None" = None,
 ) -> tuple[dict[str, Any], ExchangeSession]:
     """Return a blindfolded copy of an Anthropic Messages ``payload`` plus the session.
 
@@ -199,6 +200,15 @@ def blindfold_payload(
     itself declares (see :func:`extract_declared_tools_messages`) — suppressed from
     L3 candidacy for every hop of this request only. Never persisted, never state
     on ``l3_detector``.
+
+    ``declared_tool_vocabulary`` (issue #302), when provided, is consulted and
+    grown alongside ``declared_tools``: this request's own declared vocabulary is
+    recorded into it for ``workspace``, and the *effective* suppressed set used for
+    every hop below becomes everything that workspace has ever declared — so
+    suppression outlives the request that declared it (the #74 run-7 unblocker: a
+    value minted from a tools-less sub-agent hop before the main request ever
+    declared the same tool name). ``None`` (the default) reproduces today's
+    request-scoped-only behavior exactly.
 
     ``workspace`` (issue #171) is the requesting workspace slug — threaded down to
     every ``inbox.upsert`` call so the resulting ``ReviewItem`` carries the
@@ -224,6 +234,9 @@ def blindfold_payload(
     out = copy.deepcopy(payload)
     l3_provider = l3_detector.provider_name if l3_detector is not None else None
     inbox = _replay_inbox(l3_detector, inbox)
+    if declared_tool_vocabulary is not None:
+        declared_tool_vocabulary.record(workspace, declared_tools)
+        declared_tools = declared_tool_vocabulary.for_workspace(workspace)
 
     system = out.get("system")
     if system is not None:
@@ -257,6 +270,7 @@ def blindfold_chat_completions_payload(
     declared_tools: frozenset[str] = frozenset(),
     workspace: str = DEFAULT_WORKSPACE,
     phone_candidates_enabled: bool = True,
+    declared_tool_vocabulary: "DeclaredToolVocabulary | None" = None,
 ) -> tuple[dict[str, Any], ExchangeSession]:
     """Return a blindfolded copy of an OpenAI Chat Completions ``payload`` plus the session.
 
@@ -266,6 +280,8 @@ def blindfold_chat_completions_payload(
 
     ``declared_tools`` (ADR-0023, issue #72) — see :func:`extract_declared_tools_chat_completions`.
 
+    ``declared_tool_vocabulary`` (issue #302) — see :func:`blindfold_payload`.
+
     ``workspace`` (issue #171) — see :func:`blindfold_payload`.
 
     ``phone_candidates_enabled`` (issue #279) — see :func:`blindfold_payload`.
@@ -274,6 +290,9 @@ def blindfold_chat_completions_payload(
     out = copy.deepcopy(payload)
     l3_provider = l3_detector.provider_name if l3_detector is not None else None
     inbox = _replay_inbox(l3_detector, inbox)
+    if declared_tool_vocabulary is not None:
+        declared_tool_vocabulary.record(workspace, declared_tools)
+        declared_tools = declared_tool_vocabulary.for_workspace(workspace)
 
     for message in out.get("messages", []):
         ctx = _HopContext(l3_provider=l3_provider)
@@ -345,6 +364,37 @@ def _extract_declared_tools(
                 if part
             )
     return frozenset(names)
+
+
+class DeclaredToolVocabulary:
+    """Workspace-scoped, process-lifetime registry of every declared-tool name
+    (and #297 component) a workspace's requests have EVER carried (issue #302).
+
+    ADR-0023's own :func:`_extract_declared_tools` set is deliberately per-request
+    only, so a request cannot poison the *seeded* allowlist by declaring a tool
+    named after a person. But a tool name is protocol vocabulary, not user
+    content, and unlike the allowlist this set is derived from the traffic
+    itself rather than curated — so remembering it, scoped to the workspace
+    that declared it, poisons nothing. This is the #74 run-7 unblocker: a value
+    minted from a tools-less sub-agent hop, before the main agentic-loop request
+    ever declared the same tool name, stays visible to suppression only for as
+    long as the request that declared it is in flight — this registry gives it
+    the workspace's own lifetime instead.
+
+    In-memory only, mirroring :class:`~blindfold.policy.WorkspacePolicies` —
+    persistence across a proxy restart is out of scope this slice.
+    """
+
+    def __init__(self) -> None:
+        self._by_workspace: dict[str, set[str]] = {}
+
+    def record(self, workspace: str, tool_names: frozenset[str]) -> None:
+        """Union ``tool_names`` (already #297-decomposed) into ``workspace``'s set."""
+        self._by_workspace.setdefault(workspace, set()).update(tool_names)
+
+    def for_workspace(self, workspace: str) -> frozenset[str]:
+        """Every tool name (and component) ever recorded for ``workspace``."""
+        return frozenset(self._by_workspace.get(workspace, set()))
 
 
 def _blindfold_tools_messages(

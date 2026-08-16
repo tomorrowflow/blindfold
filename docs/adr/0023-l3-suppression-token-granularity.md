@@ -154,6 +154,72 @@ allowlist entry) is unaffected: `select_candidate_spans` still checks
 (`detect_l2`) has already rewritten any registered entity's text to its
 surrogate before L3 candidate selection ever sees it.
 
+## Update (issue #302): declared-tool suppression gets a second, workspace-scoped lifetime
+
+The #74 live-verify **run 7** measured the residual this ADR's own "per request only"
+scoping (Decision 2, "Declared tool vocabulary") left open: inbox item 17
+(`real='Agent'`) minted from ordinary prose in a request that carried no `tools`
+array at all (a sub-agent/short-context call — the same shape #297's `Asana` mint
+came from in run 6). By the time a later, main-agentic-loop request declared
+`tools[].name == "Agent"`, this ADR's suppression had already expired — it never
+had a chance to keep "Agent" out of L3 candidacy for the request that minted it,
+because that request is exactly the one shape (no declared `tools`) the per-request
+set cannot see. Run 7 died: 14 blocked exchanges, 9 of them on this one value,
+unrecoverable without a human `reject` (#294) — `tools[].name` is a surface the
+deterministic blinder is structurally forbidden to rewrite (rewriting a tool's own
+name breaks dispatch), so once a value is provisional and also a declared tool
+name, nothing in the request path can un-stick it going forward.
+
+**Amended decision:** a *second*, distinct mechanism now gives the same declared
+vocabulary a longer lifetime, alongside — not instead of — the per-request set
+Decision 2 already describes. `engine.DeclaredToolVocabulary` is a workspace-scoped,
+process-lifetime registry: every tool name (and #297 component) any request in a
+**workspace** ever declares is recorded into it, and the *effective* suppressed set
+`select_candidate_spans` consults for every subsequent request in that workspace —
+tools-array-bearing or not — is the union of that request's own declared names and
+everything the workspace has ever declared. Once a name has been declared at least
+once, it stays suppressed from L3 novelty discovery in that workspace from then on,
+closing the exact gap run 7 measured: a sub-agent hop with no `tools` array, sent
+after the main request has already taught the workspace that name, no longer mints
+it fresh.
+
+This is deliberately **not** a reinterpretation of "never persisted" from Decision
+2 — that clause is about the **allowlist** specifically (`_allowlist`, the
+seeded/learned-reject store), and stays true unchanged: a declared tool name is
+still never added there, so a request still cannot poison *that* learning loop by
+declaring a tool named after a person. `DeclaredToolVocabulary` is a different
+store, in-memory only (mirrors `policy.WorkspacePolicies` — no persistence across
+a proxy restart), scoped by workspace rather than global, and reasoned about
+separately: a tool name is protocol vocabulary derived from the traffic itself,
+not curated or learned from a human verdict, so remembering it poisons nothing the
+allowlist's non-persistence guard exists to prevent.
+
+Scope discipline unchanged from this ADR's original decisions:
+
+- Suppression still removes **L3 novelty discovery only**. A workspace-remembered
+  declared-tool name that is also a registered **Term** or entity-graph surface is
+  still blindfolded by L1/L2, which run first and win — re-pinned by test for the
+  persisted set specifically, not just the per-request one.
+- `leak_gate` is untouched. This closes future mints of a value that collides with
+  a declared tool name; it does not retroactively un-mint an already-existing
+  provisional entity like run 7's item 17 — that remains an operator-`reject`
+  (#294) matter, tracked as a separate, human-scoped question (whether `leak_gate`
+  should stop checking `tools[].name` at all is filed separately, not decided here).
+- Workspace scoping is a real boundary: a name declared under one workspace does
+  not suppress candidacy for a different workspace's traffic.
+
+**Cost, stated plainly rather than left implicit.** Widening suppression's
+lifetime from one request to the workspace widens the same accepted blind spot
+this ADR's original Decision 2 already named — a token that happens to be both a
+declared tool name and a genuine, never-registered real referent (an
+implausible but not impossible collision, same class as any seeded token) is now
+invisible to novelty discovery for the rest of the workspace's process lifetime,
+not just for one request. This is not a new risk in kind, only in duration: the
+same "suppression removes novelty discovery, never protection" guardrail still
+holds (a registered Term or entity-graph surface is unaffected), and the
+alternative — the run-7 permanent deadlock — is strictly worse for an unattended
+proxy.
+
 ## Alternatives considered
 
 - **Skip L3 over the `system` region** — rejected: the live verify proved that

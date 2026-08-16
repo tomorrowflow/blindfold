@@ -22,8 +22,18 @@ import json
 import httpx
 import pytest
 
-from blindfold.app import app, get_mapping, get_upstream_client, get_workspace_policies
-from blindfold.engine import blindfold_chat_completions_payload, blindfold_payload
+from blindfold.app import (
+    app,
+    get_declared_tool_vocabulary,
+    get_mapping,
+    get_upstream_client,
+    get_workspace_policies,
+)
+from blindfold.engine import (
+    DeclaredToolVocabulary,
+    blindfold_chat_completions_payload,
+    blindfold_payload,
+)
 from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
 from blindfold.policy import DEFAULT_WORKSPACE, WorkspacePolicies
 from blindfold.review import ReviewInbox
@@ -237,6 +247,9 @@ async def test_real_endpoint_blindfolds_tool_description_and_restores_it_for_the
     policies = WorkspacePolicies()
     policies.opt_in_deterministic_only(DEFAULT_WORKSPACE)
     app.dependency_overrides[get_workspace_policies] = lambda: policies
+    # issue #302: a fresh, test-scoped registry -- keeps this test's declared
+    # "lookup_customer" tool from persisting into the process-wide singleton.
+    app.dependency_overrides[get_declared_tool_vocabulary] = DeclaredToolVocabulary
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(

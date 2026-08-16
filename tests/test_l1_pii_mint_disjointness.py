@@ -27,7 +27,14 @@ import json
 import httpx
 import pytest
 
-from blindfold.app import app, get_mapping, get_upstream_client, get_workspace_policies
+from blindfold.app import (
+    app,
+    get_declared_tool_vocabulary,
+    get_mapping,
+    get_upstream_client,
+    get_workspace_policies,
+)
+from blindfold.engine import DeclaredToolVocabulary
 from blindfold.policy import DEFAULT_WORKSPACE, WorkspacePolicies
 from blindfold.surrogates import SurrogateMapping
 from blindfold.upstream import UpstreamClient
@@ -145,6 +152,10 @@ async def test_claude_code_shaped_tool_result_with_colliding_fixture_phone_round
     app.dependency_overrides[get_mapping] = lambda: mapping
     app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(recorded)
     app.dependency_overrides[get_workspace_policies] = _deterministic_only_policies
+    # issue #302: declared-tool suppression now persists in a workspace-scoped
+    # registry -- a fresh instance keeps this test's "Read"/"Write" declaration
+    # from bleeding into the process-wide singleton other tests share.
+    app.dependency_overrides[get_declared_tool_vocabulary] = DeclaredToolVocabulary
 
     colliding_real_phone = "+1-555-0103"
     request_body = {

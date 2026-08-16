@@ -244,9 +244,21 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   and whitespace-normalized (issue #294) — it never implicitly suppresses one
   of its own component words occurring standalone elsewhere.
 - **Declared tool vocabulary** — the tool names a request itself declares in its
-  tool schemas. Suppressed from L3 candidacy for that request only —
-  session-scoped, never persisted into the **allowlist** (a request must not be
-  able to permanently poison learning by declaring a tool named after a person).
+  tool schemas, plus (issue #297) each name's components split on `_`/`__`/`.`/`-`
+  (an MCP name like `mcp__claude_ai_Asana__authenticate` carries the vendor token
+  `Asana`). Suppressed from L3 candidacy for that request — never on the L3
+  detector singleton, never persisted into the **allowlist** (a request must not
+  be able to permanently poison *that* learning loop by declaring a tool named
+  after a person). Since issue #302, a *second*, distinct mechanism gives this
+  same vocabulary a longer lifetime: a workspace-scoped, process-lifetime
+  registry (`engine.DeclaredToolVocabulary`) accumulates every name (and
+  component) a **workspace**'s requests have ever declared, consulted in
+  `select_candidate_spans` alongside the current request's own set — so
+  suppression outlives the single request that declared it (the #74 run-7
+  unblocker: a value minted from a tools-less sub-agent hop, before the main
+  agentic-loop request ever declared the same tool name). A tool name is
+  protocol vocabulary, not user content, so remembering it — unlike persisting a
+  *learned* allowlist reject — poisons nothing.
 - **Suppression** — ruling a token out of L3 adjudication (allowlist, declared
   tool vocabulary, stopwords, **positional case heuristic**). Token-granularity
   by default: a region (system prompt, code fence) may inform heuristics but is

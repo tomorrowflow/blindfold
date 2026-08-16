@@ -6,7 +6,14 @@ A request that declares tools (e.g. Claude Code declaring ``Bash``, ``Read``,
 message/system text, minting provisional surrogates for them — so a token can be
 surrogated in message text while remaining literal in the untouched tool schema,
 corrupting tool-calls. This suppresses the request's own declared vocabulary from
-L3 candidacy, per request only — never persisted, never on the detector singleton.
+L3 candidacy, per request — never on the detector singleton, never persisted into
+the **allowlist**. Since issue #302 (see ``tests/test_declared_tool_vocabulary_persistence.py``),
+the app also threads a workspace-scoped :class:`~blindfold.engine.DeclaredToolVocabulary`
+that remembers a name past the single request that declared it — a distinct
+mechanism with a distinct lifetime, exercised there, not here. Tests in this file
+that call :func:`~blindfold.engine.blindfold_payload` directly, with no
+``declared_tool_vocabulary`` argument, still pin the original per-request-only
+contract exactly.
 
 Leak-audit clauses for this slice:
 - A: N/A directly for a suppressed tool-name token itself (tool names are public
@@ -26,6 +33,7 @@ import pytest
 
 from blindfold.app import (
     app,
+    get_declared_tool_vocabulary,
     get_l3_detector,
     get_mapping,
     get_review_inbox,
@@ -34,6 +42,7 @@ from blindfold.app import (
 )
 from blindfold.detection import Entity
 from blindfold.engine import (
+    DeclaredToolVocabulary,
     blindfold_chat_completions_payload,
     blindfold_payload,
     extract_declared_tools_chat_completions,
@@ -436,6 +445,10 @@ async def test_v1_messages_suppresses_the_requests_own_declared_tool_name():
     app.dependency_overrides[get_mapping] = lambda: mapping
     app.dependency_overrides[get_review_inbox] = lambda: ReviewInbox()
     app.dependency_overrides[get_l3_detector] = lambda: L3Detector(adjudicator)
+    # issue #302: a fresh, test-scoped registry -- keeps this test's "Bash"
+    # declaration from persisting into the process-wide singleton other tests
+    # (in this file and elsewhere) share.
+    app.dependency_overrides[get_declared_tool_vocabulary] = DeclaredToolVocabulary
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
@@ -459,10 +472,17 @@ async def test_v1_messages_suppresses_the_requests_own_declared_tool_name():
 
 
 @pytest.mark.anyio
-async def test_v1_messages_without_declaring_the_tool_adjudicates_it_normally():
-    # Session-scoped: nothing about a prior request's declaration survives on the
-    # detector singleton. A later request without the declaration adjudicates the
-    # same token like any other novel candidate.
+async def test_v1_messages_declared_tool_suppression_persists_to_a_later_request_without_tools():
+    # Issue #302 (#74 run 7's unblocker): declared-tool suppression now outlives
+    # the request that declared it, via the workspace-scoped
+    # DeclaredToolVocabulary the app wires by default. A later request in the
+    # same workspace with NO tools array at all -- the sub-agent/short-context
+    # shape ADR-0023's own per-request set can never see -- still suppresses
+    # "Bash" from L3 novelty discovery, because this workspace declared it
+    # before. (Superseded assertion, pre-#302: nothing survived the request
+    # boundary and the second call adjudicated "Bash" like any other novel
+    # candidate -- see #302's ADR-0023 amendment for why that was the run-7 bug,
+    # not a feature.)
     mapping = _seeded_mapping()
     adjudicator = _RecordingAdjudicator()
     scripted_response = {
@@ -481,6 +501,11 @@ async def test_v1_messages_without_declaring_the_tool_adjudicates_it_normally():
     app.dependency_overrides[get_mapping] = lambda: mapping
     app.dependency_overrides[get_review_inbox] = lambda: ReviewInbox()
     app.dependency_overrides[get_l3_detector] = lambda: detector
+    # ONE registry instance shared by both requests below (via closure) -- that
+    # persistence across the request boundary is exactly what this test proves.
+    # Still isolated from every other test, which gets its own instance.
+    vocabulary = DeclaredToolVocabulary()
+    app.dependency_overrides[get_declared_tool_vocabulary] = lambda: vocabulary
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
@@ -512,7 +537,7 @@ async def test_v1_messages_without_declaring_the_tool_adjudicates_it_normally():
         app.dependency_overrides.clear()
 
     assert second.status_code == 200
-    assert "Bash" in adjudicator.calls
+    assert "Bash" not in adjudicator.calls
 
 
 @pytest.mark.anyio
@@ -539,6 +564,7 @@ async def test_v1_chat_completions_suppresses_the_requests_own_declared_tool_nam
     app.dependency_overrides[get_mapping] = lambda: mapping
     app.dependency_overrides[get_review_inbox] = lambda: ReviewInbox()
     app.dependency_overrides[get_l3_detector] = lambda: L3Detector(adjudicator)
+    app.dependency_overrides[get_declared_tool_vocabulary] = DeclaredToolVocabulary
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
