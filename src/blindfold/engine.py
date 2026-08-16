@@ -1401,11 +1401,90 @@ def scrub_entity_reference(real: str, mapping: SurrogateMapping) -> str:
     return f"hash:{digest}"
 
 
+_SCHEMA_STRUCTURAL_KEYS = frozenset({"type", "required", "enum"})
+
+
+def _strip_schema_structural_tokens(node: Any, forbidden: list[str]) -> Any:
+    """Recursively drop JSON-Schema structural tokens from a tool schema subtree.
+
+    ADR-0051 amendment (issue #303/#307): ``type``/``required``/``enum`` can appear
+    at every nesting level a JSON Schema has (the schema root, each
+    ``properties.*`` entry, ``items``, ...) -- rewriting any of them breaks schema
+    validation/argument binding, so the blinder is structurally forbidden to touch
+    them. Their string leaves are collected into ``forbidden`` (for the
+    declared-collision check) rather than silently dropped, and removed from the
+    returned view so :func:`leak_gate`'s normal checked surface never sees them.
+    Every other key -- ``description``, nested ``properties`` -- is walked
+    unchanged, so free-text schema prose stays fully gate-checked.
+
+    A dict key (e.g. a ``properties`` entry's own name) is never a value
+    :func:`walk_string_leaves` visits, so property keys are already excluded from
+    the checked surface without any extra handling here.
+    """
+    if isinstance(node, dict):
+        stripped: dict[str, Any] = {}
+        for key, value in node.items():
+            if key in _SCHEMA_STRUCTURAL_KEYS:
+                walk_string_leaves(value, forbidden.append)
+                continue
+            stripped[key] = _strip_schema_structural_tokens(value, forbidden)
+        return stripped
+    if isinstance(node, list):
+        return [_strip_schema_structural_tokens(item, forbidden) for item in node]
+    return node
+
+
+def _gate_excluded_view(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """Split ``payload`` into :func:`leak_gate`'s checked view and the excluded text.
+
+    ADR-0051 amendment (issue #303/#307): the forbidden field set is closed --
+    ``tools[].name``/``tools[].function.name`` (rewriting breaks tool dispatch) and
+    the JSON-Schema structural tokens inside ``input_schema``/``parameters``
+    (rewriting breaks schema validation/argument binding). Every other string
+    leaf -- message content, system blocks, ``tools[].description`` -- stays in the
+    returned view untouched and fully gate-checked.
+
+    Returns a deep-copied view with the forbidden fields removed (safe to feed to
+    :func:`_collect_text` for the normal leak check) and the NUL-joined text those
+    fields carried (checked separately by :func:`leak_gate`, for a
+    declared-collision rather than a leak).
+    """
+    view = copy.deepcopy(payload)
+    forbidden: list[str] = []
+    tools = view.get("tools")
+    if isinstance(tools, list):
+        for tool in tools:
+            if not isinstance(tool, dict):
+                continue
+            if isinstance(tool.get("name"), str):
+                forbidden.append(tool.pop("name"))
+            schema = tool.get("input_schema")
+            if isinstance(schema, dict):
+                tool["input_schema"] = _strip_schema_structural_tokens(schema, forbidden)
+            function = tool.get("function")
+            if isinstance(function, dict):
+                if isinstance(function.get("name"), str):
+                    forbidden.append(function.pop("name"))
+                parameters = function.get("parameters")
+                if isinstance(parameters, dict):
+                    function["parameters"] = _strip_schema_structural_tokens(
+                        parameters, forbidden
+                    )
+    return view, "\x00".join(forbidden)
+
+
+def _declared_collision_reason(ref: str) -> str:
+    # Distinct in shape from `_raise_leak`'s "real entity value would egress
+    # upstream" reason (issue #307's own acceptance criterion), so a human reading
+    # a log/audit record can tell a collision from a leak at a glance.
+    return f"declared collision: known real value confined to a field the blinder is forbidden to rewrite (ref: {ref})"
+
+
 def leak_gate(
     blinded_outbound: dict[str, Any],
     mapping: SurrogateMapping,
     inbox: ReviewInbox | None = None,
-) -> None:
+) -> list[str]:
     """Pre-egress leak gate (SEC-5, ADR-0020): the prevention half of the egress split.
 
     Raises :class:`LeakError` if a known real entity value is present anywhere in a
@@ -1437,6 +1516,16 @@ def leak_gate(
     later carries that ordinary word. An inbox-sourced leak's reason also names the
     inbox ``item.id`` distinctly from a mapping-entry leak, so a human can clear the
     exact row without reverse-engineering the provisional pool.
+
+    ADR-0051 amendment (issue #303/#307): a known real value confined to a field the
+    blinder is structurally forbidden to rewrite (:func:`_gate_excluded_view`'s
+    forbidden set) never raises :class:`LeakError` -- that field was never in the
+    blinder's reach, so a match there is not a miss. It is instead returned as a
+    list of scrubbed **declared-collision** reason strings (empty when there are
+    none), each distinct in shape from a leak reason
+    (:func:`_declared_collision_reason`) so a human can tell the two apart. The
+    exclusion is field-scoped, not value-scoped: the identical real value occurring
+    anywhere else in the payload still raises normally.
     """
     def _raise_leak(ref: str) -> NoReturn:
         # SEC-3 (issue #40): one scrubbed-reason format for both the mapping and the
@@ -1446,7 +1535,8 @@ def leak_gate(
         logger.warning("leak_gate: %s", reason)
         raise LeakError(reason)
 
-    outbound_text = _collect_text(blinded_outbound)
+    gate_view, forbidden_text = _gate_excluded_view(blinded_outbound)
+    outbound_text = _collect_text(gate_view)
     for real in mapping.real_values():
         if _real_value_pattern(real).search(outbound_text):
             _raise_leak(scrub_entity_reference(real, mapping))
@@ -1468,6 +1558,24 @@ def leak_gate(
                 _raise_leak(
                     f"review-inbox item {item.id} (surrogate: {item.provisional_surrogate})"
                 )
+
+    collisions: list[str] = []
+    for real in mapping.real_values():
+        if _real_value_pattern(real).search(forbidden_text):
+            collisions.append(
+                _declared_collision_reason(scrub_entity_reference(real, mapping))
+            )
+    for item in inbox.list() if inbox is not None else ():
+        if any(
+            _real_value_pattern(variation).search(forbidden_text)
+            for variation in _provisional_known_value_set(item)
+        ):
+            collisions.append(
+                _declared_collision_reason(
+                    f"review-inbox item {item.id} (surrogate: {item.provisional_surrogate})"
+                )
+            )
+    return collisions
 
 
 def resolution_gate(restored_response: dict[str, Any], session: ExchangeSession) -> None:

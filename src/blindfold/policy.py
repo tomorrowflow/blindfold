@@ -114,6 +114,11 @@ class AuditRecord:
                                           payload before it egressed.
       - ``blocked-unresolved-surrogate`` — resolution_gate found an injected surrogate
                                           still in the restored response.
+      - ``declared-collision``        — leak_gate found a known real value confined to
+                                        a field the blinder is structurally forbidden
+                                        to rewrite (``tools[].name``/``.function.name``,
+                                        a JSON-Schema structural token) — NOT a block
+                                        (ADR-0051 amendment, issue #303/#307).
       - ``deterministic-only-pass``   — degraded-mode pass under the opt-in.
       - ``re-identified``             — an authorized identity looked up the real value
                                         behind a surrogate (management API, issue #16).
@@ -161,7 +166,8 @@ def audit_event_kind(event: str) -> str | None:
     reveal/lookup/block classification the drawer (#95) and the full-page audit
     log view (#102/#124) both key off. ``None`` for structural or non-real-space
     events (``deterministic-only-pass``, ``entity-merged``, ``surrogate-edited``,
-    ``upstream-*``, ``policy-degrade-*``, ``policy-phone-candidates-*``), which
+    ``upstream-*``, ``policy-degrade-*``, ``policy-phone-candidates-*``,
+    ``declared-collision`` — a recorded observation, never a block), which
     the audit log view never shows.
     """
     if event in ("re-identified", "re-identify-denied", "re-identify-failed"):
