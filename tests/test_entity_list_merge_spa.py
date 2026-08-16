@@ -361,12 +361,12 @@ async def test_merge_by_entity_id_returns_404_for_unknown_id():
 
 
 # ---------------------------------------------------------------------------
-# 6. Merge emits an entity-merged audit event
+# 6. Merge (surrogate-space structural work) produces no audit record (issue #326)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.anyio
-async def test_merge_by_entity_id_emits_audit_event():
+async def test_merge_by_entity_id_produces_no_audit_record():
     graph = EntityGraph()
     mapping = SurrogateMapping()
     rbac = RbacRegistry()
@@ -393,14 +393,9 @@ async def test_merge_by_entity_id_emits_audit_event():
     finally:
         app.dependency_overrides.clear()
 
-    assert len(audit_log.records) == 1
-    rec = audit_log.records[0]
-    assert rec.event == "entity-merged"
-    assert rec.workspace == "acme"
-    assert rec.identity == "alice"
-    # Audit record must NOT include real names (CONTEXT invariant)
-    assert "Alice Smith" not in rec.reason
-    assert "Alice Jones" not in rec.reason
+    # Merge is surrogate-space structural work, never an audit event (CONTEXT.md,
+    # issue #326): recording it would be history/versioning, a distinct deferred concept.
+    assert audit_log.records == []
 
 
 # NOTE: Tests 7-8 (entity-list SPA HTML-serving assertions for the merge

@@ -171,10 +171,12 @@ def audit_event_kind(event: str) -> str | None:
     Mirrors ``frontend/src/lib/auditEvents.ts``'s ``eventKind`` — the single
     reveal/lookup/block classification the drawer (#95) and the full-page audit
     log view (#102/#124) both key off. ``None`` for structural or non-real-space
-    events (``deterministic-only-pass``, ``entity-merged``, ``surrogate-edited``,
-    ``upstream-*``, ``policy-degrade-*``, ``policy-phone-candidates-*``,
-    ``declared-collision`` — a recorded observation, never a block), which
-    the audit log view never shows.
+    events (``deterministic-only-pass``, ``upstream-*``, ``policy-degrade-*``,
+    ``policy-phone-candidates-*``, ``declared-collision`` — a recorded observation,
+    never a block), which the audit log view never shows. Surrogate-space
+    structural work (Merge, surrogate rename) is never an audit event at all
+    (CONTEXT.md, issue #326), so ``entity-merged``/``surrogate-edited`` are not
+    events this function -- or anything else -- needs to classify.
     """
     if event in ("re-identified", "re-identify-denied", "re-identify-failed"):
         return "reveal"

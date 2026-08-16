@@ -2897,21 +2897,16 @@ async def retry_gliner_detection(
 
 def _apply_merge_side_effects(
     *,
-    workspace: str,
-    winner_id: str,
-    loser_id: str,
     loser_canonical: str,
     merged: EntityRecord,
     mapping: SurrogateMapping,
-    audit_log: AuditLog,
-    identity: str,
 ) -> None:
-    """Sync the surrogate mapping and audit a completed entity merge.
+    """Sync the surrogate mapping for a completed entity merge.
 
     Shared by both merge endpoints (by-canonical-name and by-id, ADR-0016) so the
-    seed/retire/audit block is defined once. The audit reason carries only
-    ``winner_id``/``loser_id`` — never real canonical names (SEC-4): an admin without
-    the re-identifier role must not learn real entity names via the audit log.
+    seed/retire block is defined once. Merge is surrogate-space structural work and
+    is never an audit event (CONTEXT.md, issue #326) -- recording it would be
+    history/versioning, a distinct deferred concept.
     """
     # Sync the surrogate mapping: loser's canonical + inherited variations now
     # map to the winner's active surrogate (for future blindfold passes).
@@ -2926,15 +2921,6 @@ def _apply_merge_side_effects(
     for retired in merged.retired_surrogates:
         mapping.retire_surrogate(retired)
 
-    audit_log.append(
-        AuditRecord(
-            workspace=workspace,
-            event="entity-merged",
-            reason=f"winner_id={winner_id!r}, loser_id={loser_id!r}",
-            identity=identity,
-        )
-    )
-
 
 @app.post("/v1/management/entities/merge")
 async def merge_entities(
@@ -2943,7 +2929,6 @@ async def merge_entities(
     rbac: RbacRegistry = Depends(get_rbac),
     entity_graph: EntityGraph = Depends(get_entity_graph),
     mapping: SurrogateMapping = Depends(get_mapping),
-    audit_log: AuditLog = Depends(get_audit_log),
 ) -> dict:
     """Merge two same-kind entities (person↔person or term↔term) in a workspace.
 
@@ -3008,14 +2993,9 @@ async def merge_entities(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     _apply_merge_side_effects(
-        workspace=workspace,
-        winner_id=merged.entity_id,
-        loser_id=loser_id,
         loser_canonical=loser_canonical,
         merged=merged,
         mapping=mapping,
-        audit_log=audit_log,
-        identity=_caller_identity(request),
     )
 
     # Surrogate-space response always: canonical_name/variations are real entity
@@ -3178,7 +3158,6 @@ async def edit_entity_surrogate(
     rbac: RbacRegistry = Depends(get_rbac),
     entity_graph: EntityGraph = Depends(get_entity_graph),
     mapping: SurrogateMapping = Depends(get_mapping),
-    audit_log: AuditLog = Depends(get_audit_log),
 ) -> dict:
     """Edit an entity's active surrogate; retire the previous value (issue #28).
 
@@ -3221,14 +3200,9 @@ async def edit_entity_surrogate(
     for retired in entity.retired_surrogates:
         mapping.retire_surrogate(retired)
 
-    audit_log.append(
-        AuditRecord(
-            workspace=workspace,
-            event="surrogate-edited",
-            reason=f"entity_id={entity_id!r}, new_surrogate={new_surrogate!r}",
-            identity=_caller_identity(request),
-        )
-    )
+    # Surrogate rename is surrogate-space structural work, never an audit event
+    # (CONTEXT.md, issue #326): recording it would be history/versioning, a
+    # distinct deferred concept.
 
     # Return only surrogate-space data. canonical_name is a real entity name;
     # this endpoint requires only admin (not re-identifier), so including it
@@ -3262,7 +3236,6 @@ async def merge_entities_by_id(
     rbac: RbacRegistry = Depends(get_rbac),
     entity_graph: EntityGraph = Depends(get_entity_graph),
     mapping: SurrogateMapping = Depends(get_mapping),
-    audit_log: AuditLog = Depends(get_audit_log),
 ) -> dict:
     """Merge two same-kind entities by entity_id (issue #34 / ADR-0016).
 
@@ -3312,14 +3285,9 @@ async def merge_entities_by_id(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     _apply_merge_side_effects(
-        workspace=slug,
-        winner_id=winner_id,
-        loser_id=loser_id,
         loser_canonical=loser_canonical,
         merged=merged,
         mapping=mapping,
-        audit_log=audit_log,
-        identity=_caller_identity(request),
     )
 
     # Real-value fields (canonical_name, variations) are withheld: the entity-list SPA

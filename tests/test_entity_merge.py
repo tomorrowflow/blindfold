@@ -192,19 +192,19 @@ async def test_winner_surrogate_unchanged_after_merge():
 
 
 # ---------------------------------------------------------------------------
-# 3b. Merge audit reason references ids, never real canonical names (SEC-4)
+# 3b. Merge (surrogate-space structural work) produces no audit record (issue #326)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.anyio
-async def test_merge_by_canonical_name_audit_reason_omits_real_names():
+async def test_merge_by_canonical_name_produces_no_audit_record():
     rbac = _curator_rbac()
     graph = EntityGraph()
     mapping = SurrogateMapping()
     mapping.seed("Alice Smith", "S1")
     mapping.seed("Alice Jones", "S2")
-    winner = graph.add_entity(kind="person", workspace="acme", canonical_name="Alice Smith", surrogate="S1")
-    loser = graph.add_entity(kind="person", workspace="acme", canonical_name="Alice Jones", surrogate="S2")
+    graph.add_entity(kind="person", workspace="acme", canonical_name="Alice Smith", surrogate="S1")
+    graph.add_entity(kind="person", workspace="acme", canonical_name="Alice Jones", surrogate="S2")
     audit_log = AuditLog()
 
     app.dependency_overrides[get_rbac] = lambda: rbac
@@ -226,14 +226,9 @@ async def test_merge_by_canonical_name_audit_reason_omits_real_names():
         app.dependency_overrides.clear()
 
     assert resp.status_code == 200
-    assert len(audit_log.records) == 1
-    rec = audit_log.records[0]
-    assert rec.event == "entity-merged"
-    # Audit record must reference ids, never real canonical names (SEC-4).
-    assert "Alice Smith" not in rec.reason
-    assert "Alice Jones" not in rec.reason
-    assert winner.entity_id in rec.reason
-    assert loser.entity_id in rec.reason
+    # Merge is surrogate-space structural work, never an audit event (CONTEXT.md,
+    # issue #326): recording it would be history/versioning, a distinct deferred concept.
+    assert audit_log.records == []
 
 
 # ---------------------------------------------------------------------------

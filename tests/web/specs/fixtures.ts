@@ -67,6 +67,21 @@ export async function auditEventsFor(baseURL: string, event: string, identity: s
   );
 }
 
+/** Total audit event count for the workspace, queried the same way as
+ * `auditEventsFor` — used to prove surrogate-space structural work (merge,
+ * surrogate rename) adds no audit record at all (CONTEXT.md, issue #326). */
+export async function auditEventCount(baseURL: string) {
+  const api = await pwRequest.newContext({
+    baseURL,
+    extraHTTPHeaders: { "x-blindfold-identity": "alice" },
+  });
+  const res = await api.get(`/v1/management/audit?workspace=${WORKSPACE}`);
+  expect(res.ok()).toBeTruthy();
+  const body = await res.json();
+  await api.dispose();
+  return (body.events as unknown[]).length;
+}
+
 /** Resolve an entity-list row by its CURRENT surrogate label and pin it to a stable
  * `data-testid="entity-row-<id>"` locator (set on the `<tr>` itself). A plain
  * `page.locator("tr", { hasText: surrogate })` re-evaluates on every action; once
