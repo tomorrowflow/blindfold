@@ -50,3 +50,20 @@ audit), preserving privilege separation between *granting* and *exercising* unma
   plaintext mapping over HTTP ahead of #10, contradicting clause G / the ADR-0007 spirit.
 - **`admin ⊇ re-identifier ⊇ viewer` role hierarchy** — rejected: implicit inheritance lets
   the grant-holder unmask, breaking privilege separation in a privacy system.
+
+## Update (issue #314): both entity-merge responses are surrogate-space only
+
+The two entity-merge endpoints (`POST /v1/management/entities/merge`, ADR-0016;
+its workspace-scoped `.../entities/merge` sibling, #34) had drifted apart on this
+ADR: the by-canonical-name endpoint withheld `canonical_name`/`variations` when
+called via `entity_id`, citing this ADR, while the by-`entity_id` endpoint
+returned both unconditionally — a real-space crossing to a caller holding only
+`curator` (see the ADR-0016 update, same issue), never audited as a re-identify.
+
+**Amended decision:** both merge endpoints withhold `canonical_name` and
+`variations` unconditionally — real-value fields are *absent*, not empty, from
+every merge response, regardless of whether the caller supplied a canonical name
+or an entity_id. Re-identify (`GET /v1/management/surrogate/{surrogate}/real`,
+RBAC-gated on `re-identifier`, every attempt audited) remains the only sanctioned
+real-value read path. This exposure had zero consumers: the entity-list SPA's own
+`mergeEntities` client discards the response body entirely.

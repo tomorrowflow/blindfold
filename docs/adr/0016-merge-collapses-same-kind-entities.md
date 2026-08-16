@@ -76,6 +76,21 @@ into one canonical entity. The binding rules:
 - The `retired_surrogates` Postgres write path is a prerequisite for shipping merge end-
   to-end (currently schema-only).
 
+## Update (issue #314): both merge endpoints are gated on `curator`, not `admin`
+
+Both `POST /v1/management/entities/merge` (by canonical name) and
+`POST /v1/management/workspaces/{slug}/entities/merge` (by entity_id, #34) had
+drifted onto the `admin` role, with docstrings that cited *this* ADR while
+misreading it: merge is "the curator action" (above), and ADR-0028's role table
+assigns it to `curator` — "structural edits in fake-space: merge, edge CRUD,
+rename, surrogate edit — never unmask." A pure curator (no `admin`) could not
+merge, contradicting ADR-0017's "a curator is fully productive on structure."
+
+**Amended decision:** both merge endpoints require the `curator` role. Roles are
+flat (no hierarchy, ADR-0028), so an identity holding only `admin` now receives
+403; an admin can grant themselves `curator` to merge. See also the ADR-0015
+update (same issue) for the paired exposure-class amendment.
+
 ## Alternatives considered
 
 - **Auto-pick the winner by heuristic (older / more variations)** — rejected: merge edits

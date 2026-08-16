@@ -74,3 +74,12 @@ choice over the same four-role set, not a fifth vocabulary to keep in sync.
 
 _Consolidates the role split ADR-0017 already made load-bearing; fixes the
 vocabulary that drifted out of code._
+
+## Update (issue #314): the merge gate itself is rewired onto `curator`
+
+This ADR's original Consequences said making `curator` grantable/checkable
+"does not wire any new gate." That held until #314: both entity-merge
+endpoints (ADR-0016) had stayed on `admin` — a call site this ADR's table
+already called wrong at the time it was written, just not yet fixed. Merge now
+gates on `curator`, closing that specific gap; see the ADR-0016 update (same
+issue) for the endpoint-level decision.

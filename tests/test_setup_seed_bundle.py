@@ -11,9 +11,10 @@ mechanism (the shared ``VendoredSeedRepository.seed_entity_graph`` path), two so
 an empty request body falls back to the vendored bundle (Sample data / one-click);
 a ``{"bundle": {...}}`` body is an operator-supplied company bundle (Import).
 
-Gated by the ``admin`` role on the workspace (same convention as
-``merge_entities``/workspace-roles endpoints) -- by the time Setup calls this, the
-creator already holds ``admin`` on the just-created workspace (issue #107).
+Gated by the ``admin`` role on the workspace (same convention as the
+workspace-roles endpoints; the merge endpoints moved to ``curator`` per
+ADR-0016/ADR-0028, issue #314) -- by the time Setup calls this, the creator
+already holds ``admin`` on the just-created workspace (issue #107).
 
 Leak-audit clause analysis: A-E/G N/A -- this is a management-API entity-graph
 mutation, never the request path. F (fail-closed/access control) is the operative

@@ -212,7 +212,7 @@ async def test_merge_folding_a_variation_into_the_closed_world_retires_a_stale_c
     mapping.seed("Ingrid Falke", "Klaus Berger")
 
     rbac = RbacRegistry()
-    rbac.grant("alice", "acme", "admin")
+    rbac.grant("alice", "acme", "curator")
     graph = EntityGraph()
     graph.add_entity(
         kind="person",

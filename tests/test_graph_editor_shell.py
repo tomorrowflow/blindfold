@@ -13,10 +13,11 @@ Leak-audit clause analysis (same as #97/#99):
 - F (fail-closed / access control) — proven: reveal (both the per-node badge
   and the in-merge-dialog surface, per ADR-0017's "reveal has multiple surfaces,
   same gate" clause) renders a locked state and never fetches without the
-  re-identifier role. Structural edits (merge / edge CRUD / rename) require
-  the admin role per the existing backend gate (pre-existing RBAC-vocabulary
-  gap per ADR-0028, not re-wired here — same note as #97/#99). F is covered
-  for both surfaces by the Playwright spec (tests/web/specs/graph-editor-shell.spec.ts).
+  re-identifier role. Structural edits (merge / edge CRUD / rename) require the
+  admin role, except merge itself, which moved to curator per ADR-0016/ADR-0028
+  (issue #314) -- edge CRUD/rename are unchanged, not re-wired here. F is
+  covered for both surfaces by the Playwright spec
+  (tests/web/specs/graph-editor-shell.spec.ts).
 """
 
 from __future__ import annotations

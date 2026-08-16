@@ -407,11 +407,11 @@ def build_app():
     # browser page under test.
     rbac.grant("alice", WORKSPACE, "viewer")
     rbac.grant("alice", WORKSPACE, "curator")
-    # Structural entity-list edits (rename, merge) are gated on `admin` by the shipped
-    # backend (app.py::edit_entity_surrogate / merge_entities_by_id) — a pre-existing
-    # RBAC-vocabulary gap from the settled curator/re-identifier split (ADR-0028) that
-    # this migration slice does not re-wire (see commit notes). Granted here so the
-    # shell's structural-curation specs can exercise the real endpoints end to end.
+    # Structural entity-list edits: merge now runs on `curator` alone (ADR-0016/
+    # ADR-0028, issue #314 -- the RBAC-vocabulary gap this comment used to describe
+    # is fixed), but rename (app.py::edit_entity_surrogate) is still `admin`-gated
+    # and out of that issue's scope. Granted here so the shell's structural-curation
+    # specs can exercise the real endpoints end to end.
     rbac.grant("alice", WORKSPACE, "admin")
     # carol holds a role only on the second workspace — switcher must not show "acme"
     # to carol, and must not show "beta" to alice (multi-workspace fixture, issue #95).

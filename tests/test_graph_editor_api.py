@@ -5,13 +5,13 @@ from the graph endpoint, never canonical (real) names. The merge endpoint from
 issue #26 accepts canonical names, but the SPA cannot provide them without first
 calling the re-identify endpoint (which requires the re-identifier role).
 
-Since structural edits (merge) require only the admin role — not re-identifier —
-the SPA must be able to call merge using entity IDs. This file tests the
-ID-based merge path and the entity-details endpoint.
+Since structural edits (merge) require only the curator role (ADR-0016/ADR-0028) —
+not re-identifier — the SPA must be able to call merge using entity IDs. This file
+tests the ID-based merge path and the entity-details endpoint.
 
 Leak-audit clause analysis:
   A/B/C/D/E — N/A: these endpoints do not touch the proxy request path.
-  F (access control) — covered: merge-by-ID requires admin role; entity details
+  F (access control) — covered: merge-by-ID requires curator role; entity details
     endpoint returns only surrogate-space data (kind, active_surrogate, variations
     count) and does not require re-identifier.
   G (mapping secrecy) — covered: entity details endpoint returns no canonical
@@ -42,6 +42,12 @@ def _admin_rbac(identity: str = "curator", workspace: str = "acme") -> RbacRegis
     return rbac
 
 
+def _curator_role_rbac(identity: str = "curator", workspace: str = "acme") -> RbacRegistry:
+    rbac = RbacRegistry()
+    rbac.grant(identity, workspace, "curator")
+    return rbac
+
+
 # ---------------------------------------------------------------------------
 # 1. Merge endpoint accepts entity IDs as winner/loser specifiers
 # ---------------------------------------------------------------------------
@@ -49,7 +55,7 @@ def _admin_rbac(identity: str = "curator", workspace: str = "acme") -> RbacRegis
 
 @pytest.mark.anyio
 async def test_merge_endpoint_accepts_entity_ids_as_winner_loser():
-    rbac = _admin_rbac()
+    rbac = _curator_role_rbac()
     graph = EntityGraph()
     mapping = SurrogateMapping()
     winner = graph.add_entity("person", "acme", "Alice Real", surrogate="Alice Sur")
@@ -88,7 +94,7 @@ async def test_merge_endpoint_accepts_entity_ids_as_winner_loser():
 
 @pytest.mark.anyio
 async def test_merge_by_entity_id_cross_kind_rejected():
-    rbac = _admin_rbac()
+    rbac = _curator_role_rbac()
     graph = EntityGraph()
     mapping = SurrogateMapping()
     person = graph.add_entity("person", "acme", "Alice Real", surrogate="Alice Sur")
@@ -124,7 +130,7 @@ async def test_merge_by_entity_id_cross_kind_rejected():
 
 @pytest.mark.anyio
 async def test_merge_by_entity_id_unknown_entity_returns_404():
-    rbac = _admin_rbac()
+    rbac = _curator_role_rbac()
     graph = EntityGraph()
     mapping = SurrogateMapping()
     winner = graph.add_entity("person", "acme", "Alice Real", surrogate="Alice Sur")
@@ -151,14 +157,43 @@ async def test_merge_by_entity_id_unknown_entity_returns_404():
 
 
 # ---------------------------------------------------------------------------
-# 4. Merge-by-entity-ID requires admin role
+# 4. Merge-by-entity-ID requires curator role (ADR-0016/ADR-0028)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.anyio
-async def test_merge_by_entity_id_denied_without_admin_role():
+async def test_merge_by_entity_id_denied_without_curator_role():
     rbac = RbacRegistry()
     rbac.grant("curator", "acme", "viewer")
+    graph = EntityGraph()
+    winner = graph.add_entity("person", "acme", "Alice Real", surrogate="Alice Sur")
+    loser = graph.add_entity("person", "acme", "Bob Real", surrogate="Bob Sur")
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_entity_graph] = lambda: graph
+    app.dependency_overrides[get_mapping] = lambda: SurrogateMapping()
+    app.dependency_overrides[get_audit_log] = lambda: AuditLog()
+    try:
+        async with _make_client() as client:
+            resp = await client.post(
+                "/v1/management/entities/merge",
+                json={
+                    "workspace": "acme",
+                    "winner": {"entity_id": winner.entity_id},
+                    "loser": {"entity_id": loser.entity_id},
+                },
+                headers={"x-blindfold-identity": "curator"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_merge_by_entity_id_admin_without_curator_is_denied():
+    rbac = RbacRegistry()
+    rbac.grant("curator", "acme", "admin")  # admin, not curator -- roles are flat (ADR-0028)
     graph = EntityGraph()
     winner = graph.add_entity("person", "acme", "Alice Real", surrogate="Alice Sur")
     loser = graph.add_entity("person", "acme", "Bob Real", surrogate="Bob Sur")
@@ -189,16 +224,15 @@ async def test_merge_by_entity_id_denied_without_admin_role():
 # ---------------------------------------------------------------------------
 #
 # ADR-0015: the re-identifier role gates real-name disclosure. The merge
-# endpoint requires admin only. When the SPA calls merge via entity_id, it
-# cannot have supplied canonical_name, so returning canonical_name in the
-# response would reveal real names to an admin who lacks re-identifier. The
-# entity_id path must return only surrogate-space fields (no canonical_name,
-# no variations).
+# endpoint requires curator only (ADR-0016/ADR-0028), never re-identifier. Real-
+# value fields (canonical_name, variations) are withheld unconditionally from
+# every merge response -- not only the entity_id path -- per the issue #314
+# amendment to ADR-0015/ADR-0017.
 
 
 @pytest.mark.anyio
 async def test_merge_by_entity_id_response_omits_real_names():
-    rbac = _admin_rbac()
+    rbac = _curator_role_rbac()
     graph = EntityGraph()
     mapping = SurrogateMapping()
     winner = graph.add_entity("person", "acme", "Alice Real", surrogate="Alice Sur")

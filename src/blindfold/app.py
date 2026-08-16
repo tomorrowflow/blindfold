@@ -2952,23 +2952,15 @@ async def merge_entities(
     assignments mentioning the loser re-home onto the winner (self-loops dropped,
     duplicates deduped, non-colliding contradictions kept).
 
-    Cross-kind and org-unit merges are rejected with 422. Requires the ``admin``
-    role on the workspace (ADR-0016).
+    Cross-kind and org-unit merges are rejected with 422. Requires the ``curator``
+    role on the workspace (the merge action per ADR-0016/ADR-0028 -- never ``admin``,
+    which grants/revokes roles but does not itself curate structure).
     """
     workspace = body.get("workspace", "")
-    _require_role(request, workspace, "admin", rbac)
+    _require_role(request, workspace, "curator", rbac)
 
     winner_spec = body.get("winner", {})
     loser_spec = body.get("loser", {})
-
-    # Track whether the caller used entity_id (SPA surrogate-space path) or
-    # canonical_name (management-tool path). The SPA never has real names, so
-    # the response must not echo canonical_name back — that would reveal real
-    # entity names to an admin without the re-identifier role (ADR-0015).
-    via_entity_id = bool(
-        (winner_spec.get("entity_id") and not winner_spec.get("canonical_name"))
-        or (loser_spec.get("entity_id") and not loser_spec.get("canonical_name"))
-    )
 
     # Support entity_id as an alternative to canonical_name (SPA operates in
     # surrogate-space and cannot provide real names without re-identifier role).
@@ -3025,17 +3017,14 @@ async def merge_entities(
         identity=_caller_identity(request),
     )
 
-    # When called via entity_id (SPA path), return only surrogate-space data.
-    # Canonical names and variations are real entity names; exposing them here
-    # would allow an admin without re-identifier to discover real names (ADR-0015).
+    # Surrogate-space response always: canonical_name/variations are real entity
+    # names, and re-identify (RBAC-gated on re-identifier, audited) is the only
+    # sanctioned real-value read path -- a merge response is not (ADR-0015/ADR-0017).
     winner_payload: dict = {
         "kind": merged.kind,
         "active_surrogate": merged.active_surrogate,
         "retired_surrogates": merged.retired_surrogates,
     }
-    if not via_entity_id:
-        winner_payload["canonical_name"] = merged.canonical_name
-        winner_payload["variations"] = merged.variations
 
     return {"winner": winner_payload, "workspace": workspace}
 
@@ -3283,14 +3272,17 @@ async def merge_entities_by_id(
     Semantics are identical to the canonical-name endpoint: loser's surrogate is retired
     (restorable forever), loser's canonical name folds into winner's variations, all
     relationships/role assignments re-home onto winner (self-loops dropped, duplicates
-    deduped). Requires the ``admin`` role on the workspace (ADR-0016).
+    deduped). Requires the ``curator`` role on the workspace (the merge action per
+    ADR-0016/ADR-0028 -- never ``admin``, which grants/revokes roles but does not itself
+    curate structure).
 
     Body: {winner_id, loser_id}
-    Returns: {winner: {entity_id, kind, canonical_name, variations, active_surrogate,
-              retired_surrogates}, workspace}
-    Errors: 403 without admin role, 404 for unknown entity_id, 422 for cross-kind/org-unit.
+    Returns: {winner: {entity_id, kind, active_surrogate, retired_surrogates}, workspace}
+    -- canonical_name/variations are withheld (real-value fields, ADR-0015/ADR-0017: a
+    curator without ``re-identifier`` must not discover real names via a merge response).
+    Errors: 403 without curator role, 404 for unknown entity_id, 422 for cross-kind/org-unit.
     """
-    _require_role(request, slug, "admin", rbac)
+    _require_role(request, slug, "curator", rbac)
 
     winner_id = str(body.get("winner_id", ""))
     loser_id = str(body.get("loser_id", ""))
@@ -3329,12 +3321,13 @@ async def merge_entities_by_id(
         identity=_caller_identity(request),
     )
 
+    # Real-value fields (canonical_name, variations) are withheld: the entity-list SPA
+    # operates in surrogate-space, and a curator without re-identifier must not discover
+    # real entity names via a merge response (ADR-0015/ADR-0017).
     return {
         "winner": {
             "entity_id": merged.entity_id,
             "kind": merged.kind,
-            "canonical_name": merged.canonical_name,
-            "variations": merged.variations,
             "active_surrogate": merged.active_surrogate,
             "retired_surrogates": merged.retired_surrogates,
         },

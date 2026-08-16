@@ -6,11 +6,13 @@ that delegates to the same ADR-0016 semantics as /v1/management/entities/merge (
 
 Leak-audit clause analysis:
 - A/B/C/D/E — N/A: proxy request path unchanged.
-- F (access control) — merge endpoint requires admin role (403 without it);
-  inline Reveal in the dialog delegates to the existing re-identify endpoint
-  (re-identifier role required, ADR-0015).
-- G (mapping secrecy) — merge dialog shows surrogates + variations only (no real names).
-  The merge response may include canonical_name (admin-gated, not public surrogate-space).
+- F (access control) — merge endpoint requires curator role (403 without it, including
+  for a bare admin -- roles are flat, ADR-0028); inline Reveal in the dialog delegates
+  to the existing re-identify endpoint (re-identifier role required, ADR-0015).
+- G (mapping secrecy) — the merge response is surrogate-space only: canonical_name and
+  variations are withheld entirely (real-value fields absent, not empty), per the
+  ADR-0015/ADR-0017 amendment recorded in issue #314. The entity-list SPA's own
+  ``mergeEntities`` client already discards the response body, so this has no consumer.
 """
 
 from __future__ import annotations
@@ -53,7 +55,7 @@ async def test_merge_by_entity_id_collapses_entities():
     graph = EntityGraph()
     mapping = SurrogateMapping()
     rbac = RbacRegistry()
-    rbac.grant("alice", "acme", "admin")
+    rbac.grant("alice", "acme", "curator")
     mapping.seed("Alice Smith", "Sur-A")
     mapping.seed("Alice Jones", "Sur-B")
     winner = graph.add_entity("person", "acme", "Alice Smith", surrogate="Sur-A")
@@ -84,6 +86,48 @@ async def test_merge_by_entity_id_collapses_entities():
 
 
 # ---------------------------------------------------------------------------
+# 1a. Merge by entity_id response is surrogate-space: no canonical_name, no
+#     variations (real-value fields absent, not empty) -- ADR-0015 amendment,
+#     issue #314. Aligns this endpoint with the canonical-name endpoint's
+#     via_entity_id branch, which already withholds these fields.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_merge_by_entity_id_response_omits_real_value_fields():
+    graph = EntityGraph()
+    mapping = SurrogateMapping()
+    rbac = RbacRegistry()
+    rbac.grant("alice", "acme", "curator")
+    mapping.seed("Alice Smith", "Sur-A")
+    mapping.seed("Alice Jones", "Sur-B")
+    winner = graph.add_entity("person", "acme", "Alice Smith", surrogate="Sur-A")
+    loser = graph.add_entity("person", "acme", "Alice Jones", surrogate="Sur-B")
+    audit_log = AuditLog()
+    store = RelationshipStore()
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_entity_graph] = lambda: graph
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_audit_log] = lambda: audit_log
+    app.dependency_overrides[get_relationship_store] = lambda: store
+    try:
+        async with _make_client() as client:
+            resp = await client.post(
+                "/v1/management/workspaces/acme/entities/merge",
+                json={"winner_id": winner.entity_id, "loser_id": loser.entity_id},
+                headers=_admin_headers(),
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "canonical_name" not in body["winner"]
+    assert "variations" not in body["winner"]
+
+
+# ---------------------------------------------------------------------------
 # 1b. Merge by entity_id keeps the WINNER when winner and loser share a
 #     canonical name — the design brief's own "planted duplicate" scenario
 #     (entity-list-view-design-brief.md §4, the merge-from-a-list demo).
@@ -101,7 +145,7 @@ async def test_merge_by_entity_id_with_shared_canonical_name_keeps_the_winner():
     graph = EntityGraph()
     mapping = SurrogateMapping()
     rbac = RbacRegistry()
-    rbac.grant("alice", "acme", "admin")
+    rbac.grant("alice", "acme", "curator")
     mapping.seed("Martin Bach", "Clara Hoffmann")
     # Two DISTINCT entities that happen to share a real canonical name.
     winner = graph.add_entity("person", "acme", "Martin Bach", surrogate="Clara Hoffmann")
@@ -139,7 +183,7 @@ async def test_merge_by_entity_id_with_shared_canonical_name_keeps_the_winner():
 async def test_merge_by_entity_id_rejects_merging_an_entity_with_itself():
     graph = EntityGraph()
     rbac = RbacRegistry()
-    rbac.grant("alice", "acme", "admin")
+    rbac.grant("alice", "acme", "curator")
     person = graph.add_entity("person", "acme", "Martin Bach", surrogate="Clara Hoffmann")
 
     app.dependency_overrides[get_rbac] = lambda: rbac
@@ -159,15 +203,40 @@ async def test_merge_by_entity_id_rejects_merging_an_entity_with_itself():
 
 
 # ---------------------------------------------------------------------------
-# 2. Merge by entity_id requires admin role (403 without it)
+# 2. Merge by entity_id requires curator role (403 without it) -- ADR-0016/
+#    ADR-0028 gating amendment, issue #314. Neither a bare viewer nor a bare
+#    admin (roles are flat, no hierarchy) can merge; only curator can.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.anyio
-async def test_merge_by_entity_id_requires_admin_role():
+async def test_merge_by_entity_id_requires_curator_role():
     graph = EntityGraph()
     rbac = RbacRegistry()
-    rbac.grant("alice", "acme", "viewer")  # viewer, not admin
+    rbac.grant("alice", "acme", "viewer")  # viewer, not curator
+    winner = graph.add_entity("person", "acme", "Alice Smith", surrogate="Sur-A")
+    loser = graph.add_entity("person", "acme", "Alice Jones", surrogate="Sur-B")
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_entity_graph] = lambda: graph
+    try:
+        async with _make_client() as client:
+            resp = await client.post(
+                "/v1/management/workspaces/acme/entities/merge",
+                json={"winner_id": winner.entity_id, "loser_id": loser.entity_id},
+                headers=_admin_headers(),
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_merge_by_entity_id_admin_without_curator_is_denied():
+    graph = EntityGraph()
+    rbac = RbacRegistry()
+    rbac.grant("alice", "acme", "admin")  # admin, not curator -- roles are flat (ADR-0028)
     winner = graph.add_entity("person", "acme", "Alice Smith", surrogate="Sur-A")
     loser = graph.add_entity("person", "acme", "Alice Jones", surrogate="Sur-B")
 
@@ -196,7 +265,7 @@ async def test_merge_by_entity_id_rejects_cross_kind():
     graph = EntityGraph()
     mapping = SurrogateMapping()
     rbac = RbacRegistry()
-    rbac.grant("alice", "acme", "admin")
+    rbac.grant("alice", "acme", "curator")
     person = graph.add_entity("person", "acme", "Alice Smith", surrogate="Sur-A")
     term = graph.add_entity("term", "acme", "Project Condor", surrogate="Sur-B")
     audit_log = AuditLog()
@@ -229,7 +298,7 @@ async def test_merge_by_entity_id_retires_loser_surrogate():
     graph = EntityGraph()
     mapping = SurrogateMapping()
     rbac = RbacRegistry()
-    rbac.grant("alice", "acme", "admin")
+    rbac.grant("alice", "acme", "curator")
     mapping.seed("Alice Smith", "Sur-A")
     mapping.seed("Alice Jones", "Sur-B")
     winner = graph.add_entity("person", "acme", "Alice Smith", surrogate="Sur-A")
@@ -269,7 +338,7 @@ async def test_merge_by_entity_id_retires_loser_surrogate():
 async def test_merge_by_entity_id_returns_404_for_unknown_id():
     graph = EntityGraph()
     rbac = RbacRegistry()
-    rbac.grant("alice", "acme", "admin")
+    rbac.grant("alice", "acme", "curator")
     real = graph.add_entity("person", "acme", "Alice Smith", surrogate="Sur-A")
     audit_log = AuditLog()
     mapping = SurrogateMapping()
@@ -301,7 +370,7 @@ async def test_merge_by_entity_id_emits_audit_event():
     graph = EntityGraph()
     mapping = SurrogateMapping()
     rbac = RbacRegistry()
-    rbac.grant("alice", "acme", "admin")
+    rbac.grant("alice", "acme", "curator")
     mapping.seed("Alice Smith", "Sur-A")
     mapping.seed("Alice Jones", "Sur-B")
     winner = graph.add_entity("person", "acme", "Alice Smith", surrogate="Sur-A")

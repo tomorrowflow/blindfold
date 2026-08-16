@@ -4,8 +4,11 @@ Tests the POST /v1/management/entities/merge endpoint through the FastAPI test
 client. All assertions are at the API seam (store state, not internals), per ADR-0011.
 
 Leak-audit clause analysis:
-  A/B/C/D/E/G — N/A: this slice does not touch the proxy request path.
-  F (access control) — covered: merge endpoint returns 403 without admin role.
+  A/B/C/D/E — N/A: this slice does not touch the proxy request path.
+  F (access control) — covered: merge endpoint returns 403 without curator role
+  (including for a bare admin -- roles are flat, ADR-0028).
+  G (mapping secrecy) — covered: the response is surrogate-space only; canonical_name
+  and variations are withheld entirely (ADR-0015/ADR-0017 amendment, issue #314).
 """
 
 from __future__ import annotations
@@ -26,9 +29,9 @@ def _make_client() -> httpx.AsyncClient:
     )
 
 
-def _admin_rbac(identity: str = "alice", workspace: str = "acme") -> RbacRegistry:
+def _curator_rbac(identity: str = "alice", workspace: str = "acme") -> RbacRegistry:
     rbac = RbacRegistry()
-    rbac.grant(identity, workspace, "admin")
+    rbac.grant(identity, workspace, "curator")
     return rbac
 
 
@@ -39,7 +42,7 @@ def _admin_rbac(identity: str = "alice", workspace: str = "acme") -> RbacRegistr
 
 @pytest.mark.anyio
 async def test_cross_kind_merge_is_rejected():
-    rbac = _admin_rbac()
+    rbac = _curator_rbac()
     graph = EntityGraph()
     graph.add_entity(kind="person", workspace="acme", canonical_name="Alice Smith", surrogate="S1")
     graph.add_entity(kind="term", workspace="acme", canonical_name="Project Alpha", surrogate="S2")
@@ -71,7 +74,54 @@ async def test_cross_kind_merge_is_rejected():
 
 @pytest.mark.anyio
 async def test_same_kind_merge_collapses_entities():
-    rbac = _admin_rbac()
+    rbac = _curator_rbac()
+    graph = EntityGraph()
+    mapping = SurrogateMapping()
+    mapping.seed("Alice Smith", "S1")
+    mapping.seed("Alice Jones", "S2")
+    graph.add_entity(kind="person", workspace="acme", canonical_name="Alice Smith", surrogate="S1")
+    graph.add_entity(kind="person", workspace="acme", canonical_name="Alice Jones", surrogate="S2")
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_entity_graph] = lambda: graph
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_audit_log] = lambda: AuditLog()
+    try:
+        async with _make_client() as client:
+            resp = await client.post(
+                "/v1/management/entities/merge",
+                json={
+                    "workspace": "acme",
+                    "winner": {"kind": "person", "canonical_name": "Alice Smith"},
+                    "loser": {"kind": "person", "canonical_name": "Alice Jones"},
+                },
+                headers={"x-blindfold-identity": "alice"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    # The collapse itself is asserted at the store, not the surrogate-space
+    # response (which withholds canonical_name/variations, ADR-0015).
+    winner_rec = graph.get_by_canonical("acme", "person", "Alice Smith")
+    assert winner_rec is not None
+    assert "Alice Jones" in winner_rec.variations
+    # Loser entity no longer in graph
+    assert graph.get_by_canonical("acme", "person", "Alice Jones") is None
+
+
+# ---------------------------------------------------------------------------
+# 2b. Merge response is surrogate-space: no canonical_name, no variations
+#     (real-value fields absent, not empty), even via the canonical-name path
+#     -- ADR-0015 amendment, issue #314. Re-identify (RBAC-gated, audited) is
+#     the only sanctioned real-value read path; a merge response is not.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_merge_by_canonical_name_response_omits_real_value_fields():
+    rbac = RbacRegistry()
+    rbac.grant("alice", "acme", "curator")
     graph = EntityGraph()
     mapping = SurrogateMapping()
     mapping.seed("Alice Smith", "S1")
@@ -99,10 +149,8 @@ async def test_same_kind_merge_collapses_entities():
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["winner"]["canonical_name"] == "Alice Smith"
-    assert "Alice Jones" in body["winner"]["variations"]
-    # Loser entity no longer in graph
-    assert graph.get_by_canonical("acme", "person", "Alice Jones") is None
+    assert "canonical_name" not in body["winner"]
+    assert "variations" not in body["winner"]
 
 
 # ---------------------------------------------------------------------------
@@ -112,7 +160,7 @@ async def test_same_kind_merge_collapses_entities():
 
 @pytest.mark.anyio
 async def test_winner_surrogate_unchanged_after_merge():
-    rbac = _admin_rbac()
+    rbac = _curator_rbac()
     graph = EntityGraph()
     mapping = SurrogateMapping()
     mapping.seed("Alice Smith", "S1")
@@ -150,7 +198,7 @@ async def test_winner_surrogate_unchanged_after_merge():
 
 @pytest.mark.anyio
 async def test_merge_by_canonical_name_audit_reason_omits_real_names():
-    rbac = _admin_rbac()
+    rbac = _curator_rbac()
     graph = EntityGraph()
     mapping = SurrogateMapping()
     mapping.seed("Alice Smith", "S1")
@@ -197,7 +245,7 @@ async def test_merge_by_canonical_name_audit_reason_omits_real_names():
 async def test_loser_surrogate_retired_and_past_exchange_still_restores():
     from blindfold.engine import ExchangeSession, restore_response
 
-    rbac = _admin_rbac()
+    rbac = _curator_rbac()
     graph = EntityGraph()
     mapping = SurrogateMapping()
     mapping.seed("Alice Smith", "S1")
@@ -248,7 +296,7 @@ async def test_loser_surrogate_retired_and_past_exchange_still_restores():
 
 @pytest.mark.anyio
 async def test_loser_edges_rehome_to_winner_self_loops_dropped():
-    rbac = _admin_rbac()
+    rbac = _curator_rbac()
     graph = EntityGraph()
     mapping = SurrogateMapping()
     mapping.seed("Alice Smith", "S1")
@@ -312,7 +360,7 @@ async def test_loser_edges_rehome_to_winner_self_loops_dropped():
 
 @pytest.mark.anyio
 async def test_role_assignments_rehome_to_winner_duplicates_deduped():
-    rbac = _admin_rbac()
+    rbac = _curator_rbac()
     graph = EntityGraph()
     mapping = SurrogateMapping()
     mapping.seed("Alice Smith", "S1")
@@ -360,9 +408,36 @@ async def test_role_assignments_rehome_to_winner_duplicates_deduped():
 
 
 @pytest.mark.anyio
-async def test_merge_denied_without_admin_role():
+async def test_merge_denied_without_curator_role():
     rbac = RbacRegistry()
-    rbac.grant("alice", "acme", "viewer")  # viewer, not admin
+    rbac.grant("alice", "acme", "viewer")  # viewer, not curator
+    graph = EntityGraph()
+    graph.add_entity(kind="person", workspace="acme", canonical_name="Alice Smith", surrogate="S1")
+    graph.add_entity(kind="person", workspace="acme", canonical_name="Alice Jones", surrogate="S2")
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_entity_graph] = lambda: graph
+    try:
+        async with _make_client() as client:
+            resp = await client.post(
+                "/v1/management/entities/merge",
+                json={
+                    "workspace": "acme",
+                    "winner": {"kind": "person", "canonical_name": "Alice Smith"},
+                    "loser": {"kind": "person", "canonical_name": "Alice Jones"},
+                },
+                headers={"x-blindfold-identity": "alice"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_merge_by_canonical_name_admin_without_curator_is_denied():
+    rbac = RbacRegistry()
+    rbac.grant("alice", "acme", "admin")  # admin, not curator -- roles are flat (ADR-0028)
     graph = EntityGraph()
     graph.add_entity(kind="person", workspace="acme", canonical_name="Alice Smith", surrogate="S1")
     graph.add_entity(kind="person", workspace="acme", canonical_name="Alice Jones", surrogate="S2")
@@ -393,7 +468,7 @@ async def test_merge_denied_without_admin_role():
 
 @pytest.mark.anyio
 async def test_org_unit_merge_is_rejected():
-    rbac = _admin_rbac()
+    rbac = _curator_rbac()
     graph = EntityGraph()
 
     app.dependency_overrides[get_rbac] = lambda: rbac
@@ -423,7 +498,7 @@ async def test_org_unit_merge_is_rejected():
 
 @pytest.mark.anyio
 async def test_term_merge_same_kind():
-    rbac = _admin_rbac()
+    rbac = _curator_rbac()
     graph = EntityGraph()
     mapping = SurrogateMapping()
     mapping.seed("Enervia", "T1")
@@ -451,7 +526,8 @@ async def test_term_merge_same_kind():
 
     assert resp.status_code == 200
     body = resp.json()
-    assert body["winner"]["canonical_name"] == "Enervia"
-    assert "E-nervia" in body["winner"]["variations"]
     assert body["winner"]["active_surrogate"] == "T1"
+    winner_rec = graph.get_by_canonical("acme", "term", "Enervia")
+    assert winner_rec is not None
+    assert "E-nervia" in winner_rec.variations
     assert graph.get_by_canonical("acme", "term", "E-nervia") is None
