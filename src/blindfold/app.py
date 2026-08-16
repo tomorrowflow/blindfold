@@ -2549,8 +2549,9 @@ async def seed_workspace(
     surrogate itself, so importing a bundle can never grant a Role or plant an
     attacker-chosen surrogate (privilege-escalation guard).
 
-    Gated by the ``admin`` role on ``slug`` (same convention as ``merge_entities``) --
-    the Setup creator already holds it from creating the workspace (issue #107).
+    Gated by the ``admin`` role on ``slug`` (same convention as the workspace-roles
+    endpoints; the merge endpoints moved to ``curator`` per ADR-0016/ADR-0028, issue
+    #314) -- the Setup creator already holds it from creating the workspace (issue #107).
 
     Also seeds the re-identify store through whichever mapping cipher is active
     (ADR-0045 §2/§4, issue #231 -- Transit or the Local key cipher, not Transit
@@ -2665,11 +2666,11 @@ async def preview_seed_bundle(
     body) since previewing the vendored bundle against itself is not this
     feature's job.
 
-    Gated by the ``admin`` role, the same convention ``seed_workspace``/
-    ``merge_entities`` already use for a structural write surface in this codebase
-    -- ``curator`` is a defined RBAC role (CONTEXT.md) but is not yet wired as an
-    actual gate anywhere, so this endpoint follows the established admin-gate
-    convention rather than introducing a new, inconsistent one.
+    Gated by the ``admin`` role, the same convention ``seed_workspace`` and the
+    workspace-roles endpoints already use for an operator setup surface in this
+    codebase. (The merge endpoints moved to the ``curator`` gate per ADR-0016/
+    ADR-0028, issue #314; seed/preview stays ``admin`` -- it is an operator import
+    surface, not fake-space structural curation, and is out of that issue's scope.)
     """
     _require_role(request, slug, "admin", rbac)
 
