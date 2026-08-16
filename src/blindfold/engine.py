@@ -1404,7 +1404,9 @@ def scrub_entity_reference(real: str, mapping: SurrogateMapping) -> str:
 _SCHEMA_STRUCTURAL_KEYS = frozenset({"type", "required", "enum"})
 
 
-def _strip_schema_structural_tokens(node: Any, forbidden: list[str]) -> Any:
+def _strip_schema_structural_tokens(
+    node: Any, forbidden: list[str], *, keys_are_property_names: bool = False
+) -> Any:
     """Recursively drop JSON-Schema structural tokens from a tool schema subtree.
 
     ADR-0051 amendment (issue #303/#307): ``type``/``required``/``enum`` can appear
@@ -1420,14 +1422,26 @@ def _strip_schema_structural_tokens(node: Any, forbidden: list[str]) -> Any:
     A dict key (e.g. a ``properties`` entry's own name) is never a value
     :func:`walk_string_leaves` visits, so property keys are already excluded from
     the checked surface without any extra handling here.
+
+    Reviewer-found hole (cycle 1 -> cycle 2): a *property* can legally be named
+    ``type``/``required``/``enum`` -- that string is data (a property name), never
+    the schema keyword, even though it is spelled identically. ``keys_are_property_
+    names`` tracks whether the dict currently being walked is a ``properties`` map:
+    when true, its keys are never tested against :data:`_SCHEMA_STRUCTURAL_KEYS`
+    (only an *actual* schema-keyword position is), but each value is still walked
+    as an ordinary subschema (``keys_are_property_names=False``) -- and if that
+    subschema itself has a nested ``properties`` map, the same rule applies one
+    level down.
     """
     if isinstance(node, dict):
         stripped: dict[str, Any] = {}
         for key, value in node.items():
-            if key in _SCHEMA_STRUCTURAL_KEYS:
+            if not keys_are_property_names and key in _SCHEMA_STRUCTURAL_KEYS:
                 walk_string_leaves(value, forbidden.append)
                 continue
-            stripped[key] = _strip_schema_structural_tokens(value, forbidden)
+            stripped[key] = _strip_schema_structural_tokens(
+                value, forbidden, keys_are_property_names=(key == "properties")
+            )
         return stripped
     if isinstance(node, list):
         return [_strip_schema_structural_tokens(item, forbidden) for item in node]

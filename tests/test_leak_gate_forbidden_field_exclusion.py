@@ -160,6 +160,66 @@ def test_leak_gate_returns_a_declared_collision_for_a_mapping_sourced_real():
     assert collisions[0].startswith("declared collision:")
 
 
+def test_leak_gate_still_raises_on_an_unblinded_real_in_a_property_named_type_description():
+    # Reviewer-found hole (cycle 1 -> cycle 2): a JSON-Schema *property* happening
+    # to be named "type" (a perfectly legal property name, distinct from the
+    # schema keyword "type") must not have its whole subtree -- including
+    # description prose -- swept into the forbidden set just because the key
+    # string matches. `properties` maps' own keys are property *names*, never
+    # schema keywords, no matter what string they hold.
+    mapping = _mapping()
+    outbound = {
+        "model": "m",
+        "messages": [{"role": "user", "content": "hello"}],
+        "tools": [
+            {
+                "name": "lookup_customer",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "type": {
+                            "type": "string",
+                            "description": "Contact type for Weber",
+                        }
+                    },
+                    "required": ["type"],
+                },
+            }
+        ],
+    }
+
+    with pytest.raises(LeakError):
+        leak_gate(outbound, mapping)
+
+
+def test_leak_gate_still_raises_on_an_unblinded_real_in_an_ordinary_propertys_description():
+    # Sibling of the property-named-"type" case above: an ordinarily-named
+    # property's description was already gate-checked pre-fix; pin it alongside
+    # the fix so the two don't drift apart again.
+    mapping = _mapping()
+    outbound = {
+        "model": "m",
+        "messages": [{"role": "user", "content": "hello"}],
+        "tools": [
+            {
+                "name": "lookup_customer",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "tier": {
+                            "type": "string",
+                            "description": "Contact tier for Weber",
+                        }
+                    },
+                },
+            }
+        ],
+    }
+
+    with pytest.raises(LeakError):
+        leak_gate(outbound, mapping)
+
+
 def test_leak_gate_does_not_raise_on_a_known_real_confined_to_tools_function_name():
     # Chat Completions shape: tools[].function.name.
     mapping = _mapping()
