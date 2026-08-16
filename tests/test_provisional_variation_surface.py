@@ -6,8 +6,8 @@ both as "Kestrel Dynamics GmbH" (blinded correctly, twice) and bare "Kestrel Dyn
 one, and nothing expanded the provisional entity to its own suffix-stripped form.
 
 One helper (``review.entity_variations``) derives the variation set (starting with
-#289's legal-form-suffix stripping); it is stored on ``ReviewItem`` and consumed by all
-three surfaces that need to agree on "this referent's surface forms":
+#289's legal-form-suffix stripping); it is stored on ``ReviewItem`` and consumed by both
+surfaces that need to agree on "this referent's surface forms":
 
 - the blinder (``engine._blindfold_text``): blinds every occurrence of every variation
   (including ``real`` itself, issue #295) once the referent is minted, not only the
