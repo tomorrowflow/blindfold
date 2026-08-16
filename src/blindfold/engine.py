@@ -244,7 +244,7 @@ def blindfold_payload(
             _finish_hop(ctx, _hop_kind_for_message(message), len(session.hops))
         )
 
-    _blindfold_tools_messages(out.get("tools"), mapping, session)
+    _blindfold_tools_messages(out.get("tools"), mapping, session, inbox)
 
     return out, session
 
@@ -285,7 +285,7 @@ def blindfold_chat_completions_payload(
             _finish_hop(ctx, _hop_kind_for_message(message), len(session.hops))
         )
 
-    _blindfold_tools_chat_completions(out.get("tools"), mapping, session)
+    _blindfold_tools_chat_completions(out.get("tools"), mapping, session, inbox)
 
     return out, session
 
@@ -348,18 +348,24 @@ def _extract_declared_tools(
 
 
 def _blindfold_tools_messages(
-    tools: Any, mapping: SurrogateMapping, session: ExchangeSession
+    tools: Any,
+    mapping: SurrogateMapping,
+    session: ExchangeSession,
+    inbox: ReviewInbox | None,
 ) -> None:
     """Rewrite each tool's free-text ``description`` in place (Messages shape, ADR-0023 §3)."""
-    _blindfold_tool_descriptions(tools, mapping, session, lambda tool: tool)
+    _blindfold_tool_descriptions(tools, mapping, session, inbox, lambda tool: tool)
 
 
 def _blindfold_tools_chat_completions(
-    tools: Any, mapping: SurrogateMapping, session: ExchangeSession
+    tools: Any,
+    mapping: SurrogateMapping,
+    session: ExchangeSession,
+    inbox: ReviewInbox | None,
 ) -> None:
     """Rewrite each tool's free-text ``description`` in place (Chat Completions shape)."""
     _blindfold_tool_descriptions(
-        tools, mapping, session, lambda tool: tool.get("function")
+        tools, mapping, session, inbox, lambda tool: tool.get("function")
     )
 
 
@@ -367,18 +373,27 @@ def _blindfold_tool_descriptions(
     tools: Any,
     mapping: SurrogateMapping,
     session: ExchangeSession,
+    inbox: ReviewInbox | None,
     get_container: Callable[[dict[str, Any]], Any],
 ) -> None:
     """Rewrite the free-text ``description`` field ``get_container`` locates, in place.
 
-    Deterministic-only (L1+L2 via :func:`_blindfold_text` with no ``l3_detector``/
-    ``inbox``): L3 candidate-span adjudication never runs over tool schema prose
-    (ADR-0023 §3). A registered Term hits the same :class:`SurrogateMapping`, so it
-    mints/reuses the same surrogate as the same Term in message text (restore
-    coherence). Every other tool schema key (``name``, ``input_schema``/
-    ``parameters``) is never touched. Defensive like :func:`_extract_declared_tools`:
-    a missing/non-list ``tools``, a non-dict entry, a container ``get_container``
-    can't locate, or a missing/non-string ``description`` is left alone.
+    Deterministic-only (L1+L2 via :func:`_blindfold_text` with no ``l3_detector``):
+    L3 candidate-span adjudication never runs over tool schema prose (ADR-0023 §3). A
+    registered Term hits the same :class:`SurrogateMapping`, so it mints/reuses the
+    same surrogate as the same Term in message text (restore coherence). Every other
+    tool schema key (``name``, ``input_schema``/``parameters``) is never touched.
+    Defensive like :func:`_extract_declared_tools`: a missing/non-list ``tools``, a
+    non-dict entry, a container ``get_container`` can't locate, or a missing/non-string
+    ``description`` is left alone.
+
+    ADR-0051 stage 1 (issue #299): after the entity-graph pass, also apply every
+    already-minted provisional pair in ``inbox`` (:func:`_apply_provisional_pairs`) --
+    still no L3, no new inbox row, just reusing a surrogate an earlier hop of this
+    same request already minted. Runs strictly after the entity-graph rewrite, so a
+    registered Term equal to a provisional real still resolves via the entity graph's
+    own (already-applied) surrogate, not the provisional one -- by the time this scan
+    runs, that occurrence's real text is no longer present to match.
     """
     if not isinstance(tools, list):
         return
@@ -387,8 +402,9 @@ def _blindfold_tool_descriptions(
             continue
         container = get_container(tool)
         if isinstance(container, dict) and isinstance(container.get("description"), str):
-            container["description"] = _blindfold_text(
-                container["description"], mapping, session
+            description = _blindfold_text(container["description"], mapping, session)
+            container["description"] = _apply_provisional_pairs(
+                description, inbox, session
             )
 
 
@@ -1048,6 +1064,54 @@ def _real_value_pattern(value: str) -> re.Pattern[str]:
     return re.compile(rf"(?<!\w){re.escape(value)}(?!\w)")
 
 
+def _provisional_known_value_set(item: ReviewItem) -> frozenset[str]:
+    """The known-value surface for one review-inbox item: ``{item.real, *item.variations}``.
+
+    ADR-0051: this is the *single* derivation both :func:`leak_gate` and the
+    deterministic tool-description pass (:func:`_apply_provisional_pairs`) consult --
+    the invariant the ADR states ("every surface the leak gate checks is a surface the
+    deterministic blinder rewrites, over the same set of values") is enforced by having
+    exactly one function compute the set, not by keeping two call sites in sync by hand.
+    """
+    return frozenset({item.real, *item.variations})
+
+
+def _apply_provisional_pairs(
+    text: str, inbox: ReviewInbox | None, session: ExchangeSession
+) -> str:
+    """Rewrite every whole-word occurrence of an already-minted provisional pair's known
+    value surface with that item's existing ``provisional_surrogate`` (ADR-0051 stage 1).
+
+    Deterministic only: reads ``inbox.list()``, never runs L3, never calls
+    ``inbox.upsert`` -- a referent that already has a provisional surrogate reuses it,
+    never mints a second one (surrogates are stable, ADR-0004/#289). Matched with
+    :func:`_real_value_pattern`, the identical matcher :func:`leak_gate` uses, over the
+    identical set :func:`_provisional_known_value_set` derives -- so a value this pass
+    rewrites is exactly a value the gate would otherwise have fail-closed on.
+
+    Every actual substitution is ``session.record``ed, pairing the surrogate with
+    ``item.real`` (never the matched variation text, mirroring #296) so restore stays
+    closed-world and ``resolution_gate`` reports nothing unresolved.
+
+    ``inbox`` is ``None`` only for the two callers that deliberately pass no inbox at
+    all (devtools replay with no ``l3_detector``, ``count_tokens`` — issue #274/#267);
+    left alone rather than erroring, matching :func:`leak_gate`'s own ``inbox is None``
+    handling.
+    """
+    if inbox is None:
+        return text
+    result = text
+    for item in inbox.list():
+        for value in _provisional_known_value_set(item):
+            rewritten, count = _real_value_pattern(value).subn(
+                item.provisional_surrogate, result
+            )
+            if count:
+                result = rewritten
+                session.record(item.provisional_surrogate, item.real)
+    return result
+
+
 def _apply_restore_pass(text: str, restore_map: dict[str, str]) -> str:
     """Substitute every key of ``restore_map`` for its value, longest key first.
 
@@ -1278,7 +1342,11 @@ def leak_gate(
         # includes ``item.real``, but this is the fail-closed backstop: check
         # ``item.real`` explicitly rather than trust the (defaultable) ``variations``
         # field to carry it, so the real-value check can never silently go quiet.
-        for variation in {item.real, *item.variations}:
+        #
+        # ADR-0051: ``_provisional_known_value_set`` is the same derivation
+        # :func:`_apply_provisional_pairs` uses for the deterministic tool-description
+        # pass -- one function, not two call sites that could drift apart.
+        for variation in _provisional_known_value_set(item):
             if _real_value_pattern(variation).search(outbound_text):
                 _raise_leak(
                     f"review-inbox item {item.id} (surrogate: {item.provisional_surrogate})"

@@ -75,9 +75,10 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   it directly; a **provisional** review-inbox entity carries a narrower, derived
   variation surface too (`review.entity_variations`, issue #296 — currently just
   #289's legal-form-suffix stripping for an organisation), consumed by the
-  blinder, `leak_gate`, and the mint-time coverage check so a referent's bare and
+  blinder, `leak_gate`, the mint-time coverage check, and — as of ADR-0051 stage 1,
+  issue #299 — the deterministic tool-description pass, so a referent's bare and
   legal-form-suffixed surface forms are never treated as invisible to each other
-  before a human ever reviews the candidate.
+  before a human ever reviews the candidate, in any of those surfaces.
 - **Merge** — the curator action that collapses two separate canonical **entities**
   discovered to be the same referent into one. The surviving entity absorbs the
   other's **variations**, **relationships**, and role assignments; the absorbed
