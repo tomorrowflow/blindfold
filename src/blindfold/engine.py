@@ -716,6 +716,8 @@ def _blindfold_text(
             covered_by_real.setdefault(real, list(injected_surrogate_ranges)).append(
                 (start, end)
             )
+        minted_ranges_by_item: dict[str, list[tuple[int, int]]] = {}
+        minted_items_by_id: dict[str, ReviewItem] = {}
         for start, end, real, context, context_offset, entity_type in group_infos:
             if _real_value_occurs_outside_ranges(real, result, covered_by_real[real]):
                 continue
@@ -741,6 +743,45 @@ def _blindfold_text(
                 corpus_text=result,
             )
             spans.append((start, end, item.provisional_surrogate, real))
+            minted_ranges_by_item.setdefault(item.id, []).append((start, end))
+            minted_items_by_id[item.id] = item
+        # Issue #296: a provisional referent's variation surface (currently #289's
+        # legal-form-suffix strip) has no per-span L3 confirmation of its own -- L3
+        # confirmed "Kestrel Dynamics GmbH" and dismissed (or never separately
+        # offered) the bare "Kestrel Dynamics" elsewhere in this same hop, so
+        # relying on a confirmed candidate for every variation left the bare form
+        # standing in plaintext. Once a referent is minted, blind every occurrence
+        # of every OTHER variation unconditionally -- the detector's verdict is
+        # about the referent, not the character range. Reuses #293's own
+        # word-boundary pattern (_real_value_pattern) so this scan and the
+        # mint-time coverage check above cannot silently drift out of agreement on
+        # what "occurs" means. Deliberately scoped to the closed, derived variation
+        # set (not a blanket widen of every known real, #293's rejected Option 1):
+        # an ordinary word colliding with `real` itself stays governed by the
+        # coverage-refusal check above, unchanged.
+        #
+        # A variation is, by construction, a strict prefix of a longer confirmed
+        # occurrence's own literal text (the legal-form suffix stripped off the
+        # end) -- so a match starting at the same position as an already-confirmed
+        # span for THIS SAME referent is that span itself, not a second occurrence
+        # ("Kestrel Dynamics" is a whole-word prefix of "Kestrel Dynamics GmbH").
+        # Skip any match fully contained in a range already confirmed (or already
+        # injected) for this referent to avoid re-slicing inside it.
+        for item_id, item in minted_items_by_id.items():
+            already_covered = minted_ranges_by_item[item_id] + list(injected_surrogate_ranges)
+            for variation in item.variations:
+                if variation == item.real:
+                    continue
+                for match in _real_value_pattern(variation).finditer(result):
+                    m_start, m_end = match.start(), match.end()
+                    if any(s <= m_start and m_end <= e for s, e in already_covered):
+                        continue
+                    # session.record's second argument is what restore later hands
+                    # back to the client for this surrogate -- always the
+                    # referent's canonical stored value (item.real), never the
+                    # bare-form variation text, so restore fidelity doesn't depend
+                    # on which surface form happened to be encountered where.
+                    spans.append((m_start, m_end, item.provisional_surrogate, item.real))
         for start, end, surrogate, real in sorted(
             spans + pii_spans, key=lambda s: s[0], reverse=True
         ):
@@ -1228,8 +1269,17 @@ def leak_gate(
         if _real_value_pattern(real).search(outbound_text):
             _raise_leak(scrub_entity_reference(real, mapping))
     for item in inbox.list() if inbox is not None else ():
-        if _real_value_pattern(item.real).search(outbound_text):
-            _raise_leak(f"review-inbox item {item.id} (surrogate: {item.provisional_surrogate})")
+        # Issue #296: a provisional referent's variation surface (currently #289's
+        # legal-form-suffix strip) is a distinct literal string from ``item.real``
+        # (e.g. bare "Kestrel Dynamics" vs "Kestrel Dynamics GmbH") -- the backstop
+        # here must fail closed on it too, even when the blinder's own variation
+        # scan (engine._blindfold_text) missed it. ``item.variations`` always
+        # includes ``item.real`` itself.
+        for variation in item.variations:
+            if _real_value_pattern(variation).search(outbound_text):
+                _raise_leak(
+                    f"review-inbox item {item.id} (surrogate: {item.provisional_surrogate})"
+                )
 
 
 def resolution_gate(restored_response: dict[str, Any], session: ExchangeSession) -> None:

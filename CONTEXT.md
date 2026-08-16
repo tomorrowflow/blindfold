@@ -70,7 +70,14 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   **mapping**, and RBAC — the crown-jewel surfaces — so it is the store's durable seat,
   never a cache. _Avoid_: db dir, data dir (that is the assets location).
 - **Variation** — a surface form of an entity (full name, first name, initials,
-  nickname, misspelling). Resolving variations to one entity is **coreference**.
+  nickname, misspelling). Resolving variations to one entity is **coreference**. A
+  confirmed entity's variation surface lives in the **entity graph** and L2 matches
+  it directly; a **provisional** review-inbox entity carries a narrower, derived
+  variation surface too (`review.entity_variations`, issue #296 — currently just
+  #289's legal-form-suffix stripping for an organisation), consumed by the
+  blinder, `leak_gate`, and the mint-time coverage check so a referent's bare and
+  legal-form-suffixed surface forms are never treated as invisible to each other
+  before a human ever reviews the candidate.
 - **Merge** — the curator action that collapses two separate canonical **entities**
   discovered to be the same referent into one. The surviving entity absorbs the
   other's **variations**, **relationships**, and role assignments; the absorbed

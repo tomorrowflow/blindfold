@@ -102,6 +102,20 @@ _LEGAL_FORM_SUFFIXES: tuple[str, ...] = (
 )
 
 
+def _strip_legal_form_suffix(value: str) -> str:
+    """Strip one trailing legal-form suffix (``GmbH``, ``AG``, ``Ltd``, ...) from
+    ``value``, or return it unchanged if none matches. Longest-first (see
+    ``_LEGAL_FORM_SUFFIXES``) so ``"GmbH & Co. KG"`` matches before the bare
+    ``"KG"`` it contains.
+    """
+    for suffix in _LEGAL_FORM_SUFFIXES:
+        if value == suffix:
+            continue
+        if value.endswith(" " + suffix):
+            return value[: -(len(suffix) + 1)].rstrip()
+    return value
+
+
 def _referent_key(real: str, entity_type: str | None) -> str:
     """The key :meth:`ReviewInbox.upsert` dedups a novel candidate's referent on
     (issue #289).
@@ -114,14 +128,32 @@ def _referent_key(real: str, entity_type: str | None) -> str:
     """
     if entity_type != "organization":
         return real
-    stripped = real
-    for suffix in _LEGAL_FORM_SUFFIXES:
-        if stripped == suffix:
-            continue
-        if stripped.endswith(" " + suffix):
-            stripped = stripped[: -(len(suffix) + 1)].rstrip()
-            break
-    return stripped
+    return _strip_legal_form_suffix(real)
+
+
+def entity_variations(real: str, entity_type: str | None) -> frozenset[str]:
+    """The full surface-form variation set for a referent's ``real`` value (issue #296).
+
+    A confirmed entity-graph entity has a Variation surface L2 matches; a
+    **provisional** review-inbox entity had none -- ``_referent_key`` above only
+    used the legal-form-stripped form as a dedupe key, never exposing it to
+    anything else. This is the one helper that derives it, so the blinder
+    (``engine._blindfold_text``, full-coverage blinding at mint time),
+    ``engine.leak_gate`` (the backstop), and #293's mint-time coverage check
+    (``engine._real_value_occurs_outside_ranges``) all agree on what "this
+    referent's surface forms" means and cannot silently drift apart again.
+
+    Always includes ``real`` itself. For an ``"organization"`` candidate whose
+    ``real`` carries a trailing legal-form suffix, also includes the
+    suffix-stripped bare form -- the same basis ``_referent_key`` already uses.
+    Deliberately one-directional, matching ``_referent_key``: given only the
+    bare form, no suffixed variation is invented (which suffix would be
+    ambiguous), so that direction is not attempted.
+    """
+    variations = {real}
+    if entity_type == "organization":
+        variations.add(_strip_legal_form_suffix(real))
+    return frozenset(variations)
 
 
 @dataclass(frozen=True)
@@ -140,6 +172,12 @@ class ReviewItem:
     under, captured at detection time — confirm reads it to know which
     workspace's EntityGraph to grow, since it is not itself a real value it is
     never Transit-encrypted, unlike ``real``/``context``.
+
+    ``variations`` (issue #296) is this referent's full surface-form set,
+    derived by :func:`entity_variations` from ``real``/``entity_type`` at mint
+    time -- always includes ``real`` itself. Not persisted as its own column;
+    re-derived from ``real``/``entity_type`` on hydration (ADR-0037), since it
+    is a pure function of fields already stored.
     """
 
     id: str
@@ -149,6 +187,7 @@ class ReviewItem:
     context_offset: int
     entity_type: str | None = None
     workspace: str = DEFAULT_WORKSPACE
+    variations: frozenset[str] = frozenset()
 
 
 class ReviewInboxStore(Protocol):
@@ -273,6 +312,7 @@ class ReviewInbox:
                 context_offset=context_offset,
                 entity_type=entity_type,
                 workspace=workspace,
+                variations=entity_variations(real, entity_type),
             )
             self._items[item_id] = item
             self._by_real[_referent_key(real, entity_type)] = item_id
@@ -363,6 +403,7 @@ class ReviewInbox:
             context_offset=context_offset,
             entity_type=entity_type,
             workspace=workspace,
+            variations=entity_variations(real, entity_type),
         )
         self._items[item_id] = item
         self._by_real[referent_key] = item_id
