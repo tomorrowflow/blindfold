@@ -88,6 +88,35 @@ def test_record_defaults_to_no_hops_and_no_l3_rollup():
     assert record.l3_provider is None
     assert record.l3_duration_ms is None
     assert record.to_dict()["hops"] == []
+    assert record.declared_collisions == ()
+    assert record.to_dict()["declared_collisions"] == []
+
+
+def test_record_carries_scrubbed_declared_collisions():
+    # ADR-0051 amendment (issue #303/#307): a leak_gate match confined to a field
+    # the blinder is forbidden to rewrite is recorded here as an already-scrubbed
+    # reason string, never a real value -- outcome stays "passed" because a
+    # declared-collision never blocks the exchange.
+    buffer = ProcessingTraceBuffer(maxlen=3)
+    reason = (
+        "declared collision: known real value confined to a field the blinder "
+        "is forbidden to rewrite (ref: review-inbox item abc123 "
+        "(surrogate: Provisional Surrogate 1))"
+    )
+
+    buffer.record(
+        workspace="ws-a",
+        endpoint="messages",
+        streamed=False,
+        outcome="passed",
+        detected=0,
+        duration_ms=1.0,
+        declared_collisions=[reason],
+    )
+
+    record = buffer.recent()[0]
+    assert record.declared_collisions == (reason,)
+    assert record.to_dict()["declared_collisions"] == [reason]
 
 
 def test_record_carries_upstream_duration_ms():

@@ -329,6 +329,22 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   unresolved (and no coincidental lookalike was restored). Together they replace an
   earlier single post-hoc check that ran only after the blinded payload had already
   reached the provider.
+- **Declared collision** (ADR-0051 amendment, issue #303/#307) — the invariant "every
+  surface the leak gate checks is a surface the blinder rewrites" constrains both
+  directions: a field the blinder is *structurally forbidden* to rewrite
+  (`tools[].name`/`tools[].function.name` — rewriting breaks tool dispatch; the
+  JSON-Schema structural tokens `type`/`required`/`enum` inside `input_schema`/
+  `parameters` — rewriting breaks schema validation/argument binding) leaves the
+  **pre-egress leak gate**'s checked surface entirely, since a field the blinder
+  was never permitted to enter cannot contain a blinder *miss*. A known real value
+  found confined to one of these fields does not raise `LeakError`; it is recorded
+  as a distinguishable, scrubbed declared-collision (WARNING + audit record +
+  processing-trace entry — surrogate/hashed-id/inbox-item-id reference only, never
+  the plaintext) instead. Field-scoped, not value-scoped: the identical real value
+  occurring anywhere else in the payload still blocks normally. Free-text schema
+  prose (`input_schema.properties.*.description`) is not in this closed set — it is
+  blindable, so the symmetry there is restored by widening the blinder instead
+  (ADR-0023 §3), not by narrowing the gate.
 - **Sliding-window restore** — streaming restore that holds back a tail buffer (≥
   the longest known surrogate) so surrogates split across stream chunks are matched
   before emitting; tool-call JSON is reassembled before restoring inside it.

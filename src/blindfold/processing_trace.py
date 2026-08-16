@@ -45,6 +45,13 @@ class ProcessingTraceRecord:
     ``upstream_duration_ms`` (issue #158) is the sub-span of ``duration_ms`` spent
     waiting on the upstream provider only -- ``None`` when the exchange was blocked
     before it ever reached upstream, mirroring the ``l3_provider=None`` convention.
+
+    ``declared_collisions`` (ADR-0051 amendment, issue #303/#307) carries one
+    already-scrubbed reason string per :func:`~blindfold.engine.leak_gate` match
+    confined to a field the blinder is structurally forbidden to rewrite --
+    never a block (the exchange's own ``outcome`` is unaffected), just an
+    observable record that the collision occurred. Empty for the overwhelming
+    majority of exchanges, which have none.
     """
 
     ts: str
@@ -59,6 +66,7 @@ class ProcessingTraceRecord:
     l3_provider: str | None = None
     l3_duration_ms: float | None = None
     upstream_duration_ms: float | None = None
+    declared_collisions: tuple[str, ...] = ()
 
     def to_dict(self) -> dict:
         return {
@@ -74,6 +82,7 @@ class ProcessingTraceRecord:
             "l3_provider": self.l3_provider,
             "l3_duration_ms": self.l3_duration_ms,
             "upstream_duration_ms": self.upstream_duration_ms,
+            "declared_collisions": list(self.declared_collisions),
         }
 
 
@@ -105,6 +114,7 @@ class ProcessingTraceBuffer:
         l3_provider: str | None = None,
         l3_duration_ms: float | None = None,
         upstream_duration_ms: float | None = None,
+        declared_collisions: Sequence[str] = (),
     ) -> None:
         self._entries.append(
             ProcessingTraceRecord(
@@ -120,6 +130,7 @@ class ProcessingTraceBuffer:
                 l3_provider=l3_provider,
                 l3_duration_ms=l3_duration_ms,
                 upstream_duration_ms=upstream_duration_ms,
+                declared_collisions=tuple(declared_collisions),
             )
         )
 

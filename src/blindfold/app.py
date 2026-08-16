@@ -92,7 +92,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Sequence
 from datetime import datetime
 
 import httpx
@@ -1021,6 +1021,7 @@ def _record_trace(
     reason: str | None = None,
     session: ExchangeSession | None = None,
     upstream_duration_ms: float | None = None,
+    declared_collisions: Sequence[str] = (),
 ) -> None:
     """Append one scrubbed processing-trace record for this exchange (ADR-0035).
 
@@ -1035,6 +1036,10 @@ def _record_trace(
     actual ``upstream.send_*``/``open_stream`` + stream-consumption span -- never
     re-derived here -- and stays ``None`` for a block raised before the exchange
     ever reached upstream, mirroring the ``l3_provider=None`` convention.
+
+    ``declared_collisions`` (ADR-0051 amendment, issue #303/#307) is whatever
+    :func:`_leak_gate_or_block` already logged/audited for this exchange --
+    already-scrubbed reason strings, threaded straight through, never re-derived.
     """
     hops = [hop.to_dict() for hop in session.hops] if session is not None else []
     l3_hops = [hop for hop in session.hops if hop.l3_provider is not None] if session else []
@@ -1052,6 +1057,7 @@ def _record_trace(
         l3_provider=l3_provider,
         l3_duration_ms=l3_duration_ms,
         upstream_duration_ms=upstream_duration_ms,
+        declared_collisions=declared_collisions,
     )
 
 
@@ -1272,7 +1278,7 @@ def _leak_gate_or_block(
     audit_log: AuditLog,
     block_history: BlockHistory,
     inbox: ReviewInbox | None = None,
-) -> JSONResponse | None:
+) -> tuple[JSONResponse | None, list[str]]:
     """Run the pre-egress :func:`leak_gate`; return a block ``JSONResponse`` if it raised.
 
     Runs before ``upstream.send_*``/``open_stream`` (ADR-0020, SEC-5): a leaked real
@@ -1285,22 +1291,39 @@ def _leak_gate_or_block(
     provisional entity's real value (restored to the client on the turn it was
     discovered) egresses unblocked on any later turn whose transcript carries it
     back and whose detection pass misses it.
+
+    Returns ``(block, declared_collisions)``: ``block`` is ``None`` unless
+    ``leak_gate`` raised. ``declared_collisions`` (ADR-0051 amendment, issue
+    #303/#307) is the list of already-scrubbed reason strings :func:`leak_gate`
+    returned for a match confined to a field the blinder is structurally forbidden
+    to rewrite — never a block, but logged at WARNING and written to the audit
+    log here (the caller threads it into the exchange's processing-trace record).
+    Always empty when ``block`` is not ``None`` — ``leak_gate`` raises before it
+    ever computes a collision.
     """
     try:
-        leak_gate(blinded, mapping, inbox)
+        declared_collisions = leak_gate(blinded, mapping, inbox)
     except LeakError as exc:
         # SEC-3 (issue #40): `exc`'s message is already the one scrubbed reason
         # string leak_gate logged — forward it as-is so the 503 body, the audit
         # record, and the log line all carry the identical scrubbed reference.
-        return _blocked_response(
-            event="blocked-leak",
-            reason=str(exc),
-            workspace=workspace,
-            audit_log=audit_log,
-            sub_reason="leak_detected",
-            block_history=block_history,
+        return (
+            _blocked_response(
+                event="blocked-leak",
+                reason=str(exc),
+                workspace=workspace,
+                audit_log=audit_log,
+                sub_reason="leak_detected",
+                block_history=block_history,
+            ),
+            [],
         )
-    return None
+    for reason in declared_collisions:
+        logger.warning("leak_gate: %s", reason)
+        audit_log.append(
+            AuditRecord(workspace=workspace, event="declared-collision", reason=reason)
+        )
+    return None, declared_collisions
 
 
 def _resolution_gate_or_block(
@@ -1518,6 +1541,7 @@ async def messages(
         # `next-request` grant right here so exactly one exchange gets it.
         unprotected_mode.note_exchange_complete()
         blinded, session = payload, ExchangeSession()
+        declared_collisions: list[str] = []
     else:
         effective_l3_detector = None if policy.deterministic_only else l3_detector
         declared_tools = extract_declared_tools_messages(payload)
@@ -1543,7 +1567,7 @@ async def messages(
             return result
         blinded, session = result
 
-        block = _leak_gate_or_block(
+        block, declared_collisions = _leak_gate_or_block(
             blinded, mapping, workspace, audit_log, block_history, inbox
         )
         if block is not None:
@@ -1562,6 +1586,7 @@ async def messages(
                 trace, workspace, "messages", streamed, OUTCOME_UPSTREAM_ERROR,
                 len(session.injected), start, reason=str(exc), session=session,
                 upstream_duration_ms=(time.monotonic() - upstream_start) * 1000,
+                declared_collisions=declared_collisions,
             )
             return _upstream_error_response(exc, workspace, audit_log, upstream_health)
         upstream_health.mark_success()
@@ -1569,7 +1594,7 @@ async def messages(
         return StreamingResponse(
             _stream_restored(
                 upstream_response, session, workspace, audit_log, trace, start,
-                open_stream_duration_ms,
+                open_stream_duration_ms, declared_collisions,
             ),
             media_type="text/event-stream",
         )
@@ -1582,6 +1607,7 @@ async def messages(
             trace, workspace, "messages", streamed, OUTCOME_UPSTREAM_ERROR,
             len(session.injected), start, reason=str(exc), session=session,
             upstream_duration_ms=(time.monotonic() - upstream_start) * 1000,
+            declared_collisions=declared_collisions,
         )
         return _upstream_error_response(exc, workspace, audit_log, upstream_health)
     upstream_health.mark_success()
@@ -1593,12 +1619,14 @@ async def messages(
             trace, workspace, "messages", streamed, OUTCOME_BLOCKED,
             len(session.injected), start, reason=_block_reason(block), session=session,
             upstream_duration_ms=upstream_duration_ms,
+            declared_collisions=declared_collisions,
         )
         return block
     _record_trace(
         trace, workspace, "messages", streamed, OUTCOME_PASSED,
         len(session.injected), start, session=session,
         upstream_duration_ms=upstream_duration_ms,
+        declared_collisions=declared_collisions,
     )
     return restored
 
@@ -1670,6 +1698,7 @@ async def count_tokens(
         # bound the operator never re-granted) nor consume a grant twice.
         unprotected_mode.note_exchange_complete()
         blinded, session = payload, ExchangeSession()
+        declared_collisions: list[str] = []
     else:
         effective_l3_detector = None if policy.deterministic_only else l3_detector
         declared_tools = extract_declared_tools_messages(payload)
@@ -1694,7 +1723,7 @@ async def count_tokens(
             return result
         blinded, session = result
 
-        block = _leak_gate_or_block(
+        block, declared_collisions = _leak_gate_or_block(
             blinded, mapping, workspace, audit_log, block_history, inbox
         )
         if block is not None:
@@ -1712,6 +1741,7 @@ async def count_tokens(
             trace, workspace, "count_tokens", False, OUTCOME_UPSTREAM_ERROR,
             len(session.injected), start, reason=str(exc), session=session,
             upstream_duration_ms=(time.monotonic() - upstream_start) * 1000,
+            declared_collisions=declared_collisions,
         )
         return _upstream_error_response(exc, workspace, audit_log, upstream_health)
     upstream_health.mark_success()
@@ -1720,6 +1750,7 @@ async def count_tokens(
         trace, workspace, "count_tokens", False, OUTCOME_PASSED,
         len(session.injected), start, session=session,
         upstream_duration_ms=upstream_duration_ms,
+        declared_collisions=declared_collisions,
     )
     return raw_response
 
@@ -1750,6 +1781,7 @@ async def chat_completions(
         # ADR-0038: same bypass as `/v1/messages` -- see that handler's comment.
         unprotected_mode.note_exchange_complete()
         blinded, session = payload, ExchangeSession()
+        declared_collisions: list[str] = []
     else:
         effective_l3_detector = None if policy.deterministic_only else l3_detector
         declared_tools = extract_declared_tools_chat_completions(payload)
@@ -1775,7 +1807,7 @@ async def chat_completions(
             return result
         blinded, session = result
 
-        block = _leak_gate_or_block(
+        block, declared_collisions = _leak_gate_or_block(
             blinded, mapping, workspace, audit_log, block_history, inbox
         )
         if block is not None:
@@ -1795,6 +1827,7 @@ async def chat_completions(
             trace, workspace, "chat_completions", False, OUTCOME_UPSTREAM_ERROR,
             len(session.injected), start, reason=str(exc), session=session,
             upstream_duration_ms=(time.monotonic() - upstream_start) * 1000,
+            declared_collisions=declared_collisions,
         )
         return _upstream_error_response(exc, workspace, audit_log, upstream_health)
     upstream_health.mark_success()
@@ -1806,12 +1839,14 @@ async def chat_completions(
             trace, workspace, "chat_completions", False, OUTCOME_BLOCKED,
             len(session.injected), start, reason=_block_reason(block), session=session,
             upstream_duration_ms=upstream_duration_ms,
+            declared_collisions=declared_collisions,
         )
         return block
     _record_trace(
         trace, workspace, "chat_completions", False, OUTCOME_PASSED,
         len(session.injected), start, session=session,
         upstream_duration_ms=upstream_duration_ms,
+        declared_collisions=declared_collisions,
     )
     return restored
 
@@ -1952,6 +1987,7 @@ async def _stream_restored(
     trace: ProcessingTraceBuffer,
     start: float,
     open_stream_duration_ms: float,
+    declared_collisions: Sequence[str] = (),
 ) -> AsyncIterator[bytes]:
     """Stream restored SSE bytes to the client.
 
@@ -1964,6 +2000,12 @@ async def _stream_restored(
     time to it, since the client is genuinely waiting on upstream the whole span.
     This function owns closing it (``aclose``) once the body is fully consumed or the
     generator is torn down early.
+
+    ``declared_collisions`` (ADR-0051 amendment, issue #303/#307) is whatever
+    :func:`_leak_gate_or_block` already found and logged/audited before the stream
+    ever opened -- threaded through here so the one processing-trace record this
+    exchange produces (ADR-0035 decision 1) carries it regardless of which outcome
+    this generator ultimately records.
 
     Parses upstream SSE events line-by-line, feeds ``text_delta`` payloads through a
     ``StreamingRestorer`` so a surrogate split across upstream chunks is held back
@@ -2071,6 +2113,7 @@ async def _stream_restored(
             trace, workspace, "messages", True, OUTCOME_BLOCKED,
             len(session.injected), start, reason=reason, session=session,
             upstream_duration_ms=upstream_duration_ms,
+            declared_collisions=declared_collisions,
         )
         raise
 
@@ -2079,12 +2122,14 @@ async def _stream_restored(
             trace, workspace, "messages", True, OUTCOME_UPSTREAM_ERROR,
             len(session.injected), start, reason=disconnect_reason, session=session,
             upstream_duration_ms=upstream_duration_ms,
+            declared_collisions=declared_collisions,
         )
     else:
         _record_trace(
             trace, workspace, "messages", True, OUTCOME_PASSED,
             len(session.injected), start, session=session,
             upstream_duration_ms=upstream_duration_ms,
+            declared_collisions=declared_collisions,
         )
 
 
