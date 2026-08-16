@@ -682,6 +682,7 @@ def _blindfold_text(
         # spans a dismissed-in-isolation tail (#170) overlaps that tail's own
         # position even though the tail itself was never separately confirmed.
         spans = []
+        group_infos = []
         for group in _coalesce_adjacent_spans(novel_extents, result):
             start = min(extent.start for extent in group)
             end = max(extent.end for extent in group)
@@ -693,6 +694,31 @@ def _blindfold_text(
             entity_type = _resolve_group_entity_type(
                 extent.entity_type for extent in group
             )
+            group_infos.append((start, end, real, context, context_offset, entity_type))
+        # Issue #293: refuse to mint a candidate whose real value the blinder is
+        # about to leave standing, un-blinded, elsewhere in this same hop -- minting
+        # it guarantees leak_gate deadlocks on the very next payload that carries
+        # this hop's text back around (the confirmed occurrence gets a surrogate,
+        # the untouched one keeps the plaintext word live forever). Scoped per
+        # distinct real value across every confirmed group this pass, since the
+        # same real can be independently confirmed at more than one position in
+        # one hop (a repeated entity, fully covered, must still mint normally).
+        #
+        # An occurrence inside ``injected_surrogate_ranges`` is pre-covered too:
+        # that's a coincidental substring of an unrelated live surrogate (issue
+        # #68/#292's own territory -- e.g. novel real "Kurt" sharing a word with
+        # surrogate "Kurt Steinmetz"), not this hop's own un-blinded prose. That
+        # collision stays fail-closed via leak_gate's existing word-boundary check,
+        # unchanged and out of scope here -- conflating it with this coverage
+        # check would refuse minting a genuinely novel, unrelated real.
+        covered_by_real: dict[str, list[tuple[int, int]]] = {}
+        for start, end, real, *_rest in group_infos:
+            covered_by_real.setdefault(real, list(injected_surrogate_ranges)).append(
+                (start, end)
+            )
+        for start, end, real, context, context_offset, entity_type in group_infos:
+            if _real_value_occurs_outside_ranges(real, result, covered_by_real[real]):
+                continue
             # ADR-0037 hardening: also exclude provisional surrogates already
             # active in the inbox from mint candidacy, not just known real
             # values -- defense-in-depth so a stale/reset pool cursor (e.g. a
@@ -948,6 +974,38 @@ def _surrogate_pattern(surrogate: str) -> re.Pattern[str]:
     return re.compile(rf"(?<!\w){re.escape(surrogate)}(?:{suffix_alt})?(?!\w)")
 
 
+@functools.lru_cache(maxsize=None)
+def _real_value_pattern(value: str) -> re.Pattern[str]:
+    """Word-boundary-only match for a known real entity value (issue #293).
+
+    Same not-adjacent-to-a-word-char boundary discipline as :func:`_surrogate_pattern`
+    (so ``"Weber"`` inside ``"Weberei"`` still doesn't match) but deliberately WITHOUT
+    that function's closed-set inflectional-suffix extension: that set includes bare
+    ``"s"``/``"en"``, which would let an ordinary common-word real (``"Prompt"``) match
+    right back inside ``"Prompts"``/``"PromptCache"`` -- exactly the over-match this
+    issue reports, just moved from a bare substring test to a suffixed one. A real
+    value's own bare word-boundary occurrence is all :func:`leak_gate` and the
+    mint-time coverage check (:func:`_real_value_occurs_outside_ranges`) need to catch.
+    """
+    return re.compile(rf"(?<!\w){re.escape(value)}(?!\w)")
+
+
+def _real_value_occurs_outside_ranges(
+    real: str, text: str, covered: list[tuple[int, int]]
+) -> bool:
+    """True if some word-boundary occurrence of ``real`` in ``text`` falls outside
+    every range in ``covered`` (issue #293) -- i.e. minting a provisional entity for
+    ``real`` would leave at least one occurrence of it standing, un-blinded, elsewhere
+    in this same hop. That is exactly what deadlocks the very next :func:`leak_gate`
+    check on this same text: the confirmed occurrence gets a surrogate, the untouched
+    one keeps the plaintext substring live in the outbound payload forever.
+    """
+    for match in _real_value_pattern(real).finditer(text):
+        if not any(start <= match.start() and match.end() <= end for start, end in covered):
+            return True
+    return False
+
+
 def _apply_restore_pass(text: str, restore_map: dict[str, str]) -> str:
     """Substitute every key of ``restore_map`` for its value, longest key first.
 
@@ -1143,9 +1201,19 @@ def leak_gate(
 
     The failure reason is scrubbed (SEC-3, issue #40): it references the offending
     entity by :func:`scrub_entity_reference` (mapping-known values) or by its
-    provisional surrogate (inbox values), never the plaintext. That one reason
-    string is what gets logged at WARNING and raised in the exception, so the same
-    scrubbed string is what later reaches the 503 body and the audit record.
+    provisional surrogate plus its inbox ``item.id`` (inbox values), never the
+    plaintext. That one reason string is what gets logged at WARNING and raised in
+    the exception, so the same scrubbed string is what later reaches the 503 body
+    and the audit record.
+
+    Issue #293: matching is word-boundary-only (:func:`_real_value_pattern`), not bare
+    substring containment -- the blinder only ever rewrites a *detected* span, so a
+    real value that is merely a prefix of an unrelated longer word elsewhere in the
+    payload (``"Prompt"`` inside ``"Prompts"``/``"PromptCache"``) was never something
+    the blinder was going to touch, and flagging it here deadlocks every request that
+    later carries that ordinary word. An inbox-sourced leak's reason also names the
+    inbox ``item.id`` distinctly from a mapping-entry leak, so a human can clear the
+    exact row without reverse-engineering the provisional pool.
     """
     def _raise_leak(ref: str) -> NoReturn:
         # SEC-3 (issue #40): one scrubbed-reason format for both the mapping and the
@@ -1157,11 +1225,11 @@ def leak_gate(
 
     outbound_text = _collect_text(blinded_outbound)
     for real in mapping.real_values():
-        if real in outbound_text:
+        if _real_value_pattern(real).search(outbound_text):
             _raise_leak(scrub_entity_reference(real, mapping))
     for item in inbox.list() if inbox is not None else ():
-        if item.real in outbound_text:
-            _raise_leak(item.provisional_surrogate)
+        if _real_value_pattern(item.real).search(outbound_text):
+            _raise_leak(f"review-inbox item {item.id} (surrogate: {item.provisional_surrogate})")
 
 
 def resolution_gate(restored_response: dict[str, Any], session: ExchangeSession) -> None:
