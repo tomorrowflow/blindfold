@@ -345,6 +345,7 @@ def select_candidate_spans(
     known_entities: list[Entity],
     allowlist: "Allowlist | None" = None,
     declared_tools: frozenset[str] = frozenset(),
+    system_confined_tokens: frozenset[str] = frozenset(),
 ) -> list[CandidateSpan]:
     """Flag the unknown capitalized tokens in ``text``, with minimal context.
 
@@ -375,6 +376,22 @@ def select_candidate_spans(
     person too); the positional gate protects any token that is ever
     capitalized mid-sentence, regardless of which suppression signal fired.
 
+    ``system_confined_tokens`` (ADR-0023, "Update (issue #301)") is the fourth
+    suppression layer: a per-request set of capitalized tokens whose EVERY
+    occurrence across the whole payload falls inside ``system[]`` (or, for the
+    chat-completions shape, a ``role: "system"`` message) -- computed once at the
+    app boundary on the untouched payload (see
+    :func:`~blindfold.engine.extract_system_confined_tokens_messages` /
+    :func:`~blindfold.engine.extract_system_confined_tokens_chat_completions`)
+    and passed unchanged to every hop's call here, ``system[]``'s own hop
+    included. A token that occurs even once in ``messages[]`` or in
+    ``tools[].description`` is never in this set, so it stays a full candidate
+    everywhere. Same discipline as ``declared_tools``: never persisted, never
+    state on this function or its caller -- and mechanically distinct from
+    ``engine.DeclaredToolVocabulary`` (issue #302), which deliberately DOES
+    persist past the request. Suppression here removes L3 novelty discovery
+    only; ``known_surfaces``/L1 protection is checked first and always wins.
+
     Issue #294: a rejected review item's real value can itself be a multi-word/
     coalesced span ("Apple Development", #162/#167) — the allowlist's unit of
     suppression must match L3's minting unit, the *span*, not just the seed
@@ -403,6 +420,8 @@ def select_candidate_spans(
         if any(start <= match.start() < end for start, end in phrase_ranges):
             continue
         if token in declared_tools:
+            continue
+        if token in system_confined_tokens:
             continue
         if _is_positional_case_noise(token, text, capitalized_positions):
             continue
@@ -591,6 +610,7 @@ class L3Detector:
         known_entities: list[Entity],
         declared_tools: frozenset[str] = frozenset(),
         phone_candidates_enabled: bool = True,
+        system_confined_tokens: frozenset[str] = frozenset(),
     ) -> list[tuple[CandidateSpan, L3Adjudication]]:
         if self._deterministic_only:
             return []
@@ -618,7 +638,10 @@ class L3Detector:
         # phone-shaped producer's output from the merge, never
         # select_candidate_spans's.
         candidates = sorted(
-            select_candidate_spans(text, known_entities, self._allowlist, declared_tools)
+            select_candidate_spans(
+                text, known_entities, self._allowlist, declared_tools,
+                system_confined_tokens,
+            )
             + (select_phone_candidate_spans(text) if phone_candidates_enabled else []),
             key=lambda candidate: candidate.start,
         )

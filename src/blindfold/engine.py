@@ -24,6 +24,7 @@ from dataclasses import dataclass, field
 from typing import Any, NoReturn
 
 from .detection import detect_l2, detect_pii
+from .l3 import _capitalized_token_matches
 from .l3 import _SENTENCE_STOPWORDS as _COMPONENT_STOPWORDS
 from .l3 import L3Detector, L3Unavailable, count_capitalized_tokens
 # Reused to re-window context around a *coalesced* multi-token span (issue #162):
@@ -185,6 +186,7 @@ def blindfold_payload(
     workspace: str = DEFAULT_WORKSPACE,
     phone_candidates_enabled: bool = True,
     declared_tool_vocabulary: "DeclaredToolVocabulary | None" = None,
+    system_confined_tokens: frozenset[str] = frozenset(),
 ) -> tuple[dict[str, Any], ExchangeSession]:
     """Return a blindfolded copy of an Anthropic Messages ``payload`` plus the session.
 
@@ -226,6 +228,13 @@ def blindfold_payload(
     ``_PHONE_RE`` detection (a deterministic pass, never L3 candidacy) is untouched
     either way.
 
+    ``system_confined_tokens`` (ADR-0023, "Update (issue #301)") is the fourth
+    suppression layer -- see :func:`extract_system_confined_tokens_messages`,
+    computed by the caller on the untouched payload and passed through unchanged
+    here to every hop, ``system`` itself included. Same per-request-only
+    discipline as ``declared_tools``: never persisted, never state on
+    ``l3_detector``.
+
     The resulting ``session.hops`` (issue #153, ADR-0035) labels each hop's L3
     detail with ``l3_detector.provider_name`` when ``l3_detector`` ran for that hop
     — a display-only string, never used to select behavior here.
@@ -243,7 +252,7 @@ def blindfold_payload(
         ctx = _HopContext(l3_provider=l3_provider)
         out["system"] = _blindfold_system(
             system, mapping, session, l3_detector, inbox, declared_tools, ctx,
-            workspace, phone_candidates_enabled,
+            workspace, phone_candidates_enabled, system_confined_tokens,
         )
         session.hops.append(_finish_hop(ctx, "system", len(session.hops)))
 
@@ -252,6 +261,7 @@ def blindfold_payload(
         message["content"] = _blindfold_content(
             message.get("content"), mapping, session, l3_detector, inbox,
             declared_tools, ctx, workspace, phone_candidates_enabled,
+            system_confined_tokens,
         )
         session.hops.append(
             _finish_hop(ctx, _hop_kind_for_message(message), len(session.hops))
@@ -271,6 +281,7 @@ def blindfold_chat_completions_payload(
     workspace: str = DEFAULT_WORKSPACE,
     phone_candidates_enabled: bool = True,
     declared_tool_vocabulary: "DeclaredToolVocabulary | None" = None,
+    system_confined_tokens: frozenset[str] = frozenset(),
 ) -> tuple[dict[str, Any], ExchangeSession]:
     """Return a blindfolded copy of an OpenAI Chat Completions ``payload`` plus the session.
 
@@ -285,6 +296,11 @@ def blindfold_chat_completions_payload(
     ``workspace`` (issue #171) — see :func:`blindfold_payload`.
 
     ``phone_candidates_enabled`` (issue #279) — see :func:`blindfold_payload`.
+
+    ``system_confined_tokens`` (ADR-0023, "Update (issue #301)") — see
+    :func:`extract_system_confined_tokens_chat_completions` and
+    :func:`blindfold_payload`. The "system region" here is every
+    ``role: "system"`` message.
     """
     session = ExchangeSession()
     out = copy.deepcopy(payload)
@@ -299,6 +315,7 @@ def blindfold_chat_completions_payload(
         message["content"] = _blindfold_content(
             message.get("content"), mapping, session, l3_detector, inbox,
             declared_tools, ctx, workspace, phone_candidates_enabled,
+            system_confined_tokens,
         )
         session.hops.append(
             _finish_hop(ctx, _hop_kind_for_message(message), len(session.hops))
@@ -340,6 +357,130 @@ def extract_declared_tools_chat_completions(payload: dict[str, Any]) -> frozense
         return function.get("name")
 
     return _extract_declared_tools(payload, _name)
+
+
+def extract_system_confined_tokens_messages(payload: dict[str, Any]) -> frozenset[str]:
+    """Extract the fourth ADR-0023 suppression set from an Anthropic Messages
+    ``payload`` (ADR-0023, "Update (issue #301)"): every capitalized token whose
+    occurrences in the payload fall EXCLUSIVELY inside ``system``.
+
+    Computed once, at the app boundary, on the untouched payload -- before any
+    hop is blinded, so the scan sees this request's real text, never a surrogate
+    (:func:`blindfold_payload` blinds ``system`` before ``messages``).
+    """
+    system_tokens = _capitalized_tokens_in_system(payload.get("system"))
+    if not system_tokens:
+        return frozenset()
+    other_tokens: set[str] = set()
+    messages = payload.get("messages")
+    if isinstance(messages, list):
+        for message in messages:
+            if isinstance(message, dict):
+                other_tokens.update(_capitalized_tokens_in_content(message.get("content")))
+    other_tokens.update(
+        _capitalized_tokens_in_tool_descriptions(payload.get("tools"), lambda tool: tool)
+    )
+    return frozenset(system_tokens - other_tokens)
+
+
+def extract_system_confined_tokens_chat_completions(
+    payload: dict[str, Any]
+) -> frozenset[str]:
+    """Extract the fourth ADR-0023 suppression set from an OpenAI Chat
+    Completions ``payload``. The "system region" is every ``role: "system"``
+    message; every other message role is the non-system region, same as
+    :func:`extract_system_confined_tokens_messages`.
+    """
+    system_tokens: set[str] = set()
+    other_tokens: set[str] = set()
+    messages = payload.get("messages")
+    if isinstance(messages, list):
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            tokens = _capitalized_tokens_in_content(message.get("content"))
+            if message.get("role") == "system":
+                system_tokens.update(tokens)
+            else:
+                other_tokens.update(tokens)
+    if not system_tokens:
+        return frozenset()
+    other_tokens.update(
+        _capitalized_tokens_in_tool_descriptions(
+            payload.get("tools"), lambda tool: tool.get("function")
+        )
+    )
+    return frozenset(system_tokens - other_tokens)
+
+
+def _capitalized_tokens_in_text(text: str) -> set[str]:
+    return {match.group(0) for match in _capitalized_token_matches(text)}
+
+
+def _capitalized_tokens_in_system(system: Any) -> set[str]:
+    if isinstance(system, str):
+        return _capitalized_tokens_in_text(system)
+    if isinstance(system, list):
+        tokens: set[str] = set()
+        for block in system:
+            tokens.update(_capitalized_tokens_in_block(block))
+        return tokens
+    return set()
+
+
+def _capitalized_tokens_in_content(content: Any) -> set[str]:
+    if isinstance(content, str):
+        return _capitalized_tokens_in_text(content)
+    if isinstance(content, list):
+        tokens: set[str] = set()
+        for block in content:
+            tokens.update(_capitalized_tokens_in_block(block))
+        return tokens
+    return set()
+
+
+def _capitalized_tokens_in_block(block: Any) -> set[str]:
+    if not isinstance(block, dict):
+        return set()
+    block_type = block.get("type")
+    if block_type == "text" and isinstance(block.get("text"), str):
+        return _capitalized_tokens_in_text(block["text"])
+    if block_type == "tool_result":
+        return _capitalized_tokens_in_content(block.get("content"))
+    if block_type == "tool_use":
+        return _capitalized_tokens_in_json_value(block.get("input"))
+    return set()
+
+
+def _capitalized_tokens_in_json_value(value: Any) -> set[str]:
+    if isinstance(value, str):
+        return _capitalized_tokens_in_text(value)
+    if isinstance(value, dict):
+        tokens: set[str] = set()
+        for v in value.values():
+            tokens.update(_capitalized_tokens_in_json_value(v))
+        return tokens
+    if isinstance(value, list):
+        tokens = set()
+        for item in value:
+            tokens.update(_capitalized_tokens_in_json_value(item))
+        return tokens
+    return set()
+
+
+def _capitalized_tokens_in_tool_descriptions(
+    tools: Any, get_container: Callable[[dict[str, Any]], Any]
+) -> set[str]:
+    if not isinstance(tools, list):
+        return set()
+    tokens: set[str] = set()
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        container = get_container(tool)
+        if isinstance(container, dict) and isinstance(container.get("description"), str):
+            tokens.update(_capitalized_tokens_in_text(container["description"]))
+    return tokens
 
 
 _DECLARED_TOOL_NAME_COMPONENT_RE = re.compile(r"[_.\-]+")
@@ -508,17 +649,18 @@ def _blindfold_system(
     hop_ctx: "_HopContext | None" = None,
     workspace: str = DEFAULT_WORKSPACE,
     phone_candidates_enabled: bool = True,
+    system_confined_tokens: frozenset[str] = frozenset(),
 ) -> Any:
     if isinstance(system, str):
         return _blindfold_text(
             system, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
-            workspace, phone_candidates_enabled,
+            workspace, phone_candidates_enabled, system_confined_tokens,
         )
     if isinstance(system, list):
         return [
             _blindfold_block(
                 block, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
-                workspace, phone_candidates_enabled,
+                workspace, phone_candidates_enabled, system_confined_tokens,
             )
             for block in system
         ]
@@ -535,17 +677,18 @@ def _blindfold_content(
     hop_ctx: "_HopContext | None" = None,
     workspace: str = DEFAULT_WORKSPACE,
     phone_candidates_enabled: bool = True,
+    system_confined_tokens: frozenset[str] = frozenset(),
 ) -> Any:
     if isinstance(content, str):
         return _blindfold_text(
             content, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
-            workspace, phone_candidates_enabled,
+            workspace, phone_candidates_enabled, system_confined_tokens,
         )
     if isinstance(content, list):
         return [
             _blindfold_block(
                 block, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
-                workspace, phone_candidates_enabled,
+                workspace, phone_candidates_enabled, system_confined_tokens,
             )
             for block in content
         ]
@@ -562,6 +705,7 @@ def _blindfold_block(
     hop_ctx: "_HopContext | None" = None,
     workspace: str = DEFAULT_WORKSPACE,
     phone_candidates_enabled: bool = True,
+    system_confined_tokens: frozenset[str] = frozenset(),
 ) -> Any:
     if not isinstance(block, dict):
         return block
@@ -569,12 +713,13 @@ def _blindfold_block(
     if block_type == "text" and isinstance(block.get("text"), str):
         block["text"] = _blindfold_text(
             block["text"], mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
-            workspace, phone_candidates_enabled,
+            workspace, phone_candidates_enabled, system_confined_tokens,
         )
     elif block_type == "tool_result":
         block["content"] = _blindfold_content(
             block.get("content"), mapping, session, l3_detector, inbox,
             declared_tools, hop_ctx, workspace, phone_candidates_enabled,
+            system_confined_tokens,
         )
     elif block_type == "tool_use":
         # Tool-call JSON (issue #11): the assistant's prior tool_use.input is echoed
@@ -584,6 +729,7 @@ def _blindfold_block(
         block["input"] = _blindfold_json_value(
             block.get("input"), mapping, session, l3_detector, inbox,
             declared_tools, hop_ctx, workspace, phone_candidates_enabled,
+            system_confined_tokens,
         )
     return block
 
@@ -598,18 +744,19 @@ def _blindfold_json_value(
     hop_ctx: "_HopContext | None" = None,
     workspace: str = DEFAULT_WORKSPACE,
     phone_candidates_enabled: bool = True,
+    system_confined_tokens: frozenset[str] = frozenset(),
 ) -> Any:
     """Recursively rewrite every string leaf in a JSON-shaped value via L1+L2."""
     if isinstance(value, str):
         return _blindfold_text(
             value, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
-            workspace, phone_candidates_enabled,
+            workspace, phone_candidates_enabled, system_confined_tokens,
         )
     if isinstance(value, dict):
         return {
             k: _blindfold_json_value(
                 v, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
-                workspace, phone_candidates_enabled,
+                workspace, phone_candidates_enabled, system_confined_tokens,
             )
             for k, v in value.items()
         }
@@ -617,7 +764,7 @@ def _blindfold_json_value(
         return [
             _blindfold_json_value(
                 item, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
-                workspace, phone_candidates_enabled,
+                workspace, phone_candidates_enabled, system_confined_tokens,
             )
             for item in value
         ]
@@ -634,6 +781,7 @@ def _blindfold_text(
     hop_ctx: "_HopContext | None" = None,
     workspace: str = DEFAULT_WORKSPACE,
     phone_candidates_enabled: bool = True,
+    system_confined_tokens: frozenset[str] = frozenset(),
 ) -> str:
     """Rewrite ``text`` by replacing every L2-detected entity span with its surrogate.
 
@@ -651,6 +799,10 @@ def _blindfold_text(
 
     ``phone_candidates_enabled`` (issue #279) reaches :meth:`L3Detector.detect`
     unchanged — see :func:`blindfold_payload`.
+
+    ``system_confined_tokens`` (ADR-0023, "Update (issue #301)") reaches
+    :meth:`L3Detector.detect` unchanged, for every hop including ``system``'s
+    own — see :func:`blindfold_payload`.
     """
     result = text
     l2_started_at = time.monotonic()
@@ -716,6 +868,7 @@ def _blindfold_text(
             mapping.entities(),
             declared_tools,
             phone_candidates_enabled=phone_candidates_enabled,
+            system_confined_tokens=system_confined_tokens,
         )
         if hop_ctx is not None:
             confirmed = sum(1 for _, decision in adjudications if decision.is_entity)

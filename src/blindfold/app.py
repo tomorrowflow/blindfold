@@ -129,6 +129,8 @@ from .engine import (
     blindfold_payload,
     extract_declared_tools_chat_completions,
     extract_declared_tools_messages,
+    extract_system_confined_tokens_chat_completions,
+    extract_system_confined_tokens_messages,
     leak_gate,
     resolution_gate,
     restore_chat_completion,
@@ -1519,12 +1521,14 @@ async def messages(
     else:
         effective_l3_detector = None if policy.deterministic_only else l3_detector
         declared_tools = extract_declared_tools_messages(payload)
+        system_confined_tokens = extract_system_confined_tokens_messages(payload)
         result = await _mint_or_block(
             lambda: blindfold_payload(
                 payload, mapping, effective_l3_detector, inbox, declared_tools,
                 workspace=workspace,
                 phone_candidates_enabled=policy.phone_candidates_enabled,
                 declared_tool_vocabulary=declared_tool_vocabulary,
+                system_confined_tokens=system_confined_tokens,
             ),
             workspace,
             policy.deterministic_only,
@@ -1669,11 +1673,13 @@ async def count_tokens(
     else:
         effective_l3_detector = None if policy.deterministic_only else l3_detector
         declared_tools = extract_declared_tools_messages(payload)
+        system_confined_tokens = extract_system_confined_tokens_messages(payload)
         result = await _mint_or_block(
             lambda: blindfold_payload(
                 payload, mapping, effective_l3_detector, None, declared_tools,
                 workspace=workspace,
                 phone_candidates_enabled=policy.phone_candidates_enabled,
+                system_confined_tokens=system_confined_tokens,
             ),
             workspace,
             policy.deterministic_only,
@@ -1747,12 +1753,14 @@ async def chat_completions(
     else:
         effective_l3_detector = None if policy.deterministic_only else l3_detector
         declared_tools = extract_declared_tools_chat_completions(payload)
+        system_confined_tokens = extract_system_confined_tokens_chat_completions(payload)
         result = await _mint_or_block(
             lambda: blindfold_chat_completions_payload(
                 payload, mapping, effective_l3_detector, inbox, declared_tools,
                 workspace=workspace,
                 phone_candidates_enabled=policy.phone_candidates_enabled,
                 declared_tool_vocabulary=declared_tool_vocabulary,
+                system_confined_tokens=system_confined_tokens,
             ),
             workspace,
             policy.deterministic_only,

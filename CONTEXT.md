@@ -264,13 +264,26 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   protocol vocabulary, not user content, so remembering it — unlike persisting a
   *learned* allowlist reject — poisons nothing.
 - **Suppression** — ruling a token out of L3 adjudication (allowlist, declared
-  tool vocabulary, stopwords, **positional case heuristic**). Token-granularity
-  by default: a region (system prompt, code fence) may inform heuristics but is
-  never skipped wholesale. The one span-granular exception (issue #294): a
-  multi-word **allowlist** phrase suppresses exactly its own literal
-  occurrence — still a bounded span the allowlist itself names, never a
-  region. Suppression never affects L1/L2 protection — a suppressed token
-  that is a known entity is still blindfolded.
+  tool vocabulary, stopwords, **positional case heuristic**, **payload-region
+  confinement**). Token-granularity by default: a region (system prompt, code
+  fence) may inform heuristics but is never skipped wholesale. The one
+  span-granular exception (issue #294): a multi-word **allowlist** phrase
+  suppresses exactly its own literal occurrence — still a bounded span the
+  allowlist itself names, never a region. Suppression never affects L1/L2
+  protection — a suppressed token that is a known entity is still blindfolded.
+- **Payload-region confinement** — a **Suppression** condition (ADR-0023,
+  "Update (issue #301)") that treats a capitalized token's presence in
+  `system[]` alone as evidence it is framework/product prose, not a protected
+  referent: a token every one of whose occurrences across the whole payload
+  falls inside `system[]` is suppressed from L3 candidacy, `system[]`'s own
+  hop included; a token occurring even once in `messages[]` or
+  `tools[].description` stays a full candidate everywhere. Computed once per
+  request on the untouched payload (`extract_system_confined_tokens_messages`
+  / `_chat_completions`, engine.py) — never persisted, never state on the L3
+  detector, distinct in lifetime from `DeclaredToolVocabulary`'s deliberate
+  workspace persistence (issue #302). Run 7 evidence: 25 of 43 review-inbox
+  mints were system-confined and every one was a false positive; all 6
+  genuine referents occurred at least once in `messages[]`.
 - **Positional case heuristic** — a **Suppression** condition (ADR-0033) that
   eliminates English positional-capitalization noise from L3 candidacy before
   any model call. A capitalized token is suppressed when (b) it appears only
