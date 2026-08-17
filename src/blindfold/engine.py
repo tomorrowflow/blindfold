@@ -34,7 +34,7 @@ from .l3 import L3Detector, L3DetectionInternalError, count_capitalized_tokens
 # L3 uses for a single span.
 from .l3 import _context_window as _l3_context_window
 from .policy import DEFAULT_WORKSPACE
-from .review import ReviewInbox
+from .review import ReviewInbox, _is_fallback_surrogate
 from .surrogates import SurrogateMapping
 
 logger = logging.getLogger(__name__)
@@ -1613,9 +1613,25 @@ def _provisional_component_map(items: Iterable[ReviewItem]) -> dict[str, str]:
     Deliberately keyed off word counts, never ``entity_type`` (see #306: run 7
     typed ``Agent``/``Slurm``/``Exfil``/``Edit`` as ``"person"``, and this rule
     must not inherit that error rate).
+
+    issue #329 amendment: a fallback ``"Provisional Surrogate {N}"`` label is
+    skipped whole, before decomposing into words, via
+    :func:`blindfold.review._is_fallback_surrogate` -- the label is purely
+    positional in every one of its words, not just the digit, so a real value
+    that happens to share its word count (e.g. a 3-word real against
+    "Provisional Surrogate 8") must contribute no component pairs at all. The
+    per-word alphabetic guard below still runs for any future non-fallback
+    surrogate containing a non-alphabetic word, but it cannot see this: both
+    "Provisional" and "Surrogate" are alphabetic, so only excluding the whole
+    label -- not decomposing it in the first place -- closes the gap.
+    Accepted residual (ADR-0036): a real paired with a fallback label loses
+    bare-component blinding for its words; the whole-value pair
+    (:func:`_provisional_known_value_set`) still blinds the full real value.
     """
     candidates: dict[str, set[str]] = {}
     for item in items:
+        if _is_fallback_surrogate(item.provisional_surrogate):
+            continue
         real_words = item.real.split()
         surrogate_words = item.provisional_surrogate.split()
         if len(real_words) != len(surrogate_words):
@@ -1791,9 +1807,21 @@ def _component_restore_map(injected: dict[str, str]) -> dict[str, str]:
     fallback). The prior whole-value fallback let an ordinary word donated by one
     pair (e.g. "Analytics" from a 2-word surrogate mapped to a 1-word real) become
     a restore key that matched an unrelated real value elsewhere in the response.
+
+    issue #329: a fallback ``Provisional Surrogate {N}`` label contributes no
+    component keys either, mirroring the blinding-side guard in
+    ``_provisional_component_map`` -- the label's alphabetic words are ordinary
+    corpus vocabulary, not entity-derived, and the per-word digit-only guard
+    below does not exclude them.
     """
     candidates: dict[str, set[str]] = {}
     for surrogate, real in injected.items():
+        if _is_fallback_surrogate(surrogate):
+            # Mirrors the blinding-side guard (issue #329): the fallback label's
+            # words ("Provisional"/"Surrogate") are ordinary corpus vocabulary,
+            # not entity-derived -- decomposing this pair would plant them as
+            # Pass 2 restore keys and corrupt unrelated response text (#286).
+            continue
         surrogate_words = surrogate.split()
         if len(surrogate_words) < 2:
             continue

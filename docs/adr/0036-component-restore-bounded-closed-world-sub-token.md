@@ -172,6 +172,55 @@ covering a component surface too.
 `_component_restore_map` itself is untouched; this update adds a mirror-image
 sibling, not a modification to the restore path.
 
+### Correction (issue #329): the whole fallback label, not just its digit
+
+The alphabetic-target guard above stops at the fallback label's *digit* — but a
+post-merge re-audit of this very update found that guard incomplete. When a real
+value happens to share the fallback label's word count (a 3-word real against
+`Provisional Surrogate 8`), `Provisional` and `Surrogate` are themselves
+alphabetic, so the digit guard lets them through as component targets:
+`real_word_1 → Provisional`, `real_word_2 → Surrogate`. Both words are exactly
+as positional as the digit — the label carries no entity meaning in any of its
+three words, only in its combination with the pool's exhaustion — so admitting
+either as a restore key reintroduces this ADR's #286 corruption class from the
+blinding side (an ordinary response using "Provisional" or "Surrogate" as
+themselves gets corrupted back into the real word on restore).
+
+The fix skips a fallback-labeled item **whole, before decomposing into words**
+(`review._is_fallback_surrogate`, matching `Provisional Surrogate {N}` exactly),
+rather than trying to extend the per-word guard to more words. **Accepted
+residual:** a real paired with a fallback label loses bare-component blinding
+for its own words — mapping a real word onto a meaningless label word was
+corruption, not protection, so losing it is not a regression. The whole-value
+pair (`_provisional_known_value_set`) still blinds the referent's full real
+value; `leak_gate` and the blinder read the same `_provisional_pair_map`
+derivation either way, so ADR-0051's symmetry holds by construction and no gate
+deadlock is introduced by the narrower component surface.
+
+**Resolved finding (#329, restore side):** the paragraph above's symmetry claim
+is scoped to `_provisional_pair_map` (blinding side) vs. `leak_gate`, and holds
+for that pair — it does **not** extend to `_component_restore_map` itself,
+which reads `session.injected` — the exchange's *actual* injected
+`(surrogate, real)` pairs — independently of `_provisional_component_map`.
+Cycles 1-2 on `sandcastle/issue-329` found `_component_restore_map` had the
+identical unguarded gap: its per-word guard excluded only a non-alphabetic
+word, not "Provisional"/"Surrogate" themselves. Whenever a real value is
+blinded to the fallback label as a whole (which always populates
+`session.injected` with that pair, regardless of the blinding-side component-map
+fix), `_component_restore_map` decomposed it and planted "Provisional" →
+real-word-1 / "Surrogate" → real-word-2 as Pass 2 restore keys — reproduced
+live: `restore_response` turned the upstream prose "This is a Provisional
+Surrogate for testing purposes." into "This is a Kestrel Dynamics for testing
+purposes." The maintainer rescoped #329 (2026-08-17) to authorize the matching
+guard here: `_component_restore_map` now skips a fallback-labeled `injected`
+pair whole, before decomposition, mirroring the blinding side exactly. Both
+sides now derive from the same rule (skip a fallback-labeled pair whole), even
+though they read different source structures (`_provisional_pair_map` vs.
+`session.injected`) — restore returns real values exactly and closed-world
+holds for this surface. Regression test:
+`tests/test_provisional_component_blinding.py::test_an_ordinary_response_round_trips_unchanged_when_the_fallback_labels_whole_value_is_actually_injected`
+(formerly a strict `xfail` pin, now an expected pass).
+
 ## Alternatives considered
 
 - **Component → full real value only** (`Erika`→`Sarah Bergmann`) — simpler, no

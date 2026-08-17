@@ -632,6 +632,25 @@ class ProvisionalPoolExhaustedError(Exception):
         self.pool_key = pool_key
 
 
+_FALLBACK_SURROGATE_RE = re.compile(r"^Provisional Surrogate \d+$")
+
+
+def _is_fallback_surrogate(surrogate: str) -> bool:
+    """Whether ``surrogate`` is the numbered ``"Provisional Surrogate {N}"``
+    fallback label (issue #329), exactly as minted by :func:`_provisional_pool_entry`
+    once a pool is exhausted.
+
+    None of the label's words carry entity meaning -- it is purely positional,
+    the same reason its digit alone was already excluded from the corpus-
+    disjointness check above. Callers that align a real value's words against
+    a surrogate's words (:func:`blindfold.engine._provisional_component_map`)
+    must skip a fallback label whole, before decomposing into words: a
+    per-word alphabetic guard catches the digit but not "Provisional" or
+    "Surrogate" themselves, which are exactly as positional as the digit.
+    """
+    return bool(_FALLBACK_SURROGATE_RE.match(surrogate))
+
+
 def _next_provisional(
     pool_key: str,
     start_position: int,
