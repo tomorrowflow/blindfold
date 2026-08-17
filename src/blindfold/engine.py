@@ -35,6 +35,7 @@ from .l3 import L3Detector, L3DetectionInternalError, count_capitalized_tokens
 from .l3 import _context_window as _l3_context_window
 from .policy import DEFAULT_WORKSPACE
 from .review import ReviewInbox, _is_fallback_surrogate
+from .store._mint import _real_value_pattern
 from .surrogates import SurrogateMapping
 
 logger = logging.getLogger(__name__)
@@ -1563,23 +1564,6 @@ def _surrogate_pattern(surrogate: str) -> re.Pattern[str]:
     """
     suffix_alt = "|".join(re.escape(s) for s in _SUFFIXES)
     return re.compile(rf"(?<!\w){re.escape(surrogate)}(?:{suffix_alt})?(?!\w)")
-
-
-@functools.lru_cache(maxsize=None)
-def _real_value_pattern(value: str) -> re.Pattern[str]:
-    """Word-boundary-only match for a known real entity value (issue #293).
-
-    Same not-adjacent-to-a-word-char boundary discipline as :func:`_surrogate_pattern`
-    (so ``"Weber"`` inside ``"Weberei"`` still doesn't match) but deliberately WITHOUT
-    that function's closed-set inflectional-suffix extension: that set includes bare
-    ``"s"``/``"en"``, which would let an ordinary common-word real (``"Prompt"``) match
-    right back inside ``"Prompts"``/``"PromptCache"`` -- exactly the over-match this
-    issue reports, just moved from a bare substring test to a suffixed one. A real
-    value's own bare word-boundary occurrence is all :func:`leak_gate` and the
-    mint-time full-coverage sweep (:func:`_blindfold_text`'s variation-blinding loop,
-    issue #295) need to catch.
-    """
-    return re.compile(rf"(?<!\w){re.escape(value)}(?!\w)")
 
 
 def _provisional_known_value_set(item: ReviewItem) -> frozenset[str]:

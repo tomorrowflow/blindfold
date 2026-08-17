@@ -11,9 +11,10 @@ deterministic by (kind, position-in-seed) so that:
 Coherent surrogate world / reserved-namespace PII (ADR-0005, leak-audit clause E) is out
 of scope this slice; these are merely plausible, collision-free stand-ins.
 
-Mint-time disjointness (issue #80): a candidate pool/fallback entry is rejected if it
-contains a known entity's canonical name or a Variation as a substring -- the same
-closed-world set the pre-egress leak gate (``engine.leak_gate``) checks via
+Mint-time disjointness (issue #80): a candidate pool/fallback entry is rejected if a
+known entity's canonical name or a Variation occurs in it at a word boundary
+(:func:`_real_value_pattern`, issue #293/#332) -- the same closed-world set, matched
+by the same rule, the pre-egress leak gate (``engine.leak_gate``) checks via
 ``mapping.real_values()``, so mint and gate can never disagree. A rejected entry is
 skipped, never reused for a later referent (:func:`mint_surrogates`).
 
@@ -41,6 +42,7 @@ adjudicating it after the mint).
 
 from __future__ import annotations
 
+import functools
 import re
 from collections.abc import Iterable
 
@@ -139,15 +141,45 @@ def _pool_entry(kind: str, position: int) -> str:
     return f"{kind.title()} Surrogate {position}"
 
 
-def collides_with_known_entity(candidate: str, known_values: Iterable[str]) -> bool:
-    """True if ``candidate`` contains any known entity value as a substring.
+@functools.lru_cache(maxsize=None)
+def _real_value_pattern(value: str) -> re.Pattern[str]:
+    """Word-boundary-only match for a known real entity value (issue #293).
 
-    Mirrors ``engine.leak_gate``'s own check (``real in outbound_text``) so a
-    candidate that passes here can never trip the leak gate once minted and
-    injected. ``known_values`` is the closed-world set of canonical names and
-    Variations -- the same set ``SurrogateMapping.real_values()`` exposes.
+    The single source of truth for what "a known real value occurs in this text"
+    means -- ``engine.leak_gate`` imports this same function rather than
+    reimplementing the rule, so mint-time disjointness (:func:`collides_with_known_entity`)
+    and the gate that actually blocks egress can never silently drift apart again
+    (ADR-0052 decision 4; issue #332 fixed the drift #293 left behind).
+
+    Boundaries are "not adjacent to a word character" (so ``"Weber"`` inside
+    ``"Weberei"`` still doesn't match), deliberately WITHOUT the closed-set
+    inflectional-suffix extension :func:`engine._surrogate_pattern` uses for
+    surrogates -- that set includes bare ``"s"``/``"en"``, which would let an
+    ordinary common-word real (``"Prompt"``) match right back inside
+    ``"Prompts"``/``"PromptCache"``, exactly the over-match #293 fixed for the
+    gate. A real value's own bare word-boundary occurrence is all the gate and
+    the mint-time collision check need to catch.
     """
-    return any(known and known in candidate for known in known_values)
+    return re.compile(rf"(?<!\w){re.escape(value)}(?!\w)")
+
+
+def collides_with_known_entity(candidate: str, known_values: Iterable[str]) -> bool:
+    """True if any ``known_values`` entry occurs in ``candidate`` at a word boundary.
+
+    Uses the identical rule :func:`_real_value_pattern` gives ``engine.leak_gate``
+    (issue #293's word-boundary match, not raw substring containment) so a
+    candidate that passes here can never trip the leak gate once minted and
+    injected (ADR-0052 decision 4; issue #332). Before this change the two had
+    silently drifted: this check tested raw substring containment, which is
+    *stricter* than the gate it claimed to mirror -- refusing candidates
+    (e.g. a two-character real colliding with an opaque reserved token like
+    ``"BFX0008"``, ADR-0052) the gate would never have blocked.
+    ``known_values`` is the closed-world set of canonical names and Variations
+    -- the same set ``SurrogateMapping.real_values()`` exposes.
+    """
+    return any(
+        known and _real_value_pattern(known).search(candidate) for known in known_values
+    )
 
 
 def surrogate_space_match(candidate: str, surrogate_values: Iterable[str]) -> str | None:
