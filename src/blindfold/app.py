@@ -98,7 +98,7 @@ import codecs
 import json
 import logging
 import time
-from collections.abc import AsyncIterator, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from datetime import datetime
 
 import httpx
@@ -1583,26 +1583,58 @@ async def disable_unprotected_mode(
     return unprotected_mode.status().to_dict()
 
 
-@app.post("/v1/messages")
-async def messages(
+async def _exchange(
     request: Request,
-    upstream: UpstreamClient = Depends(get_upstream_client),
-    mapping: SurrogateMapping = Depends(get_mapping),
-    inbox: ReviewInbox = Depends(get_review_inbox),
-    l3_detector: L3Detector = Depends(get_l3_detector),
-    policies: WorkspacePolicies = Depends(get_workspace_policies),
-    declared_tool_vocabulary: DeclaredToolVocabulary = Depends(get_declared_tool_vocabulary),
-    audit_log: AuditLog = Depends(get_audit_log),
-    block_history: BlockHistory = Depends(get_block_history),
-    upstream_health: RecentFailureHealth = Depends(get_upstream_health),
-    trace: ProcessingTraceBuffer = Depends(get_processing_trace),
-    unprotected_mode: UnprotectedMode = Depends(get_unprotected_mode),
+    *,
+    endpoint: str,
+    upstream: UpstreamClient,
+    mapping: SurrogateMapping,
+    inbox: ReviewInbox,
+    l3_detector: L3Detector,
+    policies: WorkspacePolicies,
+    audit_log: AuditLog,
+    block_history: BlockHistory,
+    upstream_health: RecentFailureHealth,
+    trace: ProcessingTraceBuffer,
+    unprotected_mode: UnprotectedMode,
+    extract_declared_tools: Callable[[dict], frozenset[str]],
+    extract_system_confined_tokens: Callable[[dict], frozenset[str]],
+    blindfold: Callable[..., tuple[dict, ExchangeSession]],
+    send_upstream: Callable[[dict, dict[str, str]], Awaitable[dict]],
+    declared_tool_vocabulary: DeclaredToolVocabulary | None = None,
+    mint_inbox: Callable[[ReviewInbox], ReviewInbox] = lambda inbox: inbox,
+    restore: Callable[[dict, ExchangeSession], dict] | None = None,
+    streaming_supported: bool = False,
+    reject_stream_request: bool = False,
 ):
+    """The one gate/trace sequence shared by ``/v1/messages``,
+    ``/v1/messages/count_tokens`` and ``/v1/chat/completions`` (issue #324):
+    unprotected-mode bypass -> mint-or-block -> trace -> leak-gate-or-block ->
+    trace -> upstream -> trace -> restore -> resolution-gate-or-block -> trace.
+
+    Each caller is a thin wrapper supplying its own six values -- the
+    declared-tools extractor (``extract_declared_tools``, paired 1:1 with
+    ``extract_system_confined_tokens`` since both read the same payload shape),
+    the blindfold function (``blindfold``), the upstream method
+    (``send_upstream``), the restore function (``restore``, ``None`` for
+    ``count_tokens`` -- no restore side means no resolution gate either), the
+    trace kind label (``endpoint``), and streaming support
+    (``streaming_supported``/``reject_stream_request``). ``declared_tool_vocabulary``
+    and ``mint_inbox`` are the two further deliberate differences count_tokens
+    needs (issue #322): it measures rather than uses, so it must not grow the
+    workspace's durable declared-tool vocabulary or the durable review inbox --
+    named parameters here rather than lines omitted from a copy.
+
+    A future ``/v1/responses`` wrapper (#263) supplies the same six-plus-two
+    values; nothing here changes.
+    """
     start = time.monotonic()
     payload = await request.json()
+    if reject_stream_request and payload.get("stream"):
+        return _reject_openai_stream()
     workspace = _workspace_slug(request)
     policy = policies.for_workspace(workspace)
-    streamed = bool(payload.get("stream"))
+    streamed = streaming_supported and bool(payload.get("stream"))
     forwarded = _forwarded_headers(request)
 
     if unprotected_mode.is_active():
@@ -1615,11 +1647,11 @@ async def messages(
         declared_collisions: list[str] = []
     else:
         effective_l3_detector = None if policy.deterministic_only else l3_detector
-        declared_tools = extract_declared_tools_messages(payload)
-        system_confined_tokens = extract_system_confined_tokens_messages(payload)
+        declared_tools = extract_declared_tools(payload)
+        system_confined_tokens = extract_system_confined_tokens(payload)
         result = await _mint_or_block(
-            lambda: blindfold_payload(
-                payload, mapping, effective_l3_detector, inbox, declared_tools,
+            lambda: blindfold(
+                payload, mapping, effective_l3_detector, mint_inbox(inbox), declared_tools,
                 workspace=workspace,
                 phone_candidates_enabled=policy.phone_candidates_enabled,
                 declared_tool_vocabulary=declared_tool_vocabulary,
@@ -1632,7 +1664,7 @@ async def messages(
         )
         if isinstance(result, JSONResponse):
             _record_trace(
-                trace, workspace, "messages", streamed, OUTCOME_BLOCKED, 0, start,
+                trace, workspace, endpoint, streamed, OUTCOME_BLOCKED, 0, start,
                 reason=_block_reason(result),
             )
             return result
@@ -1643,7 +1675,7 @@ async def messages(
         )
         if block is not None:
             _record_trace(
-                trace, workspace, "messages", streamed, OUTCOME_BLOCKED,
+                trace, workspace, endpoint, streamed, OUTCOME_BLOCKED,
                 len(session.injected), start, reason=_block_reason(block), session=session,
             )
             return block
@@ -1654,7 +1686,7 @@ async def messages(
             upstream_response = await upstream.open_stream(blinded, forwarded)
         except UpstreamError as exc:
             _record_trace(
-                trace, workspace, "messages", streamed, OUTCOME_UPSTREAM_ERROR,
+                trace, workspace, endpoint, streamed, OUTCOME_UPSTREAM_ERROR,
                 len(session.injected), start, reason=str(exc), session=session,
                 upstream_duration_ms=(time.monotonic() - upstream_start) * 1000,
                 declared_collisions=declared_collisions,
@@ -1672,10 +1704,10 @@ async def messages(
 
     upstream_start = time.monotonic()
     try:
-        raw_response = await upstream.send_messages(blinded, forwarded)
+        raw_response = await send_upstream(blinded, forwarded)
     except UpstreamError as exc:
         _record_trace(
-            trace, workspace, "messages", streamed, OUTCOME_UPSTREAM_ERROR,
+            trace, workspace, endpoint, streamed, OUTCOME_UPSTREAM_ERROR,
             len(session.injected), start, reason=str(exc), session=session,
             upstream_duration_ms=(time.monotonic() - upstream_start) * 1000,
             declared_collisions=declared_collisions,
@@ -1683,23 +1715,68 @@ async def messages(
         return _upstream_error_response(exc, workspace, audit_log, upstream_health)
     upstream_health.mark_success()
     upstream_duration_ms = (time.monotonic() - upstream_start) * 1000
-    restored = restore_response(raw_response, session)
-    block = _resolution_gate_or_block(restored, session, workspace, audit_log, block_history)
-    if block is not None:
-        _record_trace(
-            trace, workspace, "messages", streamed, OUTCOME_BLOCKED,
-            len(session.injected), start, reason=_block_reason(block), session=session,
-            upstream_duration_ms=upstream_duration_ms,
-            declared_collisions=declared_collisions,
+
+    if restore is not None:
+        result_body = restore(raw_response, session)
+        block = _resolution_gate_or_block(
+            result_body, session, workspace, audit_log, block_history
         )
-        return block
+        if block is not None:
+            _record_trace(
+                trace, workspace, endpoint, streamed, OUTCOME_BLOCKED,
+                len(session.injected), start, reason=_block_reason(block), session=session,
+                upstream_duration_ms=upstream_duration_ms,
+                declared_collisions=declared_collisions,
+            )
+            return block
+    else:
+        result_body = raw_response
+
     _record_trace(
-        trace, workspace, "messages", streamed, OUTCOME_PASSED,
+        trace, workspace, endpoint, streamed, OUTCOME_PASSED,
         len(session.injected), start, session=session,
         upstream_duration_ms=upstream_duration_ms,
         declared_collisions=declared_collisions,
     )
-    return restored
+    return result_body
+
+
+@app.post("/v1/messages")
+async def messages(
+    request: Request,
+    upstream: UpstreamClient = Depends(get_upstream_client),
+    mapping: SurrogateMapping = Depends(get_mapping),
+    inbox: ReviewInbox = Depends(get_review_inbox),
+    l3_detector: L3Detector = Depends(get_l3_detector),
+    policies: WorkspacePolicies = Depends(get_workspace_policies),
+    declared_tool_vocabulary: DeclaredToolVocabulary = Depends(get_declared_tool_vocabulary),
+    audit_log: AuditLog = Depends(get_audit_log),
+    block_history: BlockHistory = Depends(get_block_history),
+    upstream_health: RecentFailureHealth = Depends(get_upstream_health),
+    trace: ProcessingTraceBuffer = Depends(get_processing_trace),
+    unprotected_mode: UnprotectedMode = Depends(get_unprotected_mode),
+):
+    return await _exchange(
+        request,
+        endpoint="messages",
+        upstream=upstream,
+        mapping=mapping,
+        inbox=inbox,
+        l3_detector=l3_detector,
+        policies=policies,
+        audit_log=audit_log,
+        block_history=block_history,
+        upstream_health=upstream_health,
+        trace=trace,
+        unprotected_mode=unprotected_mode,
+        extract_declared_tools=extract_declared_tools_messages,
+        extract_system_confined_tokens=extract_system_confined_tokens_messages,
+        blindfold=blindfold_payload,
+        send_upstream=upstream.send_messages,
+        declared_tool_vocabulary=declared_tool_vocabulary,
+        restore=restore_response,
+        streaming_supported=True,
+    )
 
 
 @app.post("/v1/messages/count_tokens")
@@ -1765,76 +1842,26 @@ async def count_tokens(
     grows durable, workspace-scoped state — only ``/v1/messages``/
     ``/v1/chat/completions`` teach the workspace's declared-tool vocabulary.
     """
-    start = time.monotonic()
-    payload = await request.json()
-    workspace = _workspace_slug(request)
-    policy = policies.for_workspace(workspace)
-    forwarded = _forwarded_headers(request)
-
-    if unprotected_mode.is_active():
-        # ADR-0038: same bypass as `/v1/messages` -- see that handler's comment.
-        # A count request consumes the override's bookkeeping exactly like an
-        # inference request would; it must not get a free pass that skips
-        # `note_exchange_complete` (which would let it egress real values on a
-        # bound the operator never re-granted) nor consume a grant twice.
-        unprotected_mode.note_exchange_complete()
-        blinded, session = payload, ExchangeSession()
-        declared_collisions: list[str] = []
-    else:
-        effective_l3_detector = None if policy.deterministic_only else l3_detector
-        declared_tools = extract_declared_tools_messages(payload)
-        system_confined_tokens = extract_system_confined_tokens_messages(payload)
-        result = await _mint_or_block(
-            lambda: blindfold_payload(
-                payload, mapping, effective_l3_detector, inbox.read_only_view(),
-                declared_tools,
-                workspace=workspace,
-                phone_candidates_enabled=policy.phone_candidates_enabled,
-                system_confined_tokens=system_confined_tokens,
-            ),
-            workspace,
-            policy.deterministic_only,
-            audit_log,
-            block_history,
-        )
-        if isinstance(result, JSONResponse):
-            _record_trace(
-                trace, workspace, "count_tokens", False, OUTCOME_BLOCKED, 0, start,
-                reason=_block_reason(result),
-            )
-            return result
-        blinded, session = result
-
-        block, declared_collisions = _leak_gate_or_block(
-            blinded, mapping, workspace, audit_log, block_history, inbox
-        )
-        if block is not None:
-            _record_trace(
-                trace, workspace, "count_tokens", False, OUTCOME_BLOCKED,
-                len(session.injected), start, reason=_block_reason(block), session=session,
-            )
-            return block
-
-    upstream_start = time.monotonic()
-    try:
-        raw_response = await upstream.send_count_tokens(blinded, forwarded)
-    except UpstreamError as exc:
-        _record_trace(
-            trace, workspace, "count_tokens", False, OUTCOME_UPSTREAM_ERROR,
-            len(session.injected), start, reason=str(exc), session=session,
-            upstream_duration_ms=(time.monotonic() - upstream_start) * 1000,
-            declared_collisions=declared_collisions,
-        )
-        return _upstream_error_response(exc, workspace, audit_log, upstream_health)
-    upstream_health.mark_success()
-    upstream_duration_ms = (time.monotonic() - upstream_start) * 1000
-    _record_trace(
-        trace, workspace, "count_tokens", False, OUTCOME_PASSED,
-        len(session.injected), start, session=session,
-        upstream_duration_ms=upstream_duration_ms,
-        declared_collisions=declared_collisions,
+    return await _exchange(
+        request,
+        endpoint="count_tokens",
+        upstream=upstream,
+        mapping=mapping,
+        inbox=inbox,
+        l3_detector=l3_detector,
+        policies=policies,
+        audit_log=audit_log,
+        block_history=block_history,
+        upstream_health=upstream_health,
+        trace=trace,
+        unprotected_mode=unprotected_mode,
+        extract_declared_tools=extract_declared_tools_messages,
+        extract_system_confined_tokens=extract_system_confined_tokens_messages,
+        blindfold=blindfold_payload,
+        send_upstream=upstream.send_count_tokens,
+        mint_inbox=lambda i: i.read_only_view(),
+        restore=None,
     )
-    return raw_response
 
 
 @app.post("/v1/chat/completions")
@@ -1852,85 +1879,27 @@ async def chat_completions(
     trace: ProcessingTraceBuffer = Depends(get_processing_trace),
     unprotected_mode: UnprotectedMode = Depends(get_unprotected_mode),
 ):
-    start = time.monotonic()
-    payload = await request.json()
-    if payload.get("stream"):
-        return _reject_openai_stream()
-    workspace = _workspace_slug(request)
-    policy = policies.for_workspace(workspace)
-
-    if unprotected_mode.is_active():
-        # ADR-0038: same bypass as `/v1/messages` -- see that handler's comment.
-        unprotected_mode.note_exchange_complete()
-        blinded, session = payload, ExchangeSession()
-        declared_collisions: list[str] = []
-    else:
-        effective_l3_detector = None if policy.deterministic_only else l3_detector
-        declared_tools = extract_declared_tools_chat_completions(payload)
-        system_confined_tokens = extract_system_confined_tokens_chat_completions(payload)
-        result = await _mint_or_block(
-            lambda: blindfold_chat_completions_payload(
-                payload, mapping, effective_l3_detector, inbox, declared_tools,
-                workspace=workspace,
-                phone_candidates_enabled=policy.phone_candidates_enabled,
-                declared_tool_vocabulary=declared_tool_vocabulary,
-                system_confined_tokens=system_confined_tokens,
-            ),
-            workspace,
-            policy.deterministic_only,
-            audit_log,
-            block_history,
-        )
-        if isinstance(result, JSONResponse):
-            _record_trace(
-                trace, workspace, "chat_completions", False, OUTCOME_BLOCKED, 0, start,
-                reason=_block_reason(result),
-            )
-            return result
-        blinded, session = result
-
-        block, declared_collisions = _leak_gate_or_block(
-            blinded, mapping, workspace, audit_log, block_history, inbox
-        )
-        if block is not None:
-            _record_trace(
-                trace, workspace, "chat_completions", False, OUTCOME_BLOCKED,
-                len(session.injected), start, reason=_block_reason(block), session=session,
-            )
-            return block
-
-    upstream_start = time.monotonic()
-    try:
-        raw_response = await upstream.send_chat_completions(
-            blinded, _forwarded_headers(request)
-        )
-    except UpstreamError as exc:
-        _record_trace(
-            trace, workspace, "chat_completions", False, OUTCOME_UPSTREAM_ERROR,
-            len(session.injected), start, reason=str(exc), session=session,
-            upstream_duration_ms=(time.monotonic() - upstream_start) * 1000,
-            declared_collisions=declared_collisions,
-        )
-        return _upstream_error_response(exc, workspace, audit_log, upstream_health)
-    upstream_health.mark_success()
-    upstream_duration_ms = (time.monotonic() - upstream_start) * 1000
-    restored = restore_chat_completion(raw_response, session)
-    block = _resolution_gate_or_block(restored, session, workspace, audit_log, block_history)
-    if block is not None:
-        _record_trace(
-            trace, workspace, "chat_completions", False, OUTCOME_BLOCKED,
-            len(session.injected), start, reason=_block_reason(block), session=session,
-            upstream_duration_ms=upstream_duration_ms,
-            declared_collisions=declared_collisions,
-        )
-        return block
-    _record_trace(
-        trace, workspace, "chat_completions", False, OUTCOME_PASSED,
-        len(session.injected), start, session=session,
-        upstream_duration_ms=upstream_duration_ms,
-        declared_collisions=declared_collisions,
+    return await _exchange(
+        request,
+        endpoint="chat_completions",
+        upstream=upstream,
+        mapping=mapping,
+        inbox=inbox,
+        l3_detector=l3_detector,
+        policies=policies,
+        audit_log=audit_log,
+        block_history=block_history,
+        upstream_health=upstream_health,
+        trace=trace,
+        unprotected_mode=unprotected_mode,
+        extract_declared_tools=extract_declared_tools_chat_completions,
+        extract_system_confined_tokens=extract_system_confined_tokens_chat_completions,
+        blindfold=blindfold_chat_completions_payload,
+        send_upstream=upstream.send_chat_completions,
+        declared_tool_vocabulary=declared_tool_vocabulary,
+        restore=restore_chat_completion,
+        reject_stream_request=True,
     )
-    return restored
 
 
 @app.get("/v1/management/review-inbox")
