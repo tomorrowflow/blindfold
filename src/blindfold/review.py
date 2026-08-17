@@ -615,14 +615,13 @@ def _next_provisional(
     occurring (whole value or distinctive component) in the text being
     processed this exchange is skipped too, the same way a known-real
     collision is. Deliberately scoped to named entries only (``position <
-    len(pool)``), never the numbered ``"Provisional Surrogate {N}"`` fallback:
-    that fallback's own words ("Provisional", "Surrogate", the pool's kind
-    name) are generic project vocabulary that legitimately appears constantly
-    in ordinary corpus text about Blindfold itself -- checking it against the
-    corpus would spuriously collide on every fallback candidate forever,
-    turning a bounded pool walk into an unbounded one. The embedded position
-    number already makes every fallback entry unique without needing a corpus
-    check.
+    len(pool)``), never the opaque ``BFX{position}`` fallback (ADR-0052, issue
+    #330): that fallback is drawn from a reserved namespace that is opaque by
+    construction and syntactically closed against minting, so it carries no
+    natural-language word that could collide with the corpus -- and checking it
+    anyway is the one thing that could turn a bounded pool walk into an
+    unbounded one. The embedded position number already makes every fallback
+    entry unique without needing a corpus check.
     """
     known = list(known_values)
     pool_size = len(_PROVISIONAL_POOLS[pool_key])
