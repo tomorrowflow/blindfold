@@ -53,8 +53,33 @@ implement iteration or a human — never an unaudited edit stacked on top.
 # EXECUTION
 
 - If the leak-audit or correctness check **fails**, or the suite is red: **do not** attest.
-  State the failing clause + the smallest concrete fix in your final message so the next
+  State the failing clause + the smallest concrete fix in your handoff notes so the next
   cycle (or a human) addresses it on the branch. Withholding your `<promise>COMPLETE</promise>`
   is what blocks the merge from being blessed — that is the whole point of this gate.
 - If the merge result is verified correct and leak-clean: output
   <promise>COMPLETE</promise>.
+
+# HANDOFF NOTES (required)
+
+**Do not run `gh issue comment` / `gh issue edit` / `gh issue close`.** This sandbox's token
+has no `issues:write`; every such call fails with "Resource not accessible by personal access
+token". Your verdict is the most valuable thing to persist on a withheld attestation — do not
+lose it to a 403.
+
+End your final message with a `<handoff-notes>` block. The orchestrator lifts it out host-side
+and posts it to **every issue in this merge batch** — it is the ONLY way your verdict reaches
+the issues. A withheld attestation with no notes reads as an unexplained gate failure: the
+planner then (correctly) stops re-planning those issues, and your finding sits invisible in a
+local log while the loop deadlocks. Emit the block on an ATTESTED result too:
+
+<handoff-notes>
+**Verdict:** ATTESTED | WITHHELD, per gate (privacy/leak-audit, correctness, suite).
+**Leak audit:** which clauses hold on the merged tree, which are N/A and why, which fail.
+**Failing clause + finding:** (on WITHHELD) exactly what is wrong in the merge result, with
+file:line evidence — specific enough that nobody has to re-derive it from your transcript.
+**Which issue(s) it implicates:** the batch may carry several issues; name the one(s) whose
+change the finding is about, so the others are not re-spun for a defect that isn't theirs.
+**Smallest concrete fix:** what the next cycle (or a human) should change, and where.
+**Pre-existing / out of scope:** anything red that predates this merge delta (say so
+explicitly — a pre-existing failure must not read as an indictment of these branches).
+</handoff-notes>

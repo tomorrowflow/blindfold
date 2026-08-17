@@ -182,6 +182,15 @@ const TARGET_BRANCH = execSync("git rev-parse --abbrev-ref HEAD", {
   encoding: "utf8",
 }).trim();
 
+// The staging branch the merger operates on. The merge lands here first, and the
+// target branch is only fast-forwarded AFTER the post-merge re-audit attests the
+// result. Before this existed, the merger merged into the live target directly,
+// so its fast-forwards landed BEFORE the gate ran — a withheld attestation then
+// left unattested code already on the target (which is never rewound, by design)
+// while the blocked comment claimed nothing was merged. That is exactly how
+// #306's unfixed post-merge finding shipped to main (see issue #329).
+const MERGE_STAGING_BRANCH = "sandcastle/merge-staging";
+
 // The repo root — resolved from git rather than assumed to be process.cwd(), so
 // the Supacode worktree-surface path below is correct however the orchestrator
 // is launched. Falls back to cwd if git can't answer.
@@ -1951,10 +1960,23 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     }
   })();
 
-  openTracePane(TARGET_BRANCH, "merger");
-  const merge = await sandcastle.run({
-    hooks,
+  // The merger works in a STAGING worktree, never on the live target checkout
+  // (see MERGE_STAGING_BRANCH). Reap any leftover staging state from a prior
+  // blocked cycle first, so the staging branch is always recreated fresh from
+  // the target's current HEAD — a stale staging tip would base the merge on an
+  // old tree. Worktrees share the repo's refs, so the issue branches are
+  // reachable from inside the staging worktree exactly as they were from main.
+  reapBranch(MERGE_STAGING_BRANCH);
+  ensureSupacodeWorktreeSurface(MERGE_STAGING_BRANCH);
+  const mergeSandbox = await sandcastle.createSandbox({
+    branch: MERGE_STAGING_BRANCH,
     sandbox: docker(),
+    hooks,
+    copyToWorktree,
+  });
+
+  openTracePane(MERGE_STAGING_BRANCH, "merger");
+  const merge = await mergeSandbox.run({
     name: "merger",
     maxIterations: 1,
     agent: sandcastle.claudeCode(MODEL_MERGE),
@@ -1975,25 +1997,29 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   // Re-audit the POST-MERGE tree before blessing it (SC-1). The merger may have
   // resolved conflicts and mutated code to make tests pass — changes that never
   // passed the leak-audit gate every other change must clear. Re-run the same
-  // Opus privacy gate over the merge delta (preMergeSha..HEAD). Only a positive
-  // COMPLETE clears it; a withheld signal blocks, exactly like the per-branch
-  // reviewer. Skipped (→ blocked) if the merger didn't complete, we couldn't
-  // capture the base, or the target HEAD didn't actually advance.
+  // Opus privacy gate over the merge delta (preMergeSha..staging tip) IN the
+  // staging worktree. Only a positive COMPLETE clears it; a withheld signal
+  // blocks, exactly like the per-branch reviewer. Skipped (→ blocked) if the
+  // merger didn't complete, we couldn't capture the base, or the staging tip
+  // didn't actually advance.
   let reauditClean = false;
+  let reauditStdout = "";
   const postMergeSha = (() => {
     try {
-      return execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim();
+      return execFileSync("git", ["rev-parse", MERGE_STAGING_BRANCH], {
+        encoding: "utf8",
+      }).trim();
     } catch {
       return "";
     }
   })();
 
   if (mergerComplete && preMergeSha && postMergeSha && postMergeSha !== preMergeSha) {
-    console.log("\nBranches merged. Re-auditing the post-merge result (leak-audit gate)…");
-    openTracePane(TARGET_BRANCH, "merge-reviewer");
-    const reaudit = await sandcastle.run({
-      hooks,
-      sandbox: docker(),
+    console.log(
+      "\nBranches merged on staging. Re-auditing the post-merge result (leak-audit gate)…",
+    );
+    openTracePane(MERGE_STAGING_BRANCH, "merge-reviewer");
+    const reaudit = await mergeSandbox.run({
       name: "merge-reviewer",
       maxIterations: 1,
       // Opus — the post-merge tree faces the SAME fail-closed leak-audit gate.
@@ -2004,24 +2030,45 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       },
     });
     reauditClean = reaudit.completionSignal !== undefined;
+    // Keep the reviewer's stdout: on a withheld attestation its handoff notes
+    // are the actual verdict, and they must reach the issues (see below).
+    reauditStdout = reaudit.stdout;
   } else if (mergerComplete) {
     console.warn(
-      "\nMerger signaled COMPLETE but the target HEAD did not advance (no base/no new merge commit) — " +
+      "\nMerger signaled COMPLETE but the staging tip did not advance (no base/no new merge commit) — " +
         "withholding the merge lifecycle (fail-closed).",
     );
   }
 
-  const mergeBlessed = mergerComplete && reauditClean;
+  // Advance the target ONLY after attestation, and only by fast-forward. The
+  // staging branch was cut from the target's HEAD, so anything but a clean ff
+  // means the target moved mid-merge (e.g. a human committed) — fail closed
+  // and never force anything onto the target.
+  let mergeBlessed = mergerComplete && reauditClean;
+  let ffFailed = false;
+  if (mergeBlessed) {
+    try {
+      execFileSync("git", ["merge", "--ff-only", MERGE_STAGING_BRANCH], { stdio: "ignore" });
+    } catch {
+      ffFailed = true;
+      mergeBlessed = false;
+    }
+  }
 
   if (!mergeBlessed) {
     // Withhold the ENTIRE merged/close/reap lifecycle — nothing reaches "done"
-    // unless the merge result itself cleared the leak-audit gate. Branch commits
-    // are kept for the next cycle / a human, and the issues are marked blocked.
+    // unless the merge result itself cleared the leak-audit gate. The target
+    // was never advanced; the unattested result stays parked on the staging
+    // branch for inspection (next cycle reaps and recreates it), and the issue
+    // branch commits are kept for the next cycle / a human.
     const why = !mergerComplete
       ? "merger did not signal COMPLETE (merge or tests unfinished)"
-      : "post-merge re-audit withheld attestation (leak-audit / correctness FAIL on the merge result)";
+      : ffFailed
+        ? `the attested staging result could not fast-forward \`${TARGET_BRANCH}\` (the target moved during the merge)`
+        : "post-merge re-audit withheld attestation (leak-audit / correctness FAIL on the merge result)";
     console.warn(
-      `  ⊘ Merge lifecycle WITHHELD: ${why}. Branch commits kept; nothing closed or reaped.`,
+      `  ⊘ Merge lifecycle WITHHELD: ${why}. ${TARGET_BRANCH} not advanced; unattested result ` +
+        `parked on ${MERGE_STAGING_BRANCH}; branch commits kept; nothing closed or reaped.`,
     );
     for (const issue of completedIssues) {
       setStateLabel(issue.id, "blocked");
@@ -2029,9 +2076,21 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         issue.id,
         `sandcastle:merge-blocked:${mergerComplete ? "reaudit" : "merger"}`,
         `⛔ **Post-merge gate blocked** the merge of \`${issue.branch}\`: ${why}.\n\n` +
-          `The branch commits are kept and nothing was closed or reaped — sandcastle never ` +
-          `blesses an unaudited merge result (fail-closed, finding SC-1).`,
+          `\`${TARGET_BRANCH}\` was **not** advanced — the unattested merge result is parked on ` +
+          `\`${MERGE_STAGING_BRANCH}\`` +
+          (preMergeSha && postMergeSha
+            ? ` (\`${preMergeSha.slice(0, 7)}..${postMergeSha.slice(0, 7)}\`)`
+            : "") +
+          ` for inspection, and the issue branch commits are kept. Nothing was closed or reaped — ` +
+          `sandcastle never blesses an unaudited merge result (fail-closed, finding SC-1).`,
       );
+      // The gate's ACTUAL verdict, not just the fact of a strike: the merge-
+      // reviewer's handoff notes name the failing clause, the implicated issue,
+      // and the smallest fix. Without them the planner sees only an unexplained
+      // repeated failure and (correctly) stops re-planning the issue — which is
+      // how #306's real finding sat invisible in a local log while the loop
+      // deadlocked (see issue #329).
+      postHandoff(issue.id, "merge-reviewer", reauditStdout);
       // Same give-up path as the per-branch gate: a merge result that cannot be
       // audited clean will not become auditable by being retried indefinitely.
       if (recordGateStrike(issue.id, issue.branch, why) >= MAX_GATE_STRIKES) {
@@ -2041,7 +2100,12 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     continue;
   }
 
-  console.log("\nBranches merged and the post-merge result re-audited clean.");
+  console.log(
+    "\nBranches merged, the post-merge result re-audited clean, and the target fast-forwarded.",
+  );
+  // The blessed staging worktree + branch are spent — the target now points at
+  // the same commit. Reap them so the next cycle recreates staging fresh.
+  reapBranch(MERGE_STAGING_BRANCH);
 
   // Lifecycle → GitHub: these branches cleared the fail-closed per-branch gate,
   // the merger attested completion, AND the merge result itself re-passed the
