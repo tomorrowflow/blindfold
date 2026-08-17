@@ -1271,6 +1271,14 @@ def _blindfold_text(
                 # occurrence), not just the local context window.
                 corpus_text=result,
             )
+            if item is None:
+                # ADR-0052 (issue #330): ``real`` itself matches the opaque
+                # reserved-namespace fallback shape -- that namespace is closed
+                # against ever being minted, so there is nothing to blind here.
+                # The occurrence is already opaque/non-sensitive by construction
+                # (it's Blindfold's own reserved token, not a real referent), so
+                # leaving it untouched is safe.
+                continue
             spans.append((start, end, item.provisional_surrogate, real))
             minted_ranges_by_item.setdefault(item.id, []).append((start, end))
             minted_items_by_id[item.id] = item

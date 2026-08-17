@@ -169,13 +169,16 @@ def test_leak_gate_fails_closed_on_a_bare_real_word_component_of_a_provisional_r
 
 
 def test_a_provisional_surrogate_fallback_label_contributes_no_components():
-    # Acceptance criterion 5 (#286): the numbered "Provisional Surrogate {N}"
-    # fallback's positional digit carries no entity meaning -- mirroring the
-    # exact corruption class #286 fixed on the restore side. If a real word were
-    # allowed to align to the digit ("Holdings" -> "8"), blinding would inject a
-    # bare "8" into the outbound payload AND `session.record("8", "Holdings")`
-    # would poison restore with a stray digit key, corrupting ordinary numeric
-    # text in the response ("utf-8" -> "utf-Holdings") the same way #286 did.
+    # Acceptance criterion 5 (#286, shape updated by ADR-0052/#330): past pool
+    # exhaustion the fallback is a single opaque, whitespace-free token
+    # ("BFX0008") rather than the old three-word numbered label -- word counts
+    # between a multi-word real and the one-word fallback can never align, so
+    # the component pass contributes nothing by construction (no digit-only-
+    # word guard needed at all). If a real word were ever allowed to align to
+    # a positional fragment of the fallback, blinding would inject that
+    # fragment into the outbound payload AND poison restore with a stray key,
+    # corrupting ordinary text in the response ("utf-8" -> "utf-Holdings") the
+    # same way #286 did.
     mapping = SurrogateMapping()
     inbox = ReviewInbox()
     for i in range(8):
@@ -191,7 +194,7 @@ def test_a_provisional_surrogate_fallback_label_contributes_no_components():
     )
     item = inbox.list()[-1]
     assert item.real == "Kestrel Dynamics Holdings"
-    assert item.provisional_surrogate == "Provisional Surrogate 8"
+    assert item.provisional_surrogate == "BFX0008"
 
     payload = {
         "model": "claude-3-5-sonnet",

@@ -125,6 +125,43 @@ def test_mining_threads_the_adjudicated_entity_type_into_the_mint_pass():
     assert item.provisional_surrogate not in _PROVISIONAL_POOL
 
 
+def test_mining_never_proposes_a_reserved_form_candidate(monkeypatch):
+    # ADR-0052 (issue #330): a candidate real matching the opaque
+    # reserved-namespace fallback shape is never minted, on this mint path
+    # either -- mining a transcript that happens to contain Blindfold's own
+    # reserved token (e.g. this repo's own docs) must not crash on the
+    # refused-mint ``None`` and must not propose it.
+    from blindfold import l3 as l3_module
+
+    def _fake_select_candidate_spans(text, known_entities, allowlist=None,
+                                      declared_tools=frozenset(),
+                                      system_confined_tokens=frozenset()):
+        start = text.find("BFX0008")
+        end = start + len("BFX0008")
+        return [
+            CandidateSpan(
+                text="BFX0008", start=start, end=end, context=text, context_offset=start,
+            )
+        ]
+
+    monkeypatch.setattr(l3_module, "select_candidate_spans", _fake_select_candidate_spans)
+
+    class _ConfirmReservedFormToken:
+        def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
+            return L3Adjudication(is_entity=True, entity_type="person")
+
+    mapping = SurrogateMapping()
+    inbox = ReviewInbox()
+    detector = L3Detector(_ConfirmReservedFormToken())
+
+    report = mine_transcripts(
+        ["See BFX0008 in the ADR."], detector, mapping, inbox
+    )
+
+    assert inbox.list() == []
+    assert report.proposed == []
+
+
 def test_mining_a_transcript_proposes_novel_entities_to_review_inbox():
     # AC1: a mining job scans historical transcripts and proposes candidate
     # entities into the review inbox. Novel = NOT in the entity-graph seed.
