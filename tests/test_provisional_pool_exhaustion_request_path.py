@@ -2,11 +2,15 @@
 disjointness walk (``review._next_provisional``) used to hang forever once
 its named pool was exhausted and a known real value collided with every
 numbered fallback label -- ADR-0052's run-8 deadlock ("Surrogate" live as a
-known real, "Provisional Surrogate {N}" the fallback shape). Mirrors the
-phone reserved-namespace pool exhaustion shape (test_pii_phone_pool_exhaustion.py):
-a stable ``blindfold_fail_closed`` code, a distinct ``sub_reason``, and the
-real value never appears anywhere in the 503 body -- SEC-3/SEC-7 -- and the
-stub upstream never sees the request at all (leak-audit clause A).
+known real, "Provisional Surrogate {N}" the fallback shape). Issue #330 closed
+that specific collision by making the fallback an opaque ``BFX{N:04d}`` token,
+but a known real containing that reserved prefix ("BFX") still collides with
+every fallback candidate, so the walk must still bound and fail closed.
+Mirrors the phone reserved-namespace pool exhaustion shape
+(test_pii_phone_pool_exhaustion.py): a stable ``blindfold_fail_closed`` code,
+a distinct ``sub_reason``, and the real value never appears anywhere in the
+503 body -- SEC-3/SEC-7 -- and the stub upstream never sees the request at
+all (leak-audit clause A).
 """
 
 from __future__ import annotations
@@ -60,7 +64,7 @@ def _inbox_with_exhausted_person_pool() -> ReviewInbox:
 
 @pytest.mark.anyio
 async def test_provisional_pool_exhaustion_blocks_the_request_fail_closed_and_scrubbed():
-    mapping = SurrogateMapping.from_pairs([("Surrogate", "Someone Else")])
+    mapping = SurrogateMapping.from_pairs([("BFX", "Someone Else")])
     inbox = _inbox_with_exhausted_person_pool()
     detector = L3Detector(_StubAdjudicator(confirm={"Klaus"}))
 
@@ -93,7 +97,7 @@ async def test_provisional_pool_exhaustion_blocks_the_request_fail_closed_and_sc
     assert body["error"]["code"] == "blindfold_fail_closed"
     assert body["error"]["sub_reason"] == "provisional_pool_exhausted"
     assert "Klaus" not in json.dumps(body)
-    assert "Surrogate" not in json.dumps(body)
+    assert "BFX" not in json.dumps(body)
     # Clause A: blocked before any egress -- the stub upstream saw nothing.
     assert recorded == []
     assert any(
