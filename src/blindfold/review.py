@@ -569,6 +569,38 @@ def _provisional_pool_entry(pool_key: str, position: int) -> str:
     return f"Provisional Surrogate {position}"
 
 
+# Issue #331: a bound on how many fallback positions past the named pool
+# _next_provisional will walk before giving up. The named pool is guarded
+# both directions (issue #292), but the numbered fallback is exempted from
+# the corpus check (see the docstring below) so it has no other stop
+# condition -- a known value contained in every fallback label (e.g. a live
+# provisional real "Surrogate", ADR-0052's run 8) would otherwise collide at
+# every position and walk the integers upward forever. Generous -- this
+# should never be reached by real traffic -- and mirrors
+# ``surrogates._GENERIC_MAX_MINT_ATTEMPTS``.
+_MAX_FALLBACK_ATTEMPTS = 10_000
+
+
+class ProvisionalPoolExhaustedError(Exception):
+    """The provisional-surrogate pool for ``pool_key`` has no mint-time-disjoint
+    candidate left to issue, even after walking ``_MAX_FALLBACK_ATTEMPTS``
+    positions past the named pool.
+
+    Raised instead of walking the numbered fallback forever (issue #331).
+    Fail-closed (ADR-0009), and its own reason distinct in shape from a leak
+    reason or a declared-collision reason: the message names only the
+    provisional pool's ``pool_key``, never a real value or a candidate
+    surrogate.
+    """
+
+    def __init__(self, pool_key: str) -> None:
+        super().__init__(
+            f"the provisional surrogate pool for kind {pool_key!r} is exhausted "
+            "-- no mint-time-disjoint candidate remains to issue"
+        )
+        self.pool_key = pool_key
+
+
 def _next_provisional(
     pool_key: str,
     start_position: int,
@@ -592,11 +624,17 @@ def _next_provisional(
     turning a bounded pool walk into an unbounded one. The embedded position
     number already makes every fallback entry unique without needing a corpus
     check.
+
+    Bounded (issue #331): the walk tries at most ``_MAX_FALLBACK_ATTEMPTS``
+    positions before raising :class:`ProvisionalPoolExhaustedError` --
+    fail-closed, per ADR-0009, rather than looping forever when the pool-vs-
+    known-real check above (unlike the corpus check) applies to the fallback
+    too and something known collides with every fallback candidate.
     """
     known = list(known_values)
     pool_size = len(_PROVISIONAL_POOLS[pool_key])
     position = start_position
-    while True:
+    for _ in range(_MAX_FALLBACK_ATTEMPTS):
         candidate = _provisional_pool_entry(pool_key, position)
         is_named_entry = position < pool_size
         position += 1
@@ -605,3 +643,4 @@ def _next_provisional(
         if is_named_entry and pool_entry_collides_with_corpus(candidate, corpus_text):
             continue
         return candidate, position
+    raise ProvisionalPoolExhaustedError(pool_key)

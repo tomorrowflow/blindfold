@@ -188,7 +188,7 @@ from .processing_trace import (
 )
 from .rbac import RbacRegistry
 from .relationships import RelationshipEdge, RelationshipStore
-from .review import Allowlist, ReviewInbox
+from .review import Allowlist, ProvisionalPoolExhaustedError, ReviewInbox
 from .status import (
     BlockHistory,
     CachedHealthProbe,
@@ -989,6 +989,21 @@ _MINT_POOL_EXHAUSTED_REMEDY = (
     "surrogates, or contact an administrator."
 )
 
+# Issue #331: the provisional-surrogate mint-time disjointness walk
+# (review._next_provisional) exhausted its bounded number of numbered-fallback
+# positions without finding a candidate disjoint from every known real value
+# and already-active provisional surrogate. Distinct from
+# _MINT_POOL_EXHAUSTED_REMEDY's reserved-namespace PII pools -- this is the
+# review inbox's plausible-name pool (ADR-0010) -- and from a leak-gate or
+# declared-collision block: nothing egressed, and nothing would have.
+_PROVISIONAL_POOL_EXHAUSTED_REMEDY = (
+    "The review inbox's provisional-surrogate pool is exhausted for this "
+    "candidate's kind, so the request is blocked rather than loop "
+    "indefinitely searching for a disjoint label. Curate the review inbox to "
+    "confirm or reject pending entries and free up cursor positions, or "
+    "contact an administrator."
+)
+
 # ADR-0027 (issue #91): every current sub_reason routes a block to the management
 # app's Home/Status page -- the review inbox is never a block target (novel entities
 # are protected non-blocking by design, ADR-0010). Keyed by sub_reason (rather than a
@@ -1000,6 +1015,7 @@ _MANAGEMENT_URL_PATH_BY_SUB_REASON = {
     "leak_detected": "/ui/status",
     "unresolved_surrogate": "/ui/status",
     "mint_pool_exhausted": "/ui/status",
+    "provisional_pool_exhausted": "/ui/status",
 }
 _DEFAULT_MANAGEMENT_URL_PATH = "/ui/status"
 
@@ -1303,6 +1319,19 @@ async def _mint_or_block(
             sub_reason="mint_pool_exhausted",
             block_history=block_history,
             remedy=_MINT_POOL_EXHAUSTED_REMEDY,
+        )
+    except ProvisionalPoolExhaustedError as exc:
+        return _blocked_response(
+            event="blocked-provisional-pool-exhausted",
+            # `exc`'s own message names only the provisional pool's `pool_key`
+            # (never a real value, never a candidate surrogate) -- safe to
+            # surface verbatim, same discipline as MintPoolExhaustedError above.
+            reason=f"{exc}",
+            workspace=workspace,
+            audit_log=audit_log,
+            sub_reason="provisional_pool_exhausted",
+            block_history=block_history,
+            remedy=_PROVISIONAL_POOL_EXHAUSTED_REMEDY,
         )
     if policy_deterministic_only:
         audit_log.append(
