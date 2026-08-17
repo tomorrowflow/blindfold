@@ -69,14 +69,18 @@ def mine_transcripts(
         for candidate, decision in detector.detect(transcript, known_entities):
             if not decision.is_entity:
                 continue
-            proposed.append(
-                inbox.upsert(
-                    candidate.text,
-                    candidate.context,
-                    known_values=mapping.real_values(),
-                    context_offset=candidate.context_offset,
-                    entity_type=decision.entity_type,
-                    workspace=workspace,
-                )
+            item = inbox.upsert(
+                candidate.text,
+                candidate.context,
+                known_values=mapping.real_values(),
+                context_offset=candidate.context_offset,
+                entity_type=decision.entity_type,
+                workspace=workspace,
             )
+            if item is None:
+                # ADR-0052 (issue #330): the candidate matches the opaque
+                # reserved-namespace fallback shape -- the mint is refused,
+                # nothing to propose.
+                continue
+            proposed.append(item)
     return MiningReport(transcripts_scanned=scanned, proposed=proposed)

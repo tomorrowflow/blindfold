@@ -76,6 +76,29 @@ _PROVISIONAL_POOLS: dict[str, tuple[str, ...]] = {
     "organization": _PROVISIONAL_ORG_POOL,
 }
 
+# ADR-0052 (issue #330): past pool exhaustion, the fallback surrogate is a single
+# opaque ASCII token -- no natural-language word, no free-standing integer, no
+# whitespace, no separator -- drawn from a namespace reserved against ever being
+# minted as a real (below, in `upsert`). Zero-padded to at least 4 digits so the
+# form is stable and grep-able; the pattern's `\d{4,}` deliberately keeps
+# matching if the walk ever runs past 9999.
+_RESERVED_SURROGATE_PREFIX = "BFX"
+_RESERVED_SURROGATE_RE = re.compile(rf"^{_RESERVED_SURROGATE_PREFIX}\d{{4,}}$")
+
+
+def is_reserved_provisional_surrogate_form(value: str) -> bool:
+    """True if ``value`` matches the opaque reserved-namespace fallback shape
+    (ADR-0052) -- ``BFX`` + four-or-more zero-padded digits.
+
+    A closed syntactic class, not an open blocklist of English words (#301):
+    a candidate real matching this form must never be minted (enforced in
+    :meth:`ReviewInbox.upsert`), so a value that appears in Blindfold's own
+    documentation -- including this ADR and `CONTEXT.md` -- can never be
+    re-detected as a novel real and reproduce the #328 deadlock.
+    """
+    return bool(_RESERVED_SURROGATE_RE.match(value))
+
+
 # Trailing legal-form suffixes (issue #289): an organisation mentioned with and
 # without its legal form ("Kestrel Dynamics GmbH" vs "Kestrel Dynamics") is the
 # same referent, not two. Longest-first so "GmbH & Co. KG" matches before the
@@ -333,7 +356,7 @@ class ReviewInbox:
         entity_type: str | None = None,
         workspace: str = DEFAULT_WORKSPACE,
         corpus_text: str | None = None,
-    ) -> ReviewItem:
+    ) -> ReviewItem | None:
         """Add (or reuse) a provisional inbox entry for ``real`` and return it.
 
         Reuse is keyed on :func:`_referent_key`, not ``real`` verbatim (issue
@@ -379,12 +402,20 @@ class ReviewInbox:
         under -- captured on the item so confirm knows which workspace's
         EntityGraph to grow. Falls back to the default workspace slug for a
         caller with no workspace in context.
+
+        Returns ``None``, minting nothing, when ``real`` itself matches the
+        opaque reserved-namespace fallback shape (ADR-0052, issue #330,
+        :func:`is_reserved_provisional_surrogate_form`) -- that namespace is
+        syntactically closed against ever being minted as a real, by pattern
+        match rather than by adjudicating the collision after the fact.
         """
         with self._lock:
             referent_key = _referent_key(real, entity_type)
             existing_id = self._by_real.get(referent_key)
             if existing_id is not None:
                 return self._items[existing_id]
+            if is_reserved_provisional_surrogate_form(real):
+                return None
             item_id = str(self._minted + 1)
             self._minted += 1
             pool_key = (
@@ -566,7 +597,7 @@ def _provisional_pool_entry(pool_key: str, position: int) -> str:
     pool = _PROVISIONAL_POOLS[pool_key]
     if position < len(pool):
         return pool[position]
-    return f"Provisional Surrogate {position}"
+    return f"{_RESERVED_SURROGATE_PREFIX}{position:04d}"
 
 
 # Issue #331: a bound on how many fallback positions past the named pool
@@ -616,14 +647,13 @@ def _next_provisional(
     occurring (whole value or distinctive component) in the text being
     processed this exchange is skipped too, the same way a known-real
     collision is. Deliberately scoped to named entries only (``position <
-    len(pool)``), never the numbered ``"Provisional Surrogate {N}"`` fallback:
-    that fallback's own words ("Provisional", "Surrogate", the pool's kind
-    name) are generic project vocabulary that legitimately appears constantly
-    in ordinary corpus text about Blindfold itself -- checking it against the
-    corpus would spuriously collide on every fallback candidate forever,
-    turning a bounded pool walk into an unbounded one. The embedded position
-    number already makes every fallback entry unique without needing a corpus
-    check.
+    len(pool)``), never the opaque ``BFX{position}`` fallback (ADR-0052, issue
+    #330): that fallback is drawn from a reserved namespace that is opaque by
+    construction and syntactically closed against minting, so it carries no
+    natural-language word that could collide with the corpus -- and checking it
+    anyway is the one thing that could turn a bounded pool walk into an
+    unbounded one. The embedded position number already makes every fallback
+    entry unique without needing a corpus check.
 
     Bounded (issue #331): the walk tries at most ``_MAX_FALLBACK_ATTEMPTS``
     positions before raising :class:`ProvisionalPoolExhaustedError` --

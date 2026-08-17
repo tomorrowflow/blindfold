@@ -19,13 +19,13 @@ review-inbox rows — `Surrogate` minted as a person, and a pool-exhausted row h
 
 ```
 INBOUND : Read the Surrogate glossary entry, then summarise Referent7.
-BLINDED : Read the Alex Brenner glossary entry, then summarise Provisional Surrogate 8.
+BLINDED : Read the ‹pool name› glossary entry, then summarise Provisional Surrogate 8.
 GATE    : BLOCKED — real entity value would egress upstream (ref: review-inbox item 1)
 ```
 
 Ordinary prose **is** reached: ADR-0051's deterministic blinder rewrites `Surrogate` →
-`Alex Brenner` correctly. The single surviving occurrence is the fallback label **Blindfold itself
-injected during that same pass** — and it is unreachable by construction, not by a guard's choice.
+its pool name (`‹pool name›` above) correctly. The single surviving occurrence is the fallback label
+**Blindfold itself injected during that same pass** — and it is unreachable by construction, not by a guard's choice.
 The pass is collect-then-apply against frozen text (#325), so text the pass injects is necessarily
 outside the scan that pass already performed. A second scan cannot fix it either: re-scanning an
 injected surrogate's own literal text is what the #68/#292 guard exists to prevent.
@@ -115,7 +115,8 @@ corpus check.
   exhaustion. This ordering is a real constraint on merge sequence, not a preference.
 - Decision 4 also closes a hole the named pools still have, which run 8 did not happen to hit: a
   provisional real minted in an early **hop** is invisible to a later hop's corpus check, so
-  `Emil Fink` can still be issued while `Fink` is live as a real.
+  a two-word pool name (given name + surname) can still be issued while its bare surname is live
+  as a real.
 - The opaque fallback degrades the provider's reasoning about that referent — it is not a plausible
   person or organisation. This costs nothing that was not already lost: `Provisional Surrogate 8`
   was not plausible either, and the named pools remain the normal path. It does raise the value of
