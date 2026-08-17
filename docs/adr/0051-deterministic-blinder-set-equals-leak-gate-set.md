@@ -300,3 +300,30 @@ Recorded here because this ADR asked to be told. What follows from it, explicitl
   `system[]` and every one of them is a false positive, while all 6 genuine referents are
   messages-only. That decision is taken in ADR-0023's "Update (issue #301)" section, as a fourth
   token-granularity suppression layer.
+
+## Amendment (issue #328): the invariant also binds **mint**, not only blinding
+
+#74 run 8 died on a third instance of this ADR's asymmetry, at a stage this ADR did not name.
+
+The invariant is written about two sets: what the deterministic blinder rewrites, and what the
+**leak gate** checks. Run 8 showed a third set that must equal them and does not — the set consulted
+at **mint** time, when a **provisional surrogate** is issued. Mint-time `known_values` holds confirmed
+reals plus the inbox's *surrogates*; the gate has checked the inbox's *reals* since #287. So a
+surrogate can be issued that contains a value the gate will block on, and every subsequent request
+fails closed.
+
+`Surrogate` — a `CONTEXT.md` glossary headword — was minted as a provisional person, after which the
+`Provisional Surrogate {N}` fallback label was issued containing it. The blinder reaches the word in
+ordinary prose exactly as this ADR requires; the only occurrence it cannot reach is the label
+Blindfold injected during that same collect-then-apply pass (#325), which is outside the scan that
+pass performed by construction.
+
+The direction-symmetry rule added by the #303 amendment applies here too, and for the same reason:
+the guard existed on one side only. `surrogate_space_match` (#292) refuses a *real* that collides with
+a live *surrogate*; nothing refused a *surrogate* that collides with a live provisional *real*.
+
+**ADR-0052 records the decision.** Closing this direction is not possible while the fallback label is
+natural language — every `Provisional Surrogate {N}` contains `Surrogate`, so the disjointness walk
+never terminates — so ADR-0052 makes the unchecked fallback opaque first, then makes mint-time
+matching consult `_provisional_pair_map`'s keys by `_real_value_pattern`'s rule: this ADR's two sets
+and the mint set, one derivation, asserted to agree.

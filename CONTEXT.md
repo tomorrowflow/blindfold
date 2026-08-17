@@ -244,7 +244,9 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   a store and a **mapping cipher** are wired; otherwise in-memory and ephemeral, never
   plaintext on disk.
 - **Provisional surrogate** — the fake auto-minted for a novel entity at request
-  time, before review; protection happens immediately and non-blocking.
+  time, before review; protection happens immediately and non-blocking. Drawn from a
+  plausible per-kind pool, and past pool exhaustion from the **reserved namespace**
+  (an opaque token, never natural language — ADR-0052).
 - **Learning loop** — review actions feed the system: **confirm** grows the entity
   graph; **reject** grows the **allowlist**. Bidirectional; makes detection more
   deterministic over time.
@@ -475,6 +477,14 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   "erring toward blindfolding is safe" must not be read as "erring toward
   blindfolding is costless."
 - Surrogates are stable: a given entity maps to the same surrogate everywhere.
+- **A surrogate issued without a corpus-disjointness check is opaque by construction.** The
+  plausible named pools are checked against the corpus both ways — on issue, and on re-entry as
+  a candidate real — so they stay plausible. The pool-exhaustion fallback is checked neither
+  way, so it is drawn from a **reserved namespace**: a single opaque token, no natural-language
+  word, no free-standing integer, and syntactically closed against ever being minted as a real.
+  A natural-language reserved label collides with the corpus that contains it — Blindfold's own
+  docs are corpus — and that collision is unfixable rather than merely unlikely, because
+  de-colliding it never terminates (ADR-0052, issue #328).
 - Sensitivity (is it blindfolded?) and structure (is it an Org unit?) are independent axes.
   Being an Org unit never makes a referent sensitive, and being sensitive never makes it
   structural; a name that is both is recorded as both an Org unit and a Term.

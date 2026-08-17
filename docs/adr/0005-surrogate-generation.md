@@ -42,6 +42,12 @@ The surrogate engine will:
 ## Alternatives considered
 
 - **Random opaque tokens** — rejected: degrade model reasoning and reveal anonymization.
+  **Narrowed by ADR-0052 (2026-08-17):** still rejected for the plausible named pools, which
+  keep the model-reasoning benefit this row is about. But a surrogate issued with **no**
+  corpus-disjointness check — currently only the pool-exhaustion fallback — is now required to
+  be opaque and drawn from a syntactically closed **reserved namespace**. Plausibility there
+  was already spent, and its natural-language form made a whole class of mint-time collision
+  unfixable (#328).
 - **Plausible PII (real-looking emails/phones)** — rejected: risks generating a real
   third party's routable address.
 
