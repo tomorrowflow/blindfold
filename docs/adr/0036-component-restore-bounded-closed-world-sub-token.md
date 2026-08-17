@@ -197,27 +197,29 @@ value; `leak_gate` and the blinder read the same `_provisional_pair_map`
 derivation either way, so ADR-0051's symmetry holds by construction and no gate
 deadlock is introduced by the narrower component surface.
 
-**Open finding (#329 cycle 2, unresolved):** the paragraph above's symmetry
-claim is scoped to `_provisional_pair_map` (blinding side) vs. `leak_gate`, and
-holds for that pair. It does **not** extend to `_component_restore_map` itself,
-which this ADR's own top section describes as untouched by #306/#329. That
-function reads `session.injected` — the exchange's *actual* injected
-`(surrogate, real)` pairs — independently of `_provisional_component_map`, and
-has the identical unguarded gap: its per-word guard excludes only a
-non-alphabetic word, not "Provisional"/"Surrogate" themselves. Whenever a real
-value is blinded to the fallback label as a whole (which always populates
-`session.injected` with that pair, regardless of #329's component-map fix),
-`_component_restore_map` decomposes it and plants "Provisional" → real-word-1 /
-"Surrogate" → real-word-2 as Pass 2 restore keys — reproduced live:
-`restore_response` turns the upstream prose "This is a Provisional Surrogate
-for testing purposes." into "This is a Kestrel Dynamics for testing purposes."
-This means #329's own acceptance criterion 3 (an ordinary response containing
-the fallback label's words round-trips unchanged) does not hold end-to-end,
-while #329's "Scope discipline" section explicitly forbids the matching fix in
-`_component_restore_map` on the premise that "the restore side guards #286
-separately" — a premise this reproduction shows is false. Left as an open,
-`xfail`-pinned finding (`tests/test_provisional_component_blinding.py`) pending
-a human scope decision rather than resolved unilaterally here.
+**Resolved finding (#329, restore side):** the paragraph above's symmetry claim
+is scoped to `_provisional_pair_map` (blinding side) vs. `leak_gate`, and holds
+for that pair — it does **not** extend to `_component_restore_map` itself,
+which reads `session.injected` — the exchange's *actual* injected
+`(surrogate, real)` pairs — independently of `_provisional_component_map`.
+Cycles 1-2 on `sandcastle/issue-329` found `_component_restore_map` had the
+identical unguarded gap: its per-word guard excluded only a non-alphabetic
+word, not "Provisional"/"Surrogate" themselves. Whenever a real value is
+blinded to the fallback label as a whole (which always populates
+`session.injected` with that pair, regardless of the blinding-side component-map
+fix), `_component_restore_map` decomposed it and planted "Provisional" →
+real-word-1 / "Surrogate" → real-word-2 as Pass 2 restore keys — reproduced
+live: `restore_response` turned the upstream prose "This is a Provisional
+Surrogate for testing purposes." into "This is a Kestrel Dynamics for testing
+purposes." The maintainer rescoped #329 (2026-08-17) to authorize the matching
+guard here: `_component_restore_map` now skips a fallback-labeled `injected`
+pair whole, before decomposition, mirroring the blinding side exactly. Both
+sides now derive from the same rule (skip a fallback-labeled pair whole), even
+though they read different source structures (`_provisional_pair_map` vs.
+`session.injected`) — restore returns real values exactly and closed-world
+holds for this surface. Regression test:
+`tests/test_provisional_component_blinding.py::test_an_ordinary_response_round_trips_unchanged_when_the_fallback_labels_whole_value_is_actually_injected`
+(formerly a strict `xfail` pin, now an expected pass).
 
 ## Alternatives considered
 

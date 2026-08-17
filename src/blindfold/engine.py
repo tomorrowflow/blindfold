@@ -1799,9 +1799,21 @@ def _component_restore_map(injected: dict[str, str]) -> dict[str, str]:
     fallback). The prior whole-value fallback let an ordinary word donated by one
     pair (e.g. "Analytics" from a 2-word surrogate mapped to a 1-word real) become
     a restore key that matched an unrelated real value elsewhere in the response.
+
+    issue #329: a fallback ``Provisional Surrogate {N}`` label contributes no
+    component keys either, mirroring the blinding-side guard in
+    ``_provisional_component_map`` -- the label's alphabetic words are ordinary
+    corpus vocabulary, not entity-derived, and the per-word digit-only guard
+    below does not exclude them.
     """
     candidates: dict[str, set[str]] = {}
     for surrogate, real in injected.items():
+        if _is_fallback_surrogate(surrogate):
+            # Mirrors the blinding-side guard (issue #329): the fallback label's
+            # words ("Provisional"/"Surrogate") are ordinary corpus vocabulary,
+            # not entity-derived -- decomposing this pair would plant them as
+            # Pass 2 restore keys and corrupt unrelated response text (#286).
+            continue
         surrogate_words = surrogate.split()
         if len(surrogate_words) < 2:
             continue
