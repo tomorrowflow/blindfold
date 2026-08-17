@@ -303,3 +303,139 @@ def test_a_length_mismatched_pair_contributes_no_components():
 
     text = blinded["messages"][0]["content"]
     assert text == "Kestrel called about the invoice."
+
+
+def test_a_fallback_label_with_equal_word_count_contributes_no_components():
+    # Issue #329 (post-merge gate finding on #306): the fallback label
+    # "Provisional Surrogate {N}" carries no entity meaning in ANY of its
+    # words, not just the digit. When a real value happens to share the
+    # fallback label's word count (3 words, here "Kestrel Dynamics Holdings"
+    # against "Provisional Surrogate 8"), the old per-word digit-only guard
+    # let "Kestrel" -> "Provisional" and "Dynamics" -> "Surrogate" register as
+    # component pairs -- both label words have alphabetic characters, so
+    # neither tripped the digit guard. The whole label must be skipped before
+    # decomposition, not word-by-word.
+    mapping = SurrogateMapping()
+    inbox = ReviewInbox()
+    for i in range(8):
+        inbox.upsert(
+            f"Filler Person {i}",
+            context=f"...Filler Person {i} joined the call...",
+            entity_type="person",
+        )
+    inbox.upsert(
+        "Kestrel Dynamics Holdings",
+        context="...Kestrel Dynamics Holdings reported record profits...",
+        entity_type="person",
+    )
+    item = inbox.list()[-1]
+    assert item.real == "Kestrel Dynamics Holdings"
+    assert item.provisional_surrogate == "Provisional Surrogate 8"
+
+    assert engine._provisional_component_map(inbox.list()) == {}
+
+
+def test_a_fallback_label_whole_value_still_blinds_but_bare_component_does_not_egress():
+    # Issue #329, acceptance criterion 2: the whole-value pair
+    # (_provisional_known_value_set) is untouched by this fix -- the full real
+    # value still blinds to the fallback label -- but a bare component word of
+    # that real ("Kestrel") is no longer rewritten, since it no longer aligns
+    # to a meaningless label word.
+    mapping = SurrogateMapping()
+    inbox = ReviewInbox()
+    for i in range(8):
+        inbox.upsert(
+            f"Filler Person {i}",
+            context=f"...Filler Person {i} joined the call...",
+            entity_type="person",
+        )
+    inbox.upsert(
+        "Kestrel Dynamics Holdings",
+        context="...Kestrel Dynamics Holdings reported record profits...",
+        entity_type="person",
+    )
+    item = inbox.list()[-1]
+    assert item.provisional_surrogate == "Provisional Surrogate 8"
+
+    payload = {
+        "model": "claude-3-5-sonnet",
+        "messages": [
+            {
+                "role": "user",
+                "content": (
+                    "Kestrel Dynamics Holdings reported earnings. "
+                    "Ask Kestrel for the follow-up."
+                ),
+            }
+        ],
+    }
+    blinded, _session = blindfold_payload(payload, mapping, None, inbox)
+
+    text = blinded["messages"][0]["content"]
+    assert "Provisional Surrogate 8" in text
+    assert "Kestrel Dynamics Holdings" not in text
+    assert text.endswith("Ask Kestrel for the follow-up.")
+
+
+def test_an_ordinary_response_containing_the_fallback_labels_own_words_round_trips_unchanged():
+    # Issue #329, acceptance criterion 3 (leak-audit: restore returns real
+    # values exactly): "Provisional" and "Surrogate" must never become Pass-1
+    # restore keys, so an ordinary response using those words as themselves
+    # (not as the injected label) is untouched by restore.
+    mapping = SurrogateMapping()
+    inbox = ReviewInbox()
+    for i in range(8):
+        inbox.upsert(
+            f"Filler Person {i}",
+            context=f"...Filler Person {i} joined the call...",
+            entity_type="person",
+        )
+    inbox.upsert(
+        "Kestrel Dynamics Holdings",
+        context="...Kestrel Dynamics Holdings reported record profits...",
+        entity_type="person",
+    )
+
+    payload = {
+        "model": "claude-3-5-sonnet",
+        "messages": [{"role": "user", "content": "Ask Holdings for the report."}],
+    }
+    _blinded, session = blindfold_payload(payload, mapping, None, inbox)
+
+    upstream_response = {
+        "content": [
+            {
+                "type": "text",
+                "text": "This is a Provisional Surrogate for testing purposes.",
+            }
+        ]
+    }
+    restored = restore_response(upstream_response, session)
+    assert (
+        restored["content"][0]["text"]
+        == "This is a Provisional Surrogate for testing purposes."
+    )
+
+
+def test_leak_gate_does_not_block_on_the_skipped_fallback_component_words():
+    # Issue #329, acceptance criterion 4 (ADR-0051 symmetry): "Kestrel" and
+    # "Dynamics" are no longer keys of _provisional_pair_map, so leak_gate
+    # must not flag their bare occurrence outbound.
+    mapping = SurrogateMapping()
+    inbox = ReviewInbox()
+    for i in range(8):
+        inbox.upsert(
+            f"Filler Person {i}",
+            context=f"...Filler Person {i} joined the call...",
+            entity_type="person",
+        )
+    inbox.upsert(
+        "Kestrel Dynamics Holdings",
+        context="...Kestrel Dynamics Holdings reported record profits...",
+        entity_type="person",
+    )
+
+    outbound = {
+        "messages": [{"role": "user", "content": "Ask Kestrel about Dynamics."}]
+    }
+    leak_gate(outbound, mapping, inbox)

@@ -172,6 +172,31 @@ covering a component surface too.
 `_component_restore_map` itself is untouched; this update adds a mirror-image
 sibling, not a modification to the restore path.
 
+### Correction (issue #329): the whole fallback label, not just its digit
+
+The alphabetic-target guard above stops at the fallback label's *digit* — but a
+post-merge re-audit of this very update found that guard incomplete. When a real
+value happens to share the fallback label's word count (a 3-word real against
+`Provisional Surrogate 8`), `Provisional` and `Surrogate` are themselves
+alphabetic, so the digit guard lets them through as component targets:
+`real_word_1 → Provisional`, `real_word_2 → Surrogate`. Both words are exactly
+as positional as the digit — the label carries no entity meaning in any of its
+three words, only in its combination with the pool's exhaustion — so admitting
+either as a restore key reintroduces this ADR's #286 corruption class from the
+blinding side (an ordinary response using "Provisional" or "Surrogate" as
+themselves gets corrupted back into the real word on restore).
+
+The fix skips a fallback-labeled item **whole, before decomposing into words**
+(`review._is_fallback_surrogate`, matching `Provisional Surrogate {N}` exactly),
+rather than trying to extend the per-word guard to more words. **Accepted
+residual:** a real paired with a fallback label loses bare-component blinding
+for its own words — mapping a real word onto a meaningless label word was
+corruption, not protection, so losing it is not a regression. The whole-value
+pair (`_provisional_known_value_set`) still blinds the referent's full real
+value; `leak_gate` and the blinder read the same `_provisional_pair_map`
+derivation either way, so ADR-0051's symmetry holds by construction and no gate
+deadlock is introduced by the narrower component surface.
+
 ## Alternatives considered
 
 - **Component → full real value only** (`Erika`→`Sarah Bergmann`) — simpler, no

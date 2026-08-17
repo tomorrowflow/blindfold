@@ -34,7 +34,7 @@ from .l3 import L3Detector, L3DetectionInternalError, count_capitalized_tokens
 # L3 uses for a single span.
 from .l3 import _context_window as _l3_context_window
 from .policy import DEFAULT_WORKSPACE
-from .review import ReviewInbox
+from .review import ReviewInbox, _is_fallback_surrogate
 from .surrogates import SurrogateMapping
 
 logger = logging.getLogger(__name__)
@@ -1605,9 +1605,25 @@ def _provisional_component_map(items: Iterable[ReviewItem]) -> dict[str, str]:
     Deliberately keyed off word counts, never ``entity_type`` (see #306: run 7
     typed ``Agent``/``Slurm``/``Exfil``/``Edit`` as ``"person"``, and this rule
     must not inherit that error rate).
+
+    issue #329 amendment: a fallback ``"Provisional Surrogate {N}"`` label is
+    skipped whole, before decomposing into words, via
+    :func:`blindfold.review._is_fallback_surrogate` -- the label is purely
+    positional in every one of its words, not just the digit, so a real value
+    that happens to share its word count (e.g. a 3-word real against
+    "Provisional Surrogate 8") must contribute no component pairs at all. The
+    per-word alphabetic guard below still runs for any future non-fallback
+    surrogate containing a non-alphabetic word, but it cannot see this: both
+    "Provisional" and "Surrogate" are alphabetic, so only excluding the whole
+    label -- not decomposing it in the first place -- closes the gap.
+    Accepted residual (ADR-0036): a real paired with a fallback label loses
+    bare-component blinding for its words; the whole-value pair
+    (:func:`_provisional_known_value_set`) still blinds the full real value.
     """
     candidates: dict[str, set[str]] = {}
     for item in items:
+        if _is_fallback_surrogate(item.provisional_surrogate):
+            continue
         real_words = item.real.split()
         surrogate_words = item.provisional_surrogate.split()
         if len(real_words) != len(surrogate_words):
