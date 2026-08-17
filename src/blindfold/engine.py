@@ -1614,17 +1614,17 @@ def _provisional_component_map(items: Iterable[ReviewItem]) -> dict[str, str]:
     typed ``Agent``/``Slurm``/``Exfil``/``Edit`` as ``"person"``, and this rule
     must not inherit that error rate).
 
-    issue #329 amendment: a fallback ``"Provisional Surrogate {N}"`` label is
-    skipped whole, before decomposing into words, via
-    :func:`blindfold.review._is_fallback_surrogate` -- the label is purely
-    positional in every one of its words, not just the digit, so a real value
-    that happens to share its word count (e.g. a 3-word real against
-    "Provisional Surrogate 8") must contribute no component pairs at all. The
-    per-word alphabetic guard below still runs for any future non-fallback
-    surrogate containing a non-alphabetic word, but it cannot see this: both
-    "Provisional" and "Surrogate" are alphabetic, so only excluding the whole
-    label -- not decomposing it in the first place -- closes the gap.
-    Accepted residual (ADR-0036): a real paired with a fallback label loses
+    issue #329 amendment (reconciled with ADR-0052/#330's opaque single-token
+    fallback): a fallback ``BFX{N:04d}`` label is skipped whole, before
+    decomposing into words, via :func:`blindfold.review._is_fallback_surrogate`
+    -- the label is purely positional despite its alphabetic ``BFX`` prefix,
+    so a real value that happens to share its word count (a single-word real
+    against the single-token "BFX0008") must contribute no component pairs at
+    all. The per-word alphabetic guard below still runs for any future
+    non-fallback surrogate containing a non-alphabetic word, but it cannot see
+    this: the ``BFX`` prefix is alphabetic, so only excluding the whole label
+    -- not decomposing it in the first place -- closes the gap. Accepted
+    residual (ADR-0036): a real paired with a fallback label loses
     bare-component blinding for its words; the whole-value pair
     (:func:`_provisional_known_value_set`) still blinds the full real value.
     """
@@ -1808,19 +1808,19 @@ def _component_restore_map(injected: dict[str, str]) -> dict[str, str]:
     pair (e.g. "Analytics" from a 2-word surrogate mapped to a 1-word real) become
     a restore key that matched an unrelated real value elsewhere in the response.
 
-    issue #329: a fallback ``Provisional Surrogate {N}`` label contributes no
-    component keys either, mirroring the blinding-side guard in
-    ``_provisional_component_map`` -- the label's alphabetic words are ordinary
-    corpus vocabulary, not entity-derived, and the per-word digit-only guard
-    below does not exclude them.
+    issue #329 (reconciled with ADR-0052/#330's opaque single-token fallback):
+    a fallback ``BFX{N:04d}`` label contributes no component keys either,
+    mirroring the blinding-side guard in ``_provisional_component_map`` -- the
+    label's alphabetic ``BFX`` prefix is not entity-derived, and the per-word
+    digit-only guard below does not exclude it.
     """
     candidates: dict[str, set[str]] = {}
     for surrogate, real in injected.items():
         if _is_fallback_surrogate(surrogate):
-            # Mirrors the blinding-side guard (issue #329): the fallback label's
-            # words ("Provisional"/"Surrogate") are ordinary corpus vocabulary,
-            # not entity-derived -- decomposing this pair would plant them as
-            # Pass 2 restore keys and corrupt unrelated response text (#286).
+            # Mirrors the blinding-side guard (issue #329): the fallback
+            # label's alphabetic ``BFX`` prefix is not entity-derived --
+            # decomposing this pair would plant it as a Pass 2 restore key
+            # and corrupt unrelated response text (#286).
             continue
         surrogate_words = surrogate.split()
         if len(surrogate_words) < 2:

@@ -221,6 +221,15 @@ holds for this surface. Regression test:
 `tests/test_provisional_component_blinding.py::test_an_ordinary_response_round_trips_unchanged_when_the_fallback_labels_whole_value_is_actually_injected`
 (formerly a strict `xfail` pin, now an expected pass).
 
+**Reconciliation (merge, 2026-08-17):** #330 landed the same day and replaced
+the fallback label itself — `"Provisional Surrogate {N}"` became the opaque,
+single-token `BFX{N:04d}` (ADR-0052) — so `review._is_fallback_surrogate` above
+no longer matches the literal string `Provisional Surrogate {N}`; it now
+delegates to `review.is_reserved_provisional_surrogate_form`, the one place
+that knows the fallback's actual current shape. The guard's rationale is
+unchanged (a fallback label carries no entity meaning and must be skipped
+whole, not decomposed), only the pattern it recognizes did.
+
 ## Alternatives considered
 
 - **Component → full real value only** (`Erika`→`Sarah Bergmann`) — simpler, no

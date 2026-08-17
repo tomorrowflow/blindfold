@@ -309,15 +309,15 @@ def test_a_length_mismatched_pair_contributes_no_components():
 
 
 def test_a_fallback_label_with_equal_word_count_contributes_no_components():
-    # Issue #329 (post-merge gate finding on #306): the fallback label
-    # "Provisional Surrogate {N}" carries no entity meaning in ANY of its
-    # words, not just the digit. When a real value happens to share the
-    # fallback label's word count (3 words, here "Kestrel Dynamics Holdings"
-    # against "Provisional Surrogate 8"), the old per-word digit-only guard
-    # let "Kestrel" -> "Provisional" and "Dynamics" -> "Surrogate" register as
-    # component pairs -- both label words have alphabetic characters, so
-    # neither tripped the digit guard. The whole label must be skipped before
-    # decomposition, not word-by-word.
+    # Issue #329 (post-merge gate finding on #306), reconciled with ADR-0052
+    # (issue #330): the fallback label is a single opaque token
+    # ("BFX{N:04d}"), carrying no entity meaning despite having alphabetic
+    # characters (the "BFX" prefix). A real value that happens to share the
+    # label's word count (1 word, here "Kestrel" against "BFX0008") would
+    # otherwise let the per-word alphabetic guard register "Kestrel" ->
+    # "BFX0008" as a component pair, since both sides have alphabetic
+    # characters. The whole label must be skipped before decomposition, not
+    # word-by-word.
     mapping = SurrogateMapping()
     inbox = ReviewInbox()
     for i in range(8):
@@ -327,19 +327,20 @@ def test_a_fallback_label_with_equal_word_count_contributes_no_components():
             entity_type="person",
         )
     inbox.upsert(
-        "Kestrel Dynamics Holdings",
-        context="...Kestrel Dynamics Holdings reported record profits...",
+        "Kestrel",
+        context="...Kestrel reported record profits...",
         entity_type="person",
     )
     item = inbox.list()[-1]
-    assert item.real == "Kestrel Dynamics Holdings"
-    assert item.provisional_surrogate == "Provisional Surrogate 8"
+    assert item.real == "Kestrel"
+    assert item.provisional_surrogate == "BFX0008"
 
     assert engine._provisional_component_map(inbox.list()) == {}
 
 
 def test_a_fallback_label_whole_value_still_blinds_but_bare_component_does_not_egress():
-    # Issue #329, acceptance criterion 2: the whole-value pair
+    # Issue #329, acceptance criterion 2 (reconciled with ADR-0052/#330's
+    # opaque single-token fallback): the whole-value pair
     # (_provisional_known_value_set) is untouched by this fix -- the full real
     # value still blinds to the fallback label -- but a bare component word of
     # that real ("Kestrel") is no longer rewritten, since it no longer aligns
@@ -358,7 +359,7 @@ def test_a_fallback_label_whole_value_still_blinds_but_bare_component_does_not_e
         entity_type="person",
     )
     item = inbox.list()[-1]
-    assert item.provisional_surrogate == "Provisional Surrogate 8"
+    assert item.provisional_surrogate == "BFX0008"
 
     payload = {
         "model": "claude-3-5-sonnet",
@@ -375,7 +376,7 @@ def test_a_fallback_label_whole_value_still_blinds_but_bare_component_does_not_e
     blinded, _session = blindfold_payload(payload, mapping, None, inbox)
 
     text = blinded["messages"][0]["content"]
-    assert "Provisional Surrogate 8" in text
+    assert "BFX0008" in text
     assert "Kestrel Dynamics Holdings" not in text
     assert text.endswith("Ask Kestrel for the follow-up.")
 
@@ -454,6 +455,7 @@ def test_an_ordinary_response_round_trips_unchanged_when_the_fallback_labels_who
     # skips a fallback-labeled pair the same way _provisional_component_map
     # does on the blinding side -- this was cycle 2's strict-xfail pin,
     # flipped to an expected pass now that the restore-side guard exists.
+    # Reconciled with ADR-0052/#330's opaque single-token fallback format.
     mapping = SurrogateMapping()
     inbox = ReviewInbox()
     for i in range(8):
@@ -468,7 +470,7 @@ def test_an_ordinary_response_round_trips_unchanged_when_the_fallback_labels_who
         entity_type="person",
     )
     item = inbox.list()[-1]
-    assert item.provisional_surrogate == "Provisional Surrogate 8"
+    assert item.provisional_surrogate == "BFX0008"
 
     payload = {
         "model": "claude-3-5-sonnet",
@@ -477,7 +479,7 @@ def test_an_ordinary_response_round_trips_unchanged_when_the_fallback_labels_who
         ],
     }
     _blinded, session = blindfold_payload(payload, mapping, None, inbox)
-    assert session.injected == {"Provisional Surrogate 8": "Kestrel Dynamics Holdings"}
+    assert session.injected == {"BFX0008": "Kestrel Dynamics Holdings"}
 
     upstream_response = {
         "content": [

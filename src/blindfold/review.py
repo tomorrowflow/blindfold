@@ -632,23 +632,25 @@ class ProvisionalPoolExhaustedError(Exception):
         self.pool_key = pool_key
 
 
-_FALLBACK_SURROGATE_RE = re.compile(r"^Provisional Surrogate \d+$")
-
-
 def _is_fallback_surrogate(surrogate: str) -> bool:
-    """Whether ``surrogate`` is the numbered ``"Provisional Surrogate {N}"``
-    fallback label (issue #329), exactly as minted by :func:`_provisional_pool_entry`
-    once a pool is exhausted.
+    """Whether ``surrogate`` is the opaque ``BFX{NNNN}`` fallback label (issue
+    #329, reconciled with ADR-0052/issue #330), exactly as minted by
+    :func:`_provisional_pool_entry` once a pool is exhausted.
 
-    None of the label's words carry entity meaning -- it is purely positional,
-    the same reason its digit alone was already excluded from the corpus-
-    disjointness check above. Callers that align a real value's words against
-    a surrogate's words (:func:`blindfold.engine._provisional_component_map`)
-    must skip a fallback label whole, before decomposing into words: a
-    per-word alphabetic guard catches the digit but not "Provisional" or
-    "Surrogate" themselves, which are exactly as positional as the digit.
+    Delegates to :func:`is_reserved_provisional_surrogate_form` -- the single
+    source of truth for the fallback's actual shape -- rather than duplicating
+    a pattern of its own, so this can never drift out of sync with it again.
+    None of the label carries entity meaning -- it is purely positional, the
+    same reason it is already excluded from the corpus-disjointness check
+    above. Callers that align a real value's words against a surrogate's
+    words (:func:`blindfold.engine._provisional_component_map`) must skip a
+    fallback label whole, before decomposing into words: the label's word
+    count can coincidentally equal a real value's word count (e.g. a
+    single-word real against a single-token ``BFX0008``), and it contains
+    alphabetic characters (the ``BFX`` prefix), so neither the word-count
+    guard nor the per-word alphabetic guard alone would catch it.
     """
-    return bool(_FALLBACK_SURROGATE_RE.match(surrogate))
+    return is_reserved_provisional_surrogate_form(surrogate)
 
 
 def _next_provisional(
