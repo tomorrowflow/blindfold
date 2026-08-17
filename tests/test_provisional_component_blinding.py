@@ -439,3 +439,73 @@ def test_leak_gate_does_not_block_on_the_skipped_fallback_component_words():
         "messages": [{"role": "user", "content": "Ask Kestrel about Dynamics."}]
     }
     leak_gate(outbound, mapping, inbox)
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "#329 cycle 2 (post-merge gate re-audit): engine._component_restore_map "
+        "(the restore side, engine.py ~1787) has the identical unguarded gap as "
+        "the blinding side's pre-#329 _provisional_component_map -- its per-word "
+        "guard excludes only a non-alphabetic word (the fallback label's digit), "
+        "not 'Provisional'/'Surrogate' themselves. Once the WHOLE real value is "
+        "blinded to the fallback label (session.injected = {'Provisional "
+        "Surrogate 8': 'Kestrel Dynamics Holdings'} -- this always happens; it "
+        "does not depend on #329's component-map fix), _component_restore_map "
+        "decomposes that injected pair word-by-word and plants 'Provisional' -> "
+        "'Kestrel' / 'Surrogate' -> 'Dynamics' as Pass 2 restore keys, so an "
+        "ordinary upstream response using those words as themselves is "
+        "corrupted on restore -- the #286 corruption class, reintroduced from "
+        "the restore side this time. #329's own 'Scope discipline' section "
+        "explicitly forbids touching _component_restore_map ('the restore side "
+        "guards #286 separately'), but that premise is false per this "
+        "reproduction, and #329's acceptance criterion 3 (this exact leak-audit "
+        "clause) cannot be satisfied without touching it. Left xfail pending a "
+        "human scope decision (widen #329 or split a new issue) -- see "
+        "handoff notes, #329 cycle 2."
+    ),
+)
+def test_an_ordinary_response_still_corrupts_when_the_fallback_labels_whole_value_is_actually_injected():
+    # Strengthens the criterion-3 test above, which only egresses a single bare
+    # component word ("Holdings") and so never populates session.injected with
+    # the fallback label's whole-value pair -- it therefore never reaches
+    # _component_restore_map's bug at all. This test injects the WHOLE real
+    # value instead, the only way session.injected actually gets populated.
+    mapping = SurrogateMapping()
+    inbox = ReviewInbox()
+    for i in range(8):
+        inbox.upsert(
+            f"Filler Person {i}",
+            context=f"...Filler Person {i} joined the call...",
+            entity_type="person",
+        )
+    inbox.upsert(
+        "Kestrel Dynamics Holdings",
+        context="...Kestrel Dynamics Holdings reported record profits...",
+        entity_type="person",
+    )
+    item = inbox.list()[-1]
+    assert item.provisional_surrogate == "Provisional Surrogate 8"
+
+    payload = {
+        "model": "claude-3-5-sonnet",
+        "messages": [
+            {"role": "user", "content": "Kestrel Dynamics Holdings reported earnings."}
+        ],
+    }
+    _blinded, session = blindfold_payload(payload, mapping, None, inbox)
+    assert session.injected == {"Provisional Surrogate 8": "Kestrel Dynamics Holdings"}
+
+    upstream_response = {
+        "content": [
+            {
+                "type": "text",
+                "text": "This is a Provisional Surrogate for testing purposes.",
+            }
+        ]
+    }
+    restored = restore_response(upstream_response, session)
+    assert (
+        restored["content"][0]["text"]
+        == "This is a Provisional Surrogate for testing purposes."
+    )
