@@ -19,11 +19,25 @@ any residual non-termination into a diagnosable ``ProvisionalPoolExhaustedError`
 instead of a hang.
 
 #332 (word-boundary ``_real_value_pattern`` matching for
-``store._mint.collides_with_known_entity``) has **not** merged as of this slice
-(trusted-maintainer comment on #333). This slice therefore widens *what* is checked
-(known_values now includes the inbox's provisional reals, drawn from the shared
-``_provisional_pair_map`` derivation) but leaves *how* it is checked
-(``collides_with_known_entity``'s raw substring test) untouched -- deferred to #332.
+``store._mint.collides_with_known_entity``) merged into this branch after #333's
+own cycle-1 commit was written: that commit's fail-closed test relied on a known
+real ("BF") that was a bare substring of every ``BFX{position:04d}`` fallback
+candidate under substring matching, to force the walk to exhaust. #332's own
+word-boundary alignment is exactly what makes that premise false -- "BF" has no
+word boundary before the "X" of "BFX0008" (both are ``\\w`` characters), so it no
+longer collides with any fallback candidate at all. That is the intended immunity
+ADR-0052 and #332 describe, not a regression, but it means a universal collision
+now requires naming every candidate in range explicitly (mirroring the same
+adaptation #332's own merge made to test_next_provisional_bounded_exhaustion.py
+and test_provisional_pool_exhaustion_request_path.py): the fail-closed test below
+monkeypatches ``review._MAX_FALLBACK_ATTEMPTS`` down to a small bound and seeds
+exact-match known reals -- via ``mapping``, since an inbox item can never hold a
+reserved-fallback-shaped ``real`` itself (``ReviewInbox.upsert`` returns ``None``
+for one, issue #330) -- for that reduced range. This slice's own widening (known_values
+now includes the inbox's provisional reals, drawn from the shared
+``_provisional_pair_map`` derivation) is otherwise unchanged; only the fixture that
+forces exhaustion needed to change to keep exercising it under the now-merged
+word-boundary rule.
 
 Leak-audit clauses exercised:
 - A: the stub upstream receives only surrogates -- a pool entry that would itself
@@ -47,6 +61,7 @@ import time
 import httpx
 import pytest
 
+from blindfold import review
 from blindfold.app import (
     app,
     get_l3_detector,
@@ -101,21 +116,30 @@ def test_a_provisional_real_minted_in_an_earlier_hop_blocks_a_colliding_named_po
     assert "Emil Fink" not in surrogates
 
 
-def _inbox_with_exhausted_person_pool_and_a_universal_collision() -> ReviewInbox:
-    # Consume all 8 named "person" pool slots, then mint one more provisional
-    # real ("BF") that -- under today's raw-substring ``collides_with_known_entity``
-    # (issue #332 not yet merged, per the trusted-maintainer comment on #333) --
-    # is a bare substring of every opaque ``BFX{NNNN}`` fallback candidate past
-    # the named pool. This is the documented, expected residual of that ordering
-    # (not a defect of this issue): a short provisional real that happens to be a
-    # substring of the reserved prefix drives the walk to #331's bound. #332
-    # (word-boundary matching) removes the cause; this test asserts the bounded,
-    # loud fail-closed shape that stands until it merges.
+_BOUND = 3
+
+
+def _inbox_with_exhausted_person_pool() -> ReviewInbox:
+    # Consume all 8 named "person" pool slots, so the next mint falls through
+    # to the opaque numbered fallback.
     inbox = ReviewInbox()
     for i in range(8):
         inbox.upsert(real=f"Filler Real {i}", context=f"context {i}")
-    inbox.upsert(real="BF", context="ctx")
     return inbox
+
+
+def _known_reals_matching_every_fallback_candidate_in_bound() -> list[tuple[str, str]]:
+    # A known real can now only word-boundary-collide with a fallback candidate's
+    # own exact text (#332) -- so forcing a universal collision across the
+    # (patched-down) bound means naming every candidate in range explicitly,
+    # rather than relying on a shared prefix like the pre-#332 "BF"/"BFX0008..."
+    # substring did. These must be confirmed reals in ``mapping``, not inbox
+    # items: ``ReviewInbox.upsert`` refuses to mint an item whose ``real`` itself
+    # matches the reserved fallback shape (issue #330).
+    return [
+        (f"BFX{position:04d}", f"Someone Else {position}")
+        for position in range(8, 8 + _BOUND)
+    ]
 
 
 def _make_stub_upstream(recorded: list[httpx.Request]) -> UpstreamClient:
@@ -130,7 +154,9 @@ def _make_stub_upstream(recorded: list[httpx.Request]) -> UpstreamClient:
 
 
 @pytest.mark.anyio
-async def test_a_provisional_real_universally_colliding_with_the_fallback_fails_closed_instead_of_hanging():
+async def test_a_provisional_real_universally_colliding_with_the_fallback_fails_closed_instead_of_hanging(
+    monkeypatch,
+):
     # AC (issue #333): termination is asserted, not assumed. Widening mint-time
     # known_values to include the inbox's provisional REALS (this issue's change)
     # must still terminate -- reaching #331's bounded
@@ -138,8 +164,9 @@ async def test_a_provisional_real_universally_colliding_with_the_fallback_fails_
     # run-8 hang, now via a provisional real established in the NEW direction
     # (real live first, colliding surrogate candidate second) instead of the
     # already-guarded old one.
-    mapping = SurrogateMapping()
-    inbox = _inbox_with_exhausted_person_pool_and_a_universal_collision()
+    monkeypatch.setattr(review, "_MAX_FALLBACK_ATTEMPTS", _BOUND)
+    mapping = SurrogateMapping.from_pairs(_known_reals_matching_every_fallback_candidate_in_bound())
+    inbox = _inbox_with_exhausted_person_pool()
     detector = L3Detector(_ConfirmSet({"Klaus"}))
 
     recorded: list[httpx.Request] = []
