@@ -131,6 +131,10 @@ corpus check.
   pool cursor is durable (ADR-0037), so a workspace that already hit this stays deadlocked until
   those inbox rows are cleared. Rewriting a live surrogate would break **restore** for in-flight
   exchanges — the worse trade for a short-lived provisional row.
+- A legacy `"Provisional Surrogate {N}"` label already **promoted** into the entity graph on
+  confirm (`mapping.seed`) is likewise not migrated — it is handled by recognition
+  (`_is_fallback_surrogate` matching both shapes, issue #336), not migration, for the same reason:
+  rewriting a promoted surrogate would break restore and re-identification keys for that referent.
 
 ## Alternatives considered
 
