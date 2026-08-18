@@ -472,11 +472,10 @@ threshold as **undecided pending the #342 fixture** rather than settling it by a
 The reason it cannot be settled by argument is the fixture's bias: **every planted name in the #74
 brief is a deliberately novel non-dictionary word** — both given-name/surname pairs and codename
 tokens alike — by design, so the brief is structurally incapable of exercising the Don/Mark/Stone
-case. "0 of 6 lost"
-is therefore reassurance the evidence has not earned. Across 23,560 hops of coding-agent traffic
-*some* hop almost certainly contains a lowercase `mark`, so rule (i) would suppress a real person on
-incidental evidence while (ii) would keep the name. Expectation is that (ii) wins; an expectation is
-not a decision.
+case. "0 of 6 lost" is therefore reassurance the evidence has not earned. Across 23,560 hops of
+coding-agent traffic *some* hop almost certainly contains a lowercase `mark`, so rule (i) would
+suppress a real person on incidental evidence while (ii) would keep the name. Expectation is that
+(ii) wins; an expectation is not a decision.
 
 **Blocking prerequisite.** The condition does not ship until a fixture carrying a real referent whose
 name is an ordinary lowercase-able word (a person `Mark Stone`, an org `Northern Data`) demonstrates
