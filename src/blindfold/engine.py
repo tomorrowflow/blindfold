@@ -1255,9 +1255,22 @@ def _blindfold_text(
             # values -- defense-in-depth so a stale/reset pool cursor (e.g. a
             # restored-from-store cursor that lagged the persisted items)
             # can't reissue a surrogate that already maps to a different real.
-            known_values = list(mapping.real_values()) + [
-                existing.provisional_surrogate for existing in inbox.list()
-            ]
+            #
+            # ADR-0051 amendment (issue #328) / issue #333: the leak gate has
+            # checked the inbox's provisional REALS since #287 -- via
+            # ``_provisional_pair_map``'s keys, not just ``item.real`` -- but this
+            # mint-time set never did, so a surrogate could be issued that the gate
+            # would then block on every subsequent request. Consult the gate's own
+            # set, by the gate's own derivation (one function, not a second
+            # reimplementation), so a pool entry that collides with an already-live
+            # provisional real -- minted in ANY earlier hop, not just this one -- is
+            # skipped at mint time instead of adjudicated after the fact.
+            existing_items = inbox.list()
+            component_map = _provisional_component_map(existing_items)
+            known_values = list(mapping.real_values())
+            for existing in existing_items:
+                known_values.append(existing.provisional_surrogate)
+                known_values.extend(_provisional_pair_map(existing, component_map))
             item = inbox.upsert(
                 real,
                 context,
