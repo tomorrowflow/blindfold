@@ -133,6 +133,10 @@ corpus check.
   exchanges — the worse trade for a short-lived provisional row.
 - The invariant's remaining natural-language fallbacks in `store/_mint.py` (`next_replacement_surrogate`,
   `mint_surrogates`) were converted in #335.
+- A legacy `"Provisional Surrogate {N}"` label already **promoted** into the entity graph on
+  confirm (`mapping.seed`) is likewise not migrated — it is handled by recognition
+  (`_is_fallback_surrogate` matching both shapes, issue #336), not migration, for the same reason:
+  rewriting a promoted surrogate would break restore and re-identification keys for that referent.
 
 ## Alternatives considered
 

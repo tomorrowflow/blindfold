@@ -42,8 +42,9 @@ if TYPE_CHECKING:
 
 # Plausible fake names used to mint **provisional** surrogates. Kept disjoint from
 # the cold-start ``store._mint._PERSON_POOL`` so a rejected provisional never collides
-# with a confirmed entity's surrogate. Falls back to ``"Provisional Surrogate {N}"``
-# past the pool so the inbox is never blocked by pool exhaustion.
+# with a confirmed entity's surrogate. Falls back past the pool to the opaque
+# ``BFX{N}`` reserved-namespace shape (ADR-0052, issue #330 -- superseding the legacy
+# ``"Provisional Surrogate {N}"`` form) so the inbox is never blocked by pool exhaustion.
 _PROVISIONAL_POOL: tuple[str, ...] = (
     "Alex Brenner",
     "Berta Falke",
@@ -59,8 +60,8 @@ _PROVISIONAL_POOL: tuple[str, ...] = (
 # adjudicator) classifies as "organization" (issue #167) -- kept disjoint from
 # _PROVISIONAL_POOL above and from store._mint's _PERSON_POOL/_ORG_POOL/
 # _REPLACEMENT_POOL/_TERM_POOL for the same collision-avoidance reason those
-# pools are already kept disjoint from each other. Falls back to the same
-# "Provisional Surrogate {N}" scheme past the pool.
+# pools are already kept disjoint from each other. Falls back past the pool to the
+# same opaque ``BFX{N}`` reserved-namespace scheme (ADR-0052, issue #330).
 _PROVISIONAL_ORG_POOL: tuple[str, ...] = (
     "Nordkap Systeme GmbH",
     "Rheinblick Consulting",
@@ -94,6 +95,25 @@ _PROVISIONAL_POOLS: dict[str, tuple[str, ...]] = {
 # module cannot import review-owning code without a cycle, since review.py
 # already imports from `store._mint`).
 _RESERVED_SURROGATE_PREFIX = REVIEW_FALLBACK_PREFIX
+
+
+# Issue #336: #330 replaced this natural-language fallback with the opaque BFX
+# form above, but legacy labels in this exact shape still exist in durable
+# state -- most durably, a label promoted into the entity graph on confirm
+# (`mapping.seed`), which persists independent of ADR-0052's "clear the inbox"
+# consequence (that only covers uncleared *inbox rows*). Recognition-only:
+# unlike `_RESERVED_SURROGATE_RE`, this pattern is never consulted by the mint
+# path (`_next_provisional`/`_provisional_pool_entry`), only by
+# `_is_fallback_surrogate` and the `upsert` refusal below.
+_LEGACY_FALLBACK_SURROGATE_RE = re.compile(r"^Provisional Surrogate \d+$")
+
+
+def _is_legacy_fallback_surrogate_form(value: str) -> bool:
+    """True if ``value`` matches the pre-ADR-0052 ``"Provisional Surrogate {N}"``
+    fallback shape (issue #329's cycle-1 pattern, superseded as a mint shape by
+    #330 but still recognized for durable legacy state -- issue #336).
+    """
+    return bool(_LEGACY_FALLBACK_SURROGATE_RE.match(value))
 
 
 # Trailing legal-form suffixes (issue #289): an organisation mentioned with and
@@ -404,14 +424,20 @@ class ReviewInbox:
         opaque reserved-namespace fallback shape (ADR-0052, issue #330,
         :func:`is_reserved_provisional_surrogate_form`) -- that namespace is
         syntactically closed against ever being minted as a real, by pattern
-        match rather than by adjudicating the collision after the fact.
+        match rather than by adjudicating the collision after the fact. Same
+        refusal for the legacy ``"Provisional Surrogate {N}"`` shape it
+        replaced (:func:`_is_legacy_fallback_surrogate_form`, issue #336): a
+        coalesced span could offer the literal template quoted in doc prose as
+        a candidate real, and it must stay recognition-only, never mintable.
         """
         with self._lock:
             referent_key = _referent_key(real, entity_type)
             existing_id = self._by_real.get(referent_key)
             if existing_id is not None:
                 return self._items[existing_id]
-            if is_reserved_provisional_surrogate_form(real):
+            if is_reserved_provisional_surrogate_form(
+                real
+            ) or _is_legacy_fallback_surrogate_form(real):
                 return None
             item_id = str(self._minted + 1)
             self._minted += 1
@@ -630,24 +656,31 @@ class ProvisionalPoolExhaustedError(Exception):
 
 
 def _is_fallback_surrogate(surrogate: str) -> bool:
-    """Whether ``surrogate`` is the opaque ``BFX{NNNN}`` fallback label (issue
-    #329, reconciled with ADR-0052/issue #330), exactly as minted by
-    :func:`_provisional_pool_entry` once a pool is exhausted.
+    """Whether ``surrogate`` is a fallback label -- either the current opaque
+    ``BFX{NNNN}`` shape (issue #329, reconciled with ADR-0052/issue #330) minted
+    by :func:`_provisional_pool_entry` once a pool is exhausted, or the legacy
+    ``"Provisional Surrogate {N}"`` shape it replaced, still recognized because
+    it persists in durable state -- most durably, a label promoted into the
+    entity graph on confirm (issue #336).
 
-    Delegates to :func:`is_reserved_provisional_surrogate_form` -- the single
-    source of truth for the fallback's actual shape -- rather than duplicating
-    a pattern of its own, so this can never drift out of sync with it again.
-    None of the label carries entity meaning -- it is purely positional, the
-    same reason it is already excluded from the corpus-disjointness check
-    above. Callers that align a real value's words against a surrogate's
-    words (:func:`blindfold.engine._provisional_component_map`) must skip a
-    fallback label whole, before decomposing into words: the label's word
-    count can coincidentally equal a real value's word count (e.g. a
-    single-word real against a single-token ``BFX0008``), and it contains
-    alphabetic characters (the ``BFX`` prefix), so neither the word-count
-    guard nor the per-word alphabetic guard alone would catch it.
+    Delegates to :func:`is_reserved_provisional_surrogate_form` and
+    :func:`_is_legacy_fallback_surrogate_form` -- the two places that know each
+    shape -- rather than duplicating a pattern of its own, so this can never
+    drift out of sync with either again. Neither label carries entity meaning --
+    both are purely positional, the same reason the opaque form is already
+    excluded from the corpus-disjointness check above. Callers that align a
+    real value's words against a surrogate's words
+    (:func:`blindfold.engine._provisional_component_map`) must skip a fallback
+    label whole, before decomposing into words: a label's word count can
+    coincidentally equal a real value's word count (e.g. a single-word real
+    against a single-token ``BFX0008``, or a three-word real against the legacy
+    three-word label), and both shapes contain alphabetic characters, so
+    neither the word-count guard nor the per-word alphabetic guard alone would
+    catch it.
     """
-    return is_reserved_provisional_surrogate_form(surrogate)
+    return is_reserved_provisional_surrogate_form(
+        surrogate
+    ) or _is_legacy_fallback_surrogate_form(surrogate)
 
 
 def _next_provisional(
