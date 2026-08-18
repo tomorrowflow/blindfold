@@ -57,7 +57,7 @@ def test_component_with_unequal_word_counts_is_not_registered_as_a_restore_key()
     # an ordinary word like "Analytics" become a restore key for an unrelated real
     # value. The bare abbreviated component is left untouched (a synthetic-name
     # quality cost, never a leak) rather than risk a wrong whole-value donation.
-    session = _session_with({"Carla Distel": "Sarah Katharina Bergmann"})
+    session = _session_with({"Carla Distel": "real-word-1 real-word-2 real-word-3"})
 
     assert _restore("Hallo Carla!", session) == "Hallo Carla!"
 
