@@ -305,8 +305,8 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   lowercase form inside an email address, a URL, or a dotted-or-hyphenated
   identifier or filename is evidence about encoding conventions, not about how
   humans write the word, and is excluded — the exclusion that separates the
-  common noun `analytics` from the real org `Northwind Analytics`, whose only
-  lowercase occurrence sat inside `northwind-analytics.example`. For a
+  common noun `metrics` from the real org `Harrowgate Metrics`, whose only
+  lowercase occurrence sat inside `harrowgate-metrics.example`. For a
   multi-word candidate the condition is **conjunctive**: every capitalized
   token needs its own evidence, because a real entity name reliably pairs a
   distinctive token with a generic one, so any-token matching preferentially
