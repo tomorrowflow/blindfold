@@ -1266,12 +1266,7 @@ def _blindfold_text(
             # reimplementation), so a pool entry that collides with an already-live
             # provisional real -- minted in ANY earlier hop, not just this one -- is
             # skipped at mint time instead of adjudicated after the fact.
-            existing_items = inbox.list()
-            component_map = _provisional_component_map(existing_items)
-            known_values = list(mapping.real_values())
-            for existing in existing_items:
-                known_values.append(existing.provisional_surrogate)
-                known_values.extend(_provisional_pair_map(existing, component_map))
+            known_values = augmented_known_values(mapping, inbox)
             item = inbox.upsert(
                 real,
                 context,
@@ -1685,6 +1680,31 @@ def _provisional_pair_map(
         if target is not None:
             pairs[word] = (target, word)
     return pairs
+
+
+def augmented_known_values(
+    mapping: SurrogateMapping, inbox: ReviewInbox
+) -> list[str]:
+    """The mint-time disjointness set (ADR-0037 defense-in-depth, issue #328/#333):
+    every confirmed real value plus every live inbox item's provisional surrogate
+    and #306 real-word components, via the same ``_provisional_pair_map`` derivation
+    :func:`leak_gate` reads.
+
+    One shared derivation for both mint call sites -- the engine's own
+    (``_blindfold_text``) and mining's out-of-band one (``mining.py``, issue #337)
+    -- so a stale/reset pool cursor can't reissue a surrogate that already maps to
+    a different, live referent on either path. Passing only ``mapping.real_values()``
+    (mining's pre-#337 shape) misses every provisional surrogate not yet confirmed
+    into ``mapping`` -- exactly the gap that let two different pools' cursors mint
+    the same ``BFX{position:04d}`` fallback token.
+    """
+    existing_items = inbox.list()
+    component_map = _provisional_component_map(existing_items)
+    known_values = list(mapping.real_values())
+    for existing in existing_items:
+        known_values.append(existing.provisional_surrogate)
+        known_values.extend(_provisional_pair_map(existing, component_map))
+    return known_values
 
 
 def _apply_provisional_pairs(

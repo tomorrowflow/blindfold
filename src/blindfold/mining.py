@@ -17,6 +17,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 
+from .engine import augmented_known_values
 from .l3 import L3Detector
 from .policy import DEFAULT_WORKSPACE
 from .review import ReviewInbox, ReviewItem
@@ -72,10 +73,15 @@ def mine_transcripts(
             item = inbox.upsert(
                 candidate.text,
                 candidate.context,
-                known_values=mapping.real_values(),
+                known_values=augmented_known_values(mapping, inbox),
                 context_offset=candidate.context_offset,
                 entity_type=decision.entity_type,
                 workspace=workspace,
+                # Issue #292/#337: pool-vs-corpus disjointness, mirroring the
+                # engine's own mint call site -- the collision that matters can
+                # be anywhere in this transcript, not just this candidate's own
+                # local context window.
+                corpus_text=transcript,
             )
             if item is None:
                 # ADR-0052 (issue #330): the candidate matches the opaque
