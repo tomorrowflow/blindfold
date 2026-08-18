@@ -82,3 +82,35 @@ def test_readme_stack_line_does_not_overstate_postgres_and_local_llm():
     assert "with Postgres for the entity graph, a local LLM for novel-entity" not in readme, (
         "README Stack line still states Postgres/local-LLM as shipped rather than target architecture"
     )
+
+
+def test_no_retired_live_verify_finding_name_appears_in_docs_or_tests():
+    """Issue #341: an ADR that quotes a live-verify finding's actual entity values
+    contaminates the next #74 run -- the session reads the ADR as a tool result and
+    L3 mints the quoted value as a fresh novel real (#340's own class, one level
+    removed from the live-verify brief: here the *ADR's own prose examples* were the
+    source, not the brief). `Fernbrook Ledger`/`Fernbrook Harbor` (docs/adr/0036,
+    issue #304's worked example) and `Thornfield Meadow` (docs/adr/0036, issue #329's
+    live reproduction) were both quoted as literal values and both minted as reals in
+    #74 run 10; `Sarah Katharina Bergmann` (docs/adr/0036 prose and
+    tests/test_component_restore.py, an unaligned-pair example) likewise. All three
+    are retired in favor of role-named placeholders (`real-word-1`, `shared-word`,
+    ...; docs/agents/domain.md's convention) and must never reappear under
+    `docs/adr/` or `tests/`.
+    """
+    retired_names = ("Fernbrook", "Thornfield", "Sarah Katharina")
+    this_file = pathlib.Path(__file__)
+
+    doc_paths = sorted((REPO_ROOT / "docs" / "adr").glob("*.md"))
+    test_paths = [
+        path for path in sorted((REPO_ROOT / "tests").rglob("*.py")) if path != this_file
+    ]
+
+    offenders = []
+    for path in (*doc_paths, *test_paths):
+        text = path.read_text()
+        for name in retired_names:
+            if name in text:
+                offenders.append((path.relative_to(REPO_ROOT).as_posix(), name))
+
+    assert offenders == []
