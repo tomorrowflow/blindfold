@@ -29,6 +29,14 @@ def _pyproject() -> dict:
     return tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
 
 
+def _gliner_extra_installed() -> bool:
+    try:
+        import gliner  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
 def _dist_names(requirements: list[str]) -> set[str]:
     # Strip the version specifier off each PEP 508 requirement, leaving the bare
     # distribution name (e.g. "gliner>=0.2.13" -> "gliner").
@@ -113,6 +121,13 @@ def test_resolve_data_dir_honors_env_override(monkeypatch):
     assert resolve_data_dir() == "/mnt/air-gapped/blindfold-data"
 
 
+@pytest.mark.skipif(
+    _gliner_extra_installed(),
+    reason=(
+        "gliner is installed in this environment, so the missing-extra path "
+        "(blindfold[gliner] absent) cannot be exercised -- see issue #334"
+    ),
+)
 def test_activating_gliner_cascade_without_the_extra_installed_raises_actionable_error():
     # ADR-0034 §6: a missing gliner/onnxruntime extra must never surface as a raw
     # ImportError -- the error must name the extra to install (`blindfold[gliner]`).
