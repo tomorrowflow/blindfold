@@ -21,8 +21,7 @@ import pathlib
 import re
 
 from blindfold.l3 import _SENTENCE_STOPWORDS
-from blindfold.review import _PROVISIONAL_ORG_POOL, _PROVISIONAL_POOL
-from blindfold.review import _LEGAL_FORM_SUFFIXES
+from blindfold.review import _LEGAL_FORM_SUFFIXES, _PROVISIONAL_ORG_POOL, _PROVISIONAL_POOL
 from blindfold.store._mint import (
     _ORG_POOL,
     _PERSON_POOL,
