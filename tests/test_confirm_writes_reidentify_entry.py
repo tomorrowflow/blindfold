@@ -62,6 +62,9 @@ class _RecordingReIdentificationStore:
                 return c
         return None
 
+    def all_entries(self) -> list[tuple[str, str, str]]:
+        return list(self.seeded)
+
 
 def _b64(s: str) -> str:
     return base64.b64encode(s.encode()).decode()

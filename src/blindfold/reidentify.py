@@ -34,6 +34,18 @@ class ReIdentificationStore(Protocol):
         """
         ...
 
+    def all_entries(self) -> list[tuple[str, str, str]]:
+        """Return every (surrogate, workspace, ciphertext) triple (issue #343).
+
+        The read side of the startup-rehydration seam: declared here for the
+        same reason as ``seed`` -- both concrete implementations already expose
+        it, and :func:`blindfold.app.hydrate_mapping_from_reidentify_store`
+        consults it through this Protocol to reseed the request path's
+        ``SurrogateMapping`` so a confirmed entity's surrogate is stable across
+        a process restart.
+        """
+        ...
+
 
 class InMemoryReIdentificationStore:
     """In-process store backed by a pre-seeded dict of (surrogate, workspace) → ciphertext.
