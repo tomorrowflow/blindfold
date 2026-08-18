@@ -355,7 +355,9 @@ async def test_confirm_then_reveal_resolves_through_real_sqlite_stores_for_an_au
     assert fx["item"].provisional_surrogate in record.reason
 
     # The confirmed entity also lives in the REAL SQLite entity_graph store.
-    entity = fx["entity_graph"].get_by_canonical("acme", "person", "Astrid Voss")
+    # Issue #346: the fixture's item is untyped (entity_type=None), which
+    # _entity_kind_for now maps to "term", not a confident "person" claim.
+    entity = fx["entity_graph"].get_by_canonical("acme", "term", "Astrid Voss")
     assert entity is not None
 
 

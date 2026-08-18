@@ -2021,9 +2021,18 @@ def _entity_kind_for(entity_type: str | None) -> str:
     ``EntityGraph`` nodes are ``person`` | ``term`` (no ``organization`` kind
     exists) -- an organization/company candidate (or any other non-person type)
     is realized as a ``term`` (CONTEXT.md: an organization worth protecting is
-    a Term); person and the untyped default map to ``person``.
+    a Term); ``person`` maps to ``person``.
+
+    Issue #346: ``None`` -- no adjudicator typed this verdict, which is *every*
+    inner-LLM-adjudicated mint by construction (l3_openai_compat.py, ollama.py
+    never set ``entity_type``) -- is the less-committal ``term``, not a
+    confident claim about a human being. Measured against the production
+    GLiNER cascade over 64 real contexts: GLiNER never typed a false-positive
+    token ``person``, and typed all three genuine humans in-sample correctly,
+    so an untyped verdict means GLiNER declined, not that a real person went
+    unlabelled.
     """
-    return "person" if entity_type in (None, "person") else "term"
+    return "person" if entity_type == "person" else "term"
 
 
 @app.post("/v1/management/review-inbox/{item_id}/confirm")

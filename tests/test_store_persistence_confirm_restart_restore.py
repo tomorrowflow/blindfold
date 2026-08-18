@@ -203,17 +203,20 @@ async def test_confirm_persist_restart_restore_round_trip(dsn):
     assert surrogate in recorded_1[0].content.decode("utf-8")
 
     # --- Step 3/4: confirm's writes are ciphertext, found via the blind index ---
+    # Issue #346: _StubAdjudicator's verdict is untyped (entity_type=None), which
+    # _entity_kind_for now maps to "term" rather than a confident "person" claim
+    # -- confirm's write lands in the terms table, not persons.
     expected_blind_index = cipher.blind_index(real_value)
     with connect(dsn) as conn:
         row = conn.execute(
-            "SELECT canonical_name_ciphertext FROM persons WHERE canonical_name_blind_index = %s",
+            "SELECT canonical_name_ciphertext FROM terms WHERE canonical_name_blind_index = %s",
             (expected_blind_index,),
         ).fetchone()
     assert row is not None
-    persons_ciphertext = row[0]
+    term_ciphertext = row[0]
     # Clause G: opaque ciphertext, never the plaintext real value.
-    assert persons_ciphertext != real_value
-    assert cipher.decrypt(persons_ciphertext) == real_value
+    assert term_ciphertext != real_value
+    assert cipher.decrypt(term_ciphertext) == real_value
 
     reidentify_ciphertext = await reidentify_store_1.surrogate_to_ciphertext(
         surrogate, DEFAULT_WORKSPACE

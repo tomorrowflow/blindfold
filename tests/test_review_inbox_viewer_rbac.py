@@ -83,7 +83,9 @@ async def test_review_inbox_lists_items_for_caller_with_viewer_role():
         {
             "id": item.id,
             "real": "Klaus",
-            "kind": "person",
+            # Issue #346: entity_type=None (no adjudicator typed it) now
+            # renders as "term", not a confident "person" claim.
+            "kind": "term",
             "entity_type": None,
             "adjudicator": None,
             "provisional_surrogate": item.provisional_surrogate,

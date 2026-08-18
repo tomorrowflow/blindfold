@@ -165,12 +165,18 @@ async def test_list_reports_the_dual_encoded_kind_for_each_candidate():
     # Issue #176: the candidate card needs a kind to drive its dual-encoded
     # shape (round person / square term, hard rule §6.2). The list seam derives
     # it from ReviewItem.entity_type with the same mapping confirm already uses
-    # (_entity_kind_for) -- an "organization" candidate is a term, everything
-    # else (including no detected type) is a person.
+    # (_entity_kind_for) -- an "organization" candidate is a term, and so is
+    # no detected type at all (issue #346: an untyped verdict is the
+    # less-committal bucket, not a confident "person" claim); only an
+    # explicit "person" verdict is a person.
     inbox = ReviewInbox()
     mapping = _seeded_mapping()
     allowlist = Allowlist()
-    inbox.upsert("Klaus Bergmann", context="Please brief Klaus Bergmann tomorrow.")
+    inbox.upsert(
+        "Klaus Bergmann",
+        context="Please brief Klaus Bergmann tomorrow.",
+        entity_type="person",
+    )
     inbox.upsert(
         "Nordwind Systems",
         context="Nordwind Systems signed the contract.",

@@ -176,7 +176,7 @@ def test_coalesced_referent_reports_cascade_coalescing_when_tokens_disagree():
 @pytest.mark.parametrize(
     "entity_type, expected_kind",
     [
-        (None, "person"),
+        (None, "term"),
         ("person", "person"),
         ("organization", "term"),
         ("phone", "term"),
@@ -184,8 +184,11 @@ def test_coalesced_referent_reports_cascade_coalescing_when_tokens_disagree():
     ],
 )
 def test_entity_kind_for_is_unchanged_for_every_entity_type(entity_type, expected_kind):
-    # Acceptance criterion: kind's existing values are pinned, unaffected by
-    # entity_type/adjudicator now also being exposed alongside it.
+    # Issue #346: an untyped verdict (entity_type=None -- the inner-LLM
+    # adjudicators' own documented shape, l3.py's ADJUDICATOR_INNER_LLM path)
+    # is no longer rendered as a confident "person" claim. Every non-person
+    # type, typed or absent, is the less-committal "term" bucket;
+    # "person" alone still maps to "person".
     from blindfold.app import _entity_kind_for
 
     assert _entity_kind_for(entity_type) == expected_kind
@@ -230,6 +233,6 @@ async def test_review_inbox_response_exposes_entity_type_and_adjudicator_alongsi
             "context_offset": item.context_offset,
             "entity_type": None,
             "adjudicator": ADJUDICATOR_INNER_LLM,
-            "kind": "person",
+            "kind": "term",
         }
     ]

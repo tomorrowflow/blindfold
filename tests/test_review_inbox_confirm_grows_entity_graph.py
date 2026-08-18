@@ -61,7 +61,9 @@ async def test_confirmed_entity_appears_in_the_workspace_entity_list_and_graph_e
     entities = entities_resp.json()["entities"]
     assert len(entities) == 1
     assert entities[0]["active_surrogate"] == item.provisional_surrogate
-    assert entities[0]["kind"] == "person"
+    # Issue #346: this item's entity_type is None (no adjudicator typed it),
+    # which renders as "term" now, not a confident "person" claim.
+    assert entities[0]["kind"] == "term"
 
     nodes = graph_resp.json()["nodes"]
     assert len(nodes) == 1
@@ -96,7 +98,8 @@ async def test_confirm_creates_an_entity_record_in_the_items_workspace_entity_gr
     assert len(entities) == 1
     assert entities[0].canonical_name == "Astrid Voss"
     assert entities[0].active_surrogate == item.provisional_surrogate
-    assert entities[0].kind == "person"
+    # Issue #346: untyped (entity_type=None) now renders as "term".
+    assert entities[0].kind == "term"
 
 
 @pytest.mark.anyio
@@ -136,7 +139,11 @@ async def test_confirming_the_same_real_value_twice_does_not_duplicate_the_entit
     inbox = ReviewInbox()
     entity_graph = EntityGraph()
     mapping = SurrogateMapping.from_pairs([])
-    entity_graph.add_entity("person", "acme", "Astrid Voss", surrogate="Alex Brenner")
+    # Issue #346: an untyped review item (no entity_type) now maps to "term",
+    # not "person" -- the pre-seeded entity must match that kind for this
+    # idempotency check to exercise dedup rather than an incidental cross-kind
+    # collision.
+    entity_graph.add_entity("term", "acme", "Astrid Voss", surrogate="Alex Brenner")
     item = inbox.upsert(
         "Astrid Voss", context="Brief Astrid Voss tomorrow.", workspace="acme"
     )
