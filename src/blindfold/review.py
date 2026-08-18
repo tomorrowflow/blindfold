@@ -40,8 +40,9 @@ if TYPE_CHECKING:
 
 # Plausible fake names used to mint **provisional** surrogates. Kept disjoint from
 # the cold-start ``store._mint._PERSON_POOL`` so a rejected provisional never collides
-# with a confirmed entity's surrogate. Falls back to ``"Provisional Surrogate {N}"``
-# past the pool so the inbox is never blocked by pool exhaustion.
+# with a confirmed entity's surrogate. Falls back past the pool to the opaque
+# ``BFX{N}`` reserved-namespace shape (ADR-0052, issue #330 -- superseding the legacy
+# ``"Provisional Surrogate {N}"`` form) so the inbox is never blocked by pool exhaustion.
 _PROVISIONAL_POOL: tuple[str, ...] = (
     "Alex Brenner",
     "Berta Falke",
@@ -57,8 +58,8 @@ _PROVISIONAL_POOL: tuple[str, ...] = (
 # adjudicator) classifies as "organization" (issue #167) -- kept disjoint from
 # _PROVISIONAL_POOL above and from store._mint's _PERSON_POOL/_ORG_POOL/
 # _REPLACEMENT_POOL/_TERM_POOL for the same collision-avoidance reason those
-# pools are already kept disjoint from each other. Falls back to the same
-# "Provisional Surrogate {N}" scheme past the pool.
+# pools are already kept disjoint from each other. Falls back past the pool to the
+# same opaque ``BFX{N}`` reserved-namespace scheme (ADR-0052, issue #330).
 _PROVISIONAL_ORG_POOL: tuple[str, ...] = (
     "Nordkap Systeme GmbH",
     "Rheinblick Consulting",
