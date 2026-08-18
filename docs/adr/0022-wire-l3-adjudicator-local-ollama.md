@@ -73,7 +73,7 @@ requires. Its keys hold real, un-blindfolded candidate text, so the cache is a
 - The pipeline has a single L3 chokepoint (the mint pass), so fail-closed, the learning
   loop, and latency all reason about one place.
 - **Out of scope (deferred follow-ups):**
-  - **Multi-token coalescing** — a multi-word novel name (`Priya Nadkarni`) still
+  - **Multi-token coalescing** — a multi-word novel name (`Sarah Bergmann`) still
     fragments into per-token provisional surrogates. Quality bug, not a privacy bug
     (both tokens are blindfolded); fixed in its own issue with coreference/minting.
   - **L3 performance** — batching (many spans per LLM call) and concurrency

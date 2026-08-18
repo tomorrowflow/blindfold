@@ -101,14 +101,14 @@ buffer growth.
 ## Update (issue #304): drop the whole-value fallback; restore is a single scan
 
 Live verify (#74 run 7) found a real value corrupted in the deliverable:
-`Northwind Analytics` came back as `Northwind Vault`. Two compounding defects, both
+`Fernbrook Ledger` came back as `Fernbrook Harbor`. Two compounding defects, both
 in this ADR's own restore path:
 
 1. **A length-mismatched pair donated whole-value component keys.** The original
    decision (above) explicitly falls back to the *full real value* when
    `len(surrogate_words) != len(real_words)`: a 2-word surrogate ending in the
-   ordinary English word `Analytics`, mapped to a 1-word real value, made *every*
-   surrogate word — including `Analytics` itself — a restore key mapping to that
+   ordinary English word `Ledger`, mapped to a 1-word real value, made *every*
+   surrogate word — including `Ledger` itself — a restore key mapping to that
    one real value. Alignment carries the positional information that makes a
    component key meaningful; without it, *any* word in the surrogate is an
    equally arbitrary choice of key, so this update replaces the fallback with
@@ -121,8 +121,8 @@ in this ADR's own restore path:
 2. **Pass 2 matched inside Pass 1's own output.** `_restore_text` ran Pass 1 (full
    surrogates) and Pass 2 (components) as two sequential scans, the second over
    the *first's substituted result* — so a component key could match a real
-   value Pass 1 had just inserted (`…Analytics` from `Northwind Analytics`
-   matching the `Analytics` component key from an unrelated pair). Restore was
+   value Pass 1 had just inserted (`…Ledger` from `Fernbrook Ledger`
+   matching the `Ledger` component key from an unrelated pair). Restore was
    not protected against its own output. Fixed by merging both passes' keys into
    one `restore_map` and running `_apply_restore_pass` exactly **once**, as a
    single left-to-right, non-overlapping scan of the *original* text — a
@@ -210,7 +210,7 @@ blinded to the fallback label as a whole (which always populates
 fix), `_component_restore_map` decomposed it and planted "Provisional" →
 real-word-1 / "Surrogate" → real-word-2 as Pass 2 restore keys — reproduced
 live: `restore_response` turned the upstream prose "This is a Provisional
-Surrogate for testing purposes." into "This is a Kestrel Dynamics for testing
+Surrogate for testing purposes." into "This is a Thornfield Meadow for testing
 purposes." The maintainer rescoped #329 (2026-08-17) to authorize the matching
 guard here: `_component_restore_map` now skips a fallback-labeled `injected`
 pair whole, before decomposition, mirroring the blinding side exactly. Both

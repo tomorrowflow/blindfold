@@ -109,6 +109,75 @@ def test_no_pool_entry_appears_as_a_literal_example_in_docs():
     assert offenders == []
 
 
+def test_no_live_verify_brief_entity_appears_as_a_literal_example_in_docs():
+    # Issue #340: the same class as the pool-entry guard above, one namespace
+    # over. docs/adr/0036 used `Northwind Analytics`/`Kestrel Dynamics` and
+    # docs/adr/0022 used `Priya Nadkarni` as worked examples -- all three are
+    # real protected entities in tests/live-verify/74-engagement-brief.md, the
+    # fixture every #74 live-verify run is seeded with. The #74 brief instructs
+    # the session to read ADR-0036 in full, so every run guarantees: brief
+    # mints a surrogate for the entity -> session reads the ADR's prose
+    # mentioning the *same* entity -> real-word component pairing (#306) maps
+    # it onto the live surrogate's component, minting a novel string that
+    # exists in no source file (the #339 artifact).
+    #
+    # Forbidden vocabulary is derived from the brief file itself -- its
+    # Person/Employer table columns, plus any **bold** prose callouts -- not a
+    # hardcoded list, so adding an entity to the brief extends this guard
+    # automatically. An organisation's legal-form-stripped form is included
+    # too (`_strip_legal_form_suffix`, issue #289's own bare-vs-full-legal-name
+    # equivalence): the brief carries "Kestrel Dynamics GmbH", but the doc
+    # occurrence that actually triggered this issue was the bare "Kestrel
+    # Dynamics".
+    from blindfold.review import _strip_legal_form_suffix
+
+    brief_path = _REPO_ROOT / "tests" / "live-verify" / "74-engagement-brief.md"
+    brief_text = brief_path.read_text()
+    lines = brief_text.splitlines()
+
+    entities: set[str] = set()
+
+    header_idx = None
+    columns: list[str] = []
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("|") and "Person" in stripped and "Employer" in stripped:
+            header_idx = i
+            columns = [cell.strip() for cell in stripped.strip("|").split("|")]
+            break
+    if header_idx is not None:
+        entity_columns = {"Person", "Employer"}
+        col_indices = [i for i, name in enumerate(columns) if name in entity_columns]
+        for line in lines[header_idx + 2 :]:  # skip the "|---|...|" separator row
+            stripped = line.strip()
+            if not stripped.startswith("|"):
+                break
+            cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+            for idx in col_indices:
+                if idx < len(cells) and cells[idx]:
+                    entities.add(cells[idx])
+
+    # Bold markdown is also used for plain emphasis (e.g. "deliberately
+    # **novel**") -- an entity callout is always a proper noun or a code, so
+    # require the match to start with an uppercase letter or a digit.
+    for match in re.finditer(r"\*\*([^*]+)\*\*", brief_text):
+        value = match.group(1).strip()
+        if value and (value[0].isupper() or value[0].isdigit()):
+            entities.add(value)
+
+    entities |= {_strip_legal_form_suffix(entity) for entity in entities}
+
+    doc_paths = [_REPO_ROOT / "CONTEXT.md", *sorted((_REPO_ROOT / "docs" / "adr").glob("*.md"))]
+    offenders = []
+    for path in doc_paths:
+        text = path.read_text()
+        for entity in entities:
+            if entity in text:
+                offenders.append((path.name, entity))
+
+    assert offenders == []
+
+
 def test_pool_vs_corpus_disjointness_prevents_the_reported_deadlock():
     # The observed deadlock's actual shape: a referent needing a *fresh*
     # surrogate this exchange, and a literal pool entry (+ its first
