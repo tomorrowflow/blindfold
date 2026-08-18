@@ -424,14 +424,14 @@ Two further parameters were measured, both decided by data:
 
 - **Conjunctive over tokens, not disjunctive.** Suppress only when *every* capitalised token of the
   candidate has evidence. Disjunctive suppresses one more false positive (16/21) and *lowers*
-  precision to 44%, because it loses `Northwind Analytics` and `Project Halyard`: a real entity name
+  precision to 44%, because it loses `Harrowgate Metrics` and `Project Larkmoor`: a real entity name
   reliably pairs a distinctive token with a generic one, so any-token matching preferentially eats
   real names. Same asymmetry #341's artifact checker relies on with its generic-word stoplist.
 - **Prose-lowercase only.** Occurrences inside email addresses, URLs, and dotted-or-hyphenated
   identifiers or filenames do **not** count as evidence. This single exclusion is the whole
-  difference between losing a genuine referent and losing none: `northwind`'s only lowercase
-  occurrence anywhere in run 10's traffic is inside the email domain `northwind-analytics.example`,
-  and counting it costs the real client org `Northwind Analytics`. The rule generalises — a lowercase
+  difference between losing a genuine referent and losing none: `harrowgate`'s only lowercase
+  occurrence anywhere in run 10's traffic is inside the email domain `harrowgate-metrics.example`,
+  and counting it costs the real client org `Harrowgate Metrics`. The rule generalises — a lowercase
   occurrence inside a machine identifier is evidence about encoding conventions, not about whether
   humans write the word as a common noun, and this heuristic's entire premise is the latter.
 
@@ -470,8 +470,9 @@ therefore adopts payload scope, the conjunctive rule and the prose-only exclusio
 threshold as **undecided pending the #342 fixture** rather than settling it by argument.
 
 The reason it cannot be settled by argument is the fixture's bias: **every planted name in the #74
-brief is a deliberately novel non-dictionary word** (`Priya`, `Nadkarni`, `Halyard`, `Kestrel`), by
-design, so the brief is structurally incapable of exercising the Don/Mark/Stone case. "0 of 6 lost"
+brief is a deliberately novel non-dictionary word** — both given-name/surname pairs and codename
+tokens alike — by design, so the brief is structurally incapable of exercising the Don/Mark/Stone
+case. "0 of 6 lost"
 is therefore reassurance the evidence has not earned. Across 23,560 hops of coding-agent traffic
 *some* hop almost certainly contains a lowercase `mark`, so rule (i) would suppress a real person on
 incidental evidence while (ii) would keep the name. Expectation is that (ii) wins; an expectation is
