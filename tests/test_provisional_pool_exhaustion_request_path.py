@@ -3,14 +3,19 @@ disjointness walk (``review._next_provisional``) used to hang forever once
 its named pool was exhausted and a known real value collided with every
 numbered fallback label -- ADR-0052's run-8 deadlock ("Surrogate" live as a
 known real, "Provisional Surrogate {N}" the fallback shape). Issue #330 closed
-that specific collision by making the fallback an opaque ``BFX{N:04d}`` token,
-but a known real containing that reserved prefix ("BFX") still collides with
-every fallback candidate, so the walk must still bound and fail closed.
-Mirrors the phone reserved-namespace pool exhaustion shape
-(test_pii_phone_pool_exhaustion.py): a stable ``blindfold_fail_closed`` code,
-a distinct ``sub_reason``, and the real value never appears anywhere in the
-503 body -- SEC-3/SEC-7 -- and the stub upstream never sees the request at
-all (leak-audit clause A).
+that specific collision by making the fallback an opaque ``BFX{N:04d}`` token.
+
+Issue #332 then aligned the mint-time collision check to the leak gate's
+word-boundary rule, which makes a *bare prefix* real like "BFX" immune to
+every fallback candidate (no word boundary before the digits of "BFX0008") --
+the intended immunity ADR-0052 describes. Forcing exhaustion at this seam now
+requires a known real for every candidate the walk will try, so this patches
+the walk's bound down to a small number and seeds exact-match known reals for
+that reduced range. Mirrors the phone reserved-namespace pool exhaustion
+shape (test_pii_phone_pool_exhaustion.py): a stable ``blindfold_fail_closed``
+code, a distinct ``sub_reason``, and the real value never appears anywhere in
+the 503 body -- SEC-3/SEC-7 -- and the stub upstream never sees the request
+at all (leak-audit clause A).
 """
 
 from __future__ import annotations
@@ -20,6 +25,7 @@ import json
 import httpx
 import pytest
 
+from blindfold import review
 from blindfold.app import (
     app,
     get_audit_log,
@@ -32,6 +38,8 @@ from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
 from blindfold.review import ReviewInbox
 from blindfold.surrogates import SurrogateMapping
 from blindfold.upstream import UpstreamClient
+
+_BOUND = 3
 
 
 class _StubAdjudicator:
@@ -63,8 +71,18 @@ def _inbox_with_exhausted_person_pool() -> ReviewInbox:
 
 
 @pytest.mark.anyio
-async def test_provisional_pool_exhaustion_blocks_the_request_fail_closed_and_scrubbed():
-    mapping = SurrogateMapping.from_pairs([("BFX", "Someone Else")])
+async def test_provisional_pool_exhaustion_blocks_the_request_fail_closed_and_scrubbed(
+    monkeypatch,
+):
+    monkeypatch.setattr(review, "_MAX_FALLBACK_ATTEMPTS", _BOUND)
+    # A known real must now exact-match a fallback candidate to collide with it
+    # (#332's word-boundary alignment) -- so exhaust every position the
+    # patched-down bound will try, rather than relying on a shared "BFX" prefix.
+    known_reals = [
+        (f"BFX{position:04d}", f"Someone Else {position}")
+        for position in range(8, 8 + _BOUND)
+    ]
+    mapping = SurrogateMapping.from_pairs(known_reals)
     inbox = _inbox_with_exhausted_person_pool()
     detector = L3Detector(_StubAdjudicator(confirm={"Klaus"}))
 
