@@ -48,6 +48,14 @@ from collections.abc import Iterable
 
 from ..l3 import _SENTENCE_STOPWORDS as _COMPONENT_STOPWORDS
 
+# Issue #338 (ADR-0052's acknowledged separate work): enlarged from 8 to 32 entries so
+# the opaque BFX fallback fires far less often (run 7 minted 43 provisional items against
+# a pool of 8). Existing entries (position 0-7) are unchanged and keep their positions --
+# the cursor is durable, so editing an already-issued position would re-issue a different
+# surrogate there. New entries (position 8-31) only append. Kept pairwise disjoint, at
+# the distinctive-word level, from every other pool here and in review.py (see
+# tests/test_surrogate_pool_enlargement.py; that test documents one pre-existing,
+# out-of-scope exception between this pool and _REPLACEMENT_POOL below -- "Lorenz").
 _PERSON_POOL: tuple[str, ...] = (
     "Bernhard Vogt",
     "Claudia Reinhardt",
@@ -57,8 +65,34 @@ _PERSON_POOL: tuple[str, ...] = (
     "Gabriele Wirth",
     "Heinz Lorenz",
     "Iris Hartmann",
+    "Zacharias Ebner",
+    "Arno Falkner",
+    "Benno Gruber",
+    "Curt Hauser",
+    "Dietmar Ilg",
+    "Egon Jost",
+    "Ferdinand Kraus",
+    "Gustav Lindner",
+    "Helmut Mahler",
+    "Ivo Nagel",
+    "Jakob Oster",
+    "Konrad Pfeiffer",
+    "Leon Quint",
+    "Martin Rieger",
+    "Nikolas Stahl",
+    "Otto Trautmann",
+    "Peter Unger",
+    "Ralf Vollrath",
+    "Simon Winkler",
+    "Thorsten Adler",
+    "Uwe Brandt",
+    "Viktor Conradi",
+    "Walter Decker",
+    "Anselm Ebeling",
 )
 
+# Issue #338: enlarged from 9 to 32 entries, same rationale/constraints as
+# _PERSON_POOL above.
 _TERM_POOL: tuple[str, ...] = (
     "Projekt Polarstern",
     "Vorgang Silberpfeil",
@@ -69,8 +103,33 @@ _TERM_POOL: tuple[str, ...] = (
     "Verfahren Lindenhof",
     "Vorhaben Rabenstein",
     "Initiative Falkenberg",
+    "Projekt Bergkristall",
+    "Vorgang Feuerstein",
+    "Initiative Wolkenbruch",
+    "Vorhaben Sturmwind",
+    "Programm Regenbogen",
+    "Verfahren Schneesturm",
+    "Projekt Eisregen",
+    "Vorgang Sonnenwende",
+    "Initiative Mondlicht",
+    "Vorhaben Sternschnuppe",
+    "Programm Windhauch",
+    "Verfahren Wellenschlag",
+    "Projekt Flussbett",
+    "Vorgang Bergpfad",
+    "Initiative Waldlichtung",
+    "Vorhaben Felsenriff",
+    "Programm Dornenhecke",
+    "Verfahren Distelfeld",
+    "Projekt Kiefernwald",
+    "Vorgang Farngrund",
+    "Initiative Moosgrund",
+    "Vorhaben Heidekraut",
+    "Programm Erlenbruch",
 )
 
+# Issue #338: enlarged from 6 to 32 entries, same rationale/constraints as
+# _PERSON_POOL above.
 _ORG_POOL: tuple[str, ...] = (
     "Brunnen Technik AG",
     "Abteilung Entwicklung Nord",
@@ -78,6 +137,32 @@ _ORG_POOL: tuple[str, ...] = (
     "Gruppe Meridian",
     "Sparte Hofgarten",
     "Bereich Talblick",
+    "Abteilung Orion",
+    "Team Zenit",
+    "Gruppe Suedpol",
+    "Sparte Kompass",
+    "Bereich Leitstern",
+    "Abteilung Horizont",
+    "Team Quelle",
+    "Gruppe Wellenkamm",
+    "Sparte Bergkamm",
+    "Bereich Waldrand",
+    "Abteilung Feldrand",
+    "Team Hochebene",
+    "Gruppe Tiefental",
+    "Sparte Sonnenhang",
+    "Bereich Sternwarte",
+    "Abteilung Kristallhang",
+    "Team Silberbach",
+    "Gruppe Goldgrund",
+    "Sparte Kupferfeld",
+    "Bereich Zinnwald",
+    "Abteilung Bronzehain",
+    "Team Perlbach",
+    "Gruppe Achatstein",
+    "Sparte Opalgrund",
+    "Bereich Rubinfeld",
+    "Abteilung Saphirtal",
 )
 
 _POOLS: dict[str, tuple[str, ...]] = {
@@ -92,6 +177,8 @@ _POOLS: dict[str, tuple[str, ...]] = {
 # from a kind-specific pool. Kept disjoint (distinct given names/word tokens) from
 # every other pool above and from review.py's ``_PROVISIONAL_POOL`` so a replacement
 # never collides with an already-active surrogate from another pool.
+# Issue #338: enlarged from 8 to 32 entries, same rationale/constraints as
+# _PERSON_POOL above.
 _REPLACEMENT_POOL: tuple[str, ...] = (
     "Ruth Vollmer",
     "Wolfgang Ehrlich",
@@ -101,6 +188,30 @@ _REPLACEMENT_POOL: tuple[str, ...] = (
     "Kurt Steinmetz",
     "Waltraud Nickel",
     "Lorenz Bruckner",
+    "Bertram Frey",
+    "Dankwart Grimm",
+    "Annegret Hummel",
+    "Brigitte Ingold",
+    "Christel Jaeger",
+    "Dagmar Krueger",
+    "Edith Lauer",
+    "Franziska Marx",
+    "Gudrun Neumann",
+    "Hedwig Osswald",
+    "Ingrid Prinz",
+    "Johanna Quandt",
+    "Karin Roth",
+    "Liesel Sattler",
+    "Mechthild Thoma",
+    "Nora Ullrich",
+    "Olga Vogel",
+    "Petra Wenzel",
+    "Renate Amend",
+    "Silvia Bode",
+    "Traudel Cramer",
+    "Ursula Delling",
+    "Vera Ehlert",
+    "Wilma Frost",
 )
 
 

@@ -71,7 +71,11 @@ from blindfold.app import (
 )
 from blindfold.engine import blindfold_payload
 from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
-from blindfold.review import ProvisionalPoolExhaustedError, ReviewInbox
+from blindfold.review import (
+    _PROVISIONAL_POOL,
+    ProvisionalPoolExhaustedError,
+    ReviewInbox,
+)
 from blindfold.surrogates import SurrogateMapping
 from blindfold.upstream import UpstreamClient
 
@@ -117,13 +121,14 @@ def test_a_provisional_real_minted_in_an_earlier_hop_blocks_a_colliding_named_po
 
 
 _BOUND = 3
+_POOL_SIZE = len(_PROVISIONAL_POOL)  # issue #338: enlarged 8 -> 32, position-stable
 
 
 def _inbox_with_exhausted_person_pool() -> ReviewInbox:
-    # Consume all 8 named "person" pool slots, so the next mint falls through
+    # Consume all named "person" pool slots, so the next mint falls through
     # to the opaque numbered fallback.
     inbox = ReviewInbox()
-    for i in range(8):
+    for i in range(_POOL_SIZE):
         inbox.upsert(real=f"Filler Real {i}", context=f"context {i}")
     return inbox
 
@@ -138,7 +143,7 @@ def _known_reals_matching_every_fallback_candidate_in_bound() -> list[tuple[str,
     # matches the reserved fallback shape (issue #330).
     return [
         (f"BFX{position:04d}", f"Someone Else {position}")
-        for position in range(8, 8 + _BOUND)
+        for position in range(_POOL_SIZE, _POOL_SIZE + _BOUND)
     ]
 
 

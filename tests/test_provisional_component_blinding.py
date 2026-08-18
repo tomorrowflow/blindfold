@@ -34,8 +34,14 @@ import pytest
 from blindfold import engine
 from blindfold.engine import LeakError, blindfold_payload, leak_gate, restore_response
 from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
-from blindfold.review import ReviewInbox
+from blindfold.review import _PROVISIONAL_POOL, ReviewInbox
 from blindfold.surrogates import SurrogateMapping
+
+# Issue #338 enlarged review._PROVISIONAL_POOL from 8 to 32 entries, position-stable --
+# these tests fill the WHOLE named pool (whatever its current size) to reach the
+# opaque BFX fallback, rather than a hardcoded 8.
+_POOL_SIZE = len(_PROVISIONAL_POOL)
+_FALLBACK = f"BFX{_POOL_SIZE:04d}"
 
 
 class _ConfirmPriya:
@@ -171,7 +177,7 @@ def test_leak_gate_fails_closed_on_a_bare_real_word_component_of_a_provisional_r
 def test_a_provisional_surrogate_fallback_label_contributes_no_components():
     # Acceptance criterion 5 (#286, shape updated by ADR-0052/#330): past pool
     # exhaustion the fallback is a single opaque, whitespace-free token
-    # ("BFX0008") rather than the old three-word numbered label -- word counts
+    # (_FALLBACK) rather than the old three-word numbered label -- word counts
     # between a multi-word real and the one-word fallback can never align, so
     # the component pass contributes nothing by construction (no digit-only-
     # word guard needed at all). If a real word were ever allowed to align to
@@ -181,7 +187,7 @@ def test_a_provisional_surrogate_fallback_label_contributes_no_components():
     # same way #286 did.
     mapping = SurrogateMapping()
     inbox = ReviewInbox()
-    for i in range(8):
+    for i in range(_POOL_SIZE):
         inbox.upsert(
             f"Filler Person {i}",
             context=f"...Filler Person {i} joined the call...",
@@ -194,7 +200,7 @@ def test_a_provisional_surrogate_fallback_label_contributes_no_components():
     )
     item = inbox.list()[-1]
     assert item.real == "Kestrel Dynamics Holdings"
-    assert item.provisional_surrogate == "BFX0008"
+    assert item.provisional_surrogate == _FALLBACK
 
     payload = {
         "model": "claude-3-5-sonnet",
@@ -313,14 +319,14 @@ def test_a_fallback_label_with_equal_word_count_contributes_no_components():
     # (issue #330): the fallback label is a single opaque token
     # ("BFX{N:04d}"), carrying no entity meaning despite having alphabetic
     # characters (the "BFX" prefix). A real value that happens to share the
-    # label's word count (1 word, here "Kestrel" against "BFX0008") would
+    # label's word count (1 word, here "Kestrel" against _FALLBACK) would
     # otherwise let the per-word alphabetic guard register "Kestrel" ->
-    # "BFX0008" as a component pair, since both sides have alphabetic
+    # _FALLBACK as a component pair, since both sides have alphabetic
     # characters. The whole label must be skipped before decomposition, not
     # word-by-word.
     mapping = SurrogateMapping()
     inbox = ReviewInbox()
-    for i in range(8):
+    for i in range(_POOL_SIZE):
         inbox.upsert(
             f"Filler Person {i}",
             context=f"...Filler Person {i} joined the call...",
@@ -333,7 +339,7 @@ def test_a_fallback_label_with_equal_word_count_contributes_no_components():
     )
     item = inbox.list()[-1]
     assert item.real == "Kestrel"
-    assert item.provisional_surrogate == "BFX0008"
+    assert item.provisional_surrogate == _FALLBACK
 
     assert engine._provisional_component_map(inbox.list()) == {}
 
@@ -347,7 +353,7 @@ def test_a_fallback_label_whole_value_still_blinds_but_bare_component_does_not_e
     # to a meaningless label word.
     mapping = SurrogateMapping()
     inbox = ReviewInbox()
-    for i in range(8):
+    for i in range(_POOL_SIZE):
         inbox.upsert(
             f"Filler Person {i}",
             context=f"...Filler Person {i} joined the call...",
@@ -359,7 +365,7 @@ def test_a_fallback_label_whole_value_still_blinds_but_bare_component_does_not_e
         entity_type="person",
     )
     item = inbox.list()[-1]
-    assert item.provisional_surrogate == "BFX0008"
+    assert item.provisional_surrogate == _FALLBACK
 
     payload = {
         "model": "claude-3-5-sonnet",
@@ -376,7 +382,7 @@ def test_a_fallback_label_whole_value_still_blinds_but_bare_component_does_not_e
     blinded, _session = blindfold_payload(payload, mapping, None, inbox)
 
     text = blinded["messages"][0]["content"]
-    assert "BFX0008" in text
+    assert _FALLBACK in text
     assert "Kestrel Dynamics Holdings" not in text
     assert text.endswith("Ask Kestrel for the follow-up.")
 
@@ -388,7 +394,7 @@ def test_an_ordinary_response_containing_the_fallback_labels_own_words_round_tri
     # (not as the injected label) is untouched by restore.
     mapping = SurrogateMapping()
     inbox = ReviewInbox()
-    for i in range(8):
+    for i in range(_POOL_SIZE):
         inbox.upsert(
             f"Filler Person {i}",
             context=f"...Filler Person {i} joined the call...",
@@ -427,7 +433,7 @@ def test_leak_gate_does_not_block_on_the_skipped_fallback_component_words():
     # must not flag their bare occurrence outbound.
     mapping = SurrogateMapping()
     inbox = ReviewInbox()
-    for i in range(8):
+    for i in range(_POOL_SIZE):
         inbox.upsert(
             f"Filler Person {i}",
             context=f"...Filler Person {i} joined the call...",
@@ -458,7 +464,7 @@ def test_an_ordinary_response_round_trips_unchanged_when_the_fallback_labels_who
     # Reconciled with ADR-0052/#330's opaque single-token fallback format.
     mapping = SurrogateMapping()
     inbox = ReviewInbox()
-    for i in range(8):
+    for i in range(_POOL_SIZE):
         inbox.upsert(
             f"Filler Person {i}",
             context=f"...Filler Person {i} joined the call...",
@@ -470,7 +476,7 @@ def test_an_ordinary_response_round_trips_unchanged_when_the_fallback_labels_who
         entity_type="person",
     )
     item = inbox.list()[-1]
-    assert item.provisional_surrogate == "BFX0008"
+    assert item.provisional_surrogate == _FALLBACK
 
     payload = {
         "model": "claude-3-5-sonnet",
@@ -479,7 +485,7 @@ def test_an_ordinary_response_round_trips_unchanged_when_the_fallback_labels_who
         ],
     }
     _blinded, session = blindfold_payload(payload, mapping, None, inbox)
-    assert session.injected == {"BFX0008": "Kestrel Dynamics Holdings"}
+    assert session.injected == {_FALLBACK: "Kestrel Dynamics Holdings"}
 
     upstream_response = {
         "content": [

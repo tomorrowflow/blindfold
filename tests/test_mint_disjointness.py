@@ -36,7 +36,7 @@ from blindfold.app import app, get_upstream_client, get_workspace_policies
 from blindfold.policy import DEFAULT_WORKSPACE, WorkspacePolicies
 from blindfold.review import ReviewInbox
 from blindfold.store import vendored_seed_repository
-from blindfold.store._mint import mint_surrogates
+from blindfold.store._mint import _PERSON_POOL, mint_surrogates
 from blindfold.surrogates import SurrogateMapping
 from blindfold.upstream import UpstreamClient
 
@@ -159,15 +159,21 @@ def test_colliding_pool_entry_is_skipped_not_reused_and_non_colliding_entries_st
     # (b) leave every referent before the collision untouched (E-stable), and
     # (c) shift every referent from the collision onward by exactly one position,
     # extending into the numbered fallback rather than reusing the skipped entry.
-    baseline = mint_surrogates("person", 8)  # no known_values -> no collisions
+    #
+    # Requests exactly ``len(_PERSON_POOL)`` surrogates (issue #338 enlarged the pool
+    # from 8 to 32 entries, position-stable -- "Stefan Kaiser" is still at position 4)
+    # so the one collision-driven skip still walks off the end of the named pool into
+    # the numbered fallback, exactly as it did against the smaller pool.
+    pool_size = len(_PERSON_POOL)
+    baseline = mint_surrogates("person", pool_size)  # no known_values -> no collisions
     assert baseline[4] == "Stefan Kaiser"
 
-    minted = mint_surrogates("person", 8, known_values=["Stefan"])
+    minted = mint_surrogates("person", pool_size, known_values=["Stefan"])
 
     assert "Stefan Kaiser" not in minted
-    assert len(minted) == len(set(minted)) == 8  # no duplicate reuse of any entry
+    assert len(minted) == len(set(minted)) == pool_size  # no duplicate reuse of any entry
     # E-stable: referents before the collision are unaffected.
     assert minted[:4] == baseline[:4]
     # The referent that would have collided, and everyone after, shift by one --
     # drawing from the pool's remaining entries and then the numbered fallback.
-    assert minted[4:] == baseline[5:] + ["Person Surrogate 8"]
+    assert minted[4:] == baseline[5:] + [f"Person Surrogate {pool_size}"]
