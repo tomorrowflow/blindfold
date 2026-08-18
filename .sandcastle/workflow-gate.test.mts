@@ -1,4 +1,5 @@
-// Unit tests for the shared hosted-workflow gate (issue #275). Run with:
+// Unit tests for the shared hosted-workflow gate (issue #275; a third consumer,
+// postgres-verify.yml, added by issue #218). Run with:
 //   npx tsx --test workflow-gate.test.mts
 // (from inside .sandcastle/, where tsx/typescript are devDependencies).
 //
@@ -62,4 +63,36 @@ test("a listRuns error is fail-closed, not a pass", async () => {
     FAST,
   );
   assert.equal(result, "failure");
+});
+
+// The postgres-verify.yml gate (issue #218) is main.mts's third consumer of
+// awaitWorkflowConclusion, sharing the exact same fail-closed function as
+// web-verify.yml/platform-verify.yml above -- these two tests exercise it under
+// the new gate's own workflow name so the merge gate's fail-closed behavior is
+// asserted for postgres-verify.yml specifically, not only inferred from the
+// generic tests above.
+
+test("postgres-verify.yml: a success run for the exact head SHA satisfies the gate", async () => {
+  const runs: WorkflowRun[] = [
+    { headSha: "abc123", status: "completed", conclusion: "success", url: "https://example/run/1" },
+  ];
+  const result = await awaitWorkflowConclusion("postgres-verify.yml", "abc123", () => runs, FAST);
+  assert.equal(result, "success");
+});
+
+test("postgres-verify.yml: a failure, a missing run, or a stale-SHA success all fail closed", async () => {
+  const failingRun: WorkflowRun[] = [
+    { headSha: "abc123", status: "completed", conclusion: "failure", url: "https://example/run/1" },
+  ];
+  assert.equal(await awaitWorkflowConclusion("postgres-verify.yml", "abc123", () => failingRun, FAST), "failure");
+
+  assert.equal(await awaitWorkflowConclusion("postgres-verify.yml", "abc123", () => [], FAST), "failure");
+
+  const staleShaRun: WorkflowRun[] = [
+    { headSha: "some-other-sha", status: "completed", conclusion: "success", url: "https://example/run/1" },
+  ];
+  assert.equal(
+    await awaitWorkflowConclusion("postgres-verify.yml", "abc123", () => staleShaRun, FAST),
+    "failure", // no stale-green carryover from a prior push's SHA
+  );
 });

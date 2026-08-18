@@ -242,6 +242,14 @@ const SPA_EXISTS = existsSync(SPA_SHELL);
 // #273/#275). Declared up here (rather than alongside its timeout/poll constants
 // further down) because the console.log just below needs it.
 const WEB_VERIFY_WORKFLOW = "web-verify.yml";
+// The hosted CI workflow running the FULL `uv run pytest` suite on ubuntu-latest,
+// where a real Docker daemon is preinstalled (issue #218) -- closing the coverage
+// hole where every `@pytest.mark.skipif(not _docker_available())` test (~60,
+// across tests/test_postgres_*.py / test_entity_graph_postgres.py /
+// test_transit_ciphertext_columns.py / test_bootstrap_wiring.py) silently skips
+// in every in-sandbox agent run. Declared up here for the same reason
+// WEB_VERIFY_WORKFLOW is -- the ACTIVE console.log just below needs it.
+const POSTGRES_VERIFY_WORKFLOW = "postgres-verify.yml";
 
 // A branch needs the browser gate only if the SPA exists AND this branch's diff
 // touches SPA-observable code. Deterministic + host-side (the branch commits are
@@ -271,6 +279,12 @@ console.log(
     ? `Web-verify workflow gate ACTIVE (issue #275): SPA-touching branches must also pass the hosted ` +
       `${WEB_VERIFY_WORKFLOW} GitHub Actions run for their exact head SHA before merge.`
     : `Web-verify workflow gate inert: no built SPA shell at ${SPA_SHELL} — ${WEB_VERIFY_WORKFLOW} gate is skipped.`,
+);
+console.log(
+  `Postgres-verify gate ACTIVE (issue #218): EVERY branch must also pass the hosted ` +
+    `${POSTGRES_VERIFY_WORKFLOW} GitHub Actions run (the full \`uv run pytest\` suite, including the ` +
+    `Docker-gated Postgres coverage) for its exact head SHA before merge — always expected, no ` +
+    `path-detection precondition (unlike the SPA/platform gates above).`,
 );
 
 // The native platform shells (ADR-0039/0040 macOS, ADR-0041 Windows). Unlike the SPA
@@ -356,6 +370,7 @@ const SANDCASTLE_LABELS = [
   ["running-reviewer", "FBCA04", "Sandcastle reviewer is auditing this issue now"],
   ["running-web-verify", "FBCA04", "Sandcastle browser gate is verifying this issue now"],
   ["running-web-verify-workflow", "FBCA04", "Sandcastle is awaiting the hosted web-verify run for this issue"],
+  ["running-postgres-verify", "FBCA04", "Sandcastle is awaiting the hosted postgres-verify run for this issue"],
   ["running-platform-verify", "FBCA04", "Sandcastle is awaiting the hosted platform-verify run for this issue"],
   ["blocked", "B60205", "Sandcastle merge gate withheld — needs a human"],
   ["merged", "0E8A16", "Sandcastle merged this branch into the target"],
@@ -663,6 +678,14 @@ const PLATFORM_VERIFY_WORKFLOW = "platform-verify.yml";
 const WEB_VERIFY_WORKFLOW_TIMEOUT_MS = 20 * 60_000; // 20 min
 const WEB_VERIFY_WORKFLOW_POLL_MS = 15_000; // 15 sec
 
+// postgres-verify.yml's own timeout/poll (POSTGRES_VERIFY_WORKFLOW is declared up
+// near SPA_PATHS, above) — mirrors WEB_VERIFY_WORKFLOW_TIMEOUT_MS/POLL_MS exactly
+// (issue #218 decision 4): a full `uv run pytest` run on ubuntu-latest (Docker
+// daemon already up, no extra OS provisioning) is the same order of cost as the
+// Playwright suite, not the OS-provisioning-heavy platform-verify job.
+const POSTGRES_VERIFY_WORKFLOW_TIMEOUT_MS = 20 * 60_000; // 20 min
+const POSTGRES_VERIFY_WORKFLOW_POLL_MS = 15_000; // 15 sec
+
 // Every OTHER gate in this loop is an agent in a sandbox, and the sandbox runner
 // writes that agent's log to traceLogPath() — which is what the role's trace pane
 // tails. The hosted-workflow gates (platform-verify, web-verify) have no agent:
@@ -771,6 +794,26 @@ async function awaitWebVerifyWorkflow(
   return awaitWorkflowConclusion(WEB_VERIFY_WORKFLOW, headSha, ghListWorkflowRuns, {
     timeoutMs: WEB_VERIFY_WORKFLOW_TIMEOUT_MS,
     pollMs: WEB_VERIFY_WORKFLOW_POLL_MS,
+    trace,
+  });
+}
+
+// Await postgres-verify.yml's conclusion for `branch`'s current head SHA (issue
+// #218) — a third consumer of awaitWorkflowConclusion, parallel to
+// awaitWebVerifyWorkflow. Same fail-closed shape: a `gh` error, a timeout, or a
+// run that never appears for this exact SHA all resolve to "failure", never a
+// silent pass — and a `success` recorded against a stale SHA from an earlier
+// push can never satisfy this poll either.
+async function awaitPostgresVerifyWorkflow(
+  branch: string,
+  trace: (line: string) => void = () => {},
+): Promise<"success" | "failure"> {
+  if (!REPO) return "failure";
+  const headSha = resolveHeadSha(branch, trace);
+  if (!headSha) return "failure";
+  return awaitWorkflowConclusion(POSTGRES_VERIFY_WORKFLOW, headSha, ghListWorkflowRuns, {
+    timeoutMs: POSTGRES_VERIFY_WORKFLOW_TIMEOUT_MS,
+    pollMs: POSTGRES_VERIFY_WORKFLOW_POLL_MS,
     trace,
   });
 }
@@ -1576,6 +1619,8 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
             webVerifyComplete: true, // N/A → clears the web gate trivially
             webVerifyWorkflowNeeded: false,
             webVerifyWorkflowComplete: true, // N/A → clears the web-verify-workflow gate trivially
+            postgresVerifyNeeded: false,
+            postgresVerifyComplete: true, // N/A → clears the postgres-verify gate trivially
             platformVerifyNeeded: false,
             platformVerifyComplete: true, // N/A → clears the platform gate trivially
           };
@@ -1648,12 +1693,66 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           );
         }
 
+        // Hosted postgres-verify.yml gate (issue #218) — a third consumer of
+        // awaitWorkflowConclusion, parallel to the web-verify gate below but with
+        // NO path-detection precondition: every reviewed branch must pass this,
+        // not just ones touching a particular path. Per the issue's own decision
+        // 2, there is no docker/postgres pytest marker, only a per-test
+        // `skipif(not _docker_available())` — a hand-maintained path list to
+        // select "just the Docker tests" would silently drift the same way #217
+        // showed once already. The hosted ubuntu-latest job instead runs the
+        // FULL `uv run pytest` suite (a strict superset of what the in-sandbox
+        // agents already ran, this time with a real Docker daemon so the ~60
+        // Docker-gated Postgres tests actually execute instead of skipping). We
+        // only spend it on branches that already cleared the reviewer — a
+        // branch the reviewer already blocked won't merge regardless.
+        let postgresVerifyNeeded = false;
+        let postgresVerifyComplete = true; // N/A defaults to clear
+        if (reviewerComplete) {
+          postgresVerifyNeeded = true;
+          // Lifecycle → GitHub: handing off to the hosted postgres-verify gate.
+          setStateLabel(issue.id, "running-postgres-verify");
+          postOnce(
+            issue.id,
+            "sandcastle:postgres-verify-started",
+            `🐘 **Postgres-verify gate** is now operating — pushing \`${issue.branch}\` to origin and ` +
+              `awaiting the hosted GitHub Actions run (the full \`uv run pytest\` suite, including the ` +
+              `Docker-gated Postgres coverage, issue #218).`,
+          );
+          // Open the trace file BEFORE the pane, so `tail -F` has this run's
+          // output from its first line rather than an empty file.
+          const postgresVerifyTrace = openHostGateTrace(issue.branch, "postgres-verify");
+          postgresVerifyTrace(`postgres-verify gate for ${issue.branch}`);
+          openTracePane(issue.branch, "postgres-verify");
+
+          if (!pushBranchToOrigin(issue.branch, postgresVerifyTrace)) {
+            postgresVerifyComplete = false;
+          } else {
+            const conclusion = await awaitPostgresVerifyWorkflow(issue.branch, postgresVerifyTrace);
+            postgresVerifyComplete = conclusion === "success";
+          }
+
+          // Lifecycle → GitHub: the hosted run attested the full suite green,
+          // Docker-gated Postgres coverage included. (A FAIL/timeout/push-failure
+          // stays silent here and surfaces as the blocked comment in the gate
+          // loop below.)
+          if (postgresVerifyComplete) {
+            postOnce(
+              issue.id,
+              "sandcastle:postgres-verify-clean",
+              `🐘 Postgres-verify gate: hosted GitHub Actions run succeeded for \`${issue.branch}\` — the ` +
+                `full \`uv run pytest\` suite (including the Docker-gated Postgres coverage) is green.`,
+            );
+          }
+        }
+
         // Browser-side gate (ADR-0011). The reviewer can't drive a browser, so a
         // branch that touches the management SPA must also pass scripted Playwright
         // web-verify in this same sandbox (the browser is in the image). N/A for
         // non-SPA branches, and inert entirely until the SPA exists. We only spend
-        // it on branches that already cleared the reviewer — a branch the reviewer
-        // already blocked won't merge regardless.
+        // it on branches that already cleared the reviewer AND the postgres-verify
+        // gate above — a branch either of those already blocked won't merge
+        // regardless.
         //
         // This is the FIRST of TWO distinct browser gates this branch may have to
         // clear (issue #275) — the second, webVerifyWorkflowNeeded/Complete below,
@@ -1670,7 +1769,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         // Neither replaces the other: dropping either loses a different guarantee.
         let webVerifyNeeded = false;
         let webVerifyComplete = true; // N/A defaults to clear
-        if (reviewerComplete && branchTouchesSpa(issue.branch)) {
+        if (reviewerComplete && postgresVerifyComplete && branchTouchesSpa(issue.branch)) {
           webVerifyNeeded = true;
           // Lifecycle → GitHub: handing off to the browser gate.
           setStateLabel(issue.id, "running-web-verify");
@@ -1724,11 +1823,12 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         // push can never satisfy this gate. Anything other than `success` (a
         // failure, a timeout, or no run ever appearing for this SHA) leaves the
         // gate unmet; there is no warn-and-continue path. We only spend it on
-        // branches that already cleared the reviewer AND the sandbox browser
-        // gate — a branch either of those already blocked won't merge regardless.
+        // branches that already cleared the reviewer, the postgres-verify gate,
+        // AND the sandbox browser gate — a branch any of those already blocked
+        // won't merge regardless.
         let webVerifyWorkflowNeeded = false;
         let webVerifyWorkflowComplete = true; // N/A defaults to clear
-        if (reviewerComplete && webVerifyComplete && branchTouchesSpa(issue.branch)) {
+        if (reviewerComplete && postgresVerifyComplete && webVerifyComplete && branchTouchesSpa(issue.branch)) {
           webVerifyWorkflowNeeded = true;
           // Lifecycle → GitHub: handing off to the hosted web-verify gate.
           setStateLabel(issue.id, "running-web-verify-workflow");
@@ -1769,11 +1869,12 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         // loop, this one waits on an EXTERNAL GitHub Actions run, not an in-sandbox
         // agent: a branch touching macos/ or windows/ needs an OS-specific
         // build/smoke-launch that only a real macOS/Windows machine can do. We only
-        // spend it on branches that already cleared the reviewer AND both browser
-        // gates — a branch any of those already blocked won't merge regardless.
+        // spend it on branches that already cleared the reviewer, postgres-verify,
+        // AND both browser gates — a branch any of those already blocked won't
+        // merge regardless.
         let platformVerifyNeeded = false;
         let platformVerifyComplete = true; // N/A defaults to clear
-        if (reviewerComplete && webVerifyComplete && webVerifyWorkflowComplete) {
+        if (reviewerComplete && postgresVerifyComplete && webVerifyComplete && webVerifyWorkflowComplete) {
           const { mac, win } = branchTouchesPlatform(issue.branch);
           if (mac || win) {
             platformVerifyNeeded = true;
@@ -1820,6 +1921,8 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           implementerComplete,
           reviewed: true,
           reviewerComplete,
+          postgresVerifyNeeded,
+          postgresVerifyComplete,
           webVerifyNeeded,
           webVerifyComplete,
           webVerifyWorkflowNeeded,
@@ -1845,16 +1948,19 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
 
   // The fail-closed merge gate: a branch is mergeable ONLY if it carries work
   // (commits ahead of the target, this run's or a prior run's), the implementer
-  // signaled done, the independent reviewer attested clean, and — when it touches
-  // the SPA or a native platform — the sandbox browser gate, the hosted
-  // web-verify.yml run, and/or the external hosted platform-verify run all
-  // attested clean too (issue #275: a red web-verify.yml run must withhold the
-  // merge exactly like a red platform-verify run does).
+  // signaled done, the independent reviewer attested clean, the hosted
+  // postgres-verify.yml run (issue #218 — every branch, no path-detection
+  // precondition) attested clean, and — when it touches the SPA or a native
+  // platform — the sandbox browser gate, the hosted web-verify.yml run, and/or
+  // the external hosted platform-verify run all attested clean too (issue #275:
+  // a red web-verify.yml run must withhold the merge exactly like a red
+  // platform-verify run does).
   const mergeable = (r: {
     hasWork: boolean;
     implementerComplete: boolean;
     reviewed: boolean;
     reviewerComplete: boolean;
+    postgresVerifyComplete: boolean;
     webVerifyComplete: boolean;
     webVerifyWorkflowComplete: boolean;
     platformVerifyComplete: boolean;
@@ -1863,6 +1969,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     r.implementerComplete &&
     r.reviewed &&
     r.reviewerComplete &&
+    r.postgresVerifyComplete &&
     r.webVerifyComplete &&
     r.webVerifyWorkflowComplete &&
     r.platformVerifyComplete;
@@ -1885,13 +1992,15 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       ? "implementer did not finish (no COMPLETE)"
       : !r.reviewerComplete
         ? "reviewer withheld attestation (leak-audit / correctness FAIL)"
-        : !r.webVerifyComplete
-          ? "browser gate withheld attestation (web behavior / SPA-privacy FAIL)"
-          : !r.webVerifyWorkflowComplete
-            ? "web-verify gate withheld attestation (hosted web-verify.yml FAIL, timeout, no run for this SHA, or push failure)"
-            : !r.platformVerifyComplete
-              ? "platform gate withheld attestation (hosted macOS/Windows build+smoke FAIL, timeout, or push failure)"
-              : "change was not reviewed";
+        : !r.postgresVerifyComplete
+          ? "postgres-verify gate withheld attestation (hosted postgres-verify.yml FAIL, timeout, no run for this SHA, or push failure)"
+          : !r.webVerifyComplete
+            ? "browser gate withheld attestation (web behavior / SPA-privacy FAIL)"
+            : !r.webVerifyWorkflowComplete
+              ? "web-verify gate withheld attestation (hosted web-verify.yml FAIL, timeout, no run for this SHA, or push failure)"
+              : !r.platformVerifyComplete
+                ? "platform gate withheld attestation (hosted macOS/Windows build+smoke FAIL, timeout, or push failure)"
+                : "change was not reviewed";
     console.warn(
       `  ⊘ ${issue.id} (${issue.branch}) BLOCKED from merge: ${why} — commits kept on branch for the next cycle / a human`,
     );
@@ -1902,13 +2011,15 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       ? "implementer"
       : !r.reviewerComplete
         ? "reviewer"
-        : !r.webVerifyComplete
-          ? "web-verify"
-          : !r.webVerifyWorkflowComplete
-            ? "web-verify-workflow"
-            : !r.platformVerifyComplete
-              ? "platform-verify"
-              : "unreviewed";
+        : !r.postgresVerifyComplete
+          ? "postgres-verify-workflow"
+          : !r.webVerifyComplete
+            ? "web-verify"
+            : !r.webVerifyWorkflowComplete
+              ? "web-verify-workflow"
+              : !r.platformVerifyComplete
+                ? "platform-verify"
+                : "unreviewed";
     setStateLabel(issue.id, "blocked");
     postOnce(
       issue.id,
