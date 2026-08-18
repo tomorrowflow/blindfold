@@ -31,20 +31,25 @@ import pytest
 from blindfold import l3 as l3_module
 from blindfold.engine import ExchangeSession, blindfold_payload, leak_gate, restore_response
 from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
-from blindfold.review import ReviewInbox, _next_provisional
+from blindfold.review import _PROVISIONAL_POOL, ReviewInbox, _next_provisional
 from blindfold.surrogates import SurrogateMapping
+
+# Issue #338 enlarged review._PROVISIONAL_POOL from 8 to 32 entries, position-stable --
+# these tests fill the WHOLE named pool (whatever its current size) to reach the
+# opaque BFX fallback, rather than a hardcoded 8.
+_POOL_SIZE = len(_PROVISIONAL_POOL)
 
 
 def test_provisional_pool_exhaustion_falls_back_to_an_opaque_reserved_token():
-    # AC1: past the named pool (8 entries), the fallback is `^BFX\d{4,}$` --
-    # no natural-language word, no whitespace, no separator.
+    # AC1: past the named pool, the fallback is `^BFX\d{4,}$` -- no
+    # natural-language word, no whitespace, no separator.
     inbox = ReviewInbox()
-    for i in range(8):
+    for i in range(_POOL_SIZE):
         inbox.upsert(f"Filler Person {i}", context=f"...Filler Person {i}...", entity_type="person")
 
     item = inbox.upsert("Referent7", context="...Referent7 called...", entity_type="person")
 
-    assert item.provisional_surrogate == "BFX0008"
+    assert item.provisional_surrogate == f"BFX{_POOL_SIZE:04d}"
 
 
 def test_a_reserved_form_candidate_real_is_never_minted():
@@ -117,13 +122,13 @@ def test_request_path_never_crashes_or_mints_on_a_reserved_form_candidate(monkey
 def test_run8_deadlock_inverted_prose_and_fallback_label_both_blind_and_leak_gate_passes():
     # AC3 + AC4 (ADR-0052 worked example, #328's own repro inverted): row 1 is a
     # real ("Surrogate", a CONTEXT.md glossary headword -- run 8's own trigger)
-    # minted as a provisional person, drawing a plausible pool name. Rows 2-8
-    # fill the rest of the named pool. Row 9 is a second real ("Referent7")
-    # minted past pool exhaustion, drawing the new opaque fallback. A payload
-    # mentioning BOTH "Surrogate" in ordinary prose and "Referent7" must blind
-    # both occurrences and pass leak_gate cleanly -- today (pre-fix) the
-    # fallback label itself would carry the word "Surrogate" back into the
-    # payload and leak_gate would raise.
+    # minted as a provisional person, drawing a plausible pool name. The rest of
+    # the rows fill out the named pool. The next row is a second real
+    # ("Referent7") minted past pool exhaustion, drawing the new opaque
+    # fallback. A payload mentioning BOTH "Surrogate" in ordinary prose and
+    # "Referent7" must blind both occurrences and pass leak_gate cleanly --
+    # today (pre-fix) the fallback label itself would carry the word
+    # "Surrogate" back into the payload and leak_gate would raise.
     mapping = SurrogateMapping()
     inbox = ReviewInbox()
 
@@ -132,13 +137,13 @@ def test_run8_deadlock_inverted_prose_and_fallback_label_both_blind_and_leak_gat
     )
     assert surrogate_item.provisional_surrogate == "Alex Brenner"  # pool position 0
 
-    for i in range(7):
+    for i in range(_POOL_SIZE - 1):
         inbox.upsert(f"Filler Person {i}", context=f"...Filler Person {i}...", entity_type="person")
 
     referent_item = inbox.upsert(
         "Referent7", context="...summarise Referent7...", entity_type="person"
     )
-    assert referent_item.provisional_surrogate == "BFX0008"
+    assert referent_item.provisional_surrogate == f"BFX{_POOL_SIZE:04d}"
 
     payload = {
         "model": "claude-3-5-sonnet",
@@ -157,7 +162,7 @@ def test_run8_deadlock_inverted_prose_and_fallback_label_both_blind_and_leak_gat
     assert "Surrogate" not in text
     assert "Alex Brenner" in text
     # AC1/AC3: the fallback label carries no natural-language word to collide.
-    assert "BFX0008" in text
+    assert f"BFX{_POOL_SIZE:04d}" in text
 
     # AC3/AC7 (leak-audit clause D): the verify pass is clean.
     leak_gate(blinded, mapping, inbox)
@@ -170,14 +175,14 @@ def test_opaque_fallback_admits_no_pass2_restore_key_and_utf8_survives_restore()
     # >=2 guard excludes it categorically, not merely its digit. A response
     # containing an ordinary "utf-8" must survive restore byte-identical.
     inbox = ReviewInbox()
-    for i in range(8):
+    for i in range(_POOL_SIZE):
         inbox.upsert(f"Filler Person {i}", context=f"...Filler Person {i}...", entity_type="person")
     item = inbox.upsert(
         "Kestrel Dynamics Holdings",
         context="...Kestrel Dynamics Holdings reported record profits...",
         entity_type="person",
     )
-    assert item.provisional_surrogate == "BFX0008"
+    assert item.provisional_surrogate == f"BFX{_POOL_SIZE:04d}"
 
     session = ExchangeSession()
     session.record(item.provisional_surrogate, item.real)

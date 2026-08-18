@@ -35,11 +35,12 @@ from blindfold.app import (
     get_upstream_client,
 )
 from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
-from blindfold.review import ReviewInbox
+from blindfold.review import _PROVISIONAL_POOL, ReviewInbox
 from blindfold.surrogates import SurrogateMapping
 from blindfold.upstream import UpstreamClient
 
 _BOUND = 3
+_POOL_SIZE = len(_PROVISIONAL_POOL)  # issue #338: enlarged 8 -> 32, position-stable
 
 
 class _StubAdjudicator:
@@ -62,10 +63,10 @@ def _make_stub_upstream(recorded: list[httpx.Request]) -> UpstreamClient:
 
 
 def _inbox_with_exhausted_person_pool() -> ReviewInbox:
-    # Consume all 8 named "person" pool slots (review._PROVISIONAL_POOL) so the
+    # Consume all named "person" pool slots (review._PROVISIONAL_POOL) so the
     # cursor for the very next candidate lands on the numbered fallback.
     inbox = ReviewInbox()
-    for i in range(8):
+    for i in range(_POOL_SIZE):
         inbox.upsert(real=f"Filler Real {i}", context=f"context {i}")
     return inbox
 
@@ -80,7 +81,7 @@ async def test_provisional_pool_exhaustion_blocks_the_request_fail_closed_and_sc
     # patched-down bound will try, rather than relying on a shared "BFX" prefix.
     known_reals = [
         (f"BFX{position:04d}", f"Someone Else {position}")
-        for position in range(8, 8 + _BOUND)
+        for position in range(_POOL_SIZE, _POOL_SIZE + _BOUND)
     ]
     mapping = SurrogateMapping.from_pairs(known_reals)
     inbox = _inbox_with_exhausted_person_pool()

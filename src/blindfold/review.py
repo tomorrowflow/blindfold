@@ -45,6 +45,16 @@ if TYPE_CHECKING:
 # with a confirmed entity's surrogate. Falls back past the pool to the opaque
 # ``BFX{N}`` reserved-namespace shape (ADR-0052, issue #330 -- superseding the legacy
 # ``"Provisional Surrogate {N}"`` form) so the inbox is never blocked by pool exhaustion.
+# Issue #338 (ADR-0052's acknowledged separate work): enlarged from 8 to 32 entries so
+# the opaque BFX fallback -- which degrades the provider's reasoning about that referent
+# -- fires far less often (run 7 minted 43 provisional items against a pool of 8).
+# Existing entries (position 0-7) are unchanged and keep their positions -- the pool
+# cursor is monotonic, durable (ADR-0037), and never rewound, so reordering or editing an
+# already-issued position would re-issue a different surrogate at that position. New
+# entries (position 8-31) only append. Kept pairwise disjoint, at the distinctive-word
+# level, from every other pool in this module and in store/_mint.py (see
+# tests/test_surrogate_pool_enlargement.py), and disjoint from CONTEXT.md's reserved
+# worked-example name and from every ADR worked example (issue #292's lesson).
 _PROVISIONAL_POOL: tuple[str, ...] = (
     "Alex Brenner",
     "Berta Falke",
@@ -54,6 +64,30 @@ _PROVISIONAL_POOL: tuple[str, ...] = (
     "Fritz Graf",
     "Greta Henning",
     "Hugo Imhoff",
+    "Anton Baumann",
+    "Bruno Dressler",
+    "Detlef Ebert",
+    "Erwin Frank",
+    "Falk Gerber",
+    "Gerd Herzog",
+    "Hannes Junker",
+    "Ingo Kellner",
+    "Jorg Lang",
+    "Klaus Moser",
+    "Lukas Nolte",
+    "Manfred Ostermann",
+    "Niklas Pauli",
+    "Oskar Quast",
+    "Paul Richter",
+    "Quirin Stark",
+    "Rainer Traub",
+    "Sven Ulrich",
+    "Tobias Vetter",
+    "Udo Wachter",
+    "Volker Ackermann",
+    "Werner Berger",
+    "Xaver Cordes",
+    "Yannick Diehl",
 )
 
 # Plausible fake company names for a candidate GLiNER (or another type-aware
@@ -62,6 +96,8 @@ _PROVISIONAL_POOL: tuple[str, ...] = (
 # _REPLACEMENT_POOL/_TERM_POOL for the same collision-avoidance reason those
 # pools are already kept disjoint from each other. Falls back past the pool to the
 # same opaque ``BFX{N}`` reserved-namespace scheme (ADR-0052, issue #330).
+# Issue #338: enlarged from 8 to 32 entries, same rationale and constraints as
+# _PROVISIONAL_POOL above -- existing positions unchanged, new entries append only.
 _PROVISIONAL_ORG_POOL: tuple[str, ...] = (
     "Nordkap Systeme GmbH",
     "Rheinblick Consulting",
@@ -71,6 +107,30 @@ _PROVISIONAL_ORG_POOL: tuple[str, ...] = (
     "Moosburg Analytics",
     "Feldmark Ventures",
     "Silberklang Media",
+    "Sternwald Robotics",
+    "Grauberg Dynamics",
+    "Lindenau Holdings",
+    "Bergfeld Partners",
+    "Talkirch Networks",
+    "Rotmoos Technologies",
+    "Weissenau Innovations",
+    "Kaltental Capital",
+    "Hochwald Labs",
+    "Steinbrueck Materials",
+    "Falkental Energie",
+    "Wolkenrain Chemie",
+    "Eisenau Pharma",
+    "Marschfeld Mobility",
+    "Duenenberg Trading",
+    "Amselgrund Finance",
+    "Buchenhorst Assekuranz",
+    "Drachenfeld Immobilien",
+    "Ebersberg Spedition",
+    "Geierstein Vertrieb",
+    "Habichtswald Handel",
+    "Illerbach Rohstoffe",
+    "Jagdfeld Elektronik",
+    "Kraehenmoor Feinmechanik",
 )
 
 _DEFAULT_PROVISIONAL_POOL_KEY = "person"

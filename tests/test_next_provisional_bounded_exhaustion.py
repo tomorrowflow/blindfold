@@ -29,9 +29,14 @@ import time
 import pytest
 
 from blindfold import review
-from blindfold.review import ProvisionalPoolExhaustedError, _next_provisional
+from blindfold.review import (
+    _PROVISIONAL_POOL,
+    ProvisionalPoolExhaustedError,
+    _next_provisional,
+)
 
 _BOUND = 3
+_POOL_SIZE = len(_PROVISIONAL_POOL)  # issue #338: enlarged 8 -> 32, position-stable
 
 
 def _exact_match_known_values(start_position: int, attempts: int) -> list[str]:
@@ -44,11 +49,11 @@ def _exact_match_known_values(start_position: int, attempts: int) -> list[str]:
 
 def test_next_provisional_fails_closed_instead_of_hanging_on_universal_collision(monkeypatch):
     monkeypatch.setattr(review, "_MAX_FALLBACK_ATTEMPTS", _BOUND)
-    known_values = _exact_match_known_values(8, _BOUND)
+    known_values = _exact_match_known_values(_POOL_SIZE, _BOUND)
 
     start = time.monotonic()
     with pytest.raises(ProvisionalPoolExhaustedError):
-        _next_provisional("person", 8, known_values, "")
+        _next_provisional("person", _POOL_SIZE, known_values, "")
     elapsed = time.monotonic() - start
 
     # The measured hang (issue #331) never returned after 3 seconds. A bounded
@@ -58,9 +63,9 @@ def test_next_provisional_fails_closed_instead_of_hanging_on_universal_collision
 
 def test_provisional_pool_exhausted_error_names_only_the_pool_kind(monkeypatch):
     monkeypatch.setattr(review, "_MAX_FALLBACK_ATTEMPTS", _BOUND)
-    known_values = _exact_match_known_values(8, _BOUND)
+    known_values = _exact_match_known_values(_POOL_SIZE, _BOUND)
     try:
-        _next_provisional("person", 8, known_values, "")
+        _next_provisional("person", _POOL_SIZE, known_values, "")
     except ProvisionalPoolExhaustedError as exc:
         assert "BFX" not in str(exc)
         assert "person" in str(exc)
