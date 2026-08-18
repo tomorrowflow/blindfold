@@ -28,7 +28,7 @@ from __future__ import annotations
 from blindfold import engine, mining
 from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
 from blindfold.mining import mine_transcripts
-from blindfold.review import ReviewInbox
+from blindfold.review import _PROVISIONAL_POOL, ReviewInbox
 from blindfold.surrogates import SurrogateMapping
 
 
@@ -51,24 +51,28 @@ def _exhaust_pool(inbox: ReviewInbox, entity_type: str | None, count: int, label
 def test_mining_does_not_duplicate_a_live_provisional_surrogate_across_pools():
     # Regression (issue #337): person and organization fallback tokens are
     # both ``BFX{position:04d}`` -- the position, not the pool key, is embedded
-    # (review.py's ``_provisional_pool_entry``) -- so person-cursor-8 and
-    # org-cursor-8 render the identical string "BFX0008". The engine's own
-    # mint call site guards this by including every live inbox item's
-    # provisional surrogate in ``known_values``; mining must do the same.
+    # (review.py's ``_provisional_pool_entry``) -- so person-cursor-N and
+    # org-cursor-N render the identical string once both pools are exhausted.
+    # The engine's own mint call site guards this by including every live
+    # inbox item's provisional surrogate in ``known_values``; mining must do
+    # the same.
     mapping = SurrogateMapping()
     inbox = ReviewInbox()
 
-    # Exhaust the 8 named person-pool slots, then mint one more person referent
-    # directly -- it falls through to the opaque numbered fallback, landing on
-    # "BFX0008" (position starts at 0, exhausts through position 7, next is 8).
-    _exhaust_pool(inbox, None, 8, "Person Filler")
+    # Exhaust the named person-pool slots (32 since issue #338's enlargement),
+    # then mint one more person referent directly -- it falls through to the
+    # opaque numbered fallback, landing on "BFX{pool_size:04d}" (position
+    # starts at 0, exhausts through position pool_size - 1, next is pool_size).
+    pool_size = len(_PROVISIONAL_POOL)
+    fallback_surrogate = f"BFX{pool_size:04d}"
+    _exhaust_pool(inbox, None, pool_size, "Person Filler")
     person_fallback_item = inbox.upsert(real="Established Person", context="ctx")
     assert person_fallback_item is not None
-    assert person_fallback_item.provisional_surrogate == "BFX0008"
+    assert person_fallback_item.provisional_surrogate == fallback_surrogate
 
-    # Exhaust the 8 named organization-pool slots -- its cursor is now also at
-    # position 8, so its own next fallback candidate is the SAME "BFX0008".
-    _exhaust_pool(inbox, "organization", 8, "Org Filler")
+    # Exhaust the named organization-pool slots -- its cursor is now also at
+    # position pool_size, so its own next fallback candidate is the SAME token.
+    _exhaust_pool(inbox, "organization", pool_size, "Org Filler")
 
     detector = L3Detector(_ConfirmSetOrg({"Nordwind"}))
     report = mine_transcripts(
@@ -82,10 +86,10 @@ def test_mining_does_not_duplicate_a_live_provisional_surrogate_across_pools():
     mined_item = report.proposed[0]
     assert mined_item.real == "Nordwind"
     # The bug: mining passed only ``mapping.real_values()`` (empty here) as
-    # known_values, so it never saw the live person item's "BFX0008" surrogate
+    # known_values, so it never saw the live person item's fallback surrogate
     # and would duplicate it. Fixed: mining must skip past the collision, the
     # same way the engine's own mint call site does.
-    assert mined_item.provisional_surrogate != "BFX0008"
+    assert mined_item.provisional_surrogate != fallback_surrogate
 
 
 def test_mining_does_not_assign_a_named_pool_entry_occurring_verbatim_in_the_transcript():
@@ -97,8 +101,6 @@ def test_mining_does_not_assign_a_named_pool_entry_occurring_verbatim_in_the_tra
     # explicit ``corpus_text`` is given) -- could still be assigned as that
     # transcript's own surrogate. The pool cursor starts at position 0, so
     # with the bug, the very first named entry is handed out unconditionally.
-    from blindfold.review import _PROVISIONAL_POOL
-
     pool_entry = _PROVISIONAL_POOL[0]
     mapping = SurrogateMapping()
     inbox = ReviewInbox()

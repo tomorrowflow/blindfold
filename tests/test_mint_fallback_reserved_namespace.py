@@ -50,24 +50,28 @@ def _exact_match_known_values(prefix: str, start_position: int, attempts: int) -
 
 
 def test_next_replacement_surrogate_past_pool_exhaustion_is_opaque_not_natural_language():
-    # AC1: past _REPLACEMENT_POOL's 8 entries, the fallback must carry no
-    # natural-language word ("Replacement", "Surrogate") and no free-standing
-    # integer -- a single opaque ASCII token, mirroring BFX{NNNN}'s shape.
-    surrogate, _next_position = next_replacement_surrogate(8, known_values=[])
+    # AC1: past _REPLACEMENT_POOL's entries (32 since issue #338's enlargement),
+    # the fallback must carry no natural-language word ("Replacement",
+    # "Surrogate") and no free-standing integer -- a single opaque ASCII token,
+    # mirroring BFX{NNNN}'s shape.
+    pool_size = len(_mint._REPLACEMENT_POOL)
+    surrogate, _next_position = next_replacement_surrogate(pool_size, known_values=[])
 
-    assert surrogate != "Replacement Surrogate 8"
+    assert surrogate != f"Replacement Surrogate {pool_size}"
     assert "Replacement" not in surrogate
     assert "Surrogate" not in surrogate
     assert " " not in surrogate
 
 
 def test_mint_surrogates_past_kind_pool_exhaustion_is_opaque_not_natural_language():
-    # AC2: past a kind's named pool (8 entries for "person"), the fallback
-    # must likewise carry no natural-language word and no whitespace.
-    minted = mint_surrogates("person", 9)  # 9th entry is past the 8-entry pool
-    fallback = minted[8]
+    # AC2: past a kind's named pool (32 entries for "person" since issue
+    # #338's enlargement), the fallback must likewise carry no
+    # natural-language word and no whitespace.
+    pool_size = len(_mint._PERSON_POOL)
+    minted = mint_surrogates("person", pool_size + 1)  # one past the named pool
+    fallback = minted[pool_size]
 
-    assert fallback != "Person Surrogate 8"
+    assert fallback != f"Person Surrogate {pool_size}"
     assert "Person" not in fallback
     assert "Surrogate" not in fallback
     assert " " not in fallback
@@ -99,11 +103,14 @@ def test_next_replacement_surrogate_fails_closed_instead_of_hanging_on_universal
     # review._MAX_FALLBACK_ATTEMPTS) and assert it fails closed well inside
     # the 3s window #331's own measured hang never returned within.
     monkeypatch.setattr(_mint, "_MAX_FALLBACK_ATTEMPTS", _BOUND)
-    known_values = _exact_match_known_values(_mint.REPLACEMENT_FALLBACK_PREFIX, 8, _BOUND)
+    pool_size = len(_mint._REPLACEMENT_POOL)
+    known_values = _exact_match_known_values(
+        _mint.REPLACEMENT_FALLBACK_PREFIX, pool_size, _BOUND
+    )
 
     start = time.monotonic()
     with pytest.raises(_mint.FallbackSurrogatePoolExhaustedError):
-        next_replacement_surrogate(8, known_values=known_values)
+        next_replacement_surrogate(pool_size, known_values=known_values)
     elapsed = time.monotonic() - start
 
     assert elapsed < 3
@@ -115,11 +122,14 @@ def test_mint_surrogates_fails_closed_instead_of_hanging_on_universal_collision(
     # `while len(result) < count` never advances `result` if every candidate
     # from the current position onward collides.
     monkeypatch.setattr(_mint, "_MAX_FALLBACK_ATTEMPTS", _BOUND)
-    known_values = _exact_match_known_values(_mint.POOL_FALLBACK_PREFIXES["person"], 8, _BOUND)
+    pool_size = len(_mint._PERSON_POOL)
+    known_values = _exact_match_known_values(
+        _mint.POOL_FALLBACK_PREFIXES["person"], pool_size, _BOUND
+    )
 
     start = time.monotonic()
     with pytest.raises(_mint.FallbackSurrogatePoolExhaustedError):
-        mint_surrogates("person", 9, known_values=known_values)
+        mint_surrogates("person", pool_size + 1, known_values=known_values)
     elapsed = time.monotonic() - start
 
     assert elapsed < 3
