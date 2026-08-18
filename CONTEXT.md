@@ -278,12 +278,13 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   *learned* allowlist reject — poisons nothing.
 - **Suppression** — ruling a token out of L3 adjudication (allowlist, declared
   tool vocabulary, stopwords, **positional case heuristic**, **payload-region
-  confinement**). Token-granularity by default: a region (system prompt, code
-  fence) may inform heuristics but is never skipped wholesale. The one
-  span-granular exception (issue #294): a multi-word **allowlist** phrase
-  suppresses exactly its own literal occurrence — still a bounded span the
-  allowlist itself names, never a region. Suppression never affects L1/L2
-  protection — a suppressed token that is a known entity is still blindfolded.
+  confinement**, **case-inconsistency suppression**). Token-granularity by
+  default: a region (system prompt, code fence) may inform heuristics but is
+  never skipped wholesale. The one span-granular exception (issue #294): a
+  multi-word **allowlist** phrase suppresses exactly its own literal
+  occurrence — still a bounded span the allowlist itself names, never a
+  region. Suppression never affects L1/L2 protection — a suppressed token that
+  is a known entity is still blindfolded.
 - **Payload-region confinement** — a **Suppression** condition (ADR-0023,
   "Update (issue #301)") that treats a capitalized token's presence in
   `system[]` alone as evidence it is framework/product prose, not a protected
@@ -297,6 +298,29 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   workspace persistence (issue #302). Run 7 evidence: 25 of 43 review-inbox
   mints were system-confined and every one was a false positive; all 6
   genuine referents occurred at least once in `messages[]`.
+- **Case-inconsistency suppression** — a **Suppression** condition (ADR-0023,
+  "Update (issue #342)") that treats a capitalized token's own lowercase form
+  occurring in the same **request payload** as evidence it is ordinary
+  vocabulary, not a protected referent. Only **prose** occurrences count: a
+  lowercase form inside an email address, a URL, or a dotted-or-hyphenated
+  identifier or filename is evidence about encoding conventions, not about how
+  humans write the word, and is excluded — the exclusion that separates the
+  common noun `analytics` from the real org `Northwind Analytics`, whose only
+  lowercase occurrence sat inside `northwind-analytics.example`. For a
+  multi-word candidate the condition is **conjunctive**: every capitalized
+  token needs its own evidence, because a real entity name reliably pairs a
+  distinctive token with a generic one, so any-token matching preferentially
+  eats real names. Computed once per request on the untouched payload, never
+  persisted — the same lifetime as **payload-region confinement**,
+  deliberately not `DeclaredToolVocabulary`'s workspace persistence. Distinct
+  from the **positional case heuristic**, which tests the same vocabulary
+  signal at **hop** scope *and* behind a positional gate: this condition has
+  payload scope and no gate, so it **bypasses the Don/Mark/Stone guard** for
+  tokens the positional heuristic keeps. That guard is therefore no longer a
+  system-wide guarantee about real first names. Run 10 evidence: 14 of 21
+  false-positive mints suppressed at a cost of 0 of 6 genuine referents — on a
+  fixture whose planted names are deliberately novel non-dictionary words, so
+  it cannot exercise the guard it removes.
 - **Positional case heuristic** — a **Suppression** condition (ADR-0033) that
   eliminates English positional-capitalization noise from L3 candidacy before
   any model call. A capitalized token is suppressed when (b) it appears only

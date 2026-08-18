@@ -351,3 +351,181 @@ are still blindfolded there, and protection still wins (`known_surfaces` is chec
 - **ADR-0051's governing-risk condition is what this answers.** See that ADR's "Amendment
   (issue #301)": the trade it accepted was conditional on this precision rate coming down, and
   14% is the measurement that made it due.
+
+## Update (issue #342): a fifth suppression condition — case-inconsistency at payload scope
+
+### The measurement
+
+#74 **run 10** (build `5501ef3`) is the first live-verify run with no mid-run intervention, so it is
+the first clean read on this ADR's own acceptance gate. It measured **#59 precision at 22% — 6
+genuine mints of 27.** This supersedes run 9's 32% (6 of 19), which was flattered by that run's two
+deadlocks cutting the source-reading phase short: reading more repo prose produces proportionally
+more false positives, so the uninterrupted number is the lower one.
+
+The 21 false positives are dominated by ordinary capitalised English words, seven of them minted as
+`person`:
+
+| minted `person` | minted `term` |
+|---|---|
+| `Pass`, `Pass 1`, `Pass 2`, `Both`, `Named`, `Exists`, `Resolve`, `Surrogate` | `Data`, `Ledger`, `Provisional`, `Engagement`, `Store directory`, `Local Services`, `Local Operations`, `Secret-Store`, `Presidio-for-L1` |
+
+`Pass 1` and `Pass 2` minted as *people* is the sharpest signal: a bare English verb, or a verb plus
+a digit, is being classified as a personal name.
+
+**Four of run 10's five blocked exchanges came from this class**, not from any planted entity (items
+10 `Local Operations`, 11 `Surrogate`, 12 `Store directory`, 26 `Resolve`). Once such a word is a
+known real, the model writing that ordinary word in its own prose trips `leak_gate`. Run 10 recovered
+each time — 503s interleaved with 200s — but run 9 deadlocked on exactly this shape and needed a
+manual `reject`. **Precision failure in this class is an availability failure, not inbox noise.**
+
+### The three existing layers cannot reach this class, measured rather than assumed
+
+- **Payload-region confinement (#301) correctly declines to fire.** Every one of the 21 false
+  positives has at least one constituent token occurring in `messages[]`. This is not a regression in
+  that layer; it is a change of *source*. Run 7's flood was the harness's own system-prompt taxonomy
+  (25 of 43 mints system-confined). Run 10's flood is **repo file content arriving as `Read` tool
+  results in `messages[]`** — which is what #59's acceptance target actually does for a living. The
+  #301 layer is structurally unable to help with file-reading traffic, and no widening of it would
+  change that without becoming the region skip Alternatives rejects.
+- **Declared tool vocabulary (#302) cannot see them.** None of `Pass`, `Resolve`, `Data`, `Both`,
+  `Exists`, `Named` is a declared `tools[].name` in run 10's traffic; they occur in tool
+  *descriptions*, which this ADR's Decision 3 deliberately keeps L3 out of.
+- **Seeding them is rejected for the third time.** Open-class, and run 10 is the proof rather than
+  the assertion: the observed vocabulary changed *completely* between runs 7 and 10 because the
+  source changed. A seed curated against run 10 would have been useless for run 7 and vice versa.
+
+### What this condition actually changes, stated without euphemism
+
+The signal itself is **not new**. ADR-0033's `_is_positional_case_noise` already tests lowercase
+vocabulary evidence — its condition (a). It does not fire on this class because it is conjoined with
+a **positional gate**: the token must never appear capitalised mid-sentence. `Pass`, `Both` and
+`Resolve` all do appear mid-sentence, so the gate disqualifies them by design, exactly as the
+"Update (issue #301)" section already recorded when it tested and falsified widening that gate.
+
+CONTEXT.md names that positional gate as the **Don/Mark/Stone failure mode** guard. So this update's
+honest description is: **a new condition that bypasses ADR-0033's guard for tokens ADR-0033 keeps.**
+It is additive, not a relaxation of ADR-0033 — that heuristic and its gate stay exactly as they are,
+and keep earning their place for German, where all nouns capitalise mid-sentence and vocabulary
+evidence rarely fires.
+
+**Evidence scope is the dominant variable, not an implementation detail.** Measured on run 10:
+
+| scope of the lowercase evidence | false positives suppressed | genuine referents lost |
+|---|---|---|
+| per **hop** (ADR-0033's existing `text` argument) | 7 / 21 | 0 / 6 |
+| per **request** (the whole untouched payload) | 14 / 21 | 0 / 6 |
+| run-wide / workspace-lifetime | 15 / 21 | 0 / 6 |
+
+Per-hop is not viable: `Pass` occurs in 456 hops but only 87 carry lowercase `pass` in the *same*
+hop, and `Named` and `Exists` have same-hop evidence in **zero** of their 14 hops. The condition
+therefore needs payload scope, which is a second change beyond dropping the gate.
+
+Two further parameters were measured, both decided by data:
+
+- **Conjunctive over tokens, not disjunctive.** Suppress only when *every* capitalised token of the
+  candidate has evidence. Disjunctive suppresses one more false positive (16/21) and *lowers*
+  precision to 44%, because it loses `Northwind Analytics` and `Project Halyard`: a real entity name
+  reliably pairs a distinctive token with a generic one, so any-token matching preferentially eats
+  real names. Same asymmetry #341's artifact checker relies on with its generic-word stoplist.
+- **Prose-lowercase only.** Occurrences inside email addresses, URLs, and dotted-or-hyphenated
+  identifiers or filenames do **not** count as evidence. This single exclusion is the whole
+  difference between losing a genuine referent and losing none: `northwind`'s only lowercase
+  occurrence anywhere in run 10's traffic is inside the email domain `northwind-analytics.example`,
+  and counting it costs the real client org `Northwind Analytics`. The rule generalises — a lowercase
+  occurrence inside a machine identifier is evidence about encoding conventions, not about whether
+  humans write the word as a common noun, and this heuristic's entire premise is the latter.
+
+### Amended decision
+
+A fifth suppression condition joins the four already in Decision 2, at the same granularity:
+
+> **Case-inconsistency suppression.** A candidate token is suppressed from L3 novelty discovery when
+> its **prose-lowercase** form occurs in the same **request payload** — excluding occurrences inside
+> email addresses, URLs, and dotted-or-hyphenated identifiers or filenames. For a multi-word
+> candidate the condition is **conjunctive**: every capitalised token must have such evidence.
+
+Mechanically the same shape as the #301 layer and inheriting its discipline: a per-request
+`frozenset` computed at the app boundary from the **untouched** payload before any hop is blinded,
+threaded down to `select_candidate_spans` as a plain parameter, never state on the detector. Per
+request rather than workspace-lifetime, deliberately: it costs exactly one false positive
+(`Provisional`, whose evidence is present in 17 of the 25 payloads carrying it) and preserves #261's
+invariant that candidate selection is a pure function of its inputs. #302 broke that invariant
+because it had to — the minting request structurally could not see the tool name — and no such
+necessity exists here, since the evidence and the candidate are in the same payload by construction.
+
+Scope discipline unchanged: suppression removes **L3 novelty discovery only**. L1 and L2 still run,
+so PII-shaped values and any registered Term or entity-graph surface are still blindfolded, and
+protection still wins (`known_surfaces` is checked first).
+
+### The aggressiveness threshold is deliberately left open, and the fixture decides it
+
+Two candidate rules are **indistinguishable on run 10's evidence** and diverge sharply in risk:
+
+- **(i) bare presence** — one prose-lowercase occurrence anywhere in the payload suffices.
+- **(ii) proportionate evidence** — suppress only where lowercase occurrences dominate the
+  capitalised ones, so pervasive vocabulary (`pass`) separates from incidental (`mark`).
+
+Both score 0 of 6 genuine referents lost on run 10, so run 10 cannot choose between them. This ADR
+therefore adopts payload scope, the conjunctive rule and the prose-only exclusion, and records the
+threshold as **undecided pending the #342 fixture** rather than settling it by argument.
+
+The reason it cannot be settled by argument is the fixture's bias: **every planted name in the #74
+brief is a deliberately novel non-dictionary word** (`Priya`, `Nadkarni`, `Halyard`, `Kestrel`), by
+design, so the brief is structurally incapable of exercising the Don/Mark/Stone case. "0 of 6 lost"
+is therefore reassurance the evidence has not earned. Across 23,560 hops of coding-agent traffic
+*some* hop almost certainly contains a lowercase `mark`, so rule (i) would suppress a real person on
+incidental evidence while (ii) would keep the name. Expectation is that (ii) wins; an expectation is
+not a decision.
+
+**Blocking prerequisite.** The condition does not ship until a fixture carrying a real referent whose
+name is an ordinary lowercase-able word (a person `Mark Stone`, an org `Northern Data`) demonstrates
+which rule keeps protecting it. The gate is a **deterministic offline test** driving the real blinder
+and L3 cascade over a scripted payload, not another live run: it is repeatable, runs in CI, and pins
+the property permanently, where a live run can only show the failure did not happen that time. #339
+is the precedent — verified deterministically plus twelve guard tests, and judged stronger than a
+live absence. The existing #74 brief must **not** be mutated to carry the new name: its byte
+stability is the only reason runs 5-10 are comparable.
+
+### Verification, with the acceptance bar made numeric
+
+This ADR's original Verification said the deferred heuristics "ship only if still flooded", and
+#74/#59 share an acceptance criterion phrased as prose — *"the review inbox is not flooded"*. Nine
+runs have produced no checkable verdict against it. Two bars replace the prose, because they fail
+independently:
+
+- **#59 inbound code-token precision ≥ 80%.**
+- **Zero terminal blocks** in the run — a block from which the session cannot recover without a
+  human `reject`.
+
+Precision alone would have passed run 8, which died without producing a deliverable; blocks alone
+would tolerate a 22%-precision inbox. Projected against run 10, this condition (14 of 21 suppressed)
+composed with #341 (which deletes the five ADR-0036 prose names from the repo) leaves **6 genuine of
+7 mints — 86%**, clearing the precision bar. That projection is the target this condition is
+measured against in run 11, not a claim already banked.
+
+### Consequences
+
+- **The residual, stated plainly:** a novel real referent whose name is also an ordinary word used
+  lowercase in the same payload is no longer discovered. This is a **wider and more predictable**
+  residual than the #301 layer's, because coding-agent traffic is enormous and lowercase evidence for
+  a common word is nearly certain to appear somewhere in it. Registering the referent as a Term
+  restores full protection. Per Decision 1 a wrongly-suppressed token has the risk profile of a human
+  `reject` — but that framing is weakest here, since a human reject is a deliberate act and this
+  fires silently.
+- **ADR-0033's Don/Mark/Stone guard no longer holds globally.** It still holds for its own per-hop
+  heuristic; it does not constrain this condition. Anyone reading CONTEXT.md's *positional case
+  heuristic* entry as a system-wide guarantee about real first names would now be wrong, which is why
+  the glossary carries this condition as its own entry rather than a clause on that one.
+- **German is affected differently, and less.** German capitalises all nouns, so prose-lowercase
+  evidence for a German noun is rarer — the same English-benefiting/German-neutral asymmetry
+  ADR-0033 already records.
+- **This ADR is now at its practical limit as an append-only document.** The operative decision —
+  what the five suppression conditions are, and what each costs — is reconstructable only by reading
+  the base decision plus four updates in order, and Context premise 1 is already documented as stale.
+  A consolidating successor ADR is filed separately; deliberately not done here, so that what #342
+  decided stays legible.
+- **Adjudicator-side kind assignment is a separate defect.** `Pass 1` classified as `person` is a
+  cascade precision bug no suppression layer addresses, and it is filed separately. Not fixed here,
+  on this ADR's own #301 precedent that no prompt distinguishes a product name from a company name
+  without knowing whose data is protected — but the *kind* error is a narrower and more tractable
+  question than the *detection* error, and should not be silently folded into this one.
