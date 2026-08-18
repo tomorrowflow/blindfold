@@ -1,0 +1,70 @@
+# postgres-verify — CI gate closing the Docker-gated Postgres coverage hole (issue #218).
+#
+# ~60 tests marked `@pytest.mark.skipif(not _docker_available())` (single guard defined in
+# tests/conftest.py) drive `testcontainers.postgres.PostgresContainer` against a real
+# Postgres -- tests/test_postgres_*_store.py, test_entity_graph_postgres.py,
+# test_transit_ciphertext_columns.py, and two per-function guards in
+# test_bootstrap_wiring.py. The Sandcastle Linux sandbox that runs every implement/review
+# cycle has no Docker daemon, so these silently skip on every in-sandbox run and, per
+# issue #218's own filing, have never executed anywhere except a maintainer's laptop.
+# Issue #217 is the precedent for what that blind spot costs: two of these tests tore the
+# testcontainers container down before connecting and failed on every Docker-equipped
+# machine, but stayed green across dozens of in-sandbox runs because nothing else ever
+# ran them.
+#
+# ubuntu-latest, not self-hosted (issue #218 decision 1) -- same rationale as
+# ADR-0042's platform-verify runners: public repo, free/unlimited minutes, always
+# available for the AFK loop, no secrets or hardware to keep online. ubuntu-latest ships
+# a Docker daemon preinstalled, so testcontainers works here with zero test changes --
+# no docker-in-docker setup required.
+#
+# Runs the FULL `uv run pytest` suite, not a Docker-only subset (issue #218 decision 2):
+# the Docker gate is pure `skipif(not _docker_available())`, not a pytest marker, so
+# there is no way to select "just the Docker tests" without a hand-maintained file list
+# -- and a hand-maintained list is exactly the kind of thing that silently goes stale as
+# new Docker-gated test files are added, recreating this same hole. The full suite is a
+# strict superset of what the in-sandbox agents already ran, so nothing about running it
+# here can be less correct than a subset would be.
+#
+# Dependency setup deliberately stays minimal (issue #218 decision 5): only `uv sync`, no
+# `npm ci` anywhere and no `--group freeze`. `docker`/`testcontainers` arrive via the
+# default `dev` dependency-group (pyproject.toml), so `_docker_available()` resolves true
+# here with no extra provisioning -- but nothing installs frontend/node_modules or
+# PyInstaller, so the npm-gated (`test_ui_dist_freshness.py`) and PyInstaller-gated
+# (`test_frozen_proxy_packaging.py`) skip guards keep skipping exactly as they do
+# in-sandbox. A never-exercised Linux PyInstaller freeze must not become a flake source
+# inside a fail-closed merge gate.
+#
+# Trigger (issue #218 decision 3): unrestricted `on: push` with no path filter and no
+# `branches:` scoping -- Sandcastle's merge gate pushes a feature branch straight to
+# origin and polls this workflow's conclusion for that branch's exact head SHA
+# (mirroring platform-verify.yml/web-verify.yml's own unrestricted push), so a
+# `branches: [main]`-style restriction would mean the gate's SHA-based poll could never
+# see anything but "no run found" -- an unmet gate forever. Plus `workflow_dispatch: {}`
+# for a manual rerun.
+
+name: postgres-verify
+
+"on":
+  push: {}
+  workflow_dispatch: {}
+
+jobs:
+  postgres-verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Install Python dependencies
+        run: uv sync
+
+      - name: Run the full pytest suite (Docker-gated Postgres tests included)
+        run: uv run pytest

@@ -103,6 +103,13 @@ green suite with a missing or weakened leak-audit assertion is a **FAIL**, not a
   the container down before connecting and failed on every Docker-equipped machine while the loop
   stayed green.
 
+  **This coverage now actually runs somewhere** (issue #218): the hosted `postgres-verify.yml`
+  GitHub Actions workflow (`ubuntu-latest`, Docker preinstalled) runs the full `uv run pytest`
+  suite on every push and is wired into `.sandcastle/main.mts` as an always-expected,
+  fail-closed merge gate. That does not change your attestation duty above — you still cannot
+  execute those tests from this sandbox, so still say so plainly rather than counting them as
+  passing; the hosted gate, not your attestation, is what proves the Postgres dialect clean.
+
   Commit describing the refinements. If the code is already clean, do nothing.
 
 # HANDOFF NOTES

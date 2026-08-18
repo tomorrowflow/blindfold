@@ -84,3 +84,49 @@ macOS decision to a hosted runner.**
 - **A bespoke Sandcastle-native remote-exec to a mac/Windows instance** instead of GH Actions
   — rejected: GH Actions is the standard with far less to maintain, and ADR-0040 already
   pointed at `macos-latest` as the runner substrate.
+
+## Amendment (2026-08-18, issue #218): a third hosted job — postgres-verify
+
+**A third GitHub Actions workflow, `postgres-verify.yml`, extends this ADR's "all hosted
+runners" decision.** Roughly 60 tests across `tests/test_postgres_*.py` /
+`test_entity_graph_postgres.py` / `test_transit_ciphertext_columns.py` /
+`test_bootstrap_wiring.py` are marked `@pytest.mark.skipif(not _docker_available())` and
+drive `testcontainers.postgres.PostgresContainer` against a real Postgres — the Sandcastle
+sandbox that runs every implement/review cycle has no Docker daemon, so this whole set
+silently skips on every in-sandbox run and, until this amendment, ran nowhere else either.
+Issue #217 is the precedent for the cost of that blind spot: a fix to two of these tests
+went dozens of green in-sandbox runs without ever executing against a real container.
+
+Decisions, following this ADR's own reasoning:
+
+- **Runner: `ubuntu-latest`**, same rationale as the mac/Windows jobs above — public repo,
+  free/unlimited minutes, always available for the AFK loop, no secrets or hardware to keep
+  online. Self-hosted was rejected for the same always-online-burden reason. `ubuntu-latest`
+  ships a Docker daemon preinstalled, so `testcontainers` works with zero test changes.
+- **The job runs the FULL `uv run pytest` suite, not a Docker-only subset.** There is no
+  `docker`/`postgres` pytest marker — gating is pure `skipif` — so a subset selection would
+  need a hand-maintained file list whose staleness would silently recreate this same hole as
+  new Docker-gated tests are added. The full suite is a strict superset of the in-sandbox run
+  and trivially correct by construction.
+- **Trigger: unrestricted `on: push` (no path filter, no `branches:` scoping) plus
+  `workflow_dispatch: {}`**, matching `web-verify.yml`'s and `platform-verify.yml`'s own
+  unrestricted push — a `branches: [main]`-style restriction would mean the merge gate's
+  SHA-based poll (below) could never see anything but "no run found" for a feature branch.
+- **Merge gate: `main.mts` gains a fourth gate, `postgresVerifyNeeded`/`postgresVerifyComplete`
+  — a third consumer of the shared `awaitWorkflowConclusion` (`.sandcastle/workflow-gate.mts`),
+  parallel to `webVerifyWorkflowNeeded`/`Complete` (issue #275).** Unlike the SPA/platform
+  gates, it carries **no path-detection precondition** — every branch with reviewed work must
+  clear it, since Postgres store-layer regressions are not confined to an obviously-scoped
+  path the way SPA or native-platform code is. Same budget as the web-verify workflow gate
+  (20 min timeout / 15 s poll) and the same fail-closed semantics: a `gh` error, a timeout, or
+  no run for the exact head SHA all resolve to "failure," never a silent pass.
+- **Dependency setup stays minimal — only `uv sync`.** `docker`/`testcontainers` arrive via
+  the default `dev` dependency-group, so `_docker_available()` resolves true with no extra
+  provisioning, but nothing installs `frontend/node_modules` or PyInstaller — so the
+  npm-gated and PyInstaller-gated skip guards (`test_ui_dist_freshness.py`,
+  `test_frozen_proxy_packaging.py`) keep skipping exactly as they do in-sandbox. A
+  never-exercised Linux PyInstaller freeze must not become a flake source inside a
+  fail-closed merge gate.
+
+CONTEXT.md is untouched — this is CI-gate vocabulary, which per this ADR's own precedent
+lives in the ADR and code comments, not the product glossary.

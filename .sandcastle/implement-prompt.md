@@ -161,6 +161,14 @@ Issue #217 is the precedent: two of those tests captured the container's DSN and
 `with PostgresContainer` block before connecting, so they failed on every machine that *has*
 Docker — and the loop never saw it across dozens of green runs.
 
+**This coverage now actually runs somewhere** (issue #218): the hosted `postgres-verify.yml`
+GitHub Actions workflow (`ubuntu-latest`, Docker preinstalled) runs the full `uv run pytest`
+suite on every push and is wired into `.sandcastle/main.mts` as an always-expected,
+fail-closed merge gate — the branch does not merge unless that hosted run comes back green.
+That does not change anything above: this sandbox still cannot execute those tests itself,
+so a green `uv run pytest` *here* still proves nothing about the Postgres dialect on its own
+— the hosted gate is what closes that gap, after this cycle's work is pushed.
+
 # COMMIT
 
 Make a git commit. The message must:
