@@ -20,7 +20,7 @@ import json
 
 import httpx
 
-from .l3 import CandidateSpan, L3Adjudication
+from .l3 import ADJUDICATOR_INNER_LLM, CandidateSpan, L3Adjudication
 from .ollama import ADJUDICATOR_SEED, ADJUDICATOR_TEMPERATURE, _PROMPT_TEMPLATE
 from .status import DependencyHealth
 
@@ -109,4 +109,6 @@ class OpenAICompatibleAdjudicator:
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]
         verdict = json.loads(content)
-        return L3Adjudication(is_entity=bool(verdict["is_entity"]))
+        return L3Adjudication(
+            is_entity=bool(verdict["is_entity"]), adjudicator=ADJUDICATOR_INNER_LLM
+        )

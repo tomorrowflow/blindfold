@@ -87,9 +87,10 @@ class ReplayResult:
 
 def _reconstruct_hop(hop, text: str, mapping: SurrogateMapping, *, l3_wired: bool) -> DetectionRecord:
     """One hop's reconstructed detection: real HopDetail counts/durations/
-    provider/surrogates (from the live call this replay just made) plus
-    offsets/pass_name recovered by re-running the pure L2/L1 detection
-    primitives against this hop's original text.
+    provider/surrogates/verdict-provenance (issue #348's ``l3_verdicts``) from
+    the live call this replay just made, plus offsets/pass_name recovered by
+    re-running the pure L2/L1 detection primitives against this hop's
+    original text.
     """
     offsets: list[tuple[int, int]] = []
     pass_names: list[str] = []
@@ -129,6 +130,7 @@ def _reconstruct_hop(hop, text: str, mapping: SurrogateMapping, *, l3_wired: boo
         pass_name=",".join(sorted(set(pass_names))) if pass_names else None,
         offsets=tuple(offsets) if offsets else None,
         l3_wired=l3_wired,
+        l3_verdicts=hop.l3_verdicts,
     )
 
 

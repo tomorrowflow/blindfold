@@ -16,7 +16,7 @@ import json
 
 import httpx
 
-from .l3 import CandidateSpan, L3Adjudication
+from .l3 import ADJUDICATOR_INNER_LLM, CandidateSpan, L3Adjudication
 from .status import DependencyHealth
 
 
@@ -135,4 +135,6 @@ class OllamaAdjudicator:
         )
         response.raise_for_status()
         verdict = json.loads(response.json()["response"])
-        return L3Adjudication(is_entity=bool(verdict["is_entity"]))
+        return L3Adjudication(
+            is_entity=bool(verdict["is_entity"]), adjudicator=ADJUDICATOR_INNER_LLM
+        )

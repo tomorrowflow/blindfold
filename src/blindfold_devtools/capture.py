@@ -105,6 +105,16 @@ class DetectionRecord(_CaptureRecord):
     # *live* run's L3 confirmed but replay had no adjudicator wired to reproduce
     # reads as an unexplained divergence instead of an expected one.
     l3_wired: bool = False
+    # Reconstructed-only (issue #348), same shape as ``pass_name``/``offsets``:
+    # one ``(entity_type, adjudicator)`` pair per referent this hop's replay
+    # actually minted through the review inbox -- ``blindfold.engine.HopDetail
+    # .l3_verdicts`` verbatim. Makes a captured payload re-analysable for
+    # verdict provenance after the fact (the measurement #346 needed and #74
+    # run 10's own artifacts couldn't answer, since entity_type alone can't
+    # distinguish a GLiNER mistype from the inner LLM's undetected-type
+    # default). Never populated by live capture -- see live_capture.py's own
+    # ``_wrap_l3_detector_provider`` note; that gap is unaffected here.
+    l3_verdicts: tuple[tuple[str | None, str | None], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -201,6 +211,9 @@ def _record_from_dict(obj: dict) -> Any:
         fields["surrogates"] = tuple(fields.get("surrogates") or ())
         offsets = fields.get("offsets")
         fields["offsets"] = None if offsets is None else tuple(tuple(pair) for pair in offsets)
+        fields["l3_verdicts"] = tuple(
+            tuple(pair) for pair in (fields.get("l3_verdicts") or ())
+        )
     return cls(**fields)
 
 

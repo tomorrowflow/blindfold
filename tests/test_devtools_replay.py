@@ -12,7 +12,7 @@ inbox=None) get their own tests here and in test_devtools_replay_store.py.
 from __future__ import annotations
 
 from blindfold.detection import Entity
-from blindfold.l3 import L3Adjudication, L3Detector
+from blindfold.l3 import ADJUDICATOR_INNER_LLM, CandidateSpan, L3Adjudication, L3Detector
 from blindfold.surrogates import SurrogateMapping
 from blindfold_devtools.capture import SECTION_RECONSTRUCTED
 from blindfold_devtools.replay import replay
@@ -121,3 +121,24 @@ def test_inbox_none_still_lets_l3_confirm_and_mint_a_novel_entity_when_wired():
     # (mirrors the live request path: a provisional surrogate is never the main
     # mapping's business until a human confirms it).
     assert mapping.entities() == []
+
+
+class _ProvenanceStubAdjudicator:
+    """Confirms every candidate as ADJUDICATOR_INNER_LLM (issue #348)."""
+
+    def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
+        return L3Adjudication(is_entity=True, adjudicator=ADJUDICATOR_INNER_LLM)
+
+
+def test_replay_reconstructs_verdict_provenance_alongside_offsets():
+    # Issue #348: a past run's captured payload becomes re-analysable for
+    # entity_type/adjudicator, the specific thing #346's own measurement
+    # question needed and #74 run 10's artifacts couldn't answer.
+    payload = {"messages": [{"role": "user", "content": "Hi Completely Novel Person"}]}
+    mapping = SurrogateMapping()
+    detector = L3Detector(_ProvenanceStubAdjudicator())
+
+    result = replay(payload, mapping=mapping, l3_detector=detector)
+
+    detection = result.detections[0]
+    assert detection.l3_verdicts == ((None, ADJUDICATOR_INNER_LLM),)

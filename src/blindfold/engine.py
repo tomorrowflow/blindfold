@@ -28,6 +28,7 @@ from .detection import detect_l2, detect_pii
 from .l3 import _capitalized_token_matches
 from .l3 import _SENTENCE_STOPWORDS as _COMPONENT_STOPWORDS
 from .l3 import (
+    ADJUDICATOR_CASCADE_COALESCING,
     CaseInconsistencyEvidence,
     CaseInconsistencySuppression,
     L3Detector,
@@ -62,6 +63,16 @@ class HopDetail:
     Counts and timings only — never a real value, candidate-span text, or raw hop
     text. ``surrogates`` holds only the surrogate tokens injected for this hop (safe
     to display: a surrogate is never a real value by construction).
+
+    ``l3_verdicts`` (issue #348) is one ``(entity_type, adjudicator)`` pair per
+    referent this hop actually minted through the review inbox -- metadata
+    only (never a real value), but deliberately excluded from :meth:`to_dict`:
+    that dict is what ``ProcessingTraceRecord.hops`` embeds verbatim
+    (``blindfold.app``), and the Processing trace is a broader-audience,
+    shipped surface this issue must not widen. Consumed directly off this
+    dataclass by :mod:`blindfold_devtools.replay`, which builds the Exchange
+    capture's reconstructed ``DetectionRecord`` from the real
+    ``ExchangeSession.hops`` this call produced, never from ``to_dict()``.
     """
 
     hop_index: int
@@ -76,6 +87,7 @@ class HopDetail:
     l3_provider: str | None
     l3_duration_ms: float | None
     surrogates: tuple[str, ...] = ()
+    l3_verdicts: tuple[tuple[str | None, str | None], ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -114,6 +126,7 @@ class _HopContext:
     l3_duration_ms: float = 0.0
     l3_ran: bool = False
     surrogates: list[str] = field(default_factory=list)
+    l3_verdicts: list[tuple[str | None, str | None]] = field(default_factory=list)
 
 
 def _finish_hop(ctx: _HopContext, hop_kind: str, hop_index: int) -> HopDetail:
@@ -130,6 +143,7 @@ def _finish_hop(ctx: _HopContext, hop_kind: str, hop_index: int) -> HopDetail:
         l3_provider=ctx.l3_provider if ctx.l3_ran else None,
         l3_duration_ms=ctx.l3_duration_ms if ctx.l3_ran else None,
         surrogates=tuple(ctx.surrogates),
+        l3_verdicts=tuple(ctx.l3_verdicts),
     )
 
 
@@ -1431,7 +1445,7 @@ def _blindfold_text(
                 if t_start >= t_end:
                     continue
                 novel_extents.append(
-                    _ConfirmedExtent(t_start, t_end, decision.entity_type)
+                    _ConfirmedExtent(t_start, t_end, decision.entity_type, decision.adjudicator)
                 )
         # Coalesce adjacent/overlapping confirmed extents into one entity before
         # minting (issue #162, widened by #170): select_candidate_spans emits
@@ -1458,7 +1472,14 @@ def _blindfold_text(
             entity_type = _resolve_group_entity_type(
                 extent.entity_type for extent in group
             )
-            group_infos.append((start, end, real, context, context_offset, entity_type))
+            # Issue #348: same idea for verdict provenance -- ONE value for the
+            # whole coalesced span, not per-token.
+            adjudicator = _resolve_group_adjudicator(
+                extent.adjudicator for extent in group
+            )
+            group_infos.append(
+                (start, end, real, context, context_offset, entity_type, adjudicator)
+            )
         # Issue #293 minted a confirmed candidate unconditionally; issue #295 found
         # that #293's own follow-up (refuse the mint outright whenever the real
         # value's word-boundary occurrences in this hop weren't fully covered by
@@ -1485,7 +1506,7 @@ def _blindfold_text(
         # would rewrite a surrogate's own text for an unrelated referent.
         minted_ranges_by_item: dict[str, list[tuple[int, int]]] = {}
         minted_items_by_id: dict[str, ReviewItem] = {}
-        for start, end, real, context, context_offset, entity_type in group_infos:
+        for start, end, real, context, context_offset, entity_type, adjudicator in group_infos:
             # ADR-0037 hardening: also exclude provisional surrogates already
             # active in the inbox from mint candidacy, not just known real
             # values -- defense-in-depth so a stale/reset pool cursor (e.g. a
@@ -1514,6 +1535,7 @@ def _blindfold_text(
                 # doc/glossary tool result far from this candidate's own
                 # occurrence), not just the local context window.
                 corpus_text=result,
+                adjudicator=adjudicator,
             )
             if item is None:
                 # ADR-0052 (issue #330): ``real`` itself matches the opaque
@@ -1526,6 +1548,14 @@ def _blindfold_text(
             spans.append((start, end, item.provisional_surrogate, real))
             minted_ranges_by_item.setdefault(item.id, []).append((start, end))
             minted_items_by_id[item.id] = item
+            if hop_ctx is not None:
+                # Issue #348: one (entity_type, adjudicator) pair per referent
+                # actually minted this hop -- deliberately not the dismissal
+                # log's population (candidates that were dismissed), and
+                # deliberately not one entry per occurrence the way
+                # ``hop_ctx.surrogates`` below is (a referent repeated in this
+                # hop's text is one verdict, not several).
+                hop_ctx.l3_verdicts.append((entity_type, adjudicator))
         # Issue #296: a provisional referent's variation surface (currently #289's
         # legal-form-suffix strip) has no per-span L3 confirmation of its own -- L3
         # confirmed "Kestrel Dynamics GmbH" and dismissed (or never separately
@@ -1657,11 +1687,16 @@ class _ConfirmedExtent:
     authoritative span (``L3Adjudication.span_start``/``span_end`` -- e.g.
     GLiNER's multi-word org span), that span is used instead, so a sibling
     token inside it that was dismissed on its own doesn't narrow the entity.
+
+    ``adjudicator`` (issue #348) carries ``L3Adjudication.adjudicator``
+    through coalescing the same way ``entity_type`` does -- read-only
+    provenance, never consulted by the coalescing/mint decision itself.
     """
 
     start: int
     end: int
     entity_type: str | None
+    adjudicator: str | None = None
 
 
 def _coalesce_adjacent_spans(
@@ -1706,6 +1741,27 @@ def _resolve_group_entity_type(types: Iterator[str | None]) -> str | None:
         if entity_type is not None:
             return entity_type
     return None
+
+
+def _resolve_group_adjudicator(adjudicators: Iterator[str | None]) -> str | None:
+    """Pick a single verdict-provenance value for a coalesced multi-token span
+    (issue #348, interacting with issue #162's coalescing).
+
+    The common case -- every token of one coalesced span was confirmed by the
+    same adjudication pass -- reports that one adjudicator. A group whose
+    tokens carry two DIFFERENT non-``None`` adjudicators (e.g. the GLiNER
+    cascade confirmed one token outright and the inner LLM independently
+    confirmed an adjacent token, then coalescing merged them into one
+    referent) reports :data:`~blindfold.l3.ADJUDICATOR_CASCADE_COALESCING`
+    rather than silently picking one side -- the merged verdict's provenance
+    genuinely isn't either adjudicator alone.
+    """
+    seen = {value for value in adjudicators if value is not None}
+    if not seen:
+        return None
+    if len(seen) == 1:
+        return next(iter(seen))
+    return ADJUDICATOR_CASCADE_COALESCING
 
 
 def _live_surrogate_values(

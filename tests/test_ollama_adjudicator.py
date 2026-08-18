@@ -15,7 +15,7 @@ import json
 
 import httpx
 
-from blindfold.l3 import CandidateSpan, L3Adjudication
+from blindfold.l3 import ADJUDICATOR_INNER_LLM, CandidateSpan, L3Adjudication
 from blindfold.ollama import _PROMPT_TEMPLATE, OllamaAdjudicator, is_cloud_model
 
 
@@ -42,7 +42,7 @@ def test_ollama_adjudicator_sends_the_candidate_and_context_and_confirms_an_enti
 
     decision = adjudicator.adjudicate(candidate)
 
-    assert decision == L3Adjudication(is_entity=True)
+    assert decision == L3Adjudication(is_entity=True, adjudicator=ADJUDICATOR_INNER_LLM)
     sent = json.loads(captured["request"].content.decode("utf-8"))
     assert sent["model"] == "llama3.1"
     assert candidate.text in sent["prompt"]
@@ -165,7 +165,7 @@ def test_ollama_adjudicator_rejects_a_non_entity_candidate():
 
     decision = adjudicator.adjudicate(candidate)
 
-    assert decision == L3Adjudication(is_entity=False)
+    assert decision == L3Adjudication(is_entity=False, adjudicator=ADJUDICATOR_INNER_LLM)
 
 
 def test_ollama_adjudicator_propagates_a_local_outage_so_l3_fails_closed():

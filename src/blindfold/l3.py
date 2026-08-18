@@ -218,6 +218,15 @@ class CandidateSpan:
     context_offset: int = 0
 
 
+# Issue #348: the three verdict-provenance values a review-inbox item or an
+# Exchange capture's reconstructed detection detail can carry on
+# ``adjudicator`` -- ``ReviewItem``/``DetectionRecord`` -- see
+# ``L3Adjudication.adjudicator`` below for what each means.
+ADJUDICATOR_GLINER = "gliner"
+ADJUDICATOR_INNER_LLM = "inner_llm"
+ADJUDICATOR_CASCADE_COALESCING = "cascade_coalescing"
+
+
 @dataclass(frozen=True)
 class L3Adjudication:
     """L3's verdict for a candidate span.
@@ -241,12 +250,21 @@ class L3Adjudication:
     adjudicators, which only ever confirm/dismiss the single candidate token
     they were asked about) -- the mint pass falls back to the candidate's own
     extent, exactly as before this field existed.
+
+    ``adjudicator`` (issue #348) identifies which concrete adjudicator
+    produced this verdict -- ``ADJUDICATOR_GLINER`` (the GLiNER cascade
+    confirmed outright, with no inner call), or ``ADJUDICATOR_INNER_LLM``
+    (Ollama/oMLX). Read-only observability: nothing in the mint/selection
+    pipeline branches on it. ``None`` for a verdict from a test double or any
+    other caller that doesn't set it, exactly as ``entity_type`` behaved
+    before this field existed.
     """
 
     is_entity: bool
     entity_type: str | None = None
     span_start: int | None = None
     span_end: int | None = None
+    adjudicator: str | None = None
 
 
 class L3Adjudicator(Protocol):

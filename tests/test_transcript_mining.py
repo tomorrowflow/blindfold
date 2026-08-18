@@ -125,6 +125,31 @@ def test_mining_threads_the_adjudicated_entity_type_into_the_mint_pass():
     assert item.provisional_surrogate not in _PROVISIONAL_POOL
 
 
+def test_mining_threads_the_adjudicated_provenance_into_the_mint_pass():
+    # Issue #348: mining reuses the same L3 candidate-span seam as the live
+    # request path, so ``decision.adjudicator`` must reach the same
+    # ReviewInbox.upsert() call the request path threads it through --
+    # otherwise a mined proposal would silently lose the provenance a live
+    # detection of the same candidate would have carried.
+    from blindfold.l3 import ADJUDICATOR_INNER_LLM
+
+    class _ProvenanceStubAdjudicator:
+        def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
+            if candidate.text == "Nordwind":
+                return L3Adjudication(is_entity=True, adjudicator=ADJUDICATOR_INNER_LLM)
+            return L3Adjudication(is_entity=False)
+
+    mapping = _seeded_mapping()
+    inbox = ReviewInbox()
+    detector = L3Detector(_ProvenanceStubAdjudicator())
+
+    mine_transcripts(["Please contact Nordwind about the invoice."], detector, mapping, inbox)
+
+    item = inbox.list()[0]
+    assert item.real == "Nordwind"
+    assert item.adjudicator == ADJUDICATOR_INNER_LLM
+
+
 def test_mining_never_proposes_a_reserved_form_candidate(monkeypatch):
     # ADR-0052 (issue #330): a candidate real matching the opaque
     # reserved-namespace fallback shape is never minted, on this mint path

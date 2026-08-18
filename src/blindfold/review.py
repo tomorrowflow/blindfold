@@ -278,6 +278,19 @@ class ReviewItem:
     time -- always includes ``real`` itself. Not persisted as its own column;
     re-derived from ``real``/``entity_type`` on hydration (ADR-0037), since it
     is a pure function of fields already stored.
+
+    ``adjudicator`` (issue #348) identifies which concrete adjudicator
+    produced this referent's confirming verdict --
+    :data:`~blindfold.l3.ADJUDICATOR_GLINER`,
+    :data:`~blindfold.l3.ADJUDICATOR_INNER_LLM`, or
+    :data:`~blindfold.l3.ADJUDICATOR_CASCADE_COALESCING` (issue #162's
+    coalescing merged two adjacent tokens confirmed by two *different*
+    adjudicators). Read-only observability, deliberately NOT a stored column
+    (unlike ``entity_type``): it isn't a pure function of ``real``/
+    ``entity_type`` the way ``variations`` is, so it can't be re-derived on
+    hydration -- a restart loses it (``None``, same as an untyped verdict),
+    which is an honest degrade for metadata that was never load-bearing for
+    minting/typing/suppression.
     """
 
     id: str
@@ -288,6 +301,7 @@ class ReviewItem:
     entity_type: str | None = None
     workspace: str = DEFAULT_WORKSPACE
     variations: frozenset[str] = frozenset()
+    adjudicator: str | None = None
 
 
 class ReviewInboxStore(Protocol):
@@ -433,6 +447,7 @@ class ReviewInbox:
         entity_type: str | None = None,
         workspace: str = DEFAULT_WORKSPACE,
         corpus_text: str | None = None,
+        adjudicator: str | None = None,
     ) -> ReviewItem | None:
         """Add (or reuse) a provisional inbox entry for ``real`` and return it.
 
@@ -489,6 +504,10 @@ class ReviewInbox:
         replaced (:func:`_is_legacy_fallback_surrogate_form`, issue #336): a
         coalesced span could offer the literal template quoted in doc prose as
         a candidate real, and it must stay recognition-only, never mintable.
+
+        ``adjudicator`` (issue #348) is read-only verdict provenance -- see
+        :class:`ReviewItem`'s own docstring. Never persisted, never consulted
+        by any selection/typing/suppression decision here or in ``engine.py``.
         """
         with self._lock:
             referent_key = _referent_key(real, entity_type)
@@ -524,6 +543,7 @@ class ReviewInbox:
                 entity_type=entity_type,
                 workspace=workspace,
                 variations=entity_variations(real, entity_type),
+                adjudicator=adjudicator,
             )
             self._items[item_id] = item
             self._by_real[referent_key] = item_id

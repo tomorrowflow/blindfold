@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from .l3 import CandidateSpan, L3Adjudication, L3Adjudicator
+from .l3 import ADJUDICATOR_GLINER, CandidateSpan, L3Adjudication, L3Adjudicator
 
 
 class GlinerClassifier(Protocol):
@@ -270,5 +270,9 @@ class GlinerCascadeAdjudicator:
                 entity_type=entity_type,
                 span_start=span_start,
                 span_end=span_end,
+                adjudicator=ADJUDICATOR_GLINER,
             )
+        # A GLiNER negative delegates outright (ADR-0033 Mode A) -- the inner
+        # adjudicator's own verdict, including its own provenance (issue #348),
+        # passes through unchanged; this cascade never overwrites it.
         return self._inner.adjudicate(candidate)

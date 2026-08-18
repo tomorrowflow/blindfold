@@ -20,7 +20,7 @@ import json
 
 import httpx
 
-from blindfold.l3 import CandidateSpan, L3Adjudication
+from blindfold.l3 import ADJUDICATOR_INNER_LLM, CandidateSpan, L3Adjudication
 from blindfold.l3_openai_compat import OpenAICompatibleAdjudicator
 
 
@@ -52,7 +52,7 @@ def test_openai_compatible_adjudicator_sends_the_candidate_and_context_and_confi
 
     decision = adjudicator.adjudicate(candidate)
 
-    assert decision == L3Adjudication(is_entity=True)
+    assert decision == L3Adjudication(is_entity=True, adjudicator=ADJUDICATOR_INNER_LLM)
     sent = json.loads(captured["request"].content.decode("utf-8"))
     assert sent["model"] == "qwen2.5-7b-mlx"
     prompt = sent["messages"][0]["content"]
@@ -186,7 +186,7 @@ def test_openai_compatible_adjudicator_rejects_a_non_entity_candidate():
 
     decision = adjudicator.adjudicate(candidate)
 
-    assert decision == L3Adjudication(is_entity=False)
+    assert decision == L3Adjudication(is_entity=False, adjudicator=ADJUDICATOR_INNER_LLM)
 
 
 def test_openai_compatible_adjudicator_propagates_a_local_outage_so_l3_fails_closed():

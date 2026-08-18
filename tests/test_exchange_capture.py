@@ -215,6 +215,39 @@ def test_every_section_round_trips(tmp_path):
     assert reconstructed_detection.offsets == ((6, 11),)
 
 
+def test_reconstructed_detection_round_trips_verdict_provenance(tmp_path):
+    # Issue #348: entity_type/adjudicator per minted referent, reconstructed-
+    # only (observed records never carry it -- live verdict capture is a
+    # separate, deferred gap, see live_capture.py's own note).
+    path = tmp_path / "capture.jsonl"
+    writer = CaptureWriter(path)
+    writer.write(
+        DetectionRecord(
+            section=SECTION_RECONSTRUCTED,
+            ts="t0",
+            hop_index=0,
+            hop_kind="user",
+            l1_counts={},
+            l1_duration_ms=0.0,
+            l2_count=0,
+            l2_duration_ms=0.0,
+            l3_confirmed=1,
+            l3_dismissed=0,
+            l3_suppressed=0,
+            l3_provider="gliner",
+            l3_duration_ms=1.0,
+            surrogates=("Alex Brenner",),
+            l3_verdicts=((None, "inner_llm"),),
+        )
+    )
+    writer.close()
+
+    capture = read_capture(path)
+
+    detection = capture.records[0]
+    assert detection.l3_verdicts == ((None, "inner_llm"),)
+
+
 def test_footerless_file_reads_as_in_flight(tmp_path):
     path = tmp_path / "capture.jsonl"
     writer = CaptureWriter(path)

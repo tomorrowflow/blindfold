@@ -2002,6 +2002,12 @@ async def list_review_inbox(
                 "provisional_surrogate": item.provisional_surrogate,
                 "context": item.context,
                 "context_offset": item.context_offset,
+                # Issue #348: entity_type verbatim (None distinguishable from
+                # "person") alongside kind, which stays exactly as it was --
+                # metadata, not a new privacy-relevant value, so it inherits
+                # this endpoint's existing viewer gate without widening it.
+                "entity_type": item.entity_type,
+                "adjudicator": item.adjudicator,
                 "kind": _entity_kind_for(item.entity_type),
             }
             for item in inbox.list()
