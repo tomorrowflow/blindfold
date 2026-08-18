@@ -53,3 +53,22 @@ async def test_stored_row_holds_only_the_ciphertext_never_the_plaintext_real_val
     stored = await store.surrogate_to_ciphertext("FakeName-004", "acme")
     assert stored == ciphertext
     assert stored != real_value
+
+
+def test_all_entries_returns_every_seeded_triple_sqlite(tmp_path):
+    """``all_entries`` (issue #343) is the source
+    ``blindfold.app.hydrate_mapping_from_reidentify_store`` reads to rehydrate the
+    request path's ``SurrogateMapping`` at startup, so a confirmed entity's
+    surrogate is stable across a restart -- SQLite dialect coverage; the Postgres
+    counterpart lives in test_postgres_reidentify_store.py."""
+    from blindfold.store.reidentify_store import PostgresReIdentificationStore
+
+    dsn = f"sqlite:///{tmp_path / 'all_entries.sqlite3'}"
+    store = PostgresReIdentificationStore(dsn)
+    store.seed("Alex Brenner", "acme", "ciphertext-a")
+    store.seed("Berta Falke", "other-ws", "ciphertext-b")
+
+    assert set(store.all_entries()) == {
+        ("Alex Brenner", "acme", "ciphertext-a"),
+        ("Berta Falke", "other-ws", "ciphertext-b"),
+    }

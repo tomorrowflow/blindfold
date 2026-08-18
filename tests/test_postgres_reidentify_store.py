@@ -104,3 +104,26 @@ async def test_seeded_entry_survives_a_new_store_instance_process_restart_contra
     store2 = PostgresReIdentificationStore(pg_dsn)
     resolved = await store2.surrogate_to_ciphertext("FakeName-005", "restart-ws")
     assert resolved == "vault:v1:restart-blob"
+
+
+def test_all_entries_returns_every_seeded_triple(pg_dsn):
+    """``all_entries`` (issue #343) is the source
+    ``blindfold.app.hydrate_mapping_from_reidentify_store`` reads to rehydrate the
+    request path's ``SurrogateMapping`` at startup, so a confirmed entity's
+    surrogate is stable across a restart -- Postgres dialect coverage; the SQLite
+    counterpart lives in test_sqlite_reidentify_store.py."""
+    from blindfold.store.reidentify_store import PostgresReIdentificationStore
+
+    store = PostgresReIdentificationStore(pg_dsn)
+    store.seed("FakeName-006", "acme", "vault:v1:blob-006")
+    store.seed("FakeName-007", "other-ws", "vault:v1:blob-007")
+
+    entries = {
+        (surrogate, workspace, ciphertext)
+        for surrogate, workspace, ciphertext in store.all_entries()
+        if surrogate in {"FakeName-006", "FakeName-007"}
+    }
+    assert entries == {
+        ("FakeName-006", "acme", "vault:v1:blob-006"),
+        ("FakeName-007", "other-ws", "vault:v1:blob-007"),
+    }

@@ -62,3 +62,18 @@ class PostgresReIdentificationStore:
                 (surrogate, workspace),
             ).fetchone()
         return row[0] if row else None
+
+    def all_entries(self) -> list[tuple[str, str, str]]:
+        """Return every (surrogate, workspace, ciphertext) triple (issue #343):
+        the source :func:`blindfold.app.hydrate_mapping_from_reidentify_store`
+        reads to rehydrate the request path's ``SurrogateMapping`` at startup, so
+        a confirmed entity's surrogate is stable across a process restart. Plain
+        synchronous method (unlike :meth:`surrogate_to_ciphertext`) -- the
+        underlying dialect connection is synchronous either way, and this is read
+        from ``app.py``'s plain synchronous module-level startup wiring, not an
+        awaited request handler."""
+        with connect(self._dsn) as conn:
+            rows = conn.execute(
+                "SELECT surrogate, workspace, ciphertext FROM reidentify_mappings"
+            ).fetchall()
+        return [(row[0], row[1], row[2]) for row in rows]

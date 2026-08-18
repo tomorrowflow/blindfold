@@ -51,3 +51,12 @@ class InMemoryReIdentificationStore:
 
     async def surrogate_to_ciphertext(self, surrogate: str, workspace: str) -> str | None:
         return self._entries.get((surrogate, workspace))
+
+    def all_entries(self) -> list[tuple[str, str, str]]:
+        """Return every (surrogate, workspace, ciphertext) triple (issue #343):
+        the source :func:`blindfold.app.hydrate_mapping_from_reidentify_store`
+        reads to rehydrate the request path's ``SurrogateMapping`` at startup."""
+        return [
+            (surrogate, workspace, ciphertext)
+            for (surrogate, workspace), ciphertext in self._entries.items()
+        ]

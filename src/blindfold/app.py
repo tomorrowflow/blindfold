@@ -808,6 +808,41 @@ def hydrate_review_inbox_from_store(
         inbox.purge_surrogate_collisions(mapping)
 
 
+def hydrate_mapping_from_reidentify_store(
+    mapping: SurrogateMapping,
+    store: "ReIdentificationStore",
+    mapping_cipher,
+) -> None:
+    """Seed ``mapping`` with every confirmed entity's real -> surrogate pair,
+    decrypted from the durable re-identify store (issue #343).
+
+    Called once at startup, mirroring ``hydrate_review_inbox_from_store``'s
+    pattern: without this, ``_mapping`` below was seeded only from the vendored
+    seed, so a confirmed entity's surrogate was NOT stable across a process
+    restart -- the entity graph and re-identify store durably held it, but the
+    request path's own detection dictionary (``SurrogateMapping``, what L2 and
+    the mint-time disjointness check consult) forgot it, and the next occurrence
+    of that real value re-adjudicated through L3 and minted a brand-new
+    surrogate. This closes that gap the same way ``confirm_review_item``'s own
+    docstring already promises ("the same real value is detected
+    deterministically by L2 ... without an L3 call") -- now honored across a
+    restart, not just within one process's lifetime.
+
+    A no-op when ``mapping_cipher`` is ``None`` (issue #149 graceful
+    degradation): without a cipher, confirm never writes to ``store`` in the
+    first place (see ``confirm_review_item``), so there is nothing to decrypt.
+    ``store`` is never ``None`` (``get_reidentify_store()`` always returns an
+    instance -- Postgres/SQLite-backed or the in-memory fallback); the
+    in-memory fallback is empty at this point in startup, so calling this with
+    it is a harmless no-op, exactly like the ``memory://`` sentinel everywhere
+    else in this file.
+    """
+    if mapping_cipher is None:
+        return
+    for surrogate, _workspace, ciphertext in store.all_entries():
+        mapping.seed(mapping_cipher.decrypt(ciphertext), surrogate)
+
+
 def get_reidentify_store() -> ReIdentificationStore:
     """Return the re-identify store, constructed lazily on first call (issue #105).
 
@@ -956,6 +991,18 @@ hydrate_allowlist_from_store(_allowlist, get_allowlist_store())
 hydrate_review_inbox_from_store(
     _review_inbox, get_review_inbox_store(), get_mapping_cipher(), _mapping
 )
+
+# Persisted confirmed-entity mapping hydration (issue #343): unions every
+# confirmed real -> surrogate pair persisted before this restart into `_mapping`
+# above, via the same lazy Postgres-or-fallback seam (get_reidentify_store) plus
+# the active mapping cipher (get_mapping_cipher) -- a no-op with no cipher
+# configured (#149 graceful degradation; without one, confirm never wrote to the
+# re-identify store in the first place). Without this, a confirmed entity's
+# surrogate was NOT stable across a restart: the entity graph/re-identify store
+# durably held it, but `_mapping` -- what L2 and mint-time disjointness actually
+# consult -- forgot it, so the next occurrence re-adjudicated through L3 and
+# minted a fresh, different surrogate.
+hydrate_mapping_from_reidentify_store(_mapping, get_reidentify_store(), get_mapping_cipher())
 
 
 def _forwarded_headers(request: Request) -> dict[str, str]:

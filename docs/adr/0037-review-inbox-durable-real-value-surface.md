@@ -161,6 +161,27 @@ behavior; per-workspace scoping is a possible future slice, not this one.
   actually unblocks the observed deadlock; the corpus check is defense in
   depth against the same class of accident recurring.
 
+> **Update (2026-08-18, issue #343).** This ADR durably persists the *pending*
+> review inbox and its pool cursor, but never questioned whether **confirming**
+> an item made the resulting mapping itself durable — `confirm_review_item`
+> calls `mapping.seed(item.real, item.provisional_surrogate)`, and that text was
+> read as sufficient. It measured as false: `mapping` is `blindfold.app`'s
+> process-global `SurrogateMapping` (`_mapping`), seeded only from the vendored
+> seed at import time, never from the entity graph or `reidentify_mappings` —
+> so a confirmed entity's surrogate was durable in storage but **not** stable
+> across a process restart. `_mapping` forgot it, the next occurrence of that
+> real value re-adjudicated through L3, and minted a fresh, different
+> surrogate — a live regression of this ADR's own §"Provisional-mapping
+> collision-safety" concern, one step later than pending items. Issue #343's
+> live-verify fixture (`tests/test_store_persistence_confirm_restart_restore.py`)
+> reproduced this directly (confirm, discard the in-process objects, rebuild
+> fresh ones against the same store, resend the same real value) before fixing
+> it: `hydrate_mapping_from_reidentify_store` (app.py) now seeds `_mapping` from
+> every persisted `(surrogate, workspace, ciphertext)` row at the same startup
+> point this ADR's own `hydrate_review_inbox_from_store` call sits at, gated
+> identically (a no-op with no mapping cipher configured — #149 graceful
+> degradation, since confirm never wrote to the store in that case either).
+
 ## Alternatives considered
 
 - **Drop `context` on persist (store only `real` + surrogate).** Pure
