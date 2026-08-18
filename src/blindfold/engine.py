@@ -1197,7 +1197,29 @@ def _blindfold_text(
             start, end = _clip_span_to_candidate_line(
                 result, start, end, candidate.start, candidate.end
             )
-            novel_extents.append(_ConfirmedExtent(start, end, decision.entity_type))
+            # Issue #339: an authoritative span (#170, above) can widen a
+            # confirming candidate whose own token sits outside every injected
+            # range (the ``continue`` above only catches a candidate token fully
+            # INSIDE one) across the boundary into an injected surrogate's own
+            # occurrence -- e.g. "Provisional" widening into "Provisional Alex
+            # Brenner" when "Alex Brenner" is a surrogate this same hop already
+            # injected. Minting that whole span makes an artifact real whose only
+            # occurrences are ones the blinder itself produced (unreachable by
+            # the blinder on any future hop) and permanently deadlocks the leak
+            # gate. Flipping the guard above to overlap-refusal was rejected in
+            # the issue: it would also silently skip a genuinely novel real
+            # merely adjacent to a surrogate. Instead, trim the extent down to
+            # the sub-span(s) lying outside every injected range -- the injected
+            # portion itself is never re-examined -- and mint only what survives.
+            for t_start, t_end in _trim_ranges_outside(
+                start, end, injected_surrogate_ranges
+            ):
+                t_start, t_end = _strip_whitespace_edges(result, t_start, t_end)
+                if t_start >= t_end:
+                    continue
+                novel_extents.append(
+                    _ConfirmedExtent(t_start, t_end, decision.entity_type)
+                )
         # Coalesce adjacent/overlapping confirmed extents into one entity before
         # minting (issue #162, widened by #170): select_candidate_spans emits
         # single capitalized tokens, so a multi-word entity ("Sarah Bergmann")
@@ -1349,6 +1371,47 @@ def _blindfold_text(
                 hop_ctx.surrogates.append(span.surrogate)
         result = _apply_spans(result, l3_spans, assert_no_overlap=False)
     return result
+
+
+def _trim_ranges_outside(
+    start: int, end: int, exclude: Sequence[tuple[int, int]]
+) -> list[tuple[int, int]]:
+    """Subtract every range in ``exclude`` from ``[start, end)`` (issue #339).
+
+    Returns the surviving sub-interval(s), in order, each lying entirely outside
+    every excluded range -- ``[(start, end)]`` unchanged when nothing overlaps.
+    Used to trim a confirmed L3 extent that straddles an injected-surrogate
+    occurrence down to the portion(s) that are ordinary hop text, rather than
+    refusing the whole extent (over-broad -- would also silently skip a
+    genuinely adjacent novel real, issue #292) or minting it whole (the
+    leaked-then-unreachable artifact-real bug this closes).
+    """
+    intervals = [(start, end)]
+    for ex_start, ex_end in exclude:
+        next_intervals = []
+        for s, e in intervals:
+            if ex_end <= s or ex_start >= e:
+                next_intervals.append((s, e))
+                continue
+            if ex_start > s:
+                next_intervals.append((s, ex_start))
+            if ex_end < e:
+                next_intervals.append((ex_end, e))
+        intervals = next_intervals
+    return intervals
+
+
+def _strip_whitespace_edges(text: str, start: int, end: int) -> tuple[int, int]:
+    """Trim leading/trailing whitespace off ``[start, end)`` (issue #339): trimming
+    a straddling extent against an injected range can leave a boundary landing on
+    whitespace (e.g. the space between "Provisional" and the surrogate it
+    widened into) -- never itself part of a meaningful candidate real value.
+    """
+    while start < end and text[start].isspace():
+        start += 1
+    while end > start and text[end - 1].isspace():
+        end -= 1
+    return start, end
 
 
 def _clip_span_to_candidate_line(
