@@ -28,7 +28,9 @@ from typing import TYPE_CHECKING, Protocol
 
 from .policy import DEFAULT_WORKSPACE
 from .store._mint import (
+    REVIEW_FALLBACK_PREFIX,
     collides_with_known_entity,
+    is_reserved_provisional_surrogate_form,
     pool_entry_collides_with_corpus,
     surrogate_space_match,
 )
@@ -82,21 +84,16 @@ _PROVISIONAL_POOLS: dict[str, tuple[str, ...]] = {
 # minted as a real (below, in `upsert`). Zero-padded to at least 4 digits so the
 # form is stable and grep-able; the pattern's `\d{4,}` deliberately keeps
 # matching if the walk ever runs past 9999.
-_RESERVED_SURROGATE_PREFIX = "BFX"
-_RESERVED_SURROGATE_RE = re.compile(rf"^{_RESERVED_SURROGATE_PREFIX}\d{{4,}}$")
-
-
-def is_reserved_provisional_surrogate_form(value: str) -> bool:
-    """True if ``value`` matches the opaque reserved-namespace fallback shape
-    (ADR-0052) -- ``BFX`` + four-or-more zero-padded digits.
-
-    A closed syntactic class, not an open blocklist of English words (#301):
-    a candidate real matching this form must never be minted (enforced in
-    :meth:`ReviewInbox.upsert`), so a value that appears in Blindfold's own
-    documentation -- including this ADR and `CONTEXT.md` -- can never be
-    re-detected as a novel real and reproduce the #328 deadlock.
-    """
-    return bool(_RESERVED_SURROGATE_RE.match(value))
+#
+# The recognizer itself (`is_reserved_provisional_surrogate_form`) lives in
+# `store._mint` -- a leaf module this file already depends on -- as the
+# single source of truth for the WHOLE reserved-namespace family, not just
+# this module's own `BFX` prefix (issue #335 gave `store._mint`'s own sibling
+# fallback paths their own prefixes in the same family; #332 set the identical
+# precedent moving `_real_value_pattern` there for the identical reason: this
+# module cannot import review-owning code without a cycle, since review.py
+# already imports from `store._mint`).
+_RESERVED_SURROGATE_PREFIX = REVIEW_FALLBACK_PREFIX
 
 
 # Trailing legal-form suffixes (issue #289): an organisation mentioned with and

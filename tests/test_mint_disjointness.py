@@ -169,5 +169,7 @@ def test_colliding_pool_entry_is_skipped_not_reused_and_non_colliding_entries_st
     # E-stable: referents before the collision are unaffected.
     assert minted[:4] == baseline[:4]
     # The referent that would have collided, and everyone after, shift by one --
-    # drawing from the pool's remaining entries and then the numbered fallback.
-    assert minted[4:] == baseline[5:] + ["Person Surrogate 8"]
+    # drawing from the pool's remaining entries and then the opaque reserved-
+    # namespace fallback (ADR-0052, issue #335 -- "Person Surrogate 8" was the
+    # old natural-language shape).
+    assert minted[4:] == baseline[5:] + ["BFP0008"]

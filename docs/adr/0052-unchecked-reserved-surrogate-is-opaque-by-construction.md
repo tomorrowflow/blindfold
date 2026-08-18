@@ -131,6 +131,8 @@ corpus check.
   pool cursor is durable (ADR-0037), so a workspace that already hit this stays deadlocked until
   those inbox rows are cleared. Rewriting a live surrogate would break **restore** for in-flight
   exchanges — the worse trade for a short-lived provisional row.
+- The invariant's remaining natural-language fallbacks in `store/_mint.py` (`next_replacement_surrogate`,
+  `mint_surrogates`) were converted in #335.
 
 ## Alternatives considered
 

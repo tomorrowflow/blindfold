@@ -38,6 +38,15 @@ with surrogate-space. It is no longer used at mint time (that dismissal path
 -- fail-open on a genuine real/surrogate-component coincidence -- was removed;
 pool-vs-corpus disjointness prevents the collision from arising instead of
 adjudicating it after the mint).
+
+Reserved-namespace fallback (ADR-0052, issue #335): past a named pool,
+:func:`next_replacement_surrogate` and :func:`mint_surrogates` both fall back
+to a single opaque ASCII token from a reserved namespace closed against ever
+being minted as a real (:func:`is_reserved_provisional_surrogate_form`), and
+both walks are bounded, raising :class:`FallbackSurrogatePoolExhaustedError`
+rather than looping forever when a known value collides with every fallback
+candidate in range -- the same invariant #330/#331 already gave ``review.py``'s
+own provisional-pool fallback, applied to this module's two sibling paths.
 """
 
 from __future__ import annotations
@@ -103,11 +112,96 @@ _REPLACEMENT_POOL: tuple[str, ...] = (
     "Lorenz Bruckner",
 )
 
+# ADR-0052 (issue #335, applying #330's decision to this module's own sibling
+# fallbacks): past a named pool, a fallback surrogate is a single opaque
+# ASCII token -- no natural-language word, no free-standing integer, no
+# whitespace -- drawn from a namespace reserved against ever being minted as
+# a real (`is_reserved_provisional_surrogate_form` below). Every path/kind
+# that can exhaust its own pool gets its OWN prefix, by construction, so no
+# two paths/kinds can ever render an identical fallback token at the same
+# numeric position -- unlike `review.py`'s own person/organization pools,
+# which still share one prefix (`BFX`) and are deliberately left as-is: that
+# pre-existing ambiguity is `review.py`'s own walk (#330/#331), out of this
+# issue's scope, which touches only this module's two sibling fallback paths.
+REVIEW_FALLBACK_PREFIX = "BFX"  # review.py's provisional-inbox pools (#330)
+REPLACEMENT_FALLBACK_PREFIX = "BFR"  # next_replacement_surrogate (#81, this issue)
+POOL_FALLBACK_PREFIXES: dict[str, str] = {
+    "person": "BFP",
+    "term": "BFT",
+    "org_unit": "BFO",
+}
+DEFAULT_POOL_FALLBACK_PREFIX = "BFK"  # any kind absent from _POOLS/POOL_FALLBACK_PREFIXES
+
+# The single source of truth for the WHOLE reserved-namespace family's shape
+# (ADR-0052 decision 2, issue #335): every prefix any fallback path in the
+# process can mint, above -- kept here (a leaf module review.py already
+# depends on, per issue #332's precedent moving `_real_value_pattern` here for
+# the identical reason) rather than in review.py, so review.py can import the
+# one shared recognizer instead of keeping a second one that only knew its
+# own `BFX` prefix and would drift the moment a sibling path added its own.
+_ALL_RESERVED_PREFIXES: tuple[str, ...] = (
+    REVIEW_FALLBACK_PREFIX,
+    REPLACEMENT_FALLBACK_PREFIX,
+    *dict.fromkeys(POOL_FALLBACK_PREFIXES.values()),
+    DEFAULT_POOL_FALLBACK_PREFIX,
+)
+_RESERVED_SURROGATE_RE = re.compile(
+    rf"^(?:{'|'.join(_ALL_RESERVED_PREFIXES)})\d{{4,}}$"
+)
+
+
+def is_reserved_provisional_surrogate_form(value: str) -> bool:
+    """True if ``value`` matches ANY reserved-namespace fallback shape in the
+    family (ADR-0052) -- one of the prefixes above, followed by four-or-more
+    zero-padded digits.
+
+    A closed syntactic class, not an open blocklist of English words (#301):
+    a candidate real matching this form must never be minted (enforced in
+    :meth:`review.ReviewInbox.upsert`), so a value that appears in
+    Blindfold's own documentation -- including this ADR and `CONTEXT.md` --
+    can never be re-detected as a novel real and reproduce the #328 deadlock,
+    regardless of which fallback path originally minted that shape.
+    """
+    return bool(_RESERVED_SURROGATE_RE.match(value))
+
+
+# Issue #335 (mirroring review._MAX_FALLBACK_ATTEMPTS, issue #331): a bound on
+# how many fallback positions either walk below will try before giving up.
+# Both named pools are guarded against known-real collision (issue #80), but
+# the numbered fallback has no other stop condition -- a known value that
+# collides with every fallback candidate in range (see review.py's own
+# docstring for the general shape of this hazard) would otherwise walk the
+# integers upward forever, hanging the proxy instead of failing closed.
+# Generous -- this should never be reached by real traffic.
+_MAX_FALLBACK_ATTEMPTS = 10_000
+
+
+class FallbackSurrogatePoolExhaustedError(Exception):
+    """A ``store._mint`` fallback surrogate walk has no mint-time-disjoint
+    candidate left to issue, even after walking ``_MAX_FALLBACK_ATTEMPTS``
+    positions past its named pool (ADR-0052 decision 3, issue #335).
+
+    The sibling of :class:`review.ProvisionalPoolExhaustedError` for this
+    module's two fallback paths (:func:`next_replacement_surrogate`,
+    :func:`mint_surrogates`). Raised instead of walking the numbered fallback
+    forever -- fail-closed (ADR-0009), and its own reason distinct in shape
+    from a leak reason: the message names only the exhausted ``path`` (the
+    literal ``"replacement"``, or a kind such as ``"person"``), never a real
+    value or a candidate surrogate.
+    """
+
+    def __init__(self, path: str) -> None:
+        super().__init__(
+            f"the {path!r} surrogate fallback is exhausted -- no mint-time-disjoint "
+            f"candidate remains to issue after {_MAX_FALLBACK_ATTEMPTS} attempts"
+        )
+        self.path = path
+
 
 def _replacement_pool_entry(position: int) -> str:
     if position < len(_REPLACEMENT_POOL):
         return _REPLACEMENT_POOL[position]
-    return f"Replacement Surrogate {position}"
+    return f"{REPLACEMENT_FALLBACK_PREFIX}{position:04d}"
 
 
 def next_replacement_surrogate(
@@ -120,14 +214,20 @@ def next_replacement_surrogate(
     (falling back to a numbered surrogate once exhausted), skipping any entry that
     collides with ``known_values`` -- the same closed-world set the pre-egress leak
     gate consults -- so a re-minted replacement can never itself be stale on arrival.
+
+    Bounded (issue #335, mirroring #331): tries at most ``_MAX_FALLBACK_ATTEMPTS``
+    positions before raising :class:`FallbackSurrogatePoolExhaustedError` --
+    fail-closed rather than looping forever when something known collides with
+    every fallback candidate in range.
     """
     known = list(known_values)
     position = start_position
-    while True:
+    for _ in range(_MAX_FALLBACK_ATTEMPTS):
         candidate = _replacement_pool_entry(position)
         position += 1
         if not collides_with_known_entity(candidate, known):
             return candidate, position
+    raise FallbackSurrogatePoolExhaustedError("replacement")
 
 
 def _pool_entry(kind: str, position: int) -> str:
@@ -138,7 +238,8 @@ def _pool_entry(kind: str, position: int) -> str:
     pool = _POOLS.get(kind, ())
     if position < len(pool):
         return pool[position]
-    return f"{kind.title()} Surrogate {position}"
+    prefix = POOL_FALLBACK_PREFIXES.get(kind, DEFAULT_POOL_FALLBACK_PREFIX)
+    return f"{prefix}{position:04d}"
 
 
 @functools.lru_cache(maxsize=None)
@@ -253,6 +354,23 @@ def pool_entry_collides_with_corpus(candidate: str, corpus_text: str) -> bool:
     return False
 
 
+def _next_pool_entry(kind: str, start_position: int, known: list[str]) -> tuple[str, int]:
+    """The first mint-time-disjoint ``kind``-pool entry at or after
+    ``start_position``, and the position to resume from (issue #335).
+
+    Bounded (mirroring :func:`next_replacement_surrogate` /
+    ``review._next_provisional``): tries at most ``_MAX_FALLBACK_ATTEMPTS``
+    positions before raising :class:`FallbackSurrogatePoolExhaustedError`.
+    """
+    position = start_position
+    for _ in range(_MAX_FALLBACK_ATTEMPTS):
+        candidate = _pool_entry(kind, position)
+        position += 1
+        if not collides_with_known_entity(candidate, known):
+            return candidate, position
+    raise FallbackSurrogatePoolExhaustedError(kind)
+
+
 def mint_surrogates(kind: str, count: int, known_values: Iterable[str] = ()) -> list[str]:
     """Return ``count`` deterministic, mint-time-disjoint surrogates for ``kind``, in order.
 
@@ -262,15 +380,17 @@ def mint_surrogates(kind: str, count: int, known_values: Iterable[str] = ()) -> 
     position it would have had without collision-skipping -- so this is a strict
     superset-preserving refinement of the old positional ``mint_surrogate``: E-stable
     for every referent whose assigned entry never collides.
+
+    Bounded per referent (issue #335): if something known collides with every
+    fallback candidate in range, :func:`_next_pool_entry` raises
+    :class:`FallbackSurrogatePoolExhaustedError` -- fail-closed rather than
+    walking positions forever without ever appending to ``result``.
     """
     known = list(known_values)
     result: list[str] = []
     position = 0
     while len(result) < count:
-        candidate = _pool_entry(kind, position)
-        position += 1
-        if collides_with_known_entity(candidate, known):
-            continue
+        candidate, position = _next_pool_entry(kind, position, known)
         result.append(candidate)
     return result
 
