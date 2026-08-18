@@ -135,7 +135,8 @@ def test_mining_never_proposes_a_reserved_form_candidate(monkeypatch):
 
     def _fake_select_candidate_spans(text, known_entities, allowlist=None,
                                       declared_tools=frozenset(),
-                                      system_confined_tokens=frozenset()):
+                                      system_confined_tokens=frozenset(),
+                                      case_inconsistency=None):
         start = text.find("BFX0008")
         end = start + len("BFX0008")
         return [

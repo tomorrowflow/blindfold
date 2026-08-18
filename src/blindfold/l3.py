@@ -373,12 +373,123 @@ class L3ContentCache:
             self._entries.popitem(last=False)
 
 
+@dataclass(frozen=True)
+class CaseInconsistencyEvidence:
+    """Per-request case-inconsistency evidence (ADR-0023, "Update (issue #342)"),
+    computed once at the app boundary from the untouched payload -- before any
+    hop is blinded -- by
+    :func:`~blindfold.engine.extract_case_inconsistency_evidence_messages` /
+    ``_chat_completions`` (issue #344). Never persisted, never state on
+    :class:`L3Detector`.
+
+    ``lowercase_counts``/``capitalized_counts`` map a token's casefolded form to
+    its occurrence count across the WHOLE untouched payload -- there is no
+    region distinction here, unlike ``system_confined_tokens`` above.
+    ``lowercase_counts`` counts **prose** occurrences only: a lowercase form
+    inside an email address, a URL, or a dotted-or-hyphenated identifier/
+    filename is evidence about encoding conventions, not about how humans
+    write the word, and is excluded at extraction time -- the exclusion that
+    separates the common noun "analytics" from the real org "Northwind
+    Analytics", whose only lowercase occurrence anywhere sits inside
+    "northwind-analytics.example".
+    """
+
+    lowercase_counts: dict[str, int] = field(default_factory=dict)
+    capitalized_counts: dict[str, int] = field(default_factory=dict)
+
+    def has_evidence(self, token: str, threshold: str) -> bool:
+        """True if ``token`` (a Title-Case candidate token) clears
+        ``threshold``'s bar:
+
+        - ``"bare_presence"``: one prose-lowercase occurrence anywhere in the
+          payload suffices.
+        - ``"proportionate_evidence"``: lowercase occurrences must outnumber
+          capitalized ones, so pervasive vocabulary (``pass``) separates from
+          incidental (``mark``).
+        """
+        key = token.casefold()
+        lowercase_count = self.lowercase_counts.get(key, 0)
+        if threshold == "bare_presence":
+            return lowercase_count > 0
+        if threshold == "proportionate_evidence":
+            return lowercase_count > self.capitalized_counts.get(key, 0)
+        raise ValueError(f"unknown case-inconsistency threshold: {threshold!r}")
+
+
+@dataclass(frozen=True)
+class CaseInconsistencySuppression:
+    """Bundles the fifth ADR-0023 suppression condition's evidence with the
+    threshold selecting between its two candidate aggressiveness rules
+    (issue #344) -- one plain parameter threaded down to
+    :func:`select_candidate_spans`, mirroring how ``system_confined_tokens``
+    threads a single frozenset. Default off: no caller constructs one unless
+    it opts in, so passing ``None`` (every existing caller) reproduces today's
+    candidate selection exactly.
+    """
+
+    evidence: CaseInconsistencyEvidence
+    threshold: str
+
+
+def _is_whitespace_gap(text: str, prev_end: int, next_start: int) -> bool:
+    """True if ``text[prev_end:next_start]`` is a non-empty run of whitespace
+    with no newline -- the same adjacency test
+    :func:`~blindfold.engine._coalesce_adjacent_spans` uses post-adjudication
+    to merge confirmed extents ("Sarah" + "Bergmann", issue #162). Reused here,
+    pre-adjudication, to group the raw capitalized-token runs a case-
+    inconsistency conjunctive check must evaluate as one unit.
+    """
+    gap = text[prev_end:next_start]
+    return gap != "" and "\n" not in gap and gap.strip() == ""
+
+
+def _case_inconsistency_suppressed_starts(
+    text: str, case_inconsistency: "CaseInconsistencySuppression | None"
+) -> frozenset[int]:
+    """Start offsets, in ``text``, of every capitalized token the fifth ADR-0023
+    suppression condition rules out (issue #344).
+
+    Adjacent Title-Case tokens separated only by whitespace in ``text`` (the
+    same run a multi-word entity like "Project Halyard" would coalesce into
+    once confirmed) are evaluated together, **conjunctively**: every token of
+    the run must clear ``case_inconsistency.evidence.has_evidence`` for any of
+    them to be suppressed. A single unqualifying member (e.g. "Halyard", with
+    no prose-lowercase evidence) protects the whole run, including a token
+    that would individually qualify ("Project", if "project" appears
+    lowercase elsewhere in the payload) -- disjunctive matching was measured
+    and rejected (ADR-0023) because it preferentially eats real entity names,
+    which reliably pair a distinctive token with a generic one.
+    """
+    if case_inconsistency is None:
+        return frozenset()
+    matches = list(_capitalized_token_matches(text))
+    suppressed: set[int] = set()
+    i = 0
+    n = len(matches)
+    while i < n:
+        run = [matches[i]]
+        j = i + 1
+        while j < n and _is_whitespace_gap(text, run[-1].end(), matches[j].start()):
+            run.append(matches[j])
+            j += 1
+        if all(
+            case_inconsistency.evidence.has_evidence(
+                m.group(0), case_inconsistency.threshold
+            )
+            for m in run
+        ):
+            suppressed.update(m.start() for m in run)
+        i = j
+    return frozenset(suppressed)
+
+
 def select_candidate_spans(
     text: str,
     known_entities: list[Entity],
     allowlist: "Allowlist | None" = None,
     declared_tools: frozenset[str] = frozenset(),
     system_confined_tokens: frozenset[str] = frozenset(),
+    case_inconsistency: "CaseInconsistencySuppression | None" = None,
 ) -> list[CandidateSpan]:
     """Flag the unknown capitalized tokens in ``text``, with minimal context.
 
@@ -437,10 +548,23 @@ def select_candidate_spans(
     "Apple Development" does NOT suppress a standalone later occurrence of
     "Apple" or "Development" alone — components are not implicitly
     non-sensitive just because one phrase containing them was rejected.
+
+    ``case_inconsistency`` (ADR-0023, "Update (issue #342)", issue #344) is
+    the fifth suppression condition: a :class:`CaseInconsistencySuppression`
+    bundling per-request evidence (see
+    :func:`~blindfold.engine.extract_case_inconsistency_evidence_messages` /
+    ``_chat_completions``) with a threshold selecting between its two
+    candidate aggressiveness rules. ``None`` (the default — every existing
+    caller) reproduces today's candidate selection exactly. See
+    :func:`_case_inconsistency_suppressed_starts` for the conjunctive,
+    run-granular mechanics.
     """
     known_surfaces = _known_surfaces(known_entities)
     capitalized_positions = _capitalized_positions(text)
     phrase_ranges = _allowlisted_phrase_ranges(text, allowlist)
+    case_inconsistency_suppressed = _case_inconsistency_suppressed_starts(
+        text, case_inconsistency
+    )
     candidates: list[CandidateSpan] = []
     for match in _capitalized_token_matches(text):
         token = match.group(0)
@@ -455,6 +579,8 @@ def select_candidate_spans(
         if token in declared_tools:
             continue
         if token in system_confined_tokens:
+            continue
+        if match.start() in case_inconsistency_suppressed:
             continue
         if _is_positional_case_noise(token, text, capitalized_positions):
             continue
@@ -644,6 +770,7 @@ class L3Detector:
         declared_tools: frozenset[str] = frozenset(),
         phone_candidates_enabled: bool = True,
         system_confined_tokens: frozenset[str] = frozenset(),
+        case_inconsistency: "CaseInconsistencySuppression | None" = None,
     ) -> list[tuple[CandidateSpan, L3Adjudication]]:
         if self._deterministic_only:
             return []
@@ -673,7 +800,7 @@ class L3Detector:
         candidates = sorted(
             select_candidate_spans(
                 text, known_entities, self._allowlist, declared_tools,
-                system_confined_tokens,
+                system_confined_tokens, case_inconsistency,
             )
             + (select_phone_candidate_spans(text) if phone_candidates_enabled else []),
             key=lambda candidate: candidate.start,

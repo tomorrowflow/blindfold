@@ -27,7 +27,13 @@ from typing import Any, NoReturn
 from .detection import detect_l2, detect_pii
 from .l3 import _capitalized_token_matches
 from .l3 import _SENTENCE_STOPWORDS as _COMPONENT_STOPWORDS
-from .l3 import L3Detector, L3DetectionInternalError, count_capitalized_tokens
+from .l3 import (
+    CaseInconsistencyEvidence,
+    CaseInconsistencySuppression,
+    L3Detector,
+    L3DetectionInternalError,
+    count_capitalized_tokens,
+)
 # Reused to re-window context around a *coalesced* multi-token span (issue #162):
 # no single candidate's ``.context`` covers the merged run, so the inbox item's
 # context/offset are recomputed from the group's start/end via the same windowing
@@ -191,6 +197,7 @@ def blindfold_payload(
     phone_candidates_enabled: bool = True,
     declared_tool_vocabulary: "DeclaredToolVocabulary | None" = None,
     system_confined_tokens: frozenset[str] = frozenset(),
+    case_inconsistency: "CaseInconsistencySuppression | None" = None,
 ) -> tuple[dict[str, Any], ExchangeSession]:
     """Return a blindfolded copy of an Anthropic Messages ``payload`` plus the session.
 
@@ -239,6 +246,13 @@ def blindfold_payload(
     discipline as ``declared_tools``: never persisted, never state on
     ``l3_detector``.
 
+    ``case_inconsistency`` (ADR-0023, "Update (issue #342)", issue #344) is the
+    fifth suppression layer -- see
+    :func:`extract_case_inconsistency_evidence_messages`, computed by the
+    caller on the untouched payload and passed through unchanged here to
+    every hop. ``None`` (the default -- every caller today) reproduces
+    today's candidate selection exactly; this condition ships default off.
+
     The resulting ``session.hops`` (issue #153, ADR-0035) labels each hop's L3
     detail with ``l3_detector.provider_name`` when ``l3_detector`` ran for that hop
     — a display-only string, never used to select behavior here.
@@ -257,6 +271,7 @@ def blindfold_payload(
         out["system"] = _blindfold_system(
             system, mapping, session, l3_detector, inbox, declared_tools, ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
+            case_inconsistency,
         )
         session.hops.append(_finish_hop(ctx, "system", len(session.hops)))
 
@@ -265,7 +280,7 @@ def blindfold_payload(
         message["content"] = _blindfold_content(
             message.get("content"), mapping, session, l3_detector, inbox,
             declared_tools, ctx, workspace, phone_candidates_enabled,
-            system_confined_tokens,
+            system_confined_tokens, case_inconsistency,
         )
         session.hops.append(
             _finish_hop(ctx, _hop_kind_for_message(message), len(session.hops))
@@ -286,6 +301,7 @@ def blindfold_chat_completions_payload(
     phone_candidates_enabled: bool = True,
     declared_tool_vocabulary: "DeclaredToolVocabulary | None" = None,
     system_confined_tokens: frozenset[str] = frozenset(),
+    case_inconsistency: "CaseInconsistencySuppression | None" = None,
 ) -> tuple[dict[str, Any], ExchangeSession]:
     """Return a blindfolded copy of an OpenAI Chat Completions ``payload`` plus the session.
 
@@ -305,6 +321,10 @@ def blindfold_chat_completions_payload(
     :func:`extract_system_confined_tokens_chat_completions` and
     :func:`blindfold_payload`. The "system region" here is every
     ``role: "system"`` message.
+
+    ``case_inconsistency`` (ADR-0023, "Update (issue #342)", issue #344) — see
+    :func:`extract_case_inconsistency_evidence_chat_completions` and
+    :func:`blindfold_payload`.
     """
     session = ExchangeSession()
     out = copy.deepcopy(payload)
@@ -319,7 +339,7 @@ def blindfold_chat_completions_payload(
         message["content"] = _blindfold_content(
             message.get("content"), mapping, session, l3_detector, inbox,
             declared_tools, ctx, workspace, phone_candidates_enabled,
-            system_confined_tokens,
+            system_confined_tokens, case_inconsistency,
         )
         session.hops.append(
             _finish_hop(ctx, _hop_kind_for_message(message), len(session.hops))
@@ -415,6 +435,180 @@ def extract_system_confined_tokens_chat_completions(
         )
     )
     return frozenset(system_tokens - other_tokens)
+
+
+# The fifth ADR-0023 suppression condition's own non-prose exclusions (issue
+# #344): a lowercase form inside one of these shapes is evidence about
+# encoding conventions, not about how humans write the word, and does not
+# count as case-inconsistency evidence. Mirrors the exact live artifact ADR-
+# 0023 names: "northwind" appearing only inside the email domain
+# "northwind-analytics.example" must never count against the real org
+# "Northwind Analytics".
+_EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+_URL_RE = re.compile(r"\b\w+://\S+")
+_DOTTED_OR_HYPHENATED_RE = re.compile(r"\b\w+(?:[.\-]\w+)+\b", re.UNICODE)
+
+
+def _non_prose_ranges(text: str) -> list[tuple[int, int]]:
+    ranges: list[tuple[int, int]] = []
+    for pattern in (_EMAIL_RE, _URL_RE, _DOTTED_OR_HYPHENATED_RE):
+        ranges.extend((m.start(), m.end()) for m in pattern.finditer(text))
+    return ranges
+
+
+def _is_lowercase_word(token: str) -> bool:
+    return token.isalpha() and token.islower()
+
+
+def _prose_lowercase_word_counts(text: str) -> dict[str, int]:
+    """Count every all-lowercase word in ``text`` that occurs in **prose**
+    position -- i.e. outside an email address, URL, or dotted-or-hyphenated
+    identifier/filename (see ``_non_prose_ranges``) -- keyed by its casefolded
+    form. This is the "prose-lowercase" evidence ADR-0023's fifth suppression
+    condition tests for.
+    """
+    excluded = _non_prose_ranges(text)
+    counts: dict[str, int] = {}
+    for match in re.finditer(r"\w+", text, re.UNICODE):
+        token = match.group(0)
+        if not _is_lowercase_word(token):
+            continue
+        if any(start <= match.start() < end for start, end in excluded):
+            continue
+        key = token.casefold()
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _capitalized_token_counts(text: str) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for match in _capitalized_token_matches(text):
+        key = match.group(0).casefold()
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+def _text_leaves_in_system(system: Any) -> list[str]:
+    if isinstance(system, str):
+        return [system]
+    if isinstance(system, list):
+        leaves: list[str] = []
+        for block in system:
+            leaves.extend(_text_leaves_in_block(block))
+        return leaves
+    return []
+
+
+def _text_leaves_in_content(content: Any) -> list[str]:
+    if isinstance(content, str):
+        return [content]
+    if isinstance(content, list):
+        leaves: list[str] = []
+        for block in content:
+            leaves.extend(_text_leaves_in_block(block))
+        return leaves
+    return []
+
+
+def _text_leaves_in_block(block: Any) -> list[str]:
+    if not isinstance(block, dict):
+        return []
+    block_type = block.get("type")
+    if block_type == "text" and isinstance(block.get("text"), str):
+        return [block["text"]]
+    if block_type == "tool_result":
+        return _text_leaves_in_content(block.get("content"))
+    if block_type == "tool_use":
+        return _text_leaves_in_json_value(block.get("input"))
+    return []
+
+
+def _text_leaves_in_json_value(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        leaves: list[str] = []
+        for v in value.values():
+            leaves.extend(_text_leaves_in_json_value(v))
+        return leaves
+    if isinstance(value, list):
+        leaves = []
+        for item in value:
+            leaves.extend(_text_leaves_in_json_value(item))
+        return leaves
+    return []
+
+
+def _text_leaves_in_tool_descriptions(
+    tools: Any, get_container: Callable[[dict[str, Any]], Any]
+) -> list[str]:
+    if not isinstance(tools, list):
+        return []
+    leaves: list[str] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        container = get_container(tool)
+        if isinstance(container, dict) and isinstance(container.get("description"), str):
+            leaves.append(container["description"])
+    return leaves
+
+
+def _case_inconsistency_evidence_from_leaves(leaves: list[str]) -> CaseInconsistencyEvidence:
+    lowercase_counts: dict[str, int] = {}
+    capitalized_counts: dict[str, int] = {}
+    for text in leaves:
+        for word, count in _prose_lowercase_word_counts(text).items():
+            lowercase_counts[word] = lowercase_counts.get(word, 0) + count
+        for word, count in _capitalized_token_counts(text).items():
+            capitalized_counts[word] = capitalized_counts.get(word, 0) + count
+    return CaseInconsistencyEvidence(
+        lowercase_counts=lowercase_counts, capitalized_counts=capitalized_counts
+    )
+
+
+def extract_case_inconsistency_evidence_messages(
+    payload: dict[str, Any]
+) -> CaseInconsistencyEvidence:
+    """Extract the fifth ADR-0023 suppression condition's evidence (issue #344)
+    from an Anthropic Messages ``payload``: per-token prose-lowercase and
+    capitalized occurrence counts across the WHOLE untouched payload -- system,
+    messages, and tool descriptions alike. Computed once, at the app boundary,
+    before any hop is blinded, so the scan sees this request's real text, never
+    a surrogate. Unlike :func:`extract_system_confined_tokens_messages`, there
+    is no region distinction here -- evidence is payload-wide by construction
+    (ADR-0023's own decision: per-hop evidence scope was measured and rejected).
+    """
+    leaves = _text_leaves_in_system(payload.get("system"))
+    messages = payload.get("messages")
+    if isinstance(messages, list):
+        for message in messages:
+            if isinstance(message, dict):
+                leaves.extend(_text_leaves_in_content(message.get("content")))
+    leaves.extend(_text_leaves_in_tool_descriptions(payload.get("tools"), lambda tool: tool))
+    return _case_inconsistency_evidence_from_leaves(leaves)
+
+
+def extract_case_inconsistency_evidence_chat_completions(
+    payload: dict[str, Any]
+) -> CaseInconsistencyEvidence:
+    """Extract the fifth ADR-0023 suppression condition's evidence (issue #344)
+    from an OpenAI Chat Completions ``payload`` -- see
+    :func:`extract_case_inconsistency_evidence_messages`. Every message role
+    (``system`` included) contributes equally; there is no region split here.
+    """
+    leaves: list[str] = []
+    messages = payload.get("messages")
+    if isinstance(messages, list):
+        for message in messages:
+            if isinstance(message, dict):
+                leaves.extend(_text_leaves_in_content(message.get("content")))
+    leaves.extend(
+        _text_leaves_in_tool_descriptions(
+            payload.get("tools"), lambda tool: tool.get("function")
+        )
+    )
+    return _case_inconsistency_evidence_from_leaves(leaves)
 
 
 def _capitalized_tokens_in_text(text: str) -> set[str]:
@@ -658,17 +852,20 @@ def _blindfold_system(
     workspace: str = DEFAULT_WORKSPACE,
     phone_candidates_enabled: bool = True,
     system_confined_tokens: frozenset[str] = frozenset(),
+    case_inconsistency: "CaseInconsistencySuppression | None" = None,
 ) -> Any:
     if isinstance(system, str):
         return _blindfold_text(
             system, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
+            case_inconsistency,
         )
     if isinstance(system, list):
         return [
             _blindfold_block(
                 block, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
                 workspace, phone_candidates_enabled, system_confined_tokens,
+                case_inconsistency,
             )
             for block in system
         ]
@@ -686,17 +883,20 @@ def _blindfold_content(
     workspace: str = DEFAULT_WORKSPACE,
     phone_candidates_enabled: bool = True,
     system_confined_tokens: frozenset[str] = frozenset(),
+    case_inconsistency: "CaseInconsistencySuppression | None" = None,
 ) -> Any:
     if isinstance(content, str):
         return _blindfold_text(
             content, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
+            case_inconsistency,
         )
     if isinstance(content, list):
         return [
             _blindfold_block(
                 block, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
                 workspace, phone_candidates_enabled, system_confined_tokens,
+                case_inconsistency,
             )
             for block in content
         ]
@@ -714,6 +914,7 @@ def _blindfold_block(
     workspace: str = DEFAULT_WORKSPACE,
     phone_candidates_enabled: bool = True,
     system_confined_tokens: frozenset[str] = frozenset(),
+    case_inconsistency: "CaseInconsistencySuppression | None" = None,
 ) -> Any:
     if not isinstance(block, dict):
         return block
@@ -722,12 +923,13 @@ def _blindfold_block(
         block["text"] = _blindfold_text(
             block["text"], mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
+            case_inconsistency,
         )
     elif block_type == "tool_result":
         block["content"] = _blindfold_content(
             block.get("content"), mapping, session, l3_detector, inbox,
             declared_tools, hop_ctx, workspace, phone_candidates_enabled,
-            system_confined_tokens,
+            system_confined_tokens, case_inconsistency,
         )
     elif block_type == "tool_use":
         # Tool-call JSON (issue #11): the assistant's prior tool_use.input is echoed
@@ -737,7 +939,7 @@ def _blindfold_block(
         block["input"] = _blindfold_json_value(
             block.get("input"), mapping, session, l3_detector, inbox,
             declared_tools, hop_ctx, workspace, phone_candidates_enabled,
-            system_confined_tokens,
+            system_confined_tokens, case_inconsistency,
         )
     return block
 
@@ -753,18 +955,21 @@ def _blindfold_json_value(
     workspace: str = DEFAULT_WORKSPACE,
     phone_candidates_enabled: bool = True,
     system_confined_tokens: frozenset[str] = frozenset(),
+    case_inconsistency: "CaseInconsistencySuppression | None" = None,
 ) -> Any:
     """Recursively rewrite every string leaf in a JSON-shaped value via L1+L2."""
     if isinstance(value, str):
         return _blindfold_text(
             value, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
+            case_inconsistency,
         )
     if isinstance(value, dict):
         return {
             k: _blindfold_json_value(
                 v, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
                 workspace, phone_candidates_enabled, system_confined_tokens,
+                case_inconsistency,
             )
             for k, v in value.items()
         }
@@ -773,6 +978,7 @@ def _blindfold_json_value(
             _blindfold_json_value(
                 item, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
                 workspace, phone_candidates_enabled, system_confined_tokens,
+                case_inconsistency,
             )
             for item in value
         ]
@@ -995,6 +1201,7 @@ def _blindfold_text(
     workspace: str = DEFAULT_WORKSPACE,
     phone_candidates_enabled: bool = True,
     system_confined_tokens: frozenset[str] = frozenset(),
+    case_inconsistency: "CaseInconsistencySuppression | None" = None,
 ) -> str:
     """Rewrite ``text`` by replacing every L2-detected entity span with its surrogate.
 
@@ -1025,6 +1232,11 @@ def _blindfold_text(
     ``system_confined_tokens`` (ADR-0023, "Update (issue #301)") reaches
     :meth:`L3Detector.detect` unchanged, for every hop including ``system``'s
     own — see :func:`blindfold_payload`.
+
+    ``case_inconsistency`` (ADR-0023, "Update (issue #342)", issue #344)
+    reaches :meth:`L3Detector.detect` unchanged, for every hop — see
+    :func:`blindfold_payload`. ``None`` (the default) reproduces today's
+    candidate selection exactly.
     """
     # Issue #325: stages 1 (L2), 1.5 (the provisional-pair pass, ADR-0051) and 2
     # (L1) each *collect* replacement spans against ``text`` -- the untouched,
@@ -1109,6 +1321,7 @@ def _blindfold_text(
             declared_tools,
             phone_candidates_enabled=phone_candidates_enabled,
             system_confined_tokens=system_confined_tokens,
+            case_inconsistency=case_inconsistency,
         )
         if hop_ctx is not None:
             confirmed = sum(1 for _, decision in adjudications if decision.is_entity)
