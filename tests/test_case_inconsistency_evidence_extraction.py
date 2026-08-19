@@ -8,9 +8,9 @@ Pins the two acceptance-criteria cases the ADR calls out by name:
 - the conjunctive rule (`Project Halyard` not suppressed on lowercase `project`
   alone) -- covered directly against ``select_candidate_spans`` in
   test_case_inconsistency_l3_suppression.py; this file only pins that the
-  *extracted evidence* itself correctly gives `project` bare-presence evidence
-  and withholds it from `halyard`, since the conjunctive decision is made by
-  the consumer, not the extractor.
+  *extracted evidence* itself correctly counts a lowercase occurrence for
+  `project` and withholds one for `halyard`, since the conjunctive decision is
+  made by the consumer, not the extractor.
 
 Leak-audit: N/A this file -- pure evidence-extraction unit tests, no request
 path, restore, mint, or gate code exercised.
@@ -33,7 +33,7 @@ def test_extract_evidence_messages_captures_prose_lowercase_occurrence():
 
     evidence = extract_case_inconsistency_evidence_messages(payload)
 
-    assert evidence.has_evidence("Pass", "bare_presence")
+    assert evidence.lowercase_counts.get("pass", 0) > 0
 
 
 def test_extract_evidence_messages_excludes_email_domain_occurrence():
@@ -53,8 +53,8 @@ def test_extract_evidence_messages_excludes_email_domain_occurrence():
 
     evidence = extract_case_inconsistency_evidence_messages(payload)
 
-    assert not evidence.has_evidence("Northwind", "bare_presence")
-    assert not evidence.has_evidence("Analytics", "bare_presence")
+    assert evidence.lowercase_counts.get("northwind", 0) == 0
+    assert evidence.lowercase_counts.get("analytics", 0) == 0
 
 
 def test_extract_evidence_messages_excludes_url_occurrence():
@@ -66,7 +66,7 @@ def test_extract_evidence_messages_excludes_url_occurrence():
 
     evidence = extract_case_inconsistency_evidence_messages(payload)
 
-    assert not evidence.has_evidence("Kestrel", "bare_presence")
+    assert evidence.lowercase_counts.get("kestrel", 0) == 0
 
 
 def test_extract_evidence_messages_excludes_dotted_hyphenated_identifier():
@@ -78,7 +78,7 @@ def test_extract_evidence_messages_excludes_dotted_hyphenated_identifier():
 
     evidence = extract_case_inconsistency_evidence_messages(payload)
 
-    assert not evidence.has_evidence("Halyard", "bare_presence")
+    assert evidence.lowercase_counts.get("halyard", 0) == 0
 
 
 def test_extract_evidence_messages_conjunctive_inputs_project_halyard():
@@ -93,8 +93,8 @@ def test_extract_evidence_messages_conjunctive_inputs_project_halyard():
 
     evidence = extract_case_inconsistency_evidence_messages(payload)
 
-    assert evidence.has_evidence("Project", "bare_presence")
-    assert not evidence.has_evidence("Halyard", "bare_presence")
+    assert evidence.lowercase_counts.get("project", 0) > 0
+    assert evidence.lowercase_counts.get("halyard", 0) == 0
 
 
 def test_extract_evidence_messages_counts_tool_result_and_tool_use_hops():
@@ -117,8 +117,8 @@ def test_extract_evidence_messages_counts_tool_result_and_tool_use_hops():
 
     evidence = extract_case_inconsistency_evidence_messages(payload)
 
-    assert evidence.has_evidence("Pass", "bare_presence")
-    assert not evidence.has_evidence("Data", "bare_presence")
+    assert evidence.lowercase_counts.get("pass", 0) > 0
+    assert evidence.lowercase_counts.get("data", 0) == 0
 
 
 def test_extract_evidence_messages_no_payload_text_is_empty():
@@ -141,7 +141,7 @@ def test_extract_evidence_chat_completions_pools_every_role():
 
     evidence = extract_case_inconsistency_evidence_chat_completions(payload)
 
-    assert evidence.has_evidence("Pass", "bare_presence")
+    assert evidence.lowercase_counts.get("pass", 0) > 0
 
 
 def test_extract_evidence_chat_completions_excludes_email_domain_occurrence():
@@ -158,4 +158,4 @@ def test_extract_evidence_chat_completions_excludes_email_domain_occurrence():
 
     evidence = extract_case_inconsistency_evidence_chat_completions(payload)
 
-    assert not evidence.has_evidence("Northwind", "bare_presence")
+    assert evidence.lowercase_counts.get("northwind", 0) == 0

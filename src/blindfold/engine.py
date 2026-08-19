@@ -260,12 +260,14 @@ def blindfold_payload(
     discipline as ``declared_tools``: never persisted, never state on
     ``l3_detector``.
 
-    ``case_inconsistency`` (ADR-0023, "Update (issue #342)", issue #344) is the
+    ``case_inconsistency`` (ADR-0023, "Update (issue #342)", issue #345) is the
     fifth suppression layer -- see
     :func:`extract_case_inconsistency_evidence_messages`, computed by the
     caller on the untouched payload and passed through unchanged here to
-    every hop. ``None`` (the default -- every caller today) reproduces
-    today's candidate selection exactly; this condition ships default off.
+    every hop. ``None`` (this function's own default) reproduces candidate
+    selection with the condition off; the app boundary (``app.py``'s
+    ``_exchange``) always constructs one, so it is on by default for every
+    real exchange.
 
     The resulting ``session.hops`` (issue #153, ADR-0035) labels each hop's L3
     detail with ``l3_detector.provider_name`` when ``l3_detector`` ran for that hop
@@ -336,7 +338,7 @@ def blindfold_chat_completions_payload(
     :func:`blindfold_payload`. The "system region" here is every
     ``role: "system"`` message.
 
-    ``case_inconsistency`` (ADR-0023, "Update (issue #342)", issue #344) — see
+    ``case_inconsistency`` (ADR-0023, "Update (issue #342)", issue #345) — see
     :func:`extract_case_inconsistency_evidence_chat_completions` and
     :func:`blindfold_payload`.
     """
@@ -1247,10 +1249,10 @@ def _blindfold_text(
     :meth:`L3Detector.detect` unchanged, for every hop including ``system``'s
     own — see :func:`blindfold_payload`.
 
-    ``case_inconsistency`` (ADR-0023, "Update (issue #342)", issue #344)
+    ``case_inconsistency`` (ADR-0023, "Update (issue #342)", issue #345)
     reaches :meth:`L3Detector.detect` unchanged, for every hop — see
-    :func:`blindfold_payload`. ``None`` (the default) reproduces today's
-    candidate selection exactly.
+    :func:`blindfold_payload`. ``None`` (this function's own default)
+    reproduces candidate selection with the condition off.
     """
     # Issue #325: stages 1 (L2), 1.5 (the provisional-pair pass, ADR-0051) and 2
     # (L1) each *collect* replacement spans against ``text`` -- the untouched,

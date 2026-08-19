@@ -457,34 +457,41 @@ Scope discipline unchanged: suppression removes **L3 novelty discovery only**. L
 so PII-shaped values and any registered Term or entity-graph surface are still blindfolded, and
 protection still wins (`known_surfaces` is checked first).
 
-### The aggressiveness threshold is deliberately left open, and the fixture decides it
+### The aggressiveness threshold: decided at proportionate evidence (issue #345)
 
-Two candidate rules are **indistinguishable on run 10's evidence** and diverge sharply in risk:
+Two candidate rules were **indistinguishable on run 10's evidence** and diverged sharply in risk:
 
 - **(i) bare presence** — one prose-lowercase occurrence anywhere in the payload suffices.
 - **(ii) proportionate evidence** — suppress only where lowercase occurrences dominate the
   capitalised ones, so pervasive vocabulary (`pass`) separates from incidental (`mark`).
 
-Both score 0 of 6 genuine referents lost on run 10, so run 10 cannot choose between them. This ADR
-therefore adopts payload scope, the conjunctive rule and the prose-only exclusion, and records the
-threshold as **undecided pending the #342 fixture** rather than settling it by argument.
+Both scored 0 of 6 genuine referents lost on run 10, so run 10 alone could not choose between them.
+The reason is the #74 brief's own bias: **every planted name in it is a deliberately novel
+non-dictionary word** — both given-name/surname pairs and codename tokens alike — by design, so the
+brief is structurally incapable of exercising the Don/Mark/Stone case this choice actually turns on: a
+real referent whose name is also an ordinary lowercase-able word. Across 23,560 hops of coding-agent
+traffic *some* hop almost certainly contains a lowercase common word used as a name, so rule (i) would
+suppress a real person on incidental evidence while (ii) would keep the name — but "0 of 6 lost" alone
+is reassurance the run-10 evidence had not earned.
 
-The reason it cannot be settled by argument is the fixture's bias: **every planted name in the #74
-brief is a deliberately novel non-dictionary word** — both given-name/surname pairs and codename
-tokens alike — by design, so the brief is structurally incapable of exercising the Don/Mark/Stone
-case. "0 of 6 lost" is therefore reassurance the evidence has not earned. Across 23,560 hops of
-coding-agent traffic *some* hop almost certainly contains a lowercase `mark`, so rule (i) would
-suppress a real person on incidental evidence while (ii) would keep the name. Expectation is that
-(ii) wins; an expectation is not a decision.
+**Issue #344 built the blocking-prerequisite fixture** this required:
+`test_case_inconsistency_dictionary_word_fixture.py`, a deterministic offline test driving the real
+blinder and L3 cascade over a scripted payload rather than another live run — repeatable, runs in CI,
+and pins the property permanently, where a live run can only show the failure did not happen that
+time (#339 is the precedent for this preference). The fixture plants a person referent and an
+organization referent, each built from an ordinary dictionary word, with the same *incidental*
+(one-occurrence) lowercase-evidence shape the ADR predicts is common in real traffic, alongside the
+five false-positive shapes run 10 measured, each with *pervasive* (two-plus-occurrence) evidence. The
+result, measured rather than assumed: **rule (i) suppressed both referents right alongside every false
+positive; rule (ii) kept both referents while still suppressing every false positive.**
 
-**Blocking prerequisite.** The condition does not ship until a fixture carrying a real referent whose
-name is an ordinary lowercase-able word (a person `Mark Stone`, an org `Northern Data`) demonstrates
-which rule keeps protecting it. The gate is a **deterministic offline test** driving the real blinder
-and L3 cascade over a scripted payload, not another live run: it is repeatable, runs in CI, and pins
-the property permanently, where a live run can only show the failure did not happen that time. #339
-is the precedent — verified deterministically plus twelve guard tests, and judged stronger than a
-live absence. The existing #74 brief must **not** be mutated to carry the new name: its byte
-stability is the only reason runs 5-10 are comparable.
+**Decision.** Proportionate evidence is the only rule. Issue #345 ships it on by default — wired at the
+app boundary alongside `system_confined_tokens`, so every real `/v1/messages`, `/v1/messages/count_tokens`
+and `/v1/chat/completions` exchange constructs the evidence and applies this condition — and removes
+bare presence entirely: a shipped selector nobody asked for once the fixture had answered the
+question it existed to decide. The fixture's own regression test
+(`test_shipped_default_keeps_both_dictionary_word_referents_and_suppresses_false_positives`) is the
+permanent guard: it must fail if the condition is ever widened back toward bare presence.
 
 ### Verification, with the acceptance bar made numeric
 

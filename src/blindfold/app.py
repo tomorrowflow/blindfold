@@ -133,6 +133,8 @@ from .engine import (
     UnresolvedSurrogateError,
     blindfold_chat_completions_payload,
     blindfold_payload,
+    extract_case_inconsistency_evidence_chat_completions,
+    extract_case_inconsistency_evidence_messages,
     extract_declared_tools_chat_completions,
     extract_declared_tools_messages,
     extract_system_confined_tokens_chat_completions,
@@ -151,6 +153,8 @@ from .gliner_status import (
 )
 from .l3 import (
     CandidateSpan,
+    CaseInconsistencyEvidence,
+    CaseInconsistencySuppression,
     L3Adjudication,
     L3Adjudicator,
     L3Detector,
@@ -1675,6 +1679,7 @@ async def _exchange(
     unprotected_mode: UnprotectedMode,
     extract_declared_tools: Callable[[dict], frozenset[str]],
     extract_system_confined_tokens: Callable[[dict], frozenset[str]],
+    extract_case_inconsistency_evidence: Callable[[dict], CaseInconsistencyEvidence],
     blindfold: Callable[..., tuple[dict, ExchangeSession]],
     send_upstream: Callable[[dict, dict[str, str]], Awaitable[dict]],
     declared_tool_vocabulary: DeclaredToolVocabulary | None = None,
@@ -1688,21 +1693,30 @@ async def _exchange(
     unprotected-mode bypass -> mint-or-block -> trace -> leak-gate-or-block ->
     trace -> upstream -> trace -> restore -> resolution-gate-or-block -> trace.
 
-    Each caller is a thin wrapper supplying its own six values -- the
+    Each caller is a thin wrapper supplying its own values -- the
     declared-tools extractor (``extract_declared_tools``, paired 1:1 with
-    ``extract_system_confined_tokens`` since both read the same payload shape),
-    the blindfold function (``blindfold``), the upstream method
-    (``send_upstream``), the restore function (``restore``, ``None`` for
-    ``count_tokens`` -- no restore side means no resolution gate either), the
-    trace kind label (``endpoint``), and streaming support
-    (``streaming_supported``/``reject_stream_request``). ``declared_tool_vocabulary``
-    and ``mint_inbox`` are the two further deliberate differences count_tokens
-    needs (issue #322): it measures rather than uses, so it must not grow the
-    workspace's durable declared-tool vocabulary or the durable review inbox --
-    named parameters here rather than lines omitted from a copy.
+    ``extract_system_confined_tokens`` and ``extract_case_inconsistency_evidence``
+    since all three read the same payload shape), the blindfold function
+    (``blindfold``), the upstream method (``send_upstream``), the restore
+    function (``restore``, ``None`` for ``count_tokens`` -- no restore side
+    means no resolution gate either), the trace kind label (``endpoint``), and
+    streaming support (``streaming_supported``/``reject_stream_request``).
+    ``declared_tool_vocabulary`` and ``mint_inbox`` are the two further
+    deliberate differences count_tokens needs (issue #322): it measures rather
+    than uses, so it must not grow the workspace's durable declared-tool
+    vocabulary or the durable review inbox -- named parameters here rather
+    than lines omitted from a copy.
 
-    A future ``/v1/responses`` wrapper (#263) supplies the same six-plus-two
-    values; nothing here changes.
+    ``extract_case_inconsistency_evidence`` (ADR-0023, "Update (issue #342)",
+    issue #345) computes the fifth suppression condition's evidence on the
+    untouched payload and is always threaded through to ``blindfold`` below --
+    this condition is on by default for every real exchange, unlike
+    :func:`~blindfold.engine.blindfold_payload`'s own ``case_inconsistency``
+    parameter default of ``None``, which only reproduces an unsuppressed
+    selection for a caller (test, devtools replay) that never constructs one.
+
+    A future ``/v1/responses`` wrapper (#263) supplies the same values;
+    nothing here changes.
     """
     start = time.monotonic()
     payload = await request.json()
@@ -1725,6 +1739,9 @@ async def _exchange(
         effective_l3_detector = None if policy.deterministic_only else l3_detector
         declared_tools = extract_declared_tools(payload)
         system_confined_tokens = extract_system_confined_tokens(payload)
+        case_inconsistency = CaseInconsistencySuppression(
+            evidence=extract_case_inconsistency_evidence(payload)
+        )
         result = await _mint_or_block(
             lambda: blindfold(
                 payload, mapping, effective_l3_detector, mint_inbox(inbox), declared_tools,
@@ -1732,6 +1749,7 @@ async def _exchange(
                 phone_candidates_enabled=policy.phone_candidates_enabled,
                 declared_tool_vocabulary=declared_tool_vocabulary,
                 system_confined_tokens=system_confined_tokens,
+                case_inconsistency=case_inconsistency,
             ),
             workspace,
             policy.deterministic_only,
@@ -1847,6 +1865,7 @@ async def messages(
         unprotected_mode=unprotected_mode,
         extract_declared_tools=extract_declared_tools_messages,
         extract_system_confined_tokens=extract_system_confined_tokens_messages,
+        extract_case_inconsistency_evidence=extract_case_inconsistency_evidence_messages,
         blindfold=blindfold_payload,
         send_upstream=upstream.send_messages,
         declared_tool_vocabulary=declared_tool_vocabulary,
@@ -1933,6 +1952,7 @@ async def count_tokens(
         unprotected_mode=unprotected_mode,
         extract_declared_tools=extract_declared_tools_messages,
         extract_system_confined_tokens=extract_system_confined_tokens_messages,
+        extract_case_inconsistency_evidence=extract_case_inconsistency_evidence_messages,
         blindfold=blindfold_payload,
         send_upstream=upstream.send_count_tokens,
         mint_inbox=lambda i: i.read_only_view(),
@@ -1970,6 +1990,7 @@ async def chat_completions(
         unprotected_mode=unprotected_mode,
         extract_declared_tools=extract_declared_tools_chat_completions,
         extract_system_confined_tokens=extract_system_confined_tokens_chat_completions,
+        extract_case_inconsistency_evidence=extract_case_inconsistency_evidence_chat_completions,
         blindfold=blindfold_chat_completions_payload,
         send_upstream=upstream.send_chat_completions,
         declared_tool_vocabulary=declared_tool_vocabulary,

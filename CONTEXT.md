@@ -320,7 +320,18 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   system-wide guarantee about real first names. Run 10 evidence: 14 of 21
   false-positive mints suppressed at a cost of 0 of 6 genuine referents — on a
   fixture whose planted names are deliberately novel non-dictionary words, so
-  it cannot exercise the guard it removes.
+  it cannot exercise the guard it removes. **Threshold, decided (issue
+  #345): proportionate evidence** — a token's lowercase occurrences must
+  outnumber its capitalized ones, so pervasive vocabulary separates from
+  incidental use of an ordinary word as a name. Issue #344's dictionary-word
+  fixture measured this against the alternative (bare presence — any single
+  lowercase occurrence suffices), which loses a real referent built from an
+  ordinary word right alongside every false positive; proportionate evidence
+  keeps the referent while still suppressing every false positive. Bare
+  presence was removed rather than shipped as a configuration option. The
+  condition is **on by default**, wired at the app boundary alongside
+  **payload-region confinement**'s own per-request set, for every real
+  exchange.
 - **Positional case heuristic** — a **Suppression** condition (ADR-0033) that
   eliminates English positional-capitalization noise from L3 candidacy before
   any model call. A capitalized token is suppressed when (b) it appears only

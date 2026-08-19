@@ -19,17 +19,28 @@ candidate unconditionally -- so "reaches the review inbox" here is exactly
 "was not suppressed before ever reaching L3", isolating the fifth suppression
 condition's own effect from adjudication quality.
 
+Issue #344 measured both candidate aggressiveness thresholds against this
+fixture and answered the question this file was built to settle: proportionate
+evidence keeps both dictionary-word referents while still suppressing every
+false-positive shape; bare presence loses both referents right alongside the
+false positives. Issue #345 acts on that verdict -- proportionate evidence is
+now the only rule, shipped on by default -- so the two threshold-specific
+tests below are one test:
+``test_shipped_default_keeps_both_dictionary_word_referents_and_suppresses_false_positives``.
+This is the permanent regression guard: it must fail if anyone later widens
+the condition back toward bare presence.
+
 Leak-audit clauses for this slice:
 - A: N/A directly -- this fixture measures candidate-selection/suppression
   behavior, not egress; the request path itself is exercised by the existing
   suppression-layer suites (test_system_confined_l3_suppression.py et al.).
-- E: reproven implicitly -- both thresholds run against the identical
-  payload/mapping/inbox construction with no shared process state between
-  them (#261's purity invariant), matching this file's own two independent
-  ``blindfold_payload`` calls.
+- E: reproven directly -- the shipped-default run and the omitting-
+  case_inconsistency baseline run against the identical payload/mapping/inbox
+  construction with no shared process state between them (#261's purity
+  invariant), matching this file's own two independent ``blindfold_payload``
+  calls.
 - B/C/D/F/G: N/A -- no restore, mapping-store, or resolution-gate code
-  exercised; this condition ships default off, so no production behavior
-  changes as a result of this fixture existing.
+  exercised.
 """
 
 from __future__ import annotations
@@ -94,12 +105,13 @@ def test_fixture_evidence_shape_is_incidental_for_referents_and_pervasive_for_fa
         assert evidence.lowercase_counts[key] > evidence.capitalized_counts[key]
 
 
-def test_default_off_every_referent_and_false_positive_shape_reaches_the_inbox():
-    # Baseline: with no case-inconsistency suppression at all, every
-    # capitalized token that survives the existing four layers (none of these
-    # nine do collide with a stopword, a known surface, a declared tool, or
-    # ADR-0033's positional gate -- each false-positive shape occurs mid-
-    # sentence, never at a start position) reaches the inbox.
+def test_omitting_case_inconsistency_every_referent_and_false_positive_shape_reaches_the_inbox():
+    # Baseline: with no case-inconsistency suppression at all (blindfold_payload's
+    # own parameter default), every capitalized token that survives the existing
+    # four layers (none of these nine do collide with a stopword, a known
+    # surface, a declared tool, or ADR-0033's positional gate -- each
+    # false-positive shape occurs mid-sentence, never at a start position)
+    # reaches the inbox.
     mapping = SurrogateMapping.from_pairs([])
     inbox = ReviewInbox()
     detector = L3Detector(_ConfirmEverything())
@@ -113,41 +125,20 @@ def test_default_off_every_referent_and_false_positive_shape_reaches_the_inbox()
         assert shape in reals
 
 
-def test_bare_presence_threshold_loses_both_dictionary_word_referents():
-    # Threshold (i): one prose-lowercase occurrence anywhere in the payload
-    # suffices. Both referents' constituent words have exactly that one
-    # incidental occurrence, so bare presence suppresses them right alongside
-    # the false positives -- the residual ADR-0023 states without euphemism.
+def test_shipped_default_keeps_both_dictionary_word_referents_and_suppresses_false_positives():
+    # The permanent regression guard (issue #345): proportionate evidence is
+    # the only rule now, on by default. Both referents' incidental (1-vs-1)
+    # evidence does not dominate, so they are kept, while every false
+    # positive's pervasive (2-plus-vs-1) evidence still suppresses -- #344's
+    # measured verdict, now a shipped decision instead of an open question.
+    # This must fail if the condition is later widened back toward bare
+    # presence.
     payload = _fixture_payload()
     mapping = SurrogateMapping.from_pairs([])
     inbox = ReviewInbox()
     detector = L3Detector(_ConfirmEverything())
     evidence = extract_case_inconsistency_evidence_messages(payload)
-    suppression = CaseInconsistencySuppression(evidence=evidence, threshold="bare_presence")
-
-    blindfold_payload(payload, mapping, detector, inbox, case_inconsistency=suppression)
-
-    reals = {item.real for item in inbox.list()}
-    for referent in _DICTIONARY_WORD_REFERENTS:
-        assert referent not in reals
-    for shape in _FALSE_POSITIVE_SHAPES:
-        assert shape not in reals
-
-
-def test_proportionate_evidence_threshold_keeps_both_dictionary_word_referents():
-    # Threshold (ii): lowercase occurrences must dominate the capitalized
-    # ones. Both referents' incidental (1-vs-1) evidence does not dominate, so
-    # proportionate evidence protects them, while every false positive's
-    # pervasive (2-plus-vs-1) evidence still suppresses -- ADR-0023's own
-    # expectation ("(ii) wins"), now a decision instead of an expectation.
-    payload = _fixture_payload()
-    mapping = SurrogateMapping.from_pairs([])
-    inbox = ReviewInbox()
-    detector = L3Detector(_ConfirmEverything())
-    evidence = extract_case_inconsistency_evidence_messages(payload)
-    suppression = CaseInconsistencySuppression(
-        evidence=evidence, threshold="proportionate_evidence"
-    )
+    suppression = CaseInconsistencySuppression(evidence=evidence)
 
     blindfold_payload(payload, mapping, detector, inbox, case_inconsistency=suppression)
 

@@ -415,38 +415,30 @@ class CaseInconsistencyEvidence:
     lowercase_counts: dict[str, int] = field(default_factory=dict)
     capitalized_counts: dict[str, int] = field(default_factory=dict)
 
-    def has_evidence(self, token: str, threshold: str) -> bool:
-        """True if ``token`` (a Title-Case candidate token) clears
-        ``threshold``'s bar:
-
-        - ``"bare_presence"``: one prose-lowercase occurrence anywhere in the
-          payload suffices.
-        - ``"proportionate_evidence"``: lowercase occurrences must outnumber
-          capitalized ones, so pervasive vocabulary (``pass``) separates from
-          incidental (``mark``).
+    def has_evidence(self, token: str) -> bool:
+        """True if ``token`` (a Title-Case candidate token) clears the
+        proportionate-evidence bar (issue #345): lowercase occurrences must
+        outnumber capitalized ones, so pervasive vocabulary (``pass``)
+        separates from incidental (``mark``).
         """
         key = token.casefold()
         lowercase_count = self.lowercase_counts.get(key, 0)
-        if threshold == "bare_presence":
-            return lowercase_count > 0
-        if threshold == "proportionate_evidence":
-            return lowercase_count > self.capitalized_counts.get(key, 0)
-        raise ValueError(f"unknown case-inconsistency threshold: {threshold!r}")
+        return lowercase_count > self.capitalized_counts.get(key, 0)
 
 
 @dataclass(frozen=True)
 class CaseInconsistencySuppression:
-    """Bundles the fifth ADR-0023 suppression condition's evidence with the
-    threshold selecting between its two candidate aggressiveness rules
-    (issue #344) -- one plain parameter threaded down to
+    """Bundles the fifth ADR-0023 suppression condition's evidence (issue
+    #344, #345) -- one plain parameter threaded down to
     :func:`select_candidate_spans`, mirroring how ``system_confined_tokens``
-    threads a single frozenset. Default off: no caller constructs one unless
-    it opts in, so passing ``None`` (every existing caller) reproduces today's
-    candidate selection exactly.
+    threads a single frozenset. Wired at the app boundary alongside
+    ``system_confined_tokens`` (issue #345): a caller that does not construct
+    one (e.g. a direct :func:`~blindfold.engine.blindfold_payload` call with
+    no ``case_inconsistency`` argument) reproduces candidate selection with
+    this condition off.
     """
 
     evidence: CaseInconsistencyEvidence
-    threshold: str
 
 
 def _is_whitespace_gap(text: str, prev_end: int, next_start: int) -> bool:
@@ -490,12 +482,7 @@ def _case_inconsistency_suppressed_starts(
         while j < n and _is_whitespace_gap(text, run[-1].end(), matches[j].start()):
             run.append(matches[j])
             j += 1
-        if all(
-            case_inconsistency.evidence.has_evidence(
-                m.group(0), case_inconsistency.threshold
-            )
-            for m in run
-        ):
+        if all(case_inconsistency.evidence.has_evidence(m.group(0)) for m in run):
             suppressed.update(m.start() for m in run)
         i = j
     return frozenset(suppressed)
@@ -567,15 +554,16 @@ def select_candidate_spans(
     "Apple" or "Development" alone — components are not implicitly
     non-sensitive just because one phrase containing them was rejected.
 
-    ``case_inconsistency`` (ADR-0023, "Update (issue #342)", issue #344) is
+    ``case_inconsistency`` (ADR-0023, "Update (issue #342)", issue #345) is
     the fifth suppression condition: a :class:`CaseInconsistencySuppression`
     bundling per-request evidence (see
     :func:`~blindfold.engine.extract_case_inconsistency_evidence_messages` /
-    ``_chat_completions``) with a threshold selecting between its two
-    candidate aggressiveness rules. ``None`` (the default — every existing
-    caller) reproduces today's candidate selection exactly. See
-    :func:`_case_inconsistency_suppressed_starts` for the conjunctive,
-    run-granular mechanics.
+    ``_chat_completions``) evaluated against the proportionate-evidence rule
+    (issue #344's fixture decided it; issue #345 shipped it as the only
+    rule). ``None`` (this function's own default) reproduces candidate
+    selection with the condition off; the app boundary constructs one for
+    every real exchange. See :func:`_case_inconsistency_suppressed_starts`
+    for the conjunctive, run-granular mechanics.
     """
     known_surfaces = _known_surfaces(known_entities)
     capitalized_positions = _capitalized_positions(text)

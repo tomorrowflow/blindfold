@@ -1,33 +1,49 @@
 """Case-inconsistency suppression (ADR-0023, "Update (issue #342)"): the fifth L3
 suppression layer. Run 10 measured 14 of 21 false-positive mints sharing a
 lowercase prose occurrence of their own capitalized form in the same payload
-(`Pass`/`pass`, `Both`/`both`, ...) at a cost of 0 of 6 genuine referents -- but
-every planted name in the #74 brief is a deliberately novel non-dictionary word,
-so run 10 cannot choose an aggressiveness threshold. Issue #344 builds both
-candidate thresholds behind a parameter, **default off**, plus the dictionary-
-word fixture (test_case_inconsistency_dictionary_word_fixture.py) that does.
+(`Pass`/`pass`, `Both`/`both`, ...) at a cost of 0 of 6 genuine referents.
+Issue #344 built two candidate aggressiveness rules behind a parameter, default
+off, plus the dictionary-word fixture (test_case_inconsistency_dictionary_word_
+fixture.py) needed to choose between them because every planted name in the
+#74 brief is a deliberately novel non-dictionary word. That fixture answered
+it -- proportionate evidence keeps both dictionary-word referents while still
+suppressing every false-positive shape -- so issue #345 makes proportionate
+evidence the only rule and turns the condition on.
 
-This file covers the condition itself: :class:`CaseInconsistencyEvidence`'s two
-threshold rules and the conjunctive, run-granular mechanics in
+This file covers the condition itself: :class:`CaseInconsistencyEvidence`'s
+proportionate-evidence rule and the conjunctive, run-granular mechanics in
 :func:`select_candidate_spans` / :meth:`L3Detector.detect`. The prose-only
 extraction exclusion (email/URL/dotted-hyphenated identifiers) and the app-
-boundary extractors live in test_case_inconsistency_evidence_extraction.py --
-this file constructs :class:`CaseInconsistencyEvidence` directly, exercising the
+boundary extractors live in test_case_inconsistency_evidence_extraction.py;
+the app-boundary wiring that makes this condition on by default for real
+traffic lives in test_system_confined_l3_suppression.py's sibling integration
+pattern, exercised here in the ``/v1/messages`` wiring test below. This file
+constructs :class:`CaseInconsistencyEvidence` directly, exercising the
 suppression mechanics independent of how the evidence was gathered.
 
 Leak-audit clauses for this slice:
 - A: N/A directly for a suppressed token itself -- but reproven for the
   co-occurring case: a registered Term/L1-PII value sharing a suppressed
-  token's payload is still blindfolded (L1/L2 win over suppression).
+  token's payload is still blindfolded (L1/L2 win over suppression),
+  including now that the condition is on by default.
 - F: an unrelated genuine novel candidate with no case-inconsistency evidence
   still reaches L3 in the same traffic -- suppression is token-run-scoped,
   never a blanket payload skip.
-- B/C/D/E/G: N/A -- no restore, mapping, or store change this slice; the
-  condition ships default off, so no production behavior changes either.
+- B/C/D/E/G: N/A -- no restore, mapping, or store change this slice.
 """
 
 from __future__ import annotations
 
+import httpx
+import pytest
+
+from blindfold.app import (
+    app,
+    get_l3_detector,
+    get_mapping,
+    get_review_inbox,
+    get_upstream_client,
+)
 from blindfold.engine import (
     blindfold_chat_completions_payload,
     blindfold_payload,
@@ -55,7 +71,7 @@ class _RecordingAdjudicator:
         return L3Adjudication(is_entity=False)
 
 
-def test_default_off_reproduces_todays_candidate_selection():
+def test_no_case_inconsistency_argument_reproduces_todays_candidate_selection():
     text = "Pass this along to Mark Stone before the meeting."
 
     candidates = select_candidate_spans(text, known_entities=[])
@@ -63,28 +79,29 @@ def test_default_off_reproduces_todays_candidate_selection():
     assert {c.text for c in candidates} == {"Pass", "Mark", "Stone"}
 
 
-def test_bare_presence_suppresses_a_single_word_candidate_with_any_lowercase_evidence():
-    text = "Pass the review; pass rate matters here."
+def test_has_evidence_takes_no_threshold_and_applies_proportionate_evidence():
+    # Issue #345: the threshold parameter is gone -- proportionate evidence
+    # (lowercase occurrences must outnumber capitalized ones) is the only rule.
     evidence = CaseInconsistencyEvidence(
-        lowercase_counts={"pass": 1}, capitalized_counts={"pass": 1}
-    )
-    suppression = CaseInconsistencySuppression(
-        evidence=evidence, threshold="bare_presence"
+        lowercase_counts={"pass": 5, "mark": 1}, capitalized_counts={"pass": 1, "mark": 3}
     )
 
-    candidates = select_candidate_spans(
-        text, known_entities=[], case_inconsistency=suppression
-    )
-
-    assert not any(c.text == "Pass" for c in candidates)
+    assert evidence.has_evidence("Pass") is True
+    assert evidence.has_evidence("Mark") is False
 
 
-def test_bare_presence_leaves_a_candidate_with_no_lowercase_evidence_untouched():
+def test_case_inconsistency_suppression_no_longer_carries_a_threshold_field():
+    evidence = CaseInconsistencyEvidence(lowercase_counts={"pass": 1})
+
+    suppression = CaseInconsistencySuppression(evidence=evidence)
+
+    assert suppression.evidence is evidence
+
+
+def test_no_lowercase_evidence_leaves_a_candidate_untouched():
     text = "Please brief Quentin tomorrow."
     evidence = CaseInconsistencyEvidence(lowercase_counts={}, capitalized_counts={})
-    suppression = CaseInconsistencySuppression(
-        evidence=evidence, threshold="bare_presence"
-    )
+    suppression = CaseInconsistencySuppression(evidence=evidence)
 
     candidates = select_candidate_spans(
         text, known_entities=[], case_inconsistency=suppression
@@ -100,9 +117,7 @@ def test_proportionate_evidence_requires_lowercase_to_outnumber_capitalized():
     evidence = CaseInconsistencyEvidence(
         lowercase_counts={"mark": 1}, capitalized_counts={"mark": 3}
     )
-    suppression = CaseInconsistencySuppression(
-        evidence=evidence, threshold="proportionate_evidence"
-    )
+    suppression = CaseInconsistencySuppression(evidence=evidence)
 
     candidates = select_candidate_spans(
         text, known_entities=[], case_inconsistency=suppression
@@ -116,9 +131,7 @@ def test_proportionate_evidence_suppresses_when_lowercase_dominates():
     evidence = CaseInconsistencyEvidence(
         lowercase_counts={"pass": 5}, capitalized_counts={"pass": 1}
     )
-    suppression = CaseInconsistencySuppression(
-        evidence=evidence, threshold="proportionate_evidence"
-    )
+    suppression = CaseInconsistencySuppression(evidence=evidence)
 
     candidates = select_candidate_spans(
         text, known_entities=[], case_inconsistency=suppression
@@ -127,34 +140,22 @@ def test_proportionate_evidence_suppresses_when_lowercase_dominates():
     assert not any(c.text == "Pass" for c in candidates)
 
 
-def test_bare_presence_and_proportionate_diverge_on_incidental_evidence():
-    # The exact case ADR-0023 says the two thresholds diverge on: one
-    # incidental lowercase occurrence of an ordinary-word real name amid many
-    # capitalized ones. Bare presence suppresses (loses the referent);
-    # proportionate evidence does not.
+def test_incidental_evidence_protects_an_ordinary_word_real_name():
+    # The exact case ADR-0023/#344's fixture measured: one incidental
+    # lowercase occurrence of an ordinary-word real name amid many capitalized
+    # ones does not dominate, so proportionate evidence keeps the referent.
     text = "Mark Stone is the client contact."
     evidence = CaseInconsistencyEvidence(
         lowercase_counts={"mark": 1, "stone": 1},
         capitalized_counts={"mark": 4, "stone": 4},
     )
+    suppression = CaseInconsistencySuppression(evidence=evidence)
 
-    bare = select_candidate_spans(
-        text,
-        known_entities=[],
-        case_inconsistency=CaseInconsistencySuppression(
-            evidence=evidence, threshold="bare_presence"
-        ),
-    )
-    proportionate = select_candidate_spans(
-        text,
-        known_entities=[],
-        case_inconsistency=CaseInconsistencySuppression(
-            evidence=evidence, threshold="proportionate_evidence"
-        ),
+    candidates = select_candidate_spans(
+        text, known_entities=[], case_inconsistency=suppression
     )
 
-    assert {c.text for c in bare} == set()
-    assert {c.text for c in proportionate} == {"Mark", "Stone"}
+    assert {c.text for c in candidates} == {"Mark", "Stone"}
 
 
 def test_conjunctive_rule_protects_a_multiword_candidate_missing_one_tokens_evidence():
@@ -162,11 +163,9 @@ def test_conjunctive_rule_protects_a_multiword_candidate_missing_one_tokens_evid
     # the strength of lowercase "project" alone -- "halyard" has no evidence.
     text = "Project Halyard is the codename for this engagement."
     evidence = CaseInconsistencyEvidence(
-        lowercase_counts={"project": 1}, capitalized_counts={"project": 1, "halyard": 1}
+        lowercase_counts={"project": 2}, capitalized_counts={"project": 1, "halyard": 1}
     )
-    suppression = CaseInconsistencySuppression(
-        evidence=evidence, threshold="bare_presence"
-    )
+    suppression = CaseInconsistencySuppression(evidence=evidence)
 
     candidates = select_candidate_spans(
         text, known_entities=[], case_inconsistency=suppression
@@ -178,12 +177,10 @@ def test_conjunctive_rule_protects_a_multiword_candidate_missing_one_tokens_evid
 def test_conjunctive_rule_suppresses_whole_run_when_every_token_has_evidence():
     text = "Northern Data handles this account."
     evidence = CaseInconsistencyEvidence(
-        lowercase_counts={"northern": 1, "data": 1},
+        lowercase_counts={"northern": 2, "data": 2},
         capitalized_counts={"northern": 1, "data": 1},
     )
-    suppression = CaseInconsistencySuppression(
-        evidence=evidence, threshold="bare_presence"
-    )
+    suppression = CaseInconsistencySuppression(evidence=evidence)
 
     candidates = select_candidate_spans(
         text, known_entities=[], case_inconsistency=suppression
@@ -195,11 +192,9 @@ def test_conjunctive_rule_suppresses_whole_run_when_every_token_has_evidence():
 def test_l3_detector_detect_threads_case_inconsistency_through_to_candidacy():
     text = "Pass the review to Zolfgang."
     evidence = CaseInconsistencyEvidence(
-        lowercase_counts={"pass": 1}, capitalized_counts={"pass": 1}
+        lowercase_counts={"pass": 2}, capitalized_counts={"pass": 1}
     )
-    suppression = CaseInconsistencySuppression(
-        evidence=evidence, threshold="bare_presence"
-    )
+    suppression = CaseInconsistencySuppression(evidence=evidence)
     adjudicator = _RecordingAdjudicator()
     detector = L3Detector(adjudicator)
 
@@ -211,23 +206,17 @@ def test_l3_detector_detect_threads_case_inconsistency_through_to_candidacy():
     assert "Zolfgang" in adjudicator.calls
 
 
-def test_unknown_threshold_raises():
-    evidence = CaseInconsistencyEvidence(lowercase_counts={"pass": 1})
-    import pytest
-
-    with pytest.raises(ValueError):
-        evidence.has_evidence("Pass", "made_up_threshold")
-
-
 def _seeded_mapping() -> SurrogateMapping:
     return SurrogateMapping.from_pairs([])
 
 
-def test_blindfold_payload_default_off_reproduces_todays_candidate_selection():
-    # Acceptance criterion: the condition is default off -- candidate
-    # selection through the full request path is unchanged with no
-    # ``case_inconsistency`` argument at all, even though the payload itself
-    # carries plenty of lowercase evidence for "Pass".
+def test_blindfold_payload_omitting_case_inconsistency_reproduces_unsuppressed_selection():
+    # blindfold_payload's own parameter default (None -- no evidence
+    # computed) leaves candidate selection unaffected by this condition, even
+    # though the payload itself carries plenty of lowercase evidence for
+    # "Pass". Production traffic never hits this path bare: the app boundary
+    # (test_messages_endpoint_wires_case_inconsistency_suppression_by_default,
+    # below) always constructs the evidence and threads it through.
     mapping = _seeded_mapping()
     adjudicator = _RecordingAdjudicator()
     detector = L3Detector(adjudicator)
@@ -243,7 +232,7 @@ def test_blindfold_payload_default_off_reproduces_todays_candidate_selection():
     assert "Pass" in adjudicator.calls
 
 
-def test_blindfold_payload_suppresses_case_inconsistent_token_when_opted_in():
+def test_blindfold_payload_suppresses_case_inconsistent_token_when_constructed():
     mapping = _seeded_mapping()
     adjudicator = _RecordingAdjudicator()
     detector = L3Detector(adjudicator)
@@ -254,16 +243,14 @@ def test_blindfold_payload_suppresses_case_inconsistent_token_when_opted_in():
         "messages": [{"role": "user", "content": "Pass this to the team."}],
     }
     evidence = extract_case_inconsistency_evidence_messages(payload)
-    suppression = CaseInconsistencySuppression(
-        evidence=evidence, threshold="bare_presence"
-    )
+    suppression = CaseInconsistencySuppression(evidence=evidence)
 
     blindfold_payload(payload, mapping, detector, inbox, case_inconsistency=suppression)
 
     assert "Pass" not in adjudicator.calls
 
 
-def test_blindfold_chat_completions_payload_default_off_reproduces_todays_candidate_selection():
+def test_blindfold_chat_completions_payload_omitting_case_inconsistency_reproduces_unsuppressed_selection():
     mapping = _seeded_mapping()
     adjudicator = _RecordingAdjudicator()
     detector = L3Detector(adjudicator)
@@ -281,7 +268,7 @@ def test_blindfold_chat_completions_payload_default_off_reproduces_todays_candid
     assert "Pass" in adjudicator.calls
 
 
-def test_blindfold_chat_completions_payload_suppresses_case_inconsistent_token_when_opted_in():
+def test_blindfold_chat_completions_payload_suppresses_case_inconsistent_token_when_constructed():
     mapping = _seeded_mapping()
     adjudicator = _RecordingAdjudicator()
     detector = L3Detector(adjudicator)
@@ -289,14 +276,12 @@ def test_blindfold_chat_completions_payload_suppresses_case_inconsistent_token_w
     payload = {
         "model": "m",
         "messages": [
-            {"role": "system", "content": "Please pass the review along."},
+            {"role": "system", "content": "Please pass the review along; pass rate matters."},
             {"role": "user", "content": "Pass this to the team."},
         ],
     }
     evidence = extract_case_inconsistency_evidence_chat_completions(payload)
-    suppression = CaseInconsistencySuppression(
-        evidence=evidence, threshold="bare_presence"
-    )
+    suppression = CaseInconsistencySuppression(evidence=evidence)
 
     blindfold_chat_completions_payload(
         payload, mapping, detector, inbox, case_inconsistency=suppression
@@ -308,20 +293,19 @@ def test_blindfold_chat_completions_payload_suppresses_case_inconsistent_token_w
 def test_registered_term_with_case_inconsistency_evidence_is_still_blindfolded():
     # Protection wins over suppression: a registered Term sharing its
     # lowercase form with prose elsewhere in the payload is still blindfolded
-    # by L2, unaffected by this suppression layer.
+    # by L2, unaffected by this suppression layer -- now proven for the
+    # shipped, on-by-default rule rather than the removed bare-presence one.
     mapping = SurrogateMapping.from_pairs([("Pass", "Northern Vault")])
     adjudicator = _RecordingAdjudicator()
     detector = L3Detector(adjudicator)
     inbox = ReviewInbox()
     payload = {
         "model": "m",
-        "system": "Please pass this along.",
+        "system": "Please pass this along; most people pass here too.",
         "messages": [{"role": "user", "content": "Pass handles the credential."}],
     }
     evidence = extract_case_inconsistency_evidence_messages(payload)
-    suppression = CaseInconsistencySuppression(
-        evidence=evidence, threshold="bare_presence"
-    )
+    suppression = CaseInconsistencySuppression(evidence=evidence)
 
     blinded, _session = blindfold_payload(
         payload, mapping, detector, inbox, case_inconsistency=suppression
@@ -331,3 +315,69 @@ def test_registered_term_with_case_inconsistency_evidence_is_still_blindfolded()
     surrogate = mapping.surrogate_for("Pass")
     assert surrogate is not None
     assert surrogate in blinded["messages"][0]["content"]
+
+
+def _make_stub_upstream():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "Acknowledged."}],
+                "model": "claude-3-5-sonnet",
+                "stop_reason": "end_turn",
+            },
+        )
+
+    client = httpx.AsyncClient(
+        base_url="http://upstream.test", transport=httpx.MockTransport(handler)
+    )
+    from blindfold.upstream import UpstreamClient
+
+    return UpstreamClient(base_url="http://upstream.test", client=client)
+
+
+@pytest.mark.anyio
+async def test_messages_endpoint_wires_case_inconsistency_suppression_by_default():
+    # Issue #345 acceptance criterion: the condition is on by default in
+    # production -- /v1/messages must compute the evidence itself
+    # (extract_case_inconsistency_evidence_messages) and thread it through
+    # with no opt-in, mirroring how payload-region confinement is wired
+    # (test_system_confined_l3_suppression.py's sibling test). A caller of
+    # blindfold_payload directly is not enough evidence the app actually
+    # wires this.
+    adjudicator = _RecordingAdjudicator()
+    app.dependency_overrides[get_upstream_client] = _make_stub_upstream
+    app.dependency_overrides[get_mapping] = lambda: _seeded_mapping()
+    app.dependency_overrides[get_review_inbox] = lambda: ReviewInbox()
+    app.dependency_overrides[get_l3_detector] = lambda: L3Detector(adjudicator)
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            resp = await client.post(
+                "/v1/messages",
+                json={
+                    "model": "m",
+                    "system": "Standard instructions for this workspace.",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": (
+                                "Most files Pass validation; pass rates matter, and "
+                                "something should pass every time. Please brief "
+                                "Quentin tomorrow."
+                            ),
+                        }
+                    ],
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert "Pass" not in adjudicator.calls
+    assert "Quentin" in adjudicator.calls
