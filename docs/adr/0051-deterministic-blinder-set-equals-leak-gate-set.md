@@ -327,3 +327,35 @@ natural language — every `Provisional Surrogate {N}` contains `Surrogate`, so 
 never terminates — so ADR-0052 makes the unchecked fallback opaque first, then makes mint-time
 matching consult `_provisional_pair_map`'s keys by `_real_value_pattern`'s rule: this ADR's two sets
 and the mint set, one derivation, asserted to agree.
+
+## Amendment (issue #323): the blinder was an enumeration, not a walk
+
+The #303 amendment reasoned field-by-field about specific structural fields (`tools[].name`, JSON-Schema
+keywords). Issue #323 found the asymmetry one level up, in how the two sides traverse a payload at all:
+`leak_gate` (via `_collect_text`/`walk_string_leaves`) walks **every string leaf** of the payload
+exhaustively by construction, while `_blindfold_block` matched an **enumeration** of known content-block
+`type`s (`text`, `tool_result`, `tool_use`) and returned everything else — `thinking`, `redacted_thinking`,
+`document`, `search_result`, `server_tool_use`, `web_search_tool_result`, `mcp_tool_use`, and any future
+block shape — byte-identical. A known entity confined to such a block reached the gate un-blinded and
+fail-closed as an unexplained 503; a *novel* entity there never reached L3 and egressed silently — the
+one outcome the every-hop invariant exists to prevent, on a growing list of real Anthropic Messages API
+block shapes this project simply hadn't enumerated yet.
+
+**Decision:** invert the traversal. `_blindfold_block` (and its restore-side counterpart, `_restore_block`)
+now walk every content-block string leaf **deny-by-default** — a small, closed, named exclusion set
+(`_BLOCK_NON_HOP_KEYS` in `engine.py`: the `type` discriminator, cross-reference ids `id`/`tool_use_id`,
+and a thinking block's provider-signed `signature`) is the only thing left untouched, each entry carrying
+its own justification in code. `tool_use`/`server_tool_use`/`mcp_tool_use` (free-form call `input`) and
+`tool_result`/`mcp_tool_result` (nested `content`) keep their existing dedicated treatment — their other
+fields (`name`, `server_name`) are protocol identifiers already covered by the same exclusion set. Every
+other block type — named today or not — falls through to a generic recursive walk
+(`_blindfold_block_value`/`_restore_block_value`) that applies the identical exclusion set at every
+nesting depth, so a block nested inside another (a `document`'s `source`, a `search_result`'s own nested
+content list) is covered too. Blinder coverage is now a superset of gate coverage **by construction**:
+every future payload-shape extension defaults to blinded, not to "leaks, then 503s."
+
+This closes the direction the #303 amendment did not: that amendment removed a field from the gate when
+the blinder was *structurally forbidden* to reach it; this amendment instead widens the blinder to reach
+prose it was previously only *accidentally* forbidden to reach, because nobody had enumerated the block
+type yet. Both are instances of the same rule — "the field decides the direction of the fix" — applied to
+the two different sides of the same asymmetry.

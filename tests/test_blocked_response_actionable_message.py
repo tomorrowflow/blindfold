@@ -171,11 +171,14 @@ def _seeded_mapping() -> SurrogateMapping:
 
 @pytest.mark.anyio
 async def test_unresolved_surrogate_block_also_carries_message_and_management_url(wired_app):
-    # The buffered path's resolution gate (SEC-6): restore_response only rewrites
-    # "text"/"tool_use" content blocks (ADR-0006 scope), so a "thinking" block that
-    # echoes an injected surrogate verbatim is left unresolved -- caught here, not
-    # a silent pass-through. Same _blocked_response funnel, sub_reason
-    # unresolved_surrogate.
+    # The buffered path's resolution gate (SEC-6). Issue #323 made restore walk every
+    # content-block string leaf deny-by-default -- a "thinking" block's own
+    # `thinking` prose now restores cleanly, closing the gap this test used to pin.
+    # What still cannot restore, by construction, is a surrogate-shaped string
+    # landing in one of the small, named non-hop fields (`signature`, the
+    # thinking block's provider-signed field) restore is structurally forbidden to
+    # touch -- caught here, not a silent pass-through. Same _blocked_response
+    # funnel, sub_reason unresolved_surrogate.
     mapping = _seeded_mapping()
     martin = "Martin Bach"
     martin_surrogate = mapping.surrogate_for(martin)
@@ -186,7 +189,11 @@ async def test_unresolved_surrogate_block_also_carries_message_and_management_ur
     stub_upstream = _make_stub_upstream_returning(
         {
             "content": [
-                {"type": "thinking", "thinking": martin_surrogate},
+                {
+                    "type": "thinking",
+                    "thinking": "irrelevant filler",
+                    "signature": martin_surrogate,
+                },
                 {"type": "text", "text": "ok"},
             ]
         },

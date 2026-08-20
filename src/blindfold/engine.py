@@ -920,6 +920,36 @@ def _blindfold_content(
     return content
 
 
+# Content-block field names the blinder is structurally forbidden to rewrite
+# (issue #323). Each entry is a protocol necessity -- a discriminator, a
+# cross-reference id, or a provider-issued signature -- never natural-language
+# prose, so blinding it would break the request rather than protect it. Closed
+# and enumerated in the same style as ADR-0051's own tool-schema forbidden set
+# (#307): adding an entry requires the same kind of argument made here, not
+# "whatever the blinder happened to miss."
+_BLOCK_NON_HOP_KEYS = frozenset({
+    "type",  # block-type discriminator ("text", "thinking", "document", ...) --
+    # dispatch reads it structurally, it is never itself prose.
+    "id",  # a provider-issued block/tool-call id, referenced by a later
+    # block's "tool_use_id" -- rewriting breaks that cross-reference.
+    "tool_use_id",  # the other end of that same cross-reference.
+    "signature",  # a thinking block's provider-signed field over the exact
+    # thinking text -- issue #323's own named wrinkle: rewriting the signature
+    # string invalidates a signature the provider verifies on the way back.
+})
+
+# tool_use / server_tool_use / mcp_tool_use all carry the tool call's structured
+# arguments under "input" -- the only free-form (blindable) field; "name" (and
+# mcp_tool_use's "server_name") are protocol identifiers, the same class as
+# tools[].name (ADR-0051/#307), and are never rewritten.
+_TOOL_CALL_BLOCK_TYPES = frozenset({"tool_use", "server_tool_use", "mcp_tool_use"})
+
+# tool_result / mcp_tool_result both carry their payload under "content" (a
+# string or a nested content-block list); "is_error" is a boolean flag, never a
+# string leaf.
+_TOOL_RESULT_BLOCK_TYPES = frozenset({"tool_result", "mcp_tool_result"})
+
+
 def _blindfold_block(
     block: Any,
     mapping: SurrogateMapping,
@@ -933,6 +963,29 @@ def _blindfold_block(
     system_confined_tokens: frozenset[str] = frozenset(),
     case_inconsistency: "CaseInconsistencySuppression | None" = None,
 ) -> Any:
+    """Rewrite one content block in place -- deny-by-default over its string leaves.
+
+    Issue #323: the blinder used to enumerate known block types (``text``,
+    ``tool_result``, ``tool_use``) and return every other block unchanged, while
+    ``leak_gate`` walks every string leaf of the whole payload exhaustively
+    (:func:`walk_string_leaves`/:func:`_collect_text`). A known entity inside an
+    unhandled type -- ``thinking``, ``document``, ``search_result``,
+    ``mcp_tool_use``, and any future block shape -- reached the gate un-blinded
+    and fail-closed as an unexplained 503; a *novel* entity in such a block never
+    reached L3 and egressed silently. Blinder coverage must be a superset of gate
+    coverage by construction, not by enumeration.
+
+    ``text`` keeps its own branch only because it is the hottest path (no need to
+    round-trip through dict-item iteration for the single field every text block
+    has). ``tool_result``/``mcp_tool_result`` and ``tool_use``/``server_tool_use``/
+    ``mcp_tool_use`` keep their existing dedicated treatment (recurse into
+    ``content``; blindfold ``input`` as JSON, matching issue #11) since their
+    non-payload fields (``name``, ``server_name``, ``tool_use_id``) are protocol
+    identifiers already covered by :data:`_BLOCK_NON_HOP_KEYS`. Every other block
+    type -- including any not yet named -- falls through to the generic walk:
+    every key not in :data:`_BLOCK_NON_HOP_KEYS` is a candidate string leaf (or a
+    subtree of them), recursed via :func:`_blindfold_block_value`.
+    """
     if not isinstance(block, dict):
         return block
     block_type = block.get("type")
@@ -942,13 +995,15 @@ def _blindfold_block(
             workspace, phone_candidates_enabled, system_confined_tokens,
             case_inconsistency,
         )
-    elif block_type == "tool_result":
+        return block
+    if block_type in _TOOL_RESULT_BLOCK_TYPES:
         block["content"] = _blindfold_content(
             block.get("content"), mapping, session, l3_detector, inbox,
             declared_tools, hop_ctx, workspace, phone_candidates_enabled,
             system_confined_tokens, case_inconsistency,
         )
-    elif block_type == "tool_use":
+        return block
+    if block_type in _TOOL_CALL_BLOCK_TYPES:
         # Tool-call JSON (issue #11): the assistant's prior tool_use.input is echoed
         # back into the request on multi-turn exchanges. Treat it as a hop (ADR-0002)
         # and blindfold any real entity inside its structured args so clause A holds
@@ -958,7 +1013,71 @@ def _blindfold_block(
             declared_tools, hop_ctx, workspace, phone_candidates_enabled,
             system_confined_tokens, case_inconsistency,
         )
+        return block
+    for key, value in list(block.items()):
+        if key in _BLOCK_NON_HOP_KEYS:
+            continue
+        block[key] = _blindfold_block_value(
+            value, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
+            workspace, phone_candidates_enabled, system_confined_tokens,
+            case_inconsistency,
+        )
     return block
+
+
+def _blindfold_block_value(
+    value: Any,
+    mapping: SurrogateMapping,
+    session: ExchangeSession,
+    l3_detector: L3Detector | None,
+    inbox: ReviewInbox | None,
+    declared_tools: frozenset[str] = frozenset(),
+    hop_ctx: "_HopContext | None" = None,
+    workspace: str = DEFAULT_WORKSPACE,
+    phone_candidates_enabled: bool = True,
+    system_confined_tokens: frozenset[str] = frozenset(),
+    case_inconsistency: "CaseInconsistencySuppression | None" = None,
+) -> Any:
+    """Recursively rewrite every string leaf of a content-block subtree (issue #323).
+
+    The generic, deny-by-default counterpart to :func:`_blindfold_json_value` for
+    content-block *shapes* (a ``document``'s ``source``, a ``search_result``'s
+    nested ``content`` block list, ...) rather than a tool call's arbitrary JSON
+    arguments: every :data:`_BLOCK_NON_HOP_KEYS` key is left byte-identical at
+    *any* nesting depth reached from here -- the same protocol-structural keys
+    :func:`_blindfold_block` itself excludes at the top level -- everything else
+    is a candidate string leaf, adjudicated through L3 exactly like ordinary
+    prose (``l3_detector`` reaches every recursive call unchanged).
+    """
+    if isinstance(value, str):
+        return _blindfold_text(
+            value, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
+            workspace, phone_candidates_enabled, system_confined_tokens,
+            case_inconsistency,
+        )
+    if isinstance(value, dict):
+        return {
+            k: (
+                v
+                if k in _BLOCK_NON_HOP_KEYS
+                else _blindfold_block_value(
+                    v, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
+                    workspace, phone_candidates_enabled, system_confined_tokens,
+                    case_inconsistency,
+                )
+            )
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [
+            _blindfold_block_value(
+                item, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
+                workspace, phone_candidates_enabled, system_confined_tokens,
+                case_inconsistency,
+            )
+            for item in value
+        ]
+    return value
 
 
 def _blindfold_json_value(
@@ -1884,6 +2003,73 @@ def _injected_surrogate_ranges(
     return ranges
 
 
+def _restore_block(block: Any, session: ExchangeSession) -> Any:
+    """Restore one response content block in place -- deny-by-default (issue #323).
+
+    Mirrors :func:`_blindfold_block`'s inversion on the restore side: ``text`` and
+    ``tool_use``/``server_tool_use``/``mcp_tool_use``/``tool_result``/
+    ``mcp_tool_result`` keep their dedicated treatment, everything else -- a
+    ``thinking`` block's ``thinking`` text, a ``document``/``search_result``'s
+    prose, any future block shape -- falls through to the same generic,
+    deny-by-default walk, so a surrogate injected into a hop this issue newly
+    reaches is restored on the way back too, not left for
+    :func:`resolution_gate`'s own exhaustive walk to fail-close on.
+    """
+    if not isinstance(block, dict):
+        return block
+    block_type = block.get("type")
+    if block_type == "text" and isinstance(block.get("text"), str):
+        block["text"] = _restore_text(block["text"], session)
+        return block
+    if block_type in _TOOL_RESULT_BLOCK_TYPES:
+        block["content"] = _restore_content(block.get("content"), session)
+        return block
+    if block_type in _TOOL_CALL_BLOCK_TYPES:
+        # Tool-call JSON (issue #11): restore surrogates inside string values
+        # of structured args. The dict is already reassembled here (non-stream
+        # path); JSON escaping is preserved because we walk the parsed value
+        # and the ASGI serializer re-encodes string content for us.
+        block["input"] = _restore_json_value(block.get("input"), session)
+        return block
+    for key, value in list(block.items()):
+        if key in _BLOCK_NON_HOP_KEYS:
+            continue
+        block[key] = _restore_block_value(value, session)
+    return block
+
+
+def _restore_content(content: Any, session: ExchangeSession) -> Any:
+    """Restore a ``tool_result``/``mcp_tool_result``-shaped ``content`` field.
+
+    ``content`` is either plain text or a nested content-block list (mirrors
+    :func:`_blindfold_content`'s own two shapes).
+    """
+    if isinstance(content, str):
+        return _restore_text(content, session)
+    if isinstance(content, list):
+        return [_restore_block(block, session) for block in content]
+    return content
+
+
+def _restore_block_value(value: Any, session: ExchangeSession) -> Any:
+    """Recursively restore every string leaf of a content-block subtree (issue #323).
+
+    The restore-side counterpart to :func:`_blindfold_block_value`: every
+    :data:`_BLOCK_NON_HOP_KEYS` key is left byte-identical at any nesting depth,
+    everything else is a candidate surrogate occurrence.
+    """
+    if isinstance(value, str):
+        return _restore_text(value, session)
+    if isinstance(value, dict):
+        return {
+            k: (v if k in _BLOCK_NON_HOP_KEYS else _restore_block_value(v, session))
+            for k, v in value.items()
+        }
+    if isinstance(value, list):
+        return [_restore_block_value(item, session) for item in value]
+    return value
+
+
 def restore_response(
     response: dict[str, Any], session: ExchangeSession
 ) -> dict[str, Any]:
@@ -1896,17 +2082,7 @@ def restore_response(
     out = copy.deepcopy(response)
     content = out.get("content")
     if isinstance(content, list):
-        for block in content:
-            if not isinstance(block, dict):
-                continue
-            if block.get("type") == "text" and isinstance(block.get("text"), str):
-                block["text"] = _restore_text(block["text"], session)
-            elif block.get("type") == "tool_use":
-                # Tool-call JSON (issue #11): restore surrogates inside string values
-                # of structured args. The dict is already reassembled here (non-stream
-                # path); JSON escaping is preserved because we walk the parsed value
-                # and the ASGI serializer re-encodes string content for us.
-                block["input"] = _restore_json_value(block.get("input"), session)
+        out["content"] = [_restore_block(block, session) for block in content]
     return out
 
 
