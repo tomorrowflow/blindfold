@@ -54,7 +54,19 @@ Glob
 # real GlinerOnnxClassifier.classify_span. Each is a confirmed organization/person
 # false positive AND a purpose-coined public brand identifier with no ordinary-
 # English or personal-name collision (see the corpus's per-entry rationale for the
-# excluded counter-examples, e.g. Vault/Kafka/Jenkins, that failed this bar).
+# excluded counter-examples that failed this bar -- Kafka/Jenkins, both a common
+# human surname GLiNER's own "person" label corroborates: re-judged against
+# ADR-0023's actual curation rule by issue #356 and still excluded, since a common
+# surname is exactly the plausible-unregistered-referent case that rule protects,
+# not merely a failure of this audit's own narrower non-collision bar).
+# "Vault" was excluded here too under this audit's stricter "no ordinary-English-
+# word/no internal-codename plausibility" bar -- issue #356 supersedes that call
+# the same way "Transit" superseded its own 2026-07-10 rejection below: measured
+# against ADR-0023's actual rule (public identifier, implausible as a protected
+# referent when unregistered) rather than the audit's own additional bar, in this
+# project's own context (OpenBao's key-custody prose names it as the project
+# OpenBao forked from) it is exactly the React/Grafana/Prisma class. See "Vault"
+# in the #74 run-12 batch below.
 # "Transit" is the issue's own cited live finding (OpenBao's key-wrapping secrets
 # engine) and supersedes the 2026-07-10 #87 rejection, which considered it only as
 # bare generic prose, not this project's own named component.
@@ -70,6 +82,18 @@ Bitbucket
 Firefox
 Kubernetes
 #
+# #74 run 12 review-inbox batch (issue #356). Two of run 12's four false
+# positives are public product names measured against ADR-0023's actual
+# curation rule (public framework/vendor/tool identifier, implausible as a
+# protected referent when unregistered) rather than the stricter GLiNER-audit
+# bar above: "Vault" (HashiCorp's -- named in this project's own key-custody
+# prose as what OpenBao forked from) and "Presidio" (Microsoft's -- arriving
+# via the driving harness's own auto-loaded memory index). Seeding both:
+# 10 mints/60% precision -> 8 mints/75%; "Vault"'s mint also produced one of
+# run 12's three blocked exchanges, so this is an availability fix too.
+Vault
+Presidio
+#
 # MCP / collaboration-tool vendors (issue #297). Evidence: the #74 live-verify
 # run 6 egress audit -- these public product names, named in the harness's own
 # safety-rules text, minted provisional surrogates in some hops (e.g. Jira,
@@ -81,7 +105,7 @@ Kubernetes
 # explicitly excluded under this same ADR-0023 curation rule: an ordinary
 # English dictionary word ("an idea/notion") with no single dominant
 # public-brand reading, plausible as a generic project/codename -- the same
-# collision class as Vault/Confluence/Zoom/Stripe, left out there for the
+# collision class as Confluence/Zoom/Stripe, left out there for the
 # identical reason. Seeding it here would silently re-litigate that decision
 # without new evidence; flagged in this issue's handoff notes for a human call
 # instead of resolved unilaterally.

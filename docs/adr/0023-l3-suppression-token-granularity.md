@@ -638,3 +638,33 @@ in_block` directly instead of its own copy of the dispatch, so evidence coverage
 and 5 (and the blinder) is identical by construction. #350's `SuppressionTrace` reflects the
 corrected evidence automatically, since it reads the same `CaseInconsistencyEvidence` this fix
 corrects — no separate plumbing change needed there.
+
+## Update (issue #356): a curated exclusion doesn't survive contact with measurement
+
+The #281 GLiNER probe corpus (`tests/fixtures/gliner_org_probe_corpus.json`) excluded `Vault`
+under its own additional, stricter bar — "no ordinary-English-word/no-internal-codename
+plausibility" — not this ADR's actual curation rule (public identifier, implausible as a
+protected referent *when unregistered*). The #74 run 12 live review inbox then minted `Vault` as
+one of four false positives, one of them a blocked exchange: measured cost of the stricter bar,
+not a hypothetical. Re-judged against this ADR's own rule in this project's own context — Vault
+is named in Blindfold's own key-custody prose as the project OpenBao forked from, exactly the
+"this project's own documented dependency" class `Transit` already established above — `Vault`
+is seeded. `Presidio` (Microsoft's PII-scrubbing product, arriving via the driving harness's own
+auto-loaded memory index) is a second, independent run-12 false positive in the identical class
+and is seeded alongside it. Seeding both: run 12's 10 mints/60% precision becomes 8 mints/75%.
+
+This is not a reversal of the corpus's own curation discipline — it is that discipline applied
+one level up, the same way `Transit`'s own entry (above) superseded a prior generic-prose
+rejection with product-specific evidence. The corpus's *narrower* bar remains a legitimate,
+independent tripwire for tokens with no such project-specific context to lean on: re-judging
+`Vault`'s two siblings named in the same comment, `Kafka` and `Jenkins`, directly against this
+ADR's actual rule (not the corpus's stricter one) still excludes both — each is a common human
+surname GLiNER's own `person` label corroborates, the live collision-risk case this ADR's rule
+exists to protect, with no comparable project-specific context to resolve it the way `Vault`'s
+OpenBao lineage does. `seeded_allowlist.txt`'s own comment block is corrected to stop asserting a
+bar the measurement now contradicts for `Vault`, while preserving the record for `Kafka`/`Jenkins`.
+
+Cap decision (from the "Update (issue #353)" section above) is unaffected: this batch is a third,
+separately-evidenced category (the #74 run 12 live-verify egress audit, mirroring #297's own run-6
+provenance) with its own small, bounded source — not a reopening of Decision 2's original ~150–200
+figure, which continues to govern only that section.

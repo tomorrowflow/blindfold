@@ -125,13 +125,26 @@ def test_seeded_allowlist_contains_the_issue_297_mcp_vendor_batch():
     } <= tokens
 
 
+def test_seeded_allowlist_contains_the_issue_356_run_12_batch():
+    # Acceptance criterion (issue #356): the #74 run 12 review inbox minted
+    # "Vault" (HashiCorp's -- named in this project's own key-custody prose as
+    # what OpenBao forked from) and "Presidio" (Microsoft's -- arriving via the
+    # driving harness's auto-loaded memory index) as false positives. Both are
+    # public product identifiers, implausible as a protected referent when
+    # unregistered -- the same ADR-0023 curation rule React/Grafana/Prisma
+    # already pass. Seeding both: 10 mints/60% precision -> 8 mints/75%.
+    tokens = load_seeded_allowlist_tokens()
+
+    assert {"Vault", "Presidio"} <= tokens
+
+
 def test_issue_297_run_6_vendor_batch_excludes_notion():
     # Run 6's own named set (issue #297) includes "Notion", but the issue #281
     # GLiNER audit (tests/test_gliner_org_seed_audit.py,
     # tests/fixtures/gliner_org_probe_corpus.json) already measured and
     # excluded it under this same ADR-0023 curation rule: an ordinary English
     # dictionary word with no single dominant public-brand reading, the same
-    # collision class as Vault/Confluence/Zoom/Stripe. Seeding it here would
+    # collision class as Confluence/Zoom/Stripe. Seeding it here would
     # silently re-litigate that recorded decision without new evidence -- left
     # for a human/ADR call rather than resolved unilaterally in this slice.
     tokens = load_seeded_allowlist_tokens()
@@ -588,6 +601,110 @@ async def test_registered_term_equal_to_an_issue_137_token_is_still_blindfolded(
     assert "Northwind Comms" in egressed
     # Clause B/D: the client gets the real value back, closed-world restored.
     assert "Slack" in resp.json()["content"][0]["text"]
+
+
+@pytest.mark.anyio
+async def test_registered_term_equal_to_the_issue_356_vault_token_is_still_blindfolded():
+    # Acceptance criterion (issue #356): the Term-always-wins guarantee extends
+    # to "Vault" too -- suppressing its L3 novelty discovery must never cost a
+    # workspace protection for its own registered Term of the same name.
+    assert "Vault" in load_seeded_allowlist_tokens()
+    mapping = SurrogateMapping.from_pairs([("Vault", "Northwind Custody")])
+    allowlist = Allowlist()
+    for token in load_seeded_allowlist_tokens():
+        allowlist.add(token)
+    detector = L3Detector(_NeverAnEntityAdjudicator(), allowlist=allowlist)
+    scripted_response = {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "Acknowledged, Northwind Custody."}],
+        "model": "claude-3-5-sonnet",
+        "stop_reason": "end_turn",
+    }
+    recorded: list[httpx.Request] = []
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(
+        scripted_response, recorded
+    )
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_review_inbox] = lambda: ReviewInbox()
+    app.dependency_overrides[get_l3_detector] = lambda: detector
+    app.dependency_overrides[get_allowlist] = lambda: allowlist
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            resp = await client.post(
+                "/v1/messages",
+                json={
+                    "model": "m",
+                    "messages": [
+                        {"role": "user", "content": "We store secrets in Vault."}
+                    ],
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    egressed = recorded[0].content.decode("utf-8")
+    # Clause A: the real Term never crossed egress; only its surrogate did.
+    assert "Vault" not in egressed
+    assert "Northwind Custody" in egressed
+    # Clause B/D: the client gets the real value back, closed-world restored.
+    assert "Vault" in resp.json()["content"][0]["text"]
+
+
+@pytest.mark.anyio
+async def test_registered_term_equal_to_the_issue_356_presidio_token_is_still_blindfolded():
+    # Acceptance criterion (issue #356): the same guarantee for "Presidio".
+    assert "Presidio" in load_seeded_allowlist_tokens()
+    mapping = SurrogateMapping.from_pairs([("Presidio", "Northwind Scrubber")])
+    allowlist = Allowlist()
+    for token in load_seeded_allowlist_tokens():
+        allowlist.add(token)
+    detector = L3Detector(_NeverAnEntityAdjudicator(), allowlist=allowlist)
+    scripted_response = {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "Acknowledged, Northwind Scrubber."}],
+        "model": "claude-3-5-sonnet",
+        "stop_reason": "end_turn",
+    }
+    recorded: list[httpx.Request] = []
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(
+        scripted_response, recorded
+    )
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_review_inbox] = lambda: ReviewInbox()
+    app.dependency_overrides[get_l3_detector] = lambda: detector
+    app.dependency_overrides[get_allowlist] = lambda: allowlist
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            resp = await client.post(
+                "/v1/messages",
+                json={
+                    "model": "m",
+                    "messages": [
+                        {"role": "user", "content": "Presidio flagged the scan."}
+                    ],
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    egressed = recorded[0].content.decode("utf-8")
+    # Clause A: the real Term never crossed egress; only its surrogate did.
+    assert "Presidio" not in egressed
+    assert "Northwind Scrubber" in egressed
+    # Clause B/D: the client gets the real value back, closed-world restored.
+    assert "Presidio" in resp.json()["content"][0]["text"]
 
 
 def test_learned_reject_still_suppresses_candidacy_alongside_seeded_tokens():
