@@ -33,6 +33,7 @@ from .l3 import (
     CaseInconsistencySuppression,
     L3Detector,
     L3DetectionInternalError,
+    SuppressionTrace,
     count_capitalized_tokens,
 )
 # Reused to re-window context around a *coalesced* multi-token span (issue #162):
@@ -1447,7 +1448,13 @@ def _blindfold_text(
                 if t_start >= t_end:
                     continue
                 novel_extents.append(
-                    _ConfirmedExtent(t_start, t_end, decision.entity_type, decision.adjudicator)
+                    _ConfirmedExtent(
+                        t_start,
+                        t_end,
+                        decision.entity_type,
+                        decision.adjudicator,
+                        candidate.suppression_trace,
+                    )
                 )
         # Coalesce adjacent/overlapping confirmed extents into one entity before
         # minting (issue #162, widened by #170): select_candidate_spans emits
@@ -1479,8 +1486,26 @@ def _blindfold_text(
             adjudicator = _resolve_group_adjudicator(
                 extent.adjudicator for extent in group
             )
+            # Issue #350: same idea for suppression provenance -- ONE trace for
+            # the whole coalesced span. A coalesced group's members share the
+            # same Title-Case run by construction (they're the whitespace-
+            # adjacent tokens select_candidate_spans/engine's own coalescing
+            # both group), so any member's trace is representative; the first
+            # is picked, mirroring _resolve_group_entity_type's tie-break.
+            suppression_trace = _resolve_group_suppression_trace(
+                extent.suppression_trace for extent in group
+            )
             group_infos.append(
-                (start, end, real, context, context_offset, entity_type, adjudicator)
+                (
+                    start,
+                    end,
+                    real,
+                    context,
+                    context_offset,
+                    entity_type,
+                    adjudicator,
+                    suppression_trace,
+                )
             )
         # Issue #293 minted a confirmed candidate unconditionally; issue #295 found
         # that #293's own follow-up (refuse the mint outright whenever the real
@@ -1508,7 +1533,16 @@ def _blindfold_text(
         # would rewrite a surrogate's own text for an unrelated referent.
         minted_ranges_by_item: dict[str, list[tuple[int, int]]] = {}
         minted_items_by_id: dict[str, ReviewItem] = {}
-        for start, end, real, context, context_offset, entity_type, adjudicator in group_infos:
+        for (
+            start,
+            end,
+            real,
+            context,
+            context_offset,
+            entity_type,
+            adjudicator,
+            suppression_trace,
+        ) in group_infos:
             # ADR-0037 hardening: also exclude provisional surrogates already
             # active in the inbox from mint candidacy, not just known real
             # values -- defense-in-depth so a stale/reset pool cursor (e.g. a
@@ -1538,6 +1572,7 @@ def _blindfold_text(
                 # occurrence), not just the local context window.
                 corpus_text=result,
                 adjudicator=adjudicator,
+                suppression_trace=suppression_trace,
             )
             if item is None:
                 # ADR-0052 (issue #330): ``real`` itself matches the opaque
@@ -1693,12 +1728,18 @@ class _ConfirmedExtent:
     ``adjudicator`` (issue #348) carries ``L3Adjudication.adjudicator``
     through coalescing the same way ``entity_type`` does -- read-only
     provenance, never consulted by the coalescing/mint decision itself.
+
+    ``suppression_trace`` (issue #350) carries the confirming candidate's own
+    ``CandidateSpan.suppression_trace`` through coalescing the same way
+    ``adjudicator`` does -- read-only provenance, never consulted by the
+    coalescing/mint decision itself.
     """
 
     start: int
     end: int
     entity_type: str | None
     adjudicator: str | None = None
+    suppression_trace: "SuppressionTrace | None" = None
 
 
 def _coalesce_adjacent_spans(
@@ -1764,6 +1805,24 @@ def _resolve_group_adjudicator(adjudicators: Iterator[str | None]) -> str | None
     if len(seen) == 1:
         return next(iter(seen))
     return ADJUDICATOR_CASCADE_COALESCING
+
+
+def _resolve_group_suppression_trace(
+    traces: Iterator["SuppressionTrace | None"],
+) -> "SuppressionTrace | None":
+    """Pick a single suppression trace for a coalesced multi-token span (issue
+    #350, interacting with issue #162's coalescing).
+
+    Unlike ``adjudicator``, a coalesced group's members are never expected to
+    disagree: they are exactly the whitespace-adjacent Title-Case run the
+    case-inconsistency condition itself evaluates as one unit (see
+    ``l3._capitalized_token_runs``), so every member's trace already reports
+    the same run detail. The first non-``None`` trace is representative.
+    """
+    for trace in traces:
+        if trace is not None:
+            return trace
+    return None
 
 
 def _live_surrogate_values(

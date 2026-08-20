@@ -234,5 +234,7 @@ async def test_review_inbox_response_exposes_entity_type_and_adjudicator_alongsi
             "entity_type": None,
             "adjudicator": ADJUDICATOR_INNER_LLM,
             "kind": "term",
+            # Issue #350: null when the item carries no suppression trace.
+            "suppression_trace": None,
         }
     ]

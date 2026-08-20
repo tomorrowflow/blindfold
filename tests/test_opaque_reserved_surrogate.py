@@ -94,7 +94,8 @@ def test_request_path_never_crashes_or_mints_on_a_reserved_form_candidate(monkey
     def _fake_select_candidate_spans(text_arg, known_entities, allowlist=None,
                                       declared_tools=frozenset(),
                                       system_confined_tokens=frozenset(),
-                                      case_inconsistency=None):
+                                      case_inconsistency=None,
+                                      trace_suppression=False):
         start = text_arg.find("BFX0008")
         end = start + len("BFX0008")
         return [

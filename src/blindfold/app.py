@@ -160,6 +160,7 @@ from .l3 import (
     L3Detector,
     L3DetectionInternalError,
     L3Unavailable,
+    SuppressionTrace,
 )
 from .gliner_provisioning import (
     GlinerDigestMismatchError,
@@ -2030,8 +2031,46 @@ async def list_review_inbox(
                 "entity_type": item.entity_type,
                 "adjudicator": item.adjudicator,
                 "kind": _entity_kind_for(item.entity_type),
+                "suppression_trace": _suppression_trace_dict(item.suppression_trace),
             }
             for item in inbox.list()
+        ]
+    }
+
+
+def _suppression_trace_dict(trace: "SuppressionTrace | None") -> dict | None:
+    """Render a :class:`~blindfold.l3.SuppressionTrace` as a JSON-safe dict for
+    the review-inbox response (issue #350), or ``None`` when the item carries
+    none -- an item minted before this issue, or via a direct ``upsert()``
+    call that never passed one. Same viewer gate as ``adjudicator``/
+    ``entity_type``: no new route, no widened auth surface.
+    """
+    if trace is None:
+        return None
+    return {
+        "conditions": [
+            {
+                "name": condition.name,
+                "evaluated": condition.evaluated,
+                "suppressed": condition.suppressed,
+                "detail": (
+                    {
+                        "run_start": condition.detail.run_start,
+                        "run_end": condition.detail.run_end,
+                        "tokens": [
+                            {
+                                "token": token.token,
+                                "lowercase_count": token.lowercase_count,
+                                "capitalized_count": token.capitalized_count,
+                            }
+                            for token in condition.detail.tokens
+                        ],
+                    }
+                    if condition.detail is not None
+                    else None
+                ),
+            }
+            for condition in trace.conditions
         ]
     }
 

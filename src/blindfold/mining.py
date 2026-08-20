@@ -78,6 +78,7 @@ def mine_transcripts(
                 entity_type=decision.entity_type,
                 workspace=workspace,
                 adjudicator=decision.adjudicator,
+                suppression_trace=candidate.suppression_trace,
                 # Issue #292/#337: pool-vs-corpus disjointness, mirroring the
                 # engine's own mint call site -- the collision that matters can
                 # be anywhere in this transcript, not just this candidate's own

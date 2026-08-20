@@ -216,6 +216,11 @@ class CandidateSpan:
     end: int
     context: str
     context_offset: int = 0
+    # Issue #350: per-candidate suppression provenance, populated by
+    # select_candidate_spans only when trace_suppression=True. None by
+    # default so every existing direct CandidateSpan(...) construction across
+    # the suite (adjudicator stubs, cache tests) is untouched.
+    suppression_trace: "SuppressionTrace | None" = None
 
 
 # Issue #348: the three verdict-provenance values a review-inbox item or an
@@ -441,6 +446,88 @@ class CaseInconsistencySuppression:
     evidence: CaseInconsistencyEvidence
 
 
+# Issue #350: the ADR-0023 suppression condition names, in evaluation order.
+# Shared between select_candidate_spans (the producer) and every consumer of
+# a SuppressionTrace, so a trace's condition list is always these five in
+# this order, never re-typed at each call site. Deliberately excludes the
+# ADR-0033 positional case heuristic, which ADR-0023 keeps as a distinct,
+# orthogonal condition (see docs/adr/0023, "Update (issue #342)").
+SUPPRESSION_CONDITION_SEEDED_ALLOWLIST = "seeded_allowlist"
+SUPPRESSION_CONDITION_DECLARED_TOOL_VOCABULARY = "declared_tool_vocabulary"
+SUPPRESSION_CONDITION_EXPANDED_STOPWORDS = "expanded_stopwords"
+SUPPRESSION_CONDITION_SYSTEM_CONFINED_REGION = "system_confined_region"
+SUPPRESSION_CONDITION_CASE_INCONSISTENCY = "case_inconsistency"
+
+
+@dataclass(frozen=True)
+class CaseInconsistencyRunToken:
+    """One Title-Case run member's prose-lowercase/capitalized counts (issue
+    #350) -- the exact numbers ``CaseInconsistencyEvidence.has_evidence``
+    compares for this token.
+    """
+
+    token: str
+    lowercase_count: int
+    capitalized_count: int
+
+
+@dataclass(frozen=True)
+class CaseInconsistencyRunDetail:
+    """The case-inconsistency condition's evidence for one candidate's whole
+    Title-Case run (issue #350): every member's counts, not just the
+    candidate's own, plus the run's extent -- the exact inputs
+    ``_case_inconsistency_suppressed_starts``'s conjunctive rule evaluated.
+
+    This is what lets a reviewer tell apart the two diagnoses #74 run 11
+    could not distinguish from its own output: a token whose own counts fail
+    ``has_evidence`` (a source-vocabulary cause) from a token whose own counts
+    pass but a run-mate's don't (a rule cause -- the conjunctive check
+    protected the whole run from suppression).
+    """
+
+    run_start: int
+    run_end: int
+    tokens: tuple[CaseInconsistencyRunToken, ...]
+
+
+@dataclass(frozen=True)
+class SuppressionConditionOutcome:
+    """One ADR-0023 suppression condition's outcome for a single candidate
+    (issue #350).
+
+    ``evaluated`` is False only when the condition's own data was never
+    supplied to :func:`select_candidate_spans` -- ``allowlist`` and
+    ``case_inconsistency`` are its two ``None``-able parameters; the other
+    three conditions always evaluate (against an empty set, if their
+    parameter was omitted). Distinct from ``suppressed=False``, which means
+    the condition ran and did not fire. ``detail`` is populated only for the
+    case-inconsistency condition.
+    """
+
+    name: str
+    evaluated: bool
+    suppressed: bool
+    detail: CaseInconsistencyRunDetail | None = None
+
+
+@dataclass(frozen=True)
+class SuppressionTrace:
+    """A candidate span's full suppression provenance (issue #350): one
+    :class:`SuppressionConditionOutcome` per ADR-0023 condition, in the order
+    :data:`SUPPRESSION_CONDITION_SEEDED_ALLOWLIST` through
+    :data:`SUPPRESSION_CONDITION_CASE_INCONSISTENCY` are evaluated.
+
+    Produced only by :func:`select_candidate_spans` (``trace_suppression=
+    True``) for a candidate that survives every condition -- a suppressed
+    token never becomes a :class:`CandidateSpan` at all, so it never carries
+    one. Carried, read-only, onto ``ReviewItem.suppression_trace``
+    (review.py/engine.py) -- never consulted by any selection or minting
+    decision, mirroring ``L3Adjudication.adjudicator`` (issue #348).
+    """
+
+    conditions: tuple[SuppressionConditionOutcome, ...]
+
+
 def _is_whitespace_gap(text: str, prev_end: int, next_start: int) -> bool:
     """True if ``text[prev_end:next_start]`` is a non-empty run of whitespace
     with no newline -- the same adjacency test
@@ -451,6 +538,28 @@ def _is_whitespace_gap(text: str, prev_end: int, next_start: int) -> bool:
     """
     gap = text[prev_end:next_start]
     return gap != "" and "\n" not in gap and gap.strip() == ""
+
+
+def _capitalized_token_runs(text: str) -> list[list[re.Match[str]]]:
+    """Group ``text``'s capitalized-token matches into whitespace-adjacent runs
+    (issue #344) -- the unit the case-inconsistency conjunctive rule evaluates.
+    Shared by :func:`_case_inconsistency_suppressed_starts` (the suppression
+    decision) and :func:`_case_inconsistency_run_details` (issue #350's
+    diagnostic detail over the same grouping, regardless of outcome).
+    """
+    matches = list(_capitalized_token_matches(text))
+    runs: list[list[re.Match[str]]] = []
+    i = 0
+    n = len(matches)
+    while i < n:
+        run = [matches[i]]
+        j = i + 1
+        while j < n and _is_whitespace_gap(text, run[-1].end(), matches[j].start()):
+            run.append(matches[j])
+            j += 1
+        runs.append(run)
+        i = j
+    return runs
 
 
 def _case_inconsistency_suppressed_starts(
@@ -472,20 +581,45 @@ def _case_inconsistency_suppressed_starts(
     """
     if case_inconsistency is None:
         return frozenset()
-    matches = list(_capitalized_token_matches(text))
     suppressed: set[int] = set()
-    i = 0
-    n = len(matches)
-    while i < n:
-        run = [matches[i]]
-        j = i + 1
-        while j < n and _is_whitespace_gap(text, run[-1].end(), matches[j].start()):
-            run.append(matches[j])
-            j += 1
+    for run in _capitalized_token_runs(text):
         if all(case_inconsistency.evidence.has_evidence(m.group(0)) for m in run):
             suppressed.update(m.start() for m in run)
-        i = j
     return frozenset(suppressed)
+
+
+def _case_inconsistency_run_details(
+    text: str, case_inconsistency: "CaseInconsistencySuppression | None"
+) -> dict[int, CaseInconsistencyRunDetail]:
+    """Map every capitalized-token start offset in ``text`` to its Title-Case
+    run's full :class:`CaseInconsistencyRunDetail` (issue #350) -- the same
+    grouping :func:`_case_inconsistency_suppressed_starts` uses to decide
+    suppression, retained here as diagnostic detail regardless of whether the
+    run was actually suppressed. Empty when ``case_inconsistency`` is
+    ``None`` (the condition wasn't evaluated at all).
+    """
+    if case_inconsistency is None:
+        return {}
+    details: dict[int, CaseInconsistencyRunDetail] = {}
+    for run in _capitalized_token_runs(text):
+        tokens = tuple(
+            CaseInconsistencyRunToken(
+                token=m.group(0),
+                lowercase_count=case_inconsistency.evidence.lowercase_counts.get(
+                    m.group(0).casefold(), 0
+                ),
+                capitalized_count=case_inconsistency.evidence.capitalized_counts.get(
+                    m.group(0).casefold(), 0
+                ),
+            )
+            for m in run
+        )
+        detail = CaseInconsistencyRunDetail(
+            run_start=run[0].start(), run_end=run[-1].end(), tokens=tokens
+        )
+        for m in run:
+            details[m.start()] = detail
+    return details
 
 
 def select_candidate_spans(
@@ -495,6 +629,7 @@ def select_candidate_spans(
     declared_tools: frozenset[str] = frozenset(),
     system_confined_tokens: frozenset[str] = frozenset(),
     case_inconsistency: "CaseInconsistencySuppression | None" = None,
+    trace_suppression: bool = False,
 ) -> list[CandidateSpan]:
     """Flag the unknown capitalized tokens in ``text``, with minimal context.
 
@@ -564,12 +699,27 @@ def select_candidate_spans(
     selection with the condition off; the app boundary constructs one for
     every real exchange. See :func:`_case_inconsistency_suppressed_starts`
     for the conjunctive, run-granular mechanics.
+
+    ``trace_suppression`` (issue #350) attaches a :class:`SuppressionTrace` to
+    every surviving :class:`CandidateSpan`, naming each of the five ADR-0023
+    conditions above and its outcome for that candidate -- always
+    ``suppressed=False`` by construction (a token any condition actually
+    suppressed never reaches the candidate list to carry one). Off by
+    default: an existing caller that doesn't ask for it reproduces today's
+    ``CandidateSpan`` exactly, trace field included (``None``). Purely
+    additive -- never consulted here or anywhere downstream, so candidate
+    selection itself is provably identical whether this is on or off.
     """
     known_surfaces = _known_surfaces(known_entities)
     capitalized_positions = _capitalized_positions(text)
     phrase_ranges = _allowlisted_phrase_ranges(text, allowlist)
     case_inconsistency_suppressed = _case_inconsistency_suppressed_starts(
         text, case_inconsistency
+    )
+    case_inconsistency_run_details = (
+        _case_inconsistency_run_details(text, case_inconsistency)
+        if trace_suppression
+        else {}
     )
     candidates: list[CandidateSpan] = []
     for match in _capitalized_token_matches(text):
@@ -592,6 +742,13 @@ def select_candidate_spans(
             continue
         start, end = match.start(), match.end()
         context, context_offset = _context_window(text, start, end)
+        suppression_trace = (
+            _survivor_suppression_trace(
+                allowlist, case_inconsistency, case_inconsistency_run_details, match.start()
+            )
+            if trace_suppression
+            else None
+        )
         candidates.append(
             CandidateSpan(
                 text=token,
@@ -599,9 +756,53 @@ def select_candidate_spans(
                 end=end,
                 context=context,
                 context_offset=context_offset,
+                suppression_trace=suppression_trace,
             )
         )
     return candidates
+
+
+def _survivor_suppression_trace(
+    allowlist: "Allowlist | None",
+    case_inconsistency: "CaseInconsistencySuppression | None",
+    case_inconsistency_run_details: dict[int, CaseInconsistencyRunDetail],
+    match_start: int,
+) -> SuppressionTrace:
+    """Build the five-condition trace for a candidate that survived every
+    ADR-0023 condition (issue #350) -- every outcome is ``suppressed=False``
+    by construction; only ``evaluated`` (for the two ``None``-able
+    conditions) and the case-inconsistency ``detail`` vary per call.
+    """
+    return SuppressionTrace(
+        conditions=(
+            SuppressionConditionOutcome(
+                SUPPRESSION_CONDITION_SEEDED_ALLOWLIST,
+                evaluated=allowlist is not None,
+                suppressed=False,
+            ),
+            SuppressionConditionOutcome(
+                SUPPRESSION_CONDITION_DECLARED_TOOL_VOCABULARY,
+                evaluated=True,
+                suppressed=False,
+            ),
+            SuppressionConditionOutcome(
+                SUPPRESSION_CONDITION_EXPANDED_STOPWORDS,
+                evaluated=True,
+                suppressed=False,
+            ),
+            SuppressionConditionOutcome(
+                SUPPRESSION_CONDITION_SYSTEM_CONFINED_REGION,
+                evaluated=True,
+                suppressed=False,
+            ),
+            SuppressionConditionOutcome(
+                SUPPRESSION_CONDITION_CASE_INCONSISTENCY,
+                evaluated=case_inconsistency is not None,
+                suppressed=False,
+                detail=case_inconsistency_run_details.get(match_start),
+            ),
+        )
+    )
 
 
 def select_phone_candidate_spans(text: str) -> list[CandidateSpan]:
@@ -803,10 +1004,17 @@ class L3Detector:
         # explains). Narrower than ``deterministic_only``: it drops only the
         # phone-shaped producer's output from the merge, never
         # select_candidate_spans's.
+        # Issue #350: trace_suppression=True unconditionally -- detect() is the
+        # seam that feeds a confirmed candidate onto the review record, and a
+        # caller that never asked for suppression provenance shouldn't have to
+        # know the parameter exists to get it. Read-only (see
+        # select_candidate_spans' own docstring): never changes which
+        # candidates are selected.
         candidates = sorted(
             select_candidate_spans(
                 text, known_entities, self._allowlist, declared_tools,
                 system_confined_tokens, case_inconsistency,
+                trace_suppression=True,
             )
             + (select_phone_candidate_spans(text) if phone_candidates_enabled else []),
             key=lambda candidate: candidate.start,
