@@ -309,8 +309,9 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   humans write the word, and is excluded — the exclusion that separates the
   common noun `metrics` from the real org `Harrowgate Metrics`, whose only
   lowercase occurrence sat inside `harrowgate-metrics.example`. For a
-  multi-word candidate the condition is **conjunctive**: every capitalized
-  token needs its own evidence, because a real entity name reliably pairs a
+  multi-word candidate the condition is **conjunctive with abstention** (issue
+  #358): a Title-Case run is suppressed only when no member token *vetoes* and
+  at least one *clears* — because a real entity name reliably pairs a
   distinctive token with a generic one, so any-token matching preferentially
   eats real names. Computed once per request on the untouched payload, never
   persisted — the same lifetime as **payload-region confinement**,
@@ -323,9 +324,14 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   false-positive mints suppressed at a cost of 0 of 6 genuine referents — on a
   fixture whose planted names are deliberately novel non-dictionary words, so
   it cannot exercise the guard it removes. **Threshold, decided (issue
-  #345): proportionate evidence** — a token's lowercase occurrences must
-  outnumber its capitalized ones, so pervasive vocabulary separates from
-  incidental use of an ordinary word as a name. Issue #344's dictionary-word
+  #345, amended #358): proportionate evidence, three-valued** — a token
+  *clears* when its lowercase occurrences outnumber its capitalized ones (so
+  pervasive vocabulary separates from incidental use of an ordinary word as a
+  name), *vetoes* when capitalized occurrences dominate or lowercase evidence
+  is absent entirely (the distinctive-name signal), and *abstains* on an
+  exact nonzero tie — equal counts carry no evidence either way, so a tie
+  neither protects nor condemns its run, and a run in which every token
+  abstains mints. Issue #344's dictionary-word
   fixture measured this against the alternative (bare presence — any single
   lowercase occurrence suffices), which loses a real referent built from an
   ordinary word right alongside every false positive; proportionate evidence

@@ -668,3 +668,131 @@ Cap decision (from the "Update (issue #353)" section above) is unaffected: this 
 separately-evidenced category (the #74 run 12 live-verify egress audit, mirroring #297's own run-6
 provenance) with its own small, bounded source — not a reopening of Decision 2's original ~150–200
 figure, which continues to govern only that section.
+
+## Update (issue #358): the fifth condition's veto becomes three-valued, and the deferred dictionary heuristic is rejected (#74 AC 4)
+
+### The measurement
+
+#74 **run 12** (build `1afd950`, 2026-08-20) measured #59 precision at **60% — 6 genuine of 10
+mints** (series: 22% → 43% → 60%), with zero terminal blocks passing. It is the first run whose
+false positives are individually attributable, because #350's `SuppressionTrace` shipped: all four
+have a measured cause, and they are four *different* causes. Two were the public product names the
+"Update (issue #356)" section above seeds. The remaining two both sit on this ADR's fifth
+condition, one on each side of it:
+
+1. **The conjunctive veto fired on a coin flip.** A three-token Title-Case run survived
+   suppression because its leading token — an ordinary English verb — sat at exactly 1
+   prose-lowercase vs 1 capitalised, failing the strict `>` by a single occurrence, while its
+   run-mates cleared at 32-vs-8 and 22-vs-1. Two aggravating details from the trace: a 1-vs-1
+   token carries almost no evidence in either direction, yet under the #345 rule it vetoes with
+   the same force as a 0-vs-30 distinctive name; and the evaluated run was **wider than the
+   minted span** — the minted value was the two clearing tokens only, so the token that protected
+   the span from suppression is not even part of the minted entity. The mint promoted a common UI
+   label to a protected entity and produced one of the run's three blocked exchanges.
+2. **The predicted dictionary-class survivor appeared.** An ordinary English noun at 3
+   prose-lowercase vs 5 capitalised clears no case-evidence bar — capitalised occurrences
+   dominate — and minted as a `term`. This is the false-positive direction of the residual the
+   "Update (issue #342)" section already states (its converse: a real referent named after an
+   ordinary word is no longer discovered). It is not a vocabulary problem: no allowlist scales to
+   common nouns.
+
+### Decision 1: token evidence becomes three-valued (tie-abstain)
+
+`CaseInconsistencyEvidence.has_evidence`'s single strict `>` splits into three outcomes per
+token:
+
+> - **clears** — `lowercase > capitalized` (unchanged);
+> - **vetoes** — `capitalized > lowercase`, **or** `lowercase == 0` at any count;
+> - **abstains** — `lowercase == capitalized`, both ≥ 1: the token carries no evidence either
+>   way and neither protects nor condemns its run.
+>
+> A Title-Case run is suppressed **iff no member vetoes and at least one member clears.** A run
+> in which every member abstains mints — suppression on zero evidence would be a new behavior
+> with no measurement behind it.
+
+Why this shape and not a broader one, decided against the run-12 evidence:
+
+- **`lowercase == 0` stays an unconditional veto.** Zero lowercase evidence is precisely the
+  distinctive-name signal: 11 of the 12 genuine-mint tokens in run 12 have it, and it is what
+  keeps `Project Halyard`-class names minting. The #342 update's conjunctive-over-disjunctive
+  asymmetry ("a real entity name reliably pairs a distinctive token with a generic one") is
+  preserved by construction — this change never weakens a distinctive token's veto, it only
+  removes the veto from tokens whose evidence is an exact nonzero tie.
+- **A minimum-evidence floor (abstain below N total occurrences) was considered and rejected.**
+  It would also stop 1-vs-2 and 2-vs-1 tokens from deciding — but a real name with one
+  incidental lowercase occurrence and two capitalised ones would then abstain, and clearing
+  run-mates could suppress it. That error is silent (a privacy cost); the error the floor would
+  additionally fix is a visible 503 (a precision cost). The narrowest rule that fixes the
+  measured failure wins, and ties are that rule.
+- **A margin or ratio on the clear side was rejected**: it makes clearing *harder*, and run 12's
+  failure is under-suppression, not over-suppression.
+
+Replayed over run 12's traces: the 1-vs-1 leading verb is the **only** exact tie among all 22
+trace tokens in the run's 10 mints; under tie-abstain its run is suppressed (the tie abstains,
+both run-mates clear) and **0 of 6 genuine mints are touched**. The projected outcome is exactly
+the 7-mint arithmetic below.
+
+**The residual, stated plainly:** a real referent that pairs a token at an exact nonzero tie with
+run-mates whose lowercase forms are pervasive in the same payload is now suppressed, where the tie
+previously protected the whole run. This requires equal nonzero counts on one token *and* clearing
+evidence on every other member — a strictly narrower exposure than any floor — but like the #342
+residual it fires silently, and the same "risk profile of a human reject" framing carries the same
+caveat there stated.
+
+**The regression bar lives in the #344 fixture** (issue filed separately for Sandcastle): the tie
+shape leading a clearing run must suppress; an all-abstain run must mint; a zero-lowercase token
+must veto at any count; and both dictionary-word referents plus every genuine run-10–12 shape must
+keep minting. `test_shipped_default_keeps_both_dictionary_word_referents_and_suppresses_false_positives`
+remains the guard against widening back toward bare presence.
+
+### Decision 2: the deferred dictionary heuristic is rejected (#74 AC 4 closed)
+
+This ADR deferred two riskier heuristics — appears-lowercase-elsewhere and sentence-position +
+dictionary filtering — and #74's fourth acceptance criterion asks for a written verdict on
+whether they are needed. Run 12 produced the first direct evidence (the capitalised-dominant noun
+above), and the verdict is **rejected, not shipped**:
+
+- **The bar is cleared without it.** The arithmetic below reaches 86% with this false positive
+  deliberately still minting. Every condition this ADR has shipped was driven by a measured
+  *class* of failures (25 system-confined mints in run 7, 21 case-inconsistent mints in run 10);
+  one instance is not a class.
+- **Its residual would be the widest in the ADR.** A common-noun filter suppresses novelty
+  discovery for any real referent named after a dictionary word — the Don/Mark/Stone class
+  itself, which the #342 and #345 decisions each spent measurement effort protecting. Buying
+  that residual to remove one mint that costs no availability (its blocks self-recovered) is a
+  bad trade on this ADR's own risk framing.
+- **Re-arm condition, so the verdict is falsifiable:** this rejection is reopened if a future
+  live-verify run fails the ≥80% precision bar **and** its suppression traces attribute the
+  dominant false-positive class to capitalised-dominant tokens no case-evidence rule can reach.
+- **The measured survivor points at position, not vocabulary.** Every one of its standalone
+  capitalised occurrences in the mint hop is structure-initial — heading-initial,
+  table-cell-initial, bullet-initial, or paragraph-initial; zero are mid-sentence — while every
+  prose-lowercase occurrence is mid-sentence. It therefore *satisfies the spirit* of ADR-0033's
+  "never capitalised mid-sentence" gate; that heuristic misses it only because its position
+  recognizer does not treat markdown-structural positions as positional. Widening that
+  recognizer is filed as a **held** issue with its own flip condition (a second measured
+  structure-initial false positive). The "Update (issue #301)" section's falsification of a
+  similar widening was class-specific — those run-7 tokens *did* appear mid-sentence — and does
+  not pre-judge this one; but one data point ships nothing, per this ADR's own discipline.
+
+### Run-13 projection: 86%, arithmetic shown
+
+Run 12's 10 mints → the #356 seeds remove two product-name false positives → **8 mints, 6
+genuine = 75%** (banked in the update above) → tie-abstain suppresses the conjunctive-veto false
+positive → **7 mints, 6 genuine = 86%**, clearing the ≥80% bar with one false positive of slack —
+the dictionary-class survivor, which Decision 2 deliberately leaves minting, is the seventh mint
+and is *included* in the projection. Caveat, per run 11's precedent: projections over-count when
+the source vocabulary shifts (run 11 measured 43% against a projected 86% for exactly that
+reason), so 86% is the ceiling if run 13 reads the same sources; only 22% → 43% → 60% are banked
+as measured.
+
+### Consequences
+
+- The fifth condition's operative definition is now: proportionate evidence (#345), three-valued
+  per token with tie-abstain, aggregated conjunctively-with-abstention (#358) — no-veto-and-≥1-clear.
+  CONTEXT.md's *case-inconsistency suppression* glossary entry is amended to match.
+- Issue #347's consolidating successor must carry this update; it is the sixth append and the
+  document's practical-limit note in the #342 update stands reinforced.
+- Both residuals above are now stated in the same register as the #301 and #342 ones: the
+  tie-abstain residual (Decision 1) and the retained dictionary-class false-positive residual
+  (Decision 2) are each named plainly rather than implied.
