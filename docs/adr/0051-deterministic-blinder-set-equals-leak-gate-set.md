@@ -359,3 +359,14 @@ the blinder was *structurally forbidden* to reach it; this amendment instead wid
 prose it was previously only *accidentally* forbidden to reach, because nobody had enumerated the block
 type yet. Both are instances of the same rule — "the field decides the direction of the fix" — applied to
 the two different sides of the same asymmetry.
+
+**Amendment (issue #354): the ADR-0023 evidence collectors were the same enumeration, one function
+family over.** #323 left the invariant's third leg unfixed on its own record: `extract_system_
+confined_tokens_messages` and `extract_case_inconsistency_evidence_messages` (ADR-0023 layers 4 and 5)
+fed their suppression decisions from a leaf collector (`_text_leaves_in_block`/`_capitalized_tokens_
+in_block`) that still enumerated `{text, tool_result, tool_use}`, exactly the pre-#323 shape. Fixed by
+making `_text_leaves_in_block` a second walker over the *same* `_BLOCK_NON_HOP_KEYS`/
+`_TOOL_RESULT_BLOCK_TYPES`/`_TOOL_CALL_BLOCK_TYPES` sets `_blindfold_block` uses, with
+`_capitalized_tokens_in_block` derived from it rather than re-deriving its own dispatch — so blinder
+coverage, layer-4 evidence, and layer-5 evidence are now one traversal rule shared three ways, not
+three enumerations that happened to agree until someone forgot to update one.

@@ -607,3 +607,34 @@ md's Glossary) plus, for the glossary category specifically, the sync test that 
 silently out of step with the source it's derived from. A category with no bounded source (e.g. an
 open-ended "any capitalized dictionary word") is exactly the risk Decision 2's cap existed to name, and
 remains excluded on that basis regardless of the file's total line count.
+
+## Update (issue #354): evidence collectors close the deny-by-default gap #323 left them
+
+Issue #323 inverted the *blinder* to deny-by-default over content-block string leaves —
+`_blindfold_block` walks every key of every block, excluding only the protocol-structural
+`_BLOCK_NON_HOP_KEYS` set. It deliberately left the fourth and fifth suppression conditions'
+evidence collectors (`extract_system_confined_tokens_messages`, `extract_case_inconsistency_
+evidence_messages`) out of scope: both still enumerated `{text, tool_result, tool_use}` and
+returned nothing for every other block type (`thinking`, `document`, `search_result`,
+`mcp_tool_use`, ...). After #323 the blinder walked every leaf while these two conditions judged
+those same leaves on evidence from a strict subset of them — the exact coverage asymmetry #323
+closed, one function family over.
+
+Both error directions were live: a token whose only prose-lowercase occurrence sat in an
+unhandled block type looked like it had no lowercase evidence (**under-suppression** —
+`has_evidence` wrongly fails, the token mints, the #74 run 11 43%-precision class); a token
+occurring in `system` *and* inside an unhandled block looked system-confined even though it
+also occurred outside `system` (**over-suppression** — a possibly-genuine referent's novelty
+discovery gets wrongly suppressed, weakest exactly where Decision 1's "risk profile of a human
+reject" framing depends on the suppression being caused by something in the payload, not a
+collector blind spot).
+
+Fixed with one shared leaf-collection seam rather than a second parallel enumeration:
+`_text_leaves_in_block` now mirrors `_blindfold_block`'s own dispatch, reusing the very same
+`_BLOCK_NON_HOP_KEYS`/`_TOOL_RESULT_BLOCK_TYPES`/`_TOOL_CALL_BLOCK_TYPES` module-level sets — a
+block type the blinder newly reaches is a leaf source here too, with nothing to keep in sync by
+hand. `_capitalized_tokens_in_block` (the layer-4 collector) is now derived from `_text_leaves_
+in_block` directly instead of its own copy of the dispatch, so evidence coverage between layers 4
+and 5 (and the blinder) is identical by construction. #350's `SuppressionTrace` reflects the
+corrected evidence automatically, since it reads the same `CaseInconsistencyEvidence` this fix
+corrects — no separate plumbing change needed there.

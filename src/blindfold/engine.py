@@ -528,15 +528,50 @@ def _text_leaves_in_content(content: Any) -> list[str]:
 
 
 def _text_leaves_in_block(block: Any) -> list[str]:
+    """The evidence-collector counterpart to :func:`_blindfold_block` (issue #354):
+    identical deny-by-default dispatch, reusing the very same
+    :data:`_BLOCK_NON_HOP_KEYS`/:data:`_TOOL_RESULT_BLOCK_TYPES`/
+    :data:`_TOOL_CALL_BLOCK_TYPES` sets, so evidence coverage cannot fall behind
+    blinder coverage by parallel maintenance -- a block type the blinder newly
+    reaches (``thinking``, ``document``, ``search_result``, ...) is a leaf source
+    here too, with no separate enumeration to keep in sync.
+    """
     if not isinstance(block, dict):
         return []
     block_type = block.get("type")
     if block_type == "text" and isinstance(block.get("text"), str):
         return [block["text"]]
-    if block_type == "tool_result":
+    if block_type in _TOOL_RESULT_BLOCK_TYPES:
         return _text_leaves_in_content(block.get("content"))
-    if block_type == "tool_use":
+    if block_type in _TOOL_CALL_BLOCK_TYPES:
         return _text_leaves_in_json_value(block.get("input"))
+    leaves: list[str] = []
+    for key, value in block.items():
+        if key in _BLOCK_NON_HOP_KEYS:
+            continue
+        leaves.extend(_text_leaves_in_block_value(value))
+    return leaves
+
+
+def _text_leaves_in_block_value(value: Any) -> list[str]:
+    """Recursive fallback mirroring :func:`_blindfold_block_value`: every
+    :data:`_BLOCK_NON_HOP_KEYS` key is excluded at any nesting depth, everything
+    else is a candidate string leaf.
+    """
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        leaves: list[str] = []
+        for k, v in value.items():
+            if k in _BLOCK_NON_HOP_KEYS:
+                continue
+            leaves.extend(_text_leaves_in_block_value(v))
+        return leaves
+    if isinstance(value, list):
+        leaves = []
+        for item in value:
+            leaves.extend(_text_leaves_in_block_value(item))
+        return leaves
     return []
 
 
@@ -655,32 +690,15 @@ def _capitalized_tokens_in_content(content: Any) -> set[str]:
 
 
 def _capitalized_tokens_in_block(block: Any) -> set[str]:
-    if not isinstance(block, dict):
-        return set()
-    block_type = block.get("type")
-    if block_type == "text" and isinstance(block.get("text"), str):
-        return _capitalized_tokens_in_text(block["text"])
-    if block_type == "tool_result":
-        return _capitalized_tokens_in_content(block.get("content"))
-    if block_type == "tool_use":
-        return _capitalized_tokens_in_json_value(block.get("input"))
-    return set()
-
-
-def _capitalized_tokens_in_json_value(value: Any) -> set[str]:
-    if isinstance(value, str):
-        return _capitalized_tokens_in_text(value)
-    if isinstance(value, dict):
-        tokens: set[str] = set()
-        for v in value.values():
-            tokens.update(_capitalized_tokens_in_json_value(v))
-        return tokens
-    if isinstance(value, list):
-        tokens = set()
-        for item in value:
-            tokens.update(_capitalized_tokens_in_json_value(item))
-        return tokens
-    return set()
+    """Derived from :func:`_text_leaves_in_block` (issue #354) rather than its own
+    parallel block-type dispatch: the layer-4 collector's leaf coverage is by
+    construction identical to layer 5's (and to the blinder's), since both now
+    read the same leaves.
+    """
+    tokens: set[str] = set()
+    for leaf in _text_leaves_in_block(block):
+        tokens.update(_capitalized_tokens_in_text(leaf))
+    return tokens
 
 
 def _capitalized_tokens_in_tool_descriptions(
