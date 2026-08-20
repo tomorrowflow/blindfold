@@ -266,3 +266,71 @@ Seven
 Eight
 Nine
 Ten
+#
+# Blindfold's own glossary vocabulary (CONTEXT.md's Glossary, ADR-0023's curation
+# rule applied fresh -- issue #353). "Surrogate" is a measured false positive in
+# #74 runs 10 and 11: a Blindfold-development session reads this project's own
+# docs as tool results, and every one of these terms appears Title-Case
+# throughout them. Curation rule unchanged: implausible as a protected referent
+# when unregistered -- a registered Term equal to one of these still blindfolds
+# (L2 wins before the allowlist is consulted). Multi-word entries are matched
+# span-wise (ADR-0023, issue #294): a phrase like "Store directory" (whose
+# second word is lowercase and never itself a candidate token) suppresses its
+# own leading token "Store" only inside that literal phrase, not standalone --
+# "Blindfold"/"Merge"/"Bootstrap"/"Setup"/"Transit" are already seeded above for
+# unrelated reasons and are also glossary headings; not repeated here.
+# Three glossary headings are deliberately NOT seeded, with reasons recorded in
+# blindfold.allowlist_seed.GLOSSARY_EXCLUSIONS and pinned by
+# test_glossary_allowlist_sync.py: "Re-identify" and "Fail-closed" (hyphenated,
+# no internal whitespace -- mechanically can't become a working allowlist entry),
+# and "Egress" (collides with a real public security/privacy vendor name,
+# unlike this project's own vocabulary).
+Restore
+Entity
+Term
+Org unit
+Surrogate
+Mapping
+Entity graph
+Data directory
+Store directory
+Variation
+Retired surrogate
+Relationship
+Coherent surrogate world
+Detection layers
+Candidate span
+Hop
+Workspace
+Role
+Supervisor
+Launch environment
+Seed bundle
+Sample data
+Novel entity
+Dismissal
+Dismissal log
+Review inbox
+Provisional surrogate
+Learning loop
+Allowlist
+Declared tool vocabulary
+Suppression
+Payload-region confinement
+Case-inconsistency suppression
+Positional case heuristic
+Closed-world restore
+Surrogate component
+Verify pass
+Declared collision
+Sliding-window restore
+Mapping cipher
+Store key
+Blind index
+Unprotected mode
+Audit event
+Scrubbed reason
+Processing trace
+Supervisor log
+Diagnostic session
+Exchange capture

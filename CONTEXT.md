@@ -254,7 +254,9 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   multi-word/coalesced entity, e.g. "Apple Development") marked NOT sensitive,
   so they're never flagged as candidates again. Entries arrive two ways:
   **learned** (a reject verdict from the review inbox) and **seeded** (a
-  curated list of common framework/code tokens shipped with Blindfold). Both
+  curated list of common framework/code tokens shipped with Blindfold, plus —
+  since issue #353 — this file's own Glossary vocabulary, mechanically kept in
+  sync with a dedicated test). Both
   carry identical semantics; a registered **Term** always wins over an
   allowlist entry — the allowlist suppresses novelty discovery, never
   protection. A phrase entry is matched against the hop text span-wise, case-

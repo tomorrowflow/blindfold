@@ -213,6 +213,26 @@ def test_newly_seeded_public_tool_identifiers_are_never_flagged_as_l3_candidate_
     )
 
 
+def test_glossary_derived_batch_is_never_flagged_as_an_l3_candidate_span():
+    # Acceptance criterion (issue #353): "Surrogate" -- the measured #74 run
+    # 10/11 false positive -- and its glossary neighbors no longer flag as L3
+    # candidates once the seed is loaded.
+    allowlist = Allowlist()
+    for token in load_seeded_allowlist_tokens():
+        allowlist.add(token)
+
+    text = (
+        "The Surrogate for that Entity is stale; check the Mapping and the "
+        "Allowlist before you Restore it."
+    )
+    candidates = select_candidate_spans(text, known_entities=[], allowlist=allowlist)
+
+    flagged = {c.text for c in candidates}
+    assert flagged.isdisjoint(
+        {"Surrogate", "Entity", "Mapping", "Allowlist", "Restore"}
+    )
+
+
 def test_issue_137_batch_is_never_flagged_as_an_l3_candidate_span():
     # Acceptance criterion (issue #137): each of the six tokens suppresses
     # candidacy in select_candidate_spans, mid-sentence in capitalized form
@@ -461,6 +481,62 @@ async def test_registered_term_equal_to_a_newly_seeded_token_is_still_blindfolde
     assert "Northwind Datastore" in egressed
     # Clause B/D: the client gets the real value back, closed-world restored.
     assert "Supabase" in resp.json()["content"][0]["text"]
+
+
+@pytest.mark.anyio
+async def test_registered_term_equal_to_a_glossary_derived_token_is_still_blindfolded():
+    # Acceptance criterion (issue #353): the Term-always-wins guarantee extends
+    # to Blindfold's own glossary vocabulary too, seeded fresh by this slice.
+    # "Surrogate" is the issue's own named example -- a measured false positive
+    # in #74 runs 10 and 11 -- so a workspace whose own protected Term happens
+    # to be named "Surrogate" must still see it blindfolded and restored, not
+    # silently let through because the token is on the allowlist.
+    assert "Surrogate" in load_seeded_allowlist_tokens()
+    mapping = SurrogateMapping.from_pairs([("Surrogate", "Northwind Proxy")])
+    allowlist = Allowlist()
+    for token in load_seeded_allowlist_tokens():
+        allowlist.add(token)
+    detector = L3Detector(_NeverAnEntityAdjudicator(), allowlist=allowlist)
+    scripted_response = {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "Acknowledged, Northwind Proxy."}],
+        "model": "claude-3-5-sonnet",
+        "stop_reason": "end_turn",
+    }
+    recorded: list[httpx.Request] = []
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(
+        scripted_response, recorded
+    )
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_review_inbox] = lambda: ReviewInbox()
+    app.dependency_overrides[get_l3_detector] = lambda: detector
+    app.dependency_overrides[get_allowlist] = lambda: allowlist
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            resp = await client.post(
+                "/v1/messages",
+                json={
+                    "model": "m",
+                    "messages": [
+                        {"role": "user", "content": "The Surrogate crashed again."}
+                    ],
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    egressed = recorded[0].content.decode("utf-8")
+    # Clause A: the real Term never crossed egress; only its surrogate did.
+    assert "Surrogate" not in egressed
+    assert "Northwind Proxy" in egressed
+    # Clause B/D: the client gets the real value back, closed-world restored.
+    assert "Surrogate" in resp.json()["content"][0]["text"]
 
 
 @pytest.mark.anyio

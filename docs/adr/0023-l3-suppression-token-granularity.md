@@ -569,3 +569,41 @@ residual false positives are now attributable to one of two diagnoses — a toke
 evidence is genuinely absent (a source-vocabulary cause), or a qualifying token survived only because
 a non-qualifying run-mate defeated the conjunctive check (a rule cause) — from the review record
 itself, without needing the run's raw captures to still exist.
+
+## Update (issue #353): the seed grows a fourth, glossary-derived category — and the cap decision
+
+Decision 2's seed content was, until this issue, entirely evidence-first from *external* live-verify
+traffic: AI vendors, frameworks, dev-infrastructure and collaboration-tool identifiers, plus the
+ADR-0032 dismissal-log pass and its calendar/ordinal/cardinal-word tail. It contained **no Blindfold
+domain term at all** — `Surrogate`, `Term`, `Store` (as `Store directory`/`Store key`), and every
+other CONTEXT.md Glossary heading were absent, despite being exactly the vocabulary a
+Blindfold-development session reads Title-Case in its own tool results. `Surrogate` is a measured
+false positive in #74 runs 10 and 11 (see "Update (issue #74 run 11...)" above).
+
+**New seed source: CONTEXT.md's Glossary, mechanically enumerated.** `allowlist_seed.
+extract_glossary_terms()` parses the 57 top-level `- **Term** — ...` headings under `## Glossary`
+(not the sibling `## Key invariants`/`## Controlled vocabulary` sections, and not indented sub-bullets
+like Detection layers' L1/L2/L3). Each is seeded unless recorded in `allowlist_seed.
+GLOSSARY_EXCLUSIONS` with a reason — `test_glossary_allowlist_sync.py` fails if a new glossary term is
+added to CONTEXT.md without either seeding it or excluding it, so this category can't silently drift
+out of sync with the glossary the way the whole category drifted to empty before this issue. Three
+headings are excluded: `Re-identify` and `Fail-closed` (hyphenated with no internal whitespace, so
+neither `Allowlist.phrases()`'s span matching (issue #294) nor exact single-token matching can ever
+fire on them — mechanically inert, not a curation judgement about plausibility) and `Egress` (a real,
+identifiable public security/privacy vendor name — unlike the self-referential AI-vendor batch or this
+project's own `Transit` dependency, it names someone else's business, plausible as a genuine
+not-yet-registered Term). Multi-word headings are seeded as literal phrases (`Store directory`,
+`Candidate span`, ...), matched span-wise per the issue #294 mechanism this ADR already documents.
+
+**Cap decision.** Decision 2 capped the *original* evidence-first seed at "~150–200 tokens" for that
+one section (AI vendors/frameworks/dev-infra/agent-tool-names). Every later issue that grew the file —
+#137, #297, the ADR-0032 dismissal-log pass, the calendar/ordinal/cardinal words, and now this glossary
+batch — added a distinct, separately-evidenced category, and none of them were weighed against that
+number; the file was already past 200 (205) before this issue for exactly that reason. This ADR now
+states explicitly: **the ~150–200 figure governs only Decision 2's original framework/vendor/tool-
+identifier section, not the file as a whole.** The file has no single numeric cap; each category's own
+bound is its own evidence source (a live-verify run, a dismissal log, or — as of this issue — CONTEXT.
+md's Glossary) plus, for the glossary category specifically, the sync test that keeps it from growing
+silently out of step with the source it's derived from. A category with no bounded source (e.g. an
+open-ended "any capitalized dictionary word") is exactly the risk Decision 2's cap existed to name, and
+remains excluded on that basis regardless of the file's total line count.
