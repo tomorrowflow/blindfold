@@ -6,7 +6,9 @@ interceptor) and called implementation "not started" despite a working proxy + R
 merge + SPAs. This module pins the reconciled prose so it can't drift back.
 """
 
+import hashlib
 import pathlib
+import re
 
 REPO_ROOT = pathlib.Path(__file__).parent.parent
 
@@ -145,27 +147,72 @@ def test_no_capitalised_two_word_pass_label_appears_in_docs_src_or_tests():
     assert offenders == []
 
 
-def test_no_operator_real_email_or_username_appears_in_docs_or_tests():
-    """Issue #352: ADR-0023's "Update (issue #301)" section quoted the operator's real
-    email address (as a grep marker) and real username (in the security-monitor
-    paragraph) verbatim, and tests/test_system_confined_l3_suppression.py used the same
-    real address as a fixture -- real PII in a public repo, read back through the proxy
-    as real values on every live-verify run. Replaced with reserved-form (`.example`)
-    placeholders throughout docs/ and tests/.
+def _sha256_casefold(value):
+    return hashlib.sha256(value.casefold().encode("utf-8")).hexdigest()
+
+
+_CANDIDATE_EMAIL_RE = re.compile(r"\b[\w.+-]+@[\w.-]+\.\w+\b")
+_CANDIDATE_WORD_RE = re.compile(r"\b\w+\b")
+
+
+def _digest_offenders(paths, retired_digests):
+    """Issue #355: flag any word-boundary token or candidate email address whose
+    sha256(casefold(token)) matches a retired digest -- without ever needing the
+    retired plaintext itself to run the scan.
     """
-    retired_pii = ("f.wolf@enersis.ch", "florianwolf")
-    this_file = pathlib.Path(__file__)
+    offenders = []
+    for path in paths:
+        text = path.read_text()
+        candidates = set(_CANDIDATE_EMAIL_RE.findall(text)) | set(_CANDIDATE_WORD_RE.findall(text))
+        if any(_sha256_casefold(candidate) in retired_digests for candidate in candidates):
+            offenders.append(path)
+    return offenders
+
+
+def test_operator_pii_digest_guard_catches_reintroduction(tmp_path):
+    """Issue #355: prove the digest-comparison mechanism the real guard below runs
+    on actually flags a matching token when it's reintroduced. Uses a synthetic
+    sentinel, never the real retired email/username -- the guard's whole point is
+    to not hold that plaintext anywhere, including in the test that proves it
+    works.
+    """
+    sentinel = "sentinelreintroductioncheck"
+    fixture = tmp_path / "reintroduced.md"
+    fixture.write_text(f"note: {sentinel} appears here")
+
+    offenders = _digest_offenders([fixture], {_sha256_casefold(sentinel)})
+    assert offenders == [fixture]
+
+    clean = tmp_path / "clean.md"
+    clean.write_text("note: nothing retired appears here")
+    assert _digest_offenders([clean], {_sha256_casefold(sentinel)}) == []
+
+
+def test_no_operator_real_email_or_username_appears_in_docs_or_tests():
+    """Issue #352 (see #355 for this update): ADR-0023's "Update (issue #301)"
+    section quoted the operator's real email address (as a grep marker) and real
+    username (in the security-monitor paragraph) verbatim, and
+    tests/test_system_confined_l3_suppression.py used the same real address as a
+    fixture -- real PII in a public repo, read back through the proxy as real
+    values on every live-verify run. Replaced with reserved-form (`.example`)
+    placeholders throughout docs/ and tests/.
+
+    Issue #355: #352's own guard held both retired values as a plaintext
+    `retired_pii` tuple, and excluded this file from its own scan to keep them
+    from tripping it -- the PII itself never actually left the tracked tree, and
+    a session reading this test file still carried it through the request path.
+    Fixed by comparing sha256(casefold(token)) against these two digests instead
+    of the plaintext: this file is now scanned like any other, along with every
+    file under docs/ or tests/ -- no more self-exclusion, because nothing left
+    to scan for is reversible.
+    """
+    retired_digests = {
+        "c163d5bb7c911ad89d29a220180717eddfb764b67edc99eb1ab7cc10ce16ab56",  # retired operator email
+        "354992a5345d439319f3cce19cb10b2ece29adddba7dd8031b536c12963a1289",  # retired operator username
+    }
 
     doc_paths = sorted((REPO_ROOT / "docs").rglob("*.md"))
-    test_paths = [
-        path for path in sorted((REPO_ROOT / "tests").rglob("*.py")) if path != this_file
-    ]
+    test_paths = sorted((REPO_ROOT / "tests").rglob("*.py"))
 
-    offenders = []
-    for path in (*doc_paths, *test_paths):
-        text = path.read_text()
-        for value in retired_pii:
-            if value in text:
-                offenders.append((path.relative_to(REPO_ROOT).as_posix(), value))
-
-    assert offenders == []
+    offenders = _digest_offenders((*doc_paths, *test_paths), retired_digests)
+    assert offenders == [], [p.relative_to(REPO_ROOT).as_posix() for p in offenders]
