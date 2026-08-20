@@ -4,7 +4,7 @@
 `grill-with-docs` session on issue #10 is **paused** with one open question and a queued
 agenda — parked below, do not lose it.
 
-Repo: `/Users/florianwolf/Documents/GitHub/blindfold` (branch `main`, GitHub
+Repo: `/Users/example-operator/Documents/GitHub/blindfold` (branch `main`, GitHub
 `tomorrowflow/blindfold`). All work this session was scaffolding + docs; **no app code
 exists yet** (greenfield).
 

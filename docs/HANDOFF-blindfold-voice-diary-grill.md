@@ -1,8 +1,8 @@
 # Handoff: grill session — combining Blindfold with voice-diary
 
 **Date:** 2026-07-07
-**Repo:** `/Users/florianwolf/Documents/GitHub/blindfold` (work from repo root, not `.sandcastle/`)
-**Sibling repo:** `/Users/florianwolf/Documents/GitHub/voice-diary`
+**Repo:** `/Users/example-operator/Documents/GitHub/blindfold` (work from repo root, not `.sandcastle/`)
+**Sibling repo:** `/Users/example-operator/Documents/GitHub/voice-diary`
 **Next session's job:** run `/grill-with-docs` to stress-test the integration plan below against CONTEXT.md and the ADRs, resolve each decision branch, and update docs/issues as decisions crystallise.
 
 ## What happened in the previous session

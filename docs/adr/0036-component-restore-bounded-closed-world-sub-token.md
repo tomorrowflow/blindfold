@@ -40,10 +40,10 @@ Restore decomposes the per-exchange injected-surrogate set into **surrogate
 components** (individual word tokens) and runs a **two-pass** restore, both passes
 exact, word-boundary, and closed-world:
 
-- **Pass 1 — full surrogates.** Exactly today's ADR-0024 behavior (whole surrogate at
+- **The first pass — full surrogates.** Exactly today's ADR-0024 behavior (whole surrogate at
   a word boundary + bounded suffix). Runs first, so a full match is never clobbered.
-- **Pass 2 — leftover components.** Restores component references that Pass 1 did not
-  consume (e.g. bare `Erika`).
+- **The second pass — leftover components.** Restores component references that the first pass
+  did not consume (e.g. bare `Erika`).
 
 A component becomes a restore key only if it is **distinctive AND unambiguous**:
 
@@ -62,7 +62,7 @@ organizations both (`Nordwind` for `Nordwind Logistik`).
 
 Why this is bounded, unlike the matching ADR-0024 rejected: the key set is the small,
 finite, **self-minted** set of surrogates injected *this exchange* — not fuzzy search
-over open text. Pass 2 is exact word-boundary matching against enumerated keys.
+over open text. The second pass is exact word-boundary matching against enumerated keys.
 
 **Return-path invariant.** Restore is pure substitution against the enumerated
 per-exchange (surrogate + component → real) map. It never re-detects entities in the
@@ -118,10 +118,10 @@ compounding defects, both in this ADR's own restore path:
    rather than risk a wrong whole-value donation — the same accepted,
    non-leaking transparency cost this ADR already names for generic/ambiguous
    components, just widened to cover the unaligned case too.
-2. **Pass 2 matched inside Pass 1's own output.** `_restore_text` ran Pass 1 (full
-   surrogates) and Pass 2 (components) as two sequential scans, the second over
+2. **The second pass matched inside the first pass's own output.** `_restore_text` ran the first pass
+   (full surrogates) and the second pass (components) as two sequential scans, the second over
    the *first's substituted result* — so a component key could match a real
-   value Pass 1 had just inserted (`…shared-word` from `real-word-1
+   value the first pass had just inserted (`…shared-word` from `real-word-1
    shared-word` matching the `shared-word` component key from an unrelated
    pair). Restore was not protected against its own output. Fixed by merging
    both passes' keys into one `restore_map` and running `_apply_restore_pass`
@@ -161,7 +161,7 @@ real word → surrogate word instead of surrogate word → real word. One added 
 with no restore-side analogue: the *target* (surrogate) word must also carry an
 alphabetic character, not just the *source* (real) word — because a component
 match on the blinding side calls `session.record`, which plants the target as a
-Pass 1 restore key; admitting a bare digit target (the `Provisional Surrogate {N}`
+first-pass restore key; admitting a bare digit target (the `Provisional Surrogate {N}`
 fallback's own digit) would reintroduce this ADR's #286 corruption from the
 blinding side instead of the restore side.
 
@@ -209,7 +209,7 @@ word, not "Provisional"/"Surrogate" themselves. Whenever a real value is
 blinded to the fallback label as a whole (which always populates
 `session.injected` with that pair, regardless of the blinding-side component-map
 fix), `_component_restore_map` decomposed it and planted "Provisional" →
-real-word-1 / "Surrogate" → real-word-2 as Pass 2 restore keys — reproduced
+real-word-1 / "Surrogate" → real-word-2 as second-pass restore keys — reproduced
 live: `restore_response` turned the upstream prose "This is a Provisional
 Surrogate for testing purposes." into "This is a real-word-1 real-word-2 for
 testing purposes." The maintainer rescoped #329 (2026-08-17) to authorize the matching

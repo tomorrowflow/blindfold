@@ -389,7 +389,7 @@ def test_a_fallback_label_whole_value_still_blinds_but_bare_component_does_not_e
 
 def test_an_ordinary_response_containing_the_fallback_labels_own_words_round_trips_unchanged():
     # Issue #329, acceptance criterion 3 (leak-audit: restore returns real
-    # values exactly): "Provisional" and "Surrogate" must never become Pass-1
+    # values exactly): "Provisional" and "Surrogate" must never become first-pass
     # restore keys, so an ordinary response using those words as themselves
     # (not as the injected label) is untouched by restore.
     mapping = SurrogateMapping()

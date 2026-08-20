@@ -75,9 +75,9 @@ non-colliding) — as the rule for *any* surrogate issued without a corpus-disjo
 1. **The unchecked fallback is opaque.** Past pool exhaustion, a **provisional surrogate** is a
    single opaque ASCII token — `BFX0008`, zero-padded, no whitespace, no separator — carrying no
    natural-language word and no free-standing integer. Whitespace-free means it decomposes into no
-   **surrogate components** at all, so Pass 1 covers the whole value and Pass 2 has nothing to
-   admit. This also removes #286's bare-integer restore key at the root rather than patching it at
-   the component rule.
+   **surrogate components** at all, so the first pass covers the whole value and the second pass
+   has nothing to admit. This also removes #286's bare-integer restore key at the root rather than
+   patching it at the component rule.
 
 2. **The reserved namespace is syntactically closed.** A candidate real matching the reserved form
    is never minted, enforced by pattern match in O(1). This is a *closed syntactic class*, not an
@@ -141,9 +141,9 @@ corpus check.
 ## Alternatives considered
 
 - **Reserve Blindfold's own vocabulary as a word list** (#328 direction 1) — rejected as the
-  primary fix: an open class. It cannot enumerate `Client`, `Pass 1`, `Pass 2` and the rest of what
-  run 8 minted, and it breaks the day a reserved word is genuinely somebody's name. Decision 2
-  keeps the useful half by reserving a *syntactic form* instead.
+  primary fix: an open class. It cannot enumerate `Client`, the verb-plus-a-digit shape, and the
+  rest of what run 8 minted, and it breaks the day a reserved word is genuinely somebody's name.
+  Decision 2 keeps the useful half by reserving a *syntactic form* instead.
 - **Seed the repo's glossary headwords into the allowlist** (#328 direction 3) — rejected, per
   #301: open-class, and it does not address the label collision at all.
 - **Make every surrogate opaque, retiring the plausible pools** — rejected as unsupported by the

@@ -9,7 +9,7 @@ recognizing the legacy shape anywhere it still exists in durable state: a
 legacy label promoted into the entity graph on confirm (``mapping.seed``)
 persists forever, independent of ADR-0052's "clear the inbox" consequence,
 which only covers uncleared inbox *rows*. A legacy 3-word label paired with an
-equal-word-count real re-admits "Provisional"/"Surrogate" as Pass-2 restore
+equal-word-count real re-admits "Provisional"/"Surrogate" as second-pass restore
 keys via ``_component_restore_map`` -- exactly the corruption #329 fixed, just
 via the old label shape instead of the new one.
 
@@ -18,7 +18,7 @@ what may be *minted*); the legacy pattern is recognition-only, matched
 directly by ``_is_fallback_surrogate``, and must never become mintable.
 
 Leak-audit clauses: B (restore) is the direct subject -- a legacy-labeled pair
-must not donate its own generic words as Pass-2 restore keys. A (egress) is
+must not donate its own generic words as second-pass restore keys. A (egress) is
 covered by the mirrored blinding-side guard. F (fail-closed) N/A -- no new
 fail-closed path. C/D/E/G N/A -- no mapping-store, verify-pass, or mint-time
 change beyond the upsert refusal (mint site itself, ``_provisional_pool_entry``,
@@ -48,7 +48,7 @@ def test_legacy_labeled_pairs_own_words_are_not_registered_as_restore_keys():
     # can no longer mint this shape at all, ADR-0052). Word counts are equal
     # (3 vs. 3) on purpose: without the whole-label skip, positional alignment
     # would register "Provisional" -> "Kestrel" and "Surrogate" -> "Dynamics" as
-    # Pass-2 restore keys, corrupting any ordinary later use of those words.
+    # second-pass restore keys, corrupting any ordinary later use of those words.
     session = _session_with({"Provisional Surrogate 8": "Kestrel Dynamics Holdings"})
 
     upstream_response = {

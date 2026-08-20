@@ -261,7 +261,7 @@ markers:
 ```
 claudeMd            messages 46   system 0
 Memory Index        messages 54   system 0
-f.wolf@enersis.ch   messages 46   system 0
+ops@example.com     messages 46   system 0
 ```
 
 `CLAUDE.md` contents, `MEMORY.md` contents and the operator's own email address all arrive as
@@ -271,7 +271,7 @@ f.wolf@enersis.ch   messages 46   system 0
 `messages`, and L1 caught it there.
 
 `system[]` is **not** unconditionally free of operator data, and this ADR will not claim it is: run
-7's own security-monitor subagent ships a system block carrying ``**User identity**: `florianwolf` ``
+7's own security-monitor subagent ships a system block carrying ``**User identity**: `example-operator` ``
 in 8 requests. So the premise is stale, not inverted — which is exactly why the decision below is a
 token-granularity heuristic and not the region skip this ADR's Alternatives still rejects.
 
@@ -365,12 +365,12 @@ more false positives, so the uninterrupted number is the lower one.
 The 21 false positives are dominated by ordinary capitalised English words, seven of them minted as
 `person`:
 
-| minted `person` | minted `term` |
+| minted `person` (8 tokens) | minted `term` (9 tokens) |
 |---|---|
-| `Pass`, `Pass 1`, `Pass 2`, `Both`, `Named`, `Exists`, `Resolve`, `Surrogate` | `Data`, `Ledger`, `Provisional`, `Engagement`, `Store directory`, `Local Services`, `Local Operations`, `Secret-Store`, `Presidio-for-L1` |
+| a bare capitalised English word (6, spanning several parts of speech); the same verb plus a trailing digit, in two variants (2) | a bare capitalised English word (4); a two-word capitalised phrase (3, one pair sharing its first token); a hyphenated compound token (2) |
 
-`Pass 1` and `Pass 2` minted as *people* is the sharpest signal: a bare English verb, or a verb plus
-a digit, is being classified as a personal name.
+The verb-plus-a-digit shape minted as *person* is the sharpest signal: a bare English verb, or a verb
+plus a digit, is being classified as a personal name.
 
 **Four of run 10's five blocked exchanges came from this class**, not from any planted entity (items
 10 `Local Operations`, 11 `Surrogate`, 12 `Store directory`, 26 `Resolve`). Once such a word is a
@@ -544,8 +544,8 @@ in `_case_inconsistency_suppressed_starts`.
   the base decision plus four updates in order, and Context premise 1 is already documented as stale.
   A consolidating successor ADR is filed separately; deliberately not done here, so that what #342
   decided stays legible.
-- **Adjudicator-side kind assignment is a separate defect.** `Pass 1` classified as `person` is a
-  cascade precision bug no suppression layer addresses, and it is filed separately. Not fixed here,
-  on this ADR's own #301 precedent that no prompt distinguishes a product name from a company name
-  without knowing whose data is protected — but the *kind* error is a narrower and more tractable
-  question than the *detection* error, and should not be silently folded into this one.
+- **Adjudicator-side kind assignment is a separate defect.** The verb-plus-a-digit shape classified
+  as `person` is a cascade precision bug no suppression layer addresses, and it is filed separately.
+  Not fixed here, on this ADR's own #301 precedent that no prompt distinguishes a product name from
+  a company name without knowing whose data is protected — but the *kind* error is a narrower and
+  more tractable question than the *detection* error, and should not be silently folded into this one.

@@ -1971,7 +1971,7 @@ def _provisional_component_map(items: Iterable[ReviewItem]) -> dict[str, str]:
                 # The fallback "Provisional Surrogate {N}" label's own digit
                 # (#286): a purely positional surrogate word must never become a
                 # blinding *target* either -- session.record would then plant that
-                # bare digit as a Pass-1 restore key (_component_restore_map),
+                # bare digit as a first-pass restore key (_component_restore_map),
                 # reintroducing #286's corruption ("utf-8" -> "utf-<real word>")
                 # from the blinding side instead of the restore side.
                 continue
@@ -2003,7 +2003,7 @@ def _provisional_pair_map(
       #299/#300).
     - each of ``item.real``'s own words that survived into ``component_map`` maps
       to ``(aligned_surrogate_word, that_same_real_word)`` -- the inverse of
-      :func:`_component_restore_map`'s Pass 2 rule, amended by #304.
+      :func:`_component_restore_map`'s second-pass rule, amended by #304.
     """
     pairs: dict[str, tuple[str, str]] = {
         value: (item.provisional_surrogate, item.real)
@@ -2108,14 +2108,14 @@ def _apply_restore_pass(text: str, restore_map: dict[str, str]) -> str:
     """Substitute every key of ``restore_map``, longest key first, in a single
     left-to-right, non-overlapping scan of ``text``.
 
-    Shared by both restore passes (ADR-0036): Pass 1 (full surrogates) and Pass 2
-    (surrogate components) are the same matching strategy — exact, word-boundary,
-    closed-world — applied to different key sets, never a new algorithm.
+    Shared by both restore passes (ADR-0036): the first pass (full surrogates) and the
+    second pass (surrogate components) are the same matching strategy — exact,
+    word-boundary, closed-world — applied to different key sets, never a new algorithm.
 
     issue #304: this scans ``text`` exactly once. The previous implementation ran
     one ``.sub()`` per key over the cumulative result of the prior key's
-    substitution, so a shorter key applied later in the loop (e.g. a Pass 2
-    component) could match a real value a longer key (Pass 1's full surrogate)
+    substitution, so a shorter key applied later in the loop (e.g. a second-pass
+    component) could match a real value a longer key (the first pass's full surrogate)
     had *just inserted* -- restore is never protected against its own output. A
     single scan over the untouched ``text`` makes that structurally impossible:
     at each position we try every key longest-first and advance past whichever
@@ -2144,7 +2144,7 @@ def _apply_restore_pass(text: str, restore_map: dict[str, str]) -> str:
 
 
 def _component_restore_map(injected: dict[str, str]) -> dict[str, str]:
-    """Derive Pass 2's (component -> real) map from the per-exchange injected set.
+    """Derive the second pass's (component -> real) map from the per-exchange injected set.
 
     A multi-word surrogate decomposes into its word components; a component is a
     restore key only if distinctive (not a shared common-word/legal-form) and
@@ -2170,7 +2170,7 @@ def _component_restore_map(injected: dict[str, str]) -> dict[str, str]:
         if _is_fallback_surrogate(surrogate):
             # Mirrors the blinding-side guard (issue #329): the fallback
             # label's alphabetic ``BFX`` prefix is not entity-derived --
-            # decomposing this pair would plant it as a Pass 2 restore key
+            # decomposing this pair would plant it as a second-pass restore key
             # and corrupt unrelated response text (#286).
             continue
         surrogate_words = surrogate.split()
@@ -2196,13 +2196,13 @@ def _component_restore_map(injected: dict[str, str]) -> dict[str, str]:
 def _restore_text(text: str, session: ExchangeSession) -> str:
     """Restore both passes (ADR-0036) in one combined, single-scan call (issue #304).
 
-    Pass 1 (full surrogates, ``session.injected``) and Pass 2 (components,
+    The first pass (full surrogates, ``session.injected``) and the second pass (components,
     :func:`_component_restore_map`) are merged into one ``restore_map`` -- full
     surrogates are seeded last so they win any (practically impossible) key
     collision with a component -- and applied via one call to
     :func:`_apply_restore_pass`, so the whole restore is a single scan of the
-    original ``text``. Never two sequential scans, which is what let Pass 2 match
-    inside Pass 1's own just-inserted output.
+    original ``text``. Never two sequential scans, which is what let the second pass match
+    inside the first pass's own just-inserted output.
     """
     restore_map = dict(_component_restore_map(session.injected))
     restore_map.update(session.injected)

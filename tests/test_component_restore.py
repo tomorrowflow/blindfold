@@ -4,7 +4,7 @@ Whole-surrogate restore (ADR-0024) only restores a coalesced multi-word surrogat
 (issue #162) when the provider echoes the whole string. When the provider
 abbreviates a full-name/org surrogate ("Hallo Carla!" for injected "Carla
 Distel"), the synthetic component must still restore to the real value —
-Pass 2 over the per-exchange injected-surrogate set, bounded to a small,
+the second pass over the per-exchange injected-surrogate set, bounded to a small,
 self-minted, closed-world key set, never fuzzy matching.
 """
 
@@ -130,13 +130,14 @@ def test_analytics_is_not_a_restore_key_for_vault():
 
 
 def test_pass_2_does_not_match_inside_pass_1s_own_output():
-    # issue #304 acceptance criterion: Pass 2 must never re-scan text Pass 1 has
-    # already produced. Two *independent*, individually valid pairs: pair A's full
-    # surrogate "Nordkap Systeme" restores to real "Northwind Analytics" (Pass 1).
-    # Pair B is a genuinely aligned pair contributing a legitimate component key
-    # "Analytics" -> "Baz" (Pass 2). "Analytics" never occurs in the model's actual
-    # output -- it only exists in the text because Pass 1 just inserted it as part
-    # of pair A's real value. Pass 2 must not treat that inserted occurrence as a
+    # issue #304 acceptance criterion: the second pass must never re-scan text the
+    # first pass has already produced. Two *independent*, individually valid pairs:
+    # pair A's full surrogate "Nordkap Systeme" restores to real "Northwind Analytics"
+    # (the first pass). Pair B is a genuinely aligned pair contributing a legitimate
+    # component key "Analytics" -> "Baz" (the second pass). "Analytics" never occurs
+    # in the model's actual output -- it only exists in the text because the first
+    # pass just inserted it as part of pair A's real value. The second pass must not
+    # treat that inserted occurrence as a
     # match, or the correctly restored "Northwind Analytics" gets corrupted into
     # "Northwind Baz" -- exactly the "Northwind Vault" defect this issue reports.
     session = _session_with(
@@ -151,8 +152,8 @@ def test_pass_2_does_not_match_inside_pass_1s_own_output():
 
 
 def test_full_surrogate_pass_takes_precedence_over_the_component_pass():
-    # ADR-0036: Pass 1 (full surrogates) runs first so a full match is never
-    # clobbered by Pass 2 (components) — both occurring in the same response.
+    # ADR-0036: the first pass (full surrogates) runs first so a full match is never
+    # clobbered by the second pass (components) — both occurring in the same response.
     session = _session_with({"Carla Distel": "Sarah Bergmann"})
 
     text = "Carla Distel called; Carla will follow up."
@@ -165,7 +166,7 @@ def test_bare_integer_component_is_never_registered_as_a_restore_key():
     # aligned) on purpose -- since #304 an unaligned pair is already excluded
     # for a different reason (no positional correspondence at all), so this
     # keeps exercising the digit-token guard itself: unfiltered, "8" is
-    # distinctive and unambiguous, so it would be admitted as a Pass-2 restore
+    # distinctive and unambiguous, so it would be admitted as a second-pass restore
     # key and rewrite any ordinary "8" in a response -- observed live as
     # `utf-8` becoming `utf-Kestrel Dynamics`.
     session = _session_with({"Provisional Surrogate 8": "Kestrel Dynamics Holdings"})
@@ -188,7 +189,7 @@ def test_bare_integer_component_does_not_corrupt_phone_shaped_text():
 def test_component_restores_inside_tool_call_json_the_same_as_prose():
     # ADR-0036 acceptance criterion 8: behavior is identical across all three
     # restore paths — component restore shares _restore_text, so tool-call
-    # JSON string args get the same Pass 2 treatment as prose.
+    # JSON string args get the same second-pass treatment as prose.
     session = _session_with({"Carla Distel": "Sarah Bergmann"})
 
     restored = restore_tool_call_json({"recipient": "Carla"}, session)

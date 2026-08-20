@@ -114,3 +114,58 @@ def test_no_retired_live_verify_finding_name_appears_in_docs_or_tests():
                 offenders.append((path.relative_to(REPO_ROOT).as_posix(), name))
 
     assert offenders == []
+
+
+def test_no_capitalised_two_word_pass_label_appears_in_docs_src_or_tests():
+    """Issue #352: ADR-0023's run-10 evidence table quoted `Pass 1`/`Pass 2` verbatim --
+    the same capitalised, hyphen-or-space two-word labels ADR-0036 coined for its two
+    restore passes and that engine.py/tests carried into comments -- so every occurrence
+    was a fresh candidate for the next #74 run to mint as a person (the table's own
+    sharpest false-positive signal). Renamed to lowercase prose ("the first pass" / "the
+    second pass") everywhere. Case-sensitive on the exact space/hyphen + digit form, so
+    it does not false-positive on ordinary lowercase usage (`pass`, `passed`) or the
+    all-caps `PASS` that appear legitimately elsewhere as ordinary words.
+    """
+    retired_labels = ("Pass 1", "Pass 2", "Pass-1", "Pass-2")
+    this_file = pathlib.Path(__file__)
+
+    doc_paths = sorted((REPO_ROOT / "docs" / "adr").glob("*.md"))
+    src_paths = sorted((REPO_ROOT / "src").rglob("*.py"))
+    test_paths = [
+        path for path in sorted((REPO_ROOT / "tests").rglob("*.py")) if path != this_file
+    ]
+
+    offenders = []
+    for path in (*doc_paths, *src_paths, *test_paths):
+        text = path.read_text()
+        for label in retired_labels:
+            if label in text:
+                offenders.append((path.relative_to(REPO_ROOT).as_posix(), label))
+
+    assert offenders == []
+
+
+def test_no_operator_real_email_or_username_appears_in_docs_or_tests():
+    """Issue #352: ADR-0023's "Update (issue #301)" section quoted the operator's real
+    email address (as a grep marker) and real username (in the security-monitor
+    paragraph) verbatim, and tests/test_system_confined_l3_suppression.py used the same
+    real address as a fixture -- real PII in a public repo, read back through the proxy
+    as real values on every live-verify run. Replaced with reserved-form (`.example`)
+    placeholders throughout docs/ and tests/.
+    """
+    retired_pii = ("f.wolf@enersis.ch", "florianwolf")
+    this_file = pathlib.Path(__file__)
+
+    doc_paths = sorted((REPO_ROOT / "docs").rglob("*.md"))
+    test_paths = [
+        path for path in sorted((REPO_ROOT / "tests").rglob("*.py")) if path != this_file
+    ]
+
+    offenders = []
+    for path in (*doc_paths, *test_paths):
+        text = path.read_text()
+        for value in retired_pii:
+            if value in text:
+                offenders.append((path.relative_to(REPO_ROOT).as_posix(), value))
+
+    assert offenders == []

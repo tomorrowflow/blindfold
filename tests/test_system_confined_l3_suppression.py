@@ -307,7 +307,7 @@ def test_l1_pii_only_in_system_is_still_blindfolded():
     inbox = ReviewInbox()
     payload = {
         "model": "m",
-        "system": "Contact ops at f.wolf@enersis.ch for questions.",
+        "system": "Contact ops at ops@example.com for questions.",
         "messages": [{"role": "user", "content": "Please help with the task."}],
     }
     system_confined_tokens = extract_system_confined_tokens_messages(payload)
@@ -317,7 +317,7 @@ def test_l1_pii_only_in_system_is_still_blindfolded():
         system_confined_tokens=system_confined_tokens,
     )
 
-    assert "f.wolf@enersis.ch" not in blinded["system"]
+    assert "ops@example.com" not in blinded["system"]
 
 
 def test_system_confined_tokens_do_not_leak_across_successive_requests():
