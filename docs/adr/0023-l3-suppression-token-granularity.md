@@ -506,9 +506,22 @@ independently:
 
 Precision alone would have passed run 8, which died without producing a deliverable; blocks alone
 would tolerate a 22%-precision inbox. Projected against run 10, this condition (14 of 21 suppressed)
-composed with #341 (which deletes the five ADR-0036 prose names from the repo) leaves **6 genuine of
-7 mints — 86%**, clearing the precision bar. That projection is the target this condition is
-measured against in run 11, not a claim already banked.
+composed with #341 (which deletes the five ADR-0036 prose names from the repo) put **6 genuine of
+7 mints — 86%** on paper, clearing the precision bar.
+
+**Update (issue #74 run 11, 2026-08-19): the two bars split, and the 86% projection is retired.**
+Run 11 measured this ADR's own build. Zero terminal blocks **passed** — three blocks occurred and
+the session self-recovered from all three with no human `reject`. Precision **failed at 43% — 6
+genuine of 14 mints**, up from run 10's 22% but well short of 80%. The projection over-counted
+because it modelled only the files the live-verify brief names: seven of the eight residual false
+positives are the repo's own prose about itself, and two of those eight sit outside the repo
+entirely — the driving harness's auto-loaded memory index and its permission-rules text, neither of
+which any repo-side change can reach. The measured series is 22% (run 10) → 43% (run 11); treat only
+those as banked. What closes the remaining gap is filed separately, and deliberately starts with
+instrumentation rather than another suppression condition: run 11's residual mints cannot be
+attributed to a *specific* one of the five conditions from the evidence it produced, so the same
+prose-vocabulary reading is consistent with both a source-text cause and the conjunctive span rule
+in `_case_inconsistency_suppressed_starts`.
 
 ### Consequences
 
