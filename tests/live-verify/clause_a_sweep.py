@@ -19,6 +19,15 @@ the identical rule ``engine.leak_gate`` itself uses, so this sweep's notion of
 - every real value the review inbox learned this run (an optional inbox fixture, the
   same ``{"items": [...]}`` shape ``GET /v1/management/review-inbox`` returns).
 
+**Mint-aware classification (issue #357):** a review item carries no detection timestamp,
+so a false-positive mint's own pre-mint occurrences -- ordinary text that predates the
+capture where L3 actually confirmed it as an entity -- used to read as egress on a clean
+run. :func:`find_mint_capture_indices` derives each review-inbox value's mint point as the
+first capture whose outbound payload contains its provisional surrogate; a hit strictly
+before that capture is reported separately as ``pre_mint`` rather than folded into the
+``LEAK`` count. A brief-seeded value has no mint point (it was a known referent before the
+run even started), so every occurrence of one is still a leak.
+
 **Positive control** (the acceptance criterion's own wording: "a value that
 MUST hit"): before scanning any real capture, :func:`run_self_check` proves
 the matcher fires against a synthetic leaf built from one of the brief's own
@@ -136,17 +145,31 @@ def _scrub_ref(origin: str, value: str) -> str:
     return f"{origin}:hash:{digest}"
 
 
+# A review-inbox value whose mint capture can't be established in this run's
+# own captures (its surrogate never appears) is treated the same fail-closed
+# way as a brief-seeded value: every capture counts as "at or after" it, so
+# nothing is exempted as pre-mint on the strength of an absence.
+MINT_UNKNOWN = -1
+
+
 @dataclass(frozen=True)
 class SweepHit:
     """One real value found at a word boundary in an outbound leaf.
 
     ``value_ref`` never carries the plaintext value (mirrors
     ``blindfold_devtools.leak_check``'s SEC-3 scrubbed-reference rule).
+
+    ``pre_mint`` (issue #357) is True when this occurrence's capture precedes
+    the value's own mint point -- the value egressed before it was ever a
+    known entity, so detection missing its first hop is not a clause-A
+    violation the way a later occurrence would be. A brief-seeded value has
+    no mint point at all and is therefore never ``pre_mint``.
     """
 
     capture_file: str
     leaf_path: str
     value_ref: str
+    pre_mint: bool = False
 
 
 def _hit_check(value: str, leaf_text: str) -> bool:
@@ -155,25 +178,74 @@ def _hit_check(value: str, leaf_text: str) -> bool:
     return _real_value_pattern(value).search(leaf_text) is not None
 
 
+def _payload_contains(payloads: Iterable[dict], value: str) -> bool:
+    found = False
+
+    def on_leaf(_leaf_path: str, leaf_text: str) -> None:
+        nonlocal found
+        if _hit_check(value, leaf_text):
+            found = True
+
+    for payload in payloads:
+        if found:
+            break
+        _walk_leaves_with_path(payload, "", on_leaf)
+    return found
+
+
+def find_mint_capture_indices(
+    capture_order: list[str],
+    payloads_by_capture: dict[str, list[dict]],
+    seeded_values: Iterable[tuple[str, str, str | None]],
+) -> dict[str, int]:
+    """The index into ``capture_order`` of the first capture whose outbound
+    payloads contain each review-inbox value's provisional surrogate -- the
+    mint point issue #357 needs to tell a pre-mint occurrence from a clause-A
+    violation. A value with no ``mint_surrogate`` (a brief-seeded value, which
+    has no mint point) is absent from the result; so is a review-inbox value
+    whose surrogate never appears in this run's own captures, deliberately --
+    see :data:`MINT_UNKNOWN` at the call site."""
+    mint_index: dict[str, int] = {}
+    for _origin, value, mint_surrogate in seeded_values:
+        if mint_surrogate is None or value in mint_index:
+            continue
+        for index, capture_file in enumerate(capture_order):
+            if _payload_contains(payloads_by_capture[capture_file], mint_surrogate):
+                mint_index[value] = index
+                break
+    return mint_index
+
+
 def sweep_outbound_payloads(
     capture_file: str,
     payloads: Iterable[dict],
-    seeded_values: Iterable[tuple[str, str]],
+    seeded_values: Iterable[tuple[str, str, str | None]],
+    capture_index: int = 0,
+    mint_index_by_value: dict[str, int] | None = None,
 ) -> list[SweepHit]:
     """Scan every string leaf of every outbound ``payloads`` entry for a
-    word-boundary match against any ``(origin, value)`` pair in
-    ``seeded_values``. One capture's payloads at a time, so a caller can
-    attribute hits back to the capture file they came from."""
+    word-boundary match against any ``(origin, value, mint_surrogate)`` triple
+    in ``seeded_values``. One capture's payloads at a time, so a caller can
+    attribute hits back to the capture file they came from.
+
+    ``capture_index``/``mint_index_by_value`` (issue #357) let a hit be
+    classified ``pre_mint`` when it occurs strictly before the value's own
+    mint capture (see :func:`find_mint_capture_indices`) -- omitted, a hit is
+    never pre-mint, matching a brief-seeded value's own "no mint point" rule.
+    """
+    mint_index_by_value = mint_index_by_value or {}
     hits: list[SweepHit] = []
 
     def on_leaf(leaf_path: str, leaf_text: str) -> None:
-        for origin, value in seeded_values:
+        for origin, value, _mint_surrogate in seeded_values:
             if _hit_check(value, leaf_text):
+                mint_at = mint_index_by_value.get(value, MINT_UNKNOWN)
                 hits.append(
                     SweepHit(
                         capture_file=capture_file,
                         leaf_path=leaf_path,
                         value_ref=_scrub_ref(origin, value),
+                        pre_mint=capture_index < mint_at,
                     )
                 )
 
@@ -183,7 +255,7 @@ def sweep_outbound_payloads(
     return hits
 
 
-def run_self_check(seeded_values: Iterable[tuple[str, str]]) -> None:
+def run_self_check(seeded_values: Iterable[tuple[str, str, str | None]]) -> None:
     """The positive control: prove the matcher fires against a synthetic leaf
     built from one of the sweep's own seeded values, before any real capture
     is scanned. Raises :class:`SweepSelfCheckFailed` -- loudly, not a warning
@@ -195,7 +267,7 @@ def run_self_check(seeded_values: Iterable[tuple[str, str]]) -> None:
             "no seeded values to self-check against -- brief parsing produced an "
             "empty set, so a clean sweep result would be unattributable"
         )
-    origin, control_value = values[0]
+    origin, control_value, _mint_surrogate = values[0]
     canary_leaf = f"[clause-a-sweep positive control canary] {control_value} [/canary]"
     if not _hit_check(control_value, canary_leaf):
         raise SweepSelfCheckFailed(
@@ -209,9 +281,20 @@ def _iter_capture_payloads(path: pathlib.Path) -> list[dict]:
     return [record.payload for record in capture.records if isinstance(record, OutboundRecord)]
 
 
-def _load_review_inbox_real_values(inbox_file: pathlib.Path) -> set[str]:
+def _load_review_inbox_items(inbox_file: pathlib.Path) -> list[tuple[str, str]]:
+    """Every ``(real, provisional_surrogate)`` pair the review inbox learned
+    this run. The surrogate is what :func:`find_mint_capture_indices` looks
+    for to establish this value's mint point (issue #357) -- without it, a
+    pre-mint occurrence of a false-positive mint has no way to be told apart
+    from a genuine clause-A violation."""
     payload = json.loads(inbox_file.read_text())
-    return {item["real"] for item in payload.get("items", []) if item.get("real")}
+    items: dict[str, str] = {}
+    for item in payload.get("items", []):
+        real = item.get("real")
+        provisional_surrogate = item.get("provisional_surrogate")
+        if real and provisional_surrogate:
+            items.setdefault(real, provisional_surrogate)
+    return sorted(items.items())
 
 
 _DEFAULT_BRIEF = REPO_ROOT / "tests" / "live-verify" / "74-engagement-brief.md"
@@ -233,31 +316,62 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     brief_text = pathlib.Path(args.brief).read_text()
-    seeded: list[tuple[str, str]] = [("brief", v) for v in sorted(extract_brief_seeded_values(brief_text))]
+    seeded: list[tuple[str, str, str | None]] = [
+        ("brief", v, None) for v in sorted(extract_brief_seeded_values(brief_text))
+    ]
     if args.inbox_file:
         seeded.extend(
-            ("review-inbox", v) for v in sorted(_load_review_inbox_real_values(pathlib.Path(args.inbox_file)))
+            ("review-inbox", real, provisional_surrogate)
+            for real, provisional_surrogate in _load_review_inbox_items(pathlib.Path(args.inbox_file))
         )
 
     run_self_check(seeded)
 
     captures_dir = pathlib.Path(args.captures_dir)
     capture_paths = sorted(captures_dir.glob(f"*{CAPTURE_SUFFIX}"))
-    all_hits: list[SweepHit] = []
-    for capture_path in capture_paths:
-        payloads = _iter_capture_payloads(capture_path)
-        all_hits.extend(sweep_outbound_payloads(capture_path.name, payloads, seeded))
+    capture_order = [capture_path.name for capture_path in capture_paths]
+    payloads_by_capture = {
+        capture_path.name: _iter_capture_payloads(capture_path) for capture_path in capture_paths
+    }
 
-    if not all_hits:
+    mint_index_by_value = find_mint_capture_indices(capture_order, payloads_by_capture, seeded)
+
+    all_hits: list[SweepHit] = []
+    for capture_index, capture_name in enumerate(capture_order):
+        all_hits.extend(
+            sweep_outbound_payloads(
+                capture_name,
+                payloads_by_capture[capture_name],
+                seeded,
+                capture_index=capture_index,
+                mint_index_by_value=mint_index_by_value,
+            )
+        )
+
+    leak_hits = [hit for hit in all_hits if not hit.pre_mint]
+    pre_mint_hits = [hit for hit in all_hits if hit.pre_mint]
+
+    def _print_pre_mint_section() -> None:
+        if pre_mint_hits:
+            print(
+                f"  pre-mint occurrences (not a clause-A violation -- egressed before "
+                f"the value's own mint): {len(pre_mint_hits)}"
+            )
+            for hit in pre_mint_hits:
+                print(f"    {hit.capture_file} :: {hit.leaf_path} :: {hit.value_ref}")
+
+    if not leak_hits:
         print(
             f"clause-A sweep: positive control fired, {len(capture_paths)} capture(s) "
             f"scanned, 0 real value(s) found in outbound payloads"
         )
+        _print_pre_mint_section()
         return 0
 
-    print(f"clause-A sweep: LEAK -- {len(all_hits)} hit(s):")
-    for hit in all_hits:
+    print(f"clause-A sweep: LEAK -- {len(leak_hits)} hit(s):")
+    for hit in leak_hits:
         print(f"  {hit.capture_file} :: {hit.leaf_path} :: {hit.value_ref}")
+    _print_pre_mint_section()
     return 1
 
 

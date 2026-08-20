@@ -13,6 +13,7 @@ touches request-path egress/restore/fail-closed code.
 from __future__ import annotations
 
 import importlib.util
+import json
 import pathlib
 import sys
 
@@ -70,7 +71,7 @@ def test_sweep_outbound_payloads_reports_capture_and_leaf_path_on_a_hit():
     payloads = [{"messages": [{"role": "user", "content": "cc Mara Ostrowski"}]}]
 
     hits = clause_a_sweep.sweep_outbound_payloads(
-        "20260820-abcd.jsonl", payloads, [("brief", "Mara Ostrowski")]
+        "20260820-abcd.jsonl", payloads, [("brief", "Mara Ostrowski", None)]
     )
 
     assert len(hits) == 1
@@ -89,7 +90,7 @@ def test_sweep_outbound_payloads_is_word_boundary_only_not_bare_substring():
     payloads = [{"messages": [{"role": "user", "content": "Ostrowskiego reported the finding"}]}]
 
     hits = clause_a_sweep.sweep_outbound_payloads(
-        "20260820-abcd.jsonl", payloads, [("brief", "Ostrowski")]
+        "20260820-abcd.jsonl", payloads, [("brief", "Ostrowski", None)]
     )
 
     assert hits == []
@@ -99,14 +100,14 @@ def test_sweep_outbound_payloads_clean_when_no_seeded_value_present():
     payloads = [{"messages": [{"role": "user", "content": "cc surrogate-name only"}]}]
 
     hits = clause_a_sweep.sweep_outbound_payloads(
-        "20260820-abcd.jsonl", payloads, [("brief", "Mara Ostrowski")]
+        "20260820-abcd.jsonl", payloads, [("brief", "Mara Ostrowski", None)]
     )
 
     assert hits == []
 
 
 def test_run_self_check_passes_silently_with_a_working_matcher():
-    clause_a_sweep.run_self_check([("brief", "Mara Ostrowski")])
+    clause_a_sweep.run_self_check([("brief", "Mara Ostrowski", None)])
 
 
 def test_run_self_check_raises_loudly_when_there_are_no_seeded_values_to_check():
@@ -123,7 +124,7 @@ def test_run_self_check_raises_loudly_when_the_matcher_itself_is_broken(monkeypa
     # loudly instead of the sweep silently reporting zero hits as clean.
     monkeypatch.setattr(clause_a_sweep, "_hit_check", lambda value, leaf_text: False)
     with pytest.raises(clause_a_sweep.SweepSelfCheckFailed):
-        clause_a_sweep.run_self_check([("brief", "Mara Ostrowski")])
+        clause_a_sweep.run_self_check([("brief", "Mara Ostrowski", None)])
 
 
 def _write_fixture_capture(path, *, outbound_content: str) -> None:
@@ -195,3 +196,94 @@ def test_main_reports_a_leak_with_capture_and_leaf_path_when_a_seeded_value_egre
     assert "messages[0].content" in out
     # SEC-3: the real value itself must never appear in the printed report.
     assert "Mara Ostrowski" not in out
+
+
+def _write_review_inbox_fixture(path, *, real: str, provisional_surrogate: str) -> None:
+    path.write_text(
+        json.dumps({"items": [{"real": real, "provisional_surrogate": provisional_surrogate}]})
+    )
+
+
+def test_main_reports_clean_with_pre_mint_heading_when_a_value_only_egresses_before_its_mint(
+    tmp_path, capsys
+):
+    # Run 12's own false leak (issue #357): a review-inbox value ("Rockslide",
+    # an ordinary word) occurs in an earlier capture, before the capture whose
+    # outbound payload actually mints its provisional surrogate. Zero post-mint
+    # egress -- closed-world held -- so this must report clean, not LEAK, with
+    # the pre-mint occurrence listed under its own heading.
+    brief_path = tmp_path / "brief.md"
+    brief_path.write_text(_FIXTURE_BRIEF)
+    inbox_path = tmp_path / "inbox.json"
+    _write_review_inbox_fixture(inbox_path, real="Rockslide", provisional_surrogate="BFX0007")
+
+    captures_dir = tmp_path / "captures"
+    captures_dir.mkdir()
+    _write_fixture_capture(
+        captures_dir / "20260820T000000000000Z-a.jsonl", outbound_content="the Rockslide report shipped"
+    )
+    _write_fixture_capture(
+        captures_dir / "20260820T000000000001Z-b.jsonl", outbound_content="cc BFX0007 only"
+    )
+
+    exit_code = clause_a_sweep.main(
+        ["--captures-dir", str(captures_dir), "--brief", str(brief_path), "--inbox-file", str(inbox_path)]
+    )
+
+    assert exit_code == 0
+    out = capsys.readouterr().out
+    assert "LEAK" not in out
+    assert "pre-mint" in out
+    assert "20260820T000000000000Z-a.jsonl" in out
+    assert "Rockslide" not in out
+
+
+def test_main_reports_leak_when_a_review_inbox_value_egresses_after_its_mint(tmp_path, capsys):
+    # Same value, but it egresses AGAIN in a capture at or after the one that
+    # minted its surrogate -- this is the clause-A violation the pre-mint
+    # exemption must never cover.
+    brief_path = tmp_path / "brief.md"
+    brief_path.write_text(_FIXTURE_BRIEF)
+    inbox_path = tmp_path / "inbox.json"
+    _write_review_inbox_fixture(inbox_path, real="Rockslide", provisional_surrogate="BFX0007")
+
+    captures_dir = tmp_path / "captures"
+    captures_dir.mkdir()
+    _write_fixture_capture(
+        captures_dir / "20260820T000000000000Z-a.jsonl", outbound_content="cc BFX0007 only"
+    )
+    _write_fixture_capture(
+        captures_dir / "20260820T000000000001Z-b.jsonl", outbound_content="the Rockslide report shipped"
+    )
+
+    exit_code = clause_a_sweep.main(
+        ["--captures-dir", str(captures_dir), "--brief", str(brief_path), "--inbox-file", str(inbox_path)]
+    )
+
+    assert exit_code == 1
+    out = capsys.readouterr().out
+    assert "LEAK" in out
+    assert "20260820T000000000001Z-b.jsonl" in out
+
+
+def test_main_reports_leak_for_a_brief_seeded_value_that_egresses_before_any_mint(tmp_path, capsys):
+    # A brief-seeded value has no mint point at all -- it was already a known
+    # referent before the run started, so a "pre-mint" exemption must never
+    # apply to it. A planted referent egressing on its first hop is always a
+    # leak.
+    brief_path = tmp_path / "brief.md"
+    brief_path.write_text(_FIXTURE_BRIEF)
+
+    captures_dir = tmp_path / "captures"
+    captures_dir.mkdir()
+    _write_fixture_capture(
+        captures_dir / "20260820T000000000000Z-a.jsonl", outbound_content="cc Mara Ostrowski"
+    )
+
+    exit_code = clause_a_sweep.main(
+        ["--captures-dir", str(captures_dir), "--brief", str(brief_path)]
+    )
+
+    assert exit_code == 1
+    out = capsys.readouterr().out
+    assert "LEAK" in out

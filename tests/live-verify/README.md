@@ -113,6 +113,27 @@ for their regression coverage, loaded by file path the same way
    output plus the terminal-block count (a run-time observation neither script can compute
    after the fact).
 
+   **Reading the clause-A sweep's two categories (issue #357):** a review item carries no
+   detection timestamp of its own, so the sweep derives each review-inbox value's *mint
+   point* — the first capture whose outbound payload contains that value's provisional
+   surrogate — and checks a real-value occurrence against it:
+
+   - **`LEAK` hits** are occurrences at or after a value's own mint (or, for a brief-seeded
+     value, any occurrence at all — a planted referent has no pre-mint grace period, since it
+     must be caught on its first hop). This is the clause-A violation: an entity egressed as
+     itself instead of its surrogate.
+   - **`pre-mint occurrences`** (printed under their own heading, never counted toward the
+     `LEAK` total) are a review-inbox value's occurrences strictly *before* its own mint. This
+     is expected for an ordinary false-positive mint reading unrelated prior traffic — it is
+     not a clause-A violation because the value wasn't yet a known entity. It is still worth
+     reading: for a *genuine* referent, a pre-mint occurrence means detection missed that
+     value's first hop, which is itself worth a follow-up even though the sweep doesn't fail
+     the run over it.
+
+   A clean run (exit code 0) can still print a pre-mint section — that is not a contradiction,
+   it means every occurrence of every false-positive mint predates its own mint and closed-world
+   held throughout.
+
 See `.claude/skills/leak-audit` for the property being asserted, and
 `docs/adr/0022-wire-l3-adjudicator-local-ollama.md` for the contract.
 
