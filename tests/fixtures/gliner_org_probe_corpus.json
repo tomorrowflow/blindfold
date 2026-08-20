@@ -91,10 +91,10 @@
     {
       "token": "Vault",
       "sentence": "We store secrets in Vault before deploying.",
-      "category": "ambiguous-word",
+      "category": "project-vocab",
       "gliner_label": "organization",
-      "decision": "excluded",
-      "rationale": "Ordinary English dictionary word (a bank/security vault) with no single dominant public-brand reading in isolation -- highly plausible as an internal project/product codename ('Project Vault'). Leaving it out per the issue's own instruction: when in doubt, leave it out."
+      "decision": "seeded",
+      "rationale": "Originally excluded (2026-08-15) as an ordinary English dictionary word (a bank/security vault) with no single dominant public-brand reading in isolation, judged solely against this audit's own additional non-collision bar. Issue #356 supersedes that call the same way 'Transit' (above) superseded its own prior rejection: measured against ADR-0023's actual curation rule -- public identifier, implausible as a protected referent when unregistered -- rather than this audit's own stricter bar, HashiCorp's Vault is exactly that in this project's own context: named in Blindfold's own key-custody prose as the project OpenBao forked from, and confirmed live by #74 run 12 (one of the run's three blocked exchanges). Kafka/Jenkins below are re-judged against the same ADR-0023 rule by the same issue and, unlike Vault, still fail it: both are common human surnames GLiNER's own 'person' label corroborates -- a live personal-name collision risk, not merely a generic-word/codename ambiguity a project's own context can resolve."
     },
     {
       "token": "Kafka",
@@ -102,7 +102,7 @@
       "category": "ambiguous-word",
       "gliner_label": "person",
       "decision": "excluded",
-      "rationale": "Kafka is a real, common human surname (Franz Kafka among many others) -- GLiNER's own 'person' label corroborates the collision risk directly. Exactly the Don/Mark/Stone/Frank failure mode ADR-0023/ADR-0033 name: seeding this token would permanently lose novelty discovery for any unregistered private individual actually named Kafka."
+      "rationale": "Kafka is a real, common human surname (Franz Kafka among many others) -- GLiNER's own 'person' label corroborates the collision risk directly. Exactly the Don/Mark/Stone/Frank failure mode ADR-0023/ADR-0033 name: seeding this token would permanently lose novelty discovery for any unregistered private individual actually named Kafka. Re-judged directly against ADR-0023's curation rule by issue #356 (which supersedes Vault's own exclusion above): still excluded, and for the ADR-0023 rule itself, not just this audit's narrower bar -- a common surname is squarely the plausible-protected-referent-when-unregistered case the rule exists to catch, unlike Vault's project-codename ambiguity, which this project's own OpenBao context resolves."
     },
     {
       "token": "Jenkins",
@@ -110,7 +110,7 @@
       "category": "ambiguous-word",
       "gliner_label": "person",
       "decision": "excluded",
-      "rationale": "Jenkins is a common English surname; GLiNER's own 'person' label corroborates it. Same collision class as Kafka above -- left out."
+      "rationale": "Jenkins is a common English surname; GLiNER's own 'person' label corroborates it. Same collision class as Kafka above -- left out. Re-judged directly against ADR-0023's curation rule by issue #356: still excluded for the identical reason as Kafka -- a common surname is a plausible protected referent when unregistered, the exact case the rule protects, unrelated to Vault's project-codename ambiguity that this project's own context resolves."
     },
     {
       "token": "Confluence",
@@ -310,7 +310,7 @@
       "category": "ambiguous-word",
       "gliner_label": "organization",
       "decision": "excluded",
-      "rationale": "Corrected by maintainer re-measurement (2026-08-15, real GlinerOnnxClassifier on provisioned hardware -- not reproducible in the agent sandbox, which has neither the gliner extra nor the model): the agent-authored fixture originally recorded 'none', but the real classifier flags this a confirmed 'organization' false positive, deterministic across 3 consecutive runs, and independently corroborated by issue #74's live-verify run 3 (2026-08-15, GLiNER cascade + oMLX, same model), where 'Teams' was flagged on real agentic traffic in a separate session. This is a genuine false positive AND the ambiguous-word category's central case: 'teams' is an ordinary English dictionary word, so the corpus's own curation rule applies the same way it does to Vault/Kafka/Confluence -- seeding it would be permanent novelty-discovery loss for that literal token in every future context. Record the real label; leave it out."
+      "rationale": "Corrected by maintainer re-measurement (2026-08-15, real GlinerOnnxClassifier on provisioned hardware -- not reproducible in the agent sandbox, which has neither the gliner extra nor the model): the agent-authored fixture originally recorded 'none', but the real classifier flags this a confirmed 'organization' false positive, deterministic across 3 consecutive runs, and independently corroborated by issue #74's live-verify run 3 (2026-08-15, GLiNER cascade + oMLX, same model), where 'Teams' was flagged on real agentic traffic in a separate session. This is a genuine false positive AND the ambiguous-word category's central case: 'teams' is an ordinary English dictionary word, so the corpus's own curation rule applies the same way it does to Confluence/Kafka -- seeding it would be permanent novelty-discovery loss for that literal token in every future context. Record the real label; leave it out."
     },
     {
       "token": "Java",
