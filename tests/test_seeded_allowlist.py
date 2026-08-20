@@ -144,7 +144,7 @@ def test_issue_297_run_6_vendor_batch_excludes_notion():
     # tests/fixtures/gliner_org_probe_corpus.json) already measured and
     # excluded it under this same ADR-0023 curation rule: an ordinary English
     # dictionary word with no single dominant public-brand reading, the same
-    # collision class as Vault/Confluence/Zoom/Stripe. Seeding it here would
+    # collision class as Confluence/Zoom/Stripe. Seeding it here would
     # silently re-litigate that recorded decision without new evidence -- left
     # for a human/ADR call rather than resolved unilaterally in this slice.
     tokens = load_seeded_allowlist_tokens()
