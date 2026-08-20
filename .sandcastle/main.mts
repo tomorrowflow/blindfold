@@ -1425,7 +1425,19 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   // -------------------------------------------------------------------------
   openTracePane(TARGET_BRANCH, "planner");
   const plan = await sandcastle.run({
-    hooks,
+    // NO `hooks` here, deliberately. Every other sandbox is branch-scoped and so
+    // runs in its own `.sandcastle/worktrees/<branch>` checkout; the planner is the
+    // one rootless run (no `branch` -> the library uses TARGET_BRANCH's own
+    // checkout, i.e. THE REPO ROOT), and it bind-mounts that root into the
+    // container. Running UV_SYNC there made the container's Linux/py3.12 `uv sync`
+    // write over the host's macOS/py3.13 `.venv` — the host's interpreter symlink
+    // came back pointing at /home/agent/..., so every host `.venv/bin/python`
+    // invocation failed with "no such file or directory" until a manual `uv sync`
+    // rebuilt ~1 GB. The planner needs none of it: it reads `gh issue list`,
+    // reasons about dependencies, and emits <plan> JSON — it never imports the
+    // project or runs a test (maxIterations: 1, no write tools). GRAPHIFY_BUILD is
+    // dropped with it for the same reason: a code graph it does not consult, built
+    // into the host's own tree.
     sandbox: docker(),
     name: "planner",
     // One iteration is enough: the planner just needs to read and reason,
