@@ -36,6 +36,7 @@ from .store._mint import (
 )
 
 if TYPE_CHECKING:
+    from .l3 import SuppressionTrace
     from .mapping_cipher import MappingCipher
     from .surrogates import SurrogateMapping
     from .transit import TransitClient
@@ -291,6 +292,17 @@ class ReviewItem:
     hydration -- a restart loses it (``None``, same as an untyped verdict),
     which is an honest degrade for metadata that was never load-bearing for
     minting/typing/suppression.
+
+    ``suppression_trace`` (issue #350) is the confirming candidate's
+    :class:`~blindfold.l3.SuppressionTrace` -- which of the five ADR-0023
+    suppression conditions were evaluated for it and their outcome, so a
+    false-positive mint's *cause* (source-vocabulary evidence vs. the
+    case-inconsistency conjunctive rule) is reconstructable from the review
+    record instead of guessed at after the fact (#74 run 11's own gap). Same
+    discipline as ``adjudicator``: read-only, never consulted by any
+    selection/minting decision, and deliberately NOT a stored column -- it
+    carries candidate token text, which must never gain a persistence path
+    beyond the review inbox's existing one (ADR-0047).
     """
 
     id: str
@@ -302,6 +314,7 @@ class ReviewItem:
     workspace: str = DEFAULT_WORKSPACE
     variations: frozenset[str] = frozenset()
     adjudicator: str | None = None
+    suppression_trace: "SuppressionTrace | None" = None
 
 
 class ReviewInboxStore(Protocol):
@@ -448,6 +461,7 @@ class ReviewInbox:
         workspace: str = DEFAULT_WORKSPACE,
         corpus_text: str | None = None,
         adjudicator: str | None = None,
+        suppression_trace: "SuppressionTrace | None" = None,
     ) -> ReviewItem | None:
         """Add (or reuse) a provisional inbox entry for ``real`` and return it.
 
@@ -508,6 +522,11 @@ class ReviewInbox:
         ``adjudicator`` (issue #348) is read-only verdict provenance -- see
         :class:`ReviewItem`'s own docstring. Never persisted, never consulted
         by any selection/typing/suppression decision here or in ``engine.py``.
+
+        ``suppression_trace`` (issue #350) is read-only suppression provenance
+        -- see :class:`ReviewItem`'s own docstring. Never persisted, never
+        consulted by any selection/typing/suppression decision here or in
+        ``engine.py``.
         """
         with self._lock:
             referent_key = _referent_key(real, entity_type)
@@ -544,6 +563,7 @@ class ReviewInbox:
                 workspace=workspace,
                 variations=entity_variations(real, entity_type),
                 adjudicator=adjudicator,
+                suppression_trace=suppression_trace,
             )
             self._items[item_id] = item
             self._by_real[referent_key] = item_id

@@ -91,6 +91,8 @@ async def test_review_inbox_lists_items_for_caller_with_viewer_role():
             "provisional_surrogate": item.provisional_surrogate,
             "context": "Please brief Klaus tomorrow.",
             "context_offset": item.context_offset,
+            # Issue #350: null when the item carries no suppression trace.
+            "suppression_trace": None,
         }
     ]
 

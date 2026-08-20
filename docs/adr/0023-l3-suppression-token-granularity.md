@@ -549,3 +549,23 @@ in `_case_inconsistency_suppressed_starts`.
   Not fixed here, on this ADR's own #301 precedent that no prompt distinguishes a product name from
   a company name without knowing whose data is protected — but the *kind* error is a narrower and
   more tractable question than the *detection* error, and should not be silently folded into this one.
+
+## Update (issue #350): per-candidate suppression provenance
+
+The instrumentation run 11's own record called for (rather than a sixth suppression condition):
+`select_candidate_spans` can now attach a `SuppressionTrace` to every surviving candidate, naming
+each of this ADR's five conditions and its outcome for that candidate — always "not suppressed" by
+construction, since a token any condition actually suppressed never becomes a candidate at all — plus,
+for case-inconsistency specifically, the per-token prose-lowercase/capitalized counts and extent of
+the whole Title-Case run the conjunctive rule evaluated. Opt-in (`trace_suppression=True`); `L3Detector.
+detect` always asks for it, so it reaches every review-worthy candidate without every direct caller of
+`select_candidate_spans` needing to know the parameter exists. Carried, read-only, onto
+`ReviewItem.suppression_trace` (mirroring `adjudicator`, issue #348) and exposed on the same
+viewer-gated `GET /v1/management/review-inbox` response — never a store column, never attached to an
+outbound payload.
+
+This closes exactly the gap the "Update (issue #342)" section named: a future live-verify run's
+residual false positives are now attributable to one of two diagnoses — a token's own prose-lowercase
+evidence is genuinely absent (a source-vocabulary cause), or a qualifying token survived only because
+a non-qualifying run-mate defeated the conjunctive check (a rule cause) — from the review record
+itself, without needing the run's raw captures to still exist.
