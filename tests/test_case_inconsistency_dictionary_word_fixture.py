@@ -246,21 +246,31 @@ def test_zero_lowercase_token_vetoes_at_any_capitalized_count():
     assert "Wisteria" in reals
 
 
-def test_capitalized_dominant_token_still_vetoes():
+def test_capitalized_dominant_non_dictionary_token_still_vetoes():
     # ADR-0023 "Update (issue #358)" AC 4 -- the dictionary-class shape
-    # (Decision 2) keeps minting: capitalized dominance vetoes exactly as
-    # before, tie-abstain narrows only the exact-tie case.
+    # (Decision 2) keeps minting *when the word is not in the shipped
+    # wordlist*: capitalized dominance vetoes exactly as before, tie-abstain
+    # narrows only the exact-tie case. This test originally used a real
+    # dictionary word ("Meadow") to stand in for "the dictionary-class
+    # shape" -- ADR-0023's "Update (run-14 gate decisions)" (issue #362)
+    # supersedes that specific claim by shipping dictionary-informed
+    # clearing for exactly this ratio, so the word here is swapped for an
+    # invented, non-dictionary stand-in to keep testing the residual this
+    # condition still leaves alone: a capitalized-dominant token whose
+    # casefolded form is NOT in the wordlist still vetoes. The dictionary-word
+    # case this test used to cover now has its own regression test in
+    # tests/test_dictionary_informed_clearing.py.
     payload = {
         "model": "m",
         "messages": [
             {
                 "role": "user",
                 "content": (
-                    "Please note that Meadow will lead the workshop, Meadow "
-                    "will finalize the docs, and Meadow will also close "
-                    "things out, though Meadow still needs sign-off, and "
-                    "Meadow confirmed the date, since the meadow survey, the "
-                    "meadow report, and the meadow data need review."
+                    "Please note that Brannick will lead the workshop, Brannick "
+                    "will finalize the docs, and Brannick will also close "
+                    "things out, though Brannick still needs sign-off, and "
+                    "Brannick confirmed the date, since the brannick survey, the "
+                    "brannick report, and the brannick data need review."
                 ),
             }
         ],
@@ -269,10 +279,10 @@ def test_capitalized_dominant_token_still_vetoes():
     inbox = ReviewInbox()
     detector = L3Detector(_ConfirmEverything())
     evidence = extract_case_inconsistency_evidence_messages(payload)
-    assert evidence.capitalized_counts["meadow"] > evidence.lowercase_counts["meadow"]
+    assert evidence.capitalized_counts["brannick"] > evidence.lowercase_counts["brannick"]
     suppression = CaseInconsistencySuppression(evidence=evidence)
 
     blindfold_payload(payload, mapping, detector, inbox, case_inconsistency=suppression)
 
     reals = {item.real for item in inbox.list()}
-    assert "Meadow" in reals
+    assert "Brannick" in reals

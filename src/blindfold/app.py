@@ -2062,6 +2062,7 @@ def _suppression_trace_dict(trace: "SuppressionTrace | None") -> dict | None:
                                 "token": token.token,
                                 "lowercase_count": token.lowercase_count,
                                 "capitalized_count": token.capitalized_count,
+                                "in_common_word_list": token.in_common_word_list,
                             }
                             for token in condition.detail.tokens
                         ],

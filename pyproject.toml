@@ -84,6 +84,17 @@ devtools = [
     "rich>=13.7",
 ]
 
+# ADR-0023 "Update (run-14 gate decisions)" / issue #362: wordfreq generates the
+# vendored `common_english_words.txt` package-data file once, via
+# scripts/generate_common_english_words.py -- never a runtime dependency
+# (upstream froze its data in Sept 2024, per its own SUNSET.md, so a runtime
+# dep would buy no update stream while adding supply-chain surface inside a
+# privacy proxy's detection path). Its own transitive deps (regex, langcodes,
+# ftfy, ...) stay confined to this group for the same reason.
+wordlist = [
+    "wordfreq>=3.1",
+]
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
