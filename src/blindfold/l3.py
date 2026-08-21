@@ -596,11 +596,11 @@ def _case_inconsistency_suppressed_starts(
     ADR-0023 "Update (issue #358)", issue #359).
 
     Adjacent Title-Case tokens separated only by whitespace in ``text`` (the
-    same run a multi-word entity like "Project Halyard" would coalesce into
+    same run a multi-word entity like "Project Larkmoor" would coalesce into
     once confirmed) are evaluated together, **conjunctively with abstention**:
     a run is suppressed iff no member's ``case_inconsistency.evidence.verdict``
     is ``VETOES`` and at least one member's verdict is ``CLEARS``. A single
-    vetoing member (e.g. "Halyard", with no prose-lowercase evidence) protects
+    vetoing member (e.g. "Larkmoor", with no prose-lowercase evidence) protects
     the whole run, including a token that would individually clear
     ("Project", if "project" appears lowercase elsewhere in the payload) --
     disjunctive matching was measured and rejected (ADR-0023) because it
