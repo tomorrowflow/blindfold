@@ -796,3 +796,79 @@ as measured.
 - Both residuals above are now stated in the same register as the #301 and #342 ones: the
   tie-abstain residual (Decision 1) and the retained dictionary-class false-positive residual
   (Decision 2) are each named plainly rather than implied.
+
+## Update (#74 run 13): the projection missed by one new-source mint; the dictionary heuristic is rejected a second time
+
+### The measurement
+
+#74 **run 13** (build `a78ad45`, 2026-08-21) measured #59 precision at **75% — 6 genuine of 8
+mints** against the projected 86%. Series: 22% → 43% → 60% → 75%. Zero terminal blocks passed
+(exactly one block, on the *projected* dictionary-class survivor, self-recovered); clause A was
+clean on all 43 captures with the positive control firing, and — a first — #350's traces plus
+#357's mint-order-aware sweep attributed every hit automatically, with no hand audit.
+
+Everything the projection modelled, happened: the two product-name false positives are gone
+(the #356 seeds), the run-12 conjunctive-veto shape is gone (the #358 tie-abstain, whose
+protection side was also observed live — a genuine mint's generic token cleared at 28-vs-2 while
+its distinctive partner vetoed at 0-vs-1, keeping the pair minting), and the retained
+dictionary-class survivor minted as predicted. The miss is **one unprojected false positive**:
+a single-token ordinary noun at an exact 5-vs-5 tie, minted from the driving harness's own
+permission-rules text — the out-of-repo source class run 12's ceiling analysis named. Under
+Decision 1 of the #358 update it abstained (all-abstain runs mint, by decision); under the prior
+strict rule it would have minted identically, so this is a new *source*, not a rule regression —
+recorded here so the tie-abstain choice is not re-litigated on this evidence.
+
+### Decision A: the harness label is phrase-seeded
+
+The new false positive minted from **inside the literal two-word settings label
+`Repository visibility`** — the source of every one of its prose-capitalized occurrences
+(~32 per payload, in `system[]` *and* `messages[]`, so the #301 layer structurally cannot fire),
+recurring in every run because it is the driving client's own permissions text, unreachable by
+any repo-side change. `Repository visibility` joins `seeded_allowlist.txt` as a **phrase entry**
+in Decision 2's original evidence-first category — which is defined as "the framework tokens the
+live verify actually minted", a definition this entry meets literally — matched span-wise per the
+issue #294 mechanism, so the bare word alone keeps full novelty discovery everywhere else. The
+curation bar holds: a public client's own settings vocabulary, implausible as a protected
+referent when unregistered. Evidence-first discipline is kept strict: the sibling settings label
+visible in the same rules text did **not** mint and is not seeded.
+
+### Decision B: the dictionary heuristic is rejected a second time, and the re-arm narrows
+
+The #358 update's re-arm condition fired on its own terms: the bar failed and both residual
+false positives are ordinary nouns no case-evidence rule can reach (one capitalized-dominant at
+3-vs-5, one balanced at 5-vs-5). Re-taken with the run-13 attributions in hand, the verdict is
+**rejected again** — because both instances have strictly narrower fixes through existing
+mechanisms: the tie sits inside a stable literal phrase (Decision A above), and the
+capitalized-dominant one is exclusively structure-initial, which is a position-recognizer gap,
+not a vocabulary problem (ADR-0033, "Update (issue #360)" — one markdown structure the
+mid-sentence test misread). A dictionary filter would have caught both while buying the widest
+residual on offer; the narrow fixes catch both while buying almost none.
+
+**The narrowed re-arm condition:** this rejection is reopened only by a future live-verify run
+that fails the ≥80% bar with a dominant false-positive class of ordinary nouns that are
+**neither confined to a stable literal containing phrase nor exclusively structure-initial** —
+i.e., only when the narrow mechanisms are actually exhausted, not merely when the class label
+matches. Two firings, two rejections, each time because the evidence pointed at a narrower tool;
+the condition now encodes that pattern.
+
+### Run-14 projection, with the tolerance stated instead of implied
+
+On run-13 vocabulary, Decisions A and B-adjacent (#360) remove both residual false positives:
+**6 mints, 6 genuine — 100%**. Runs 11 and 13 each missed their projection by exactly one
+new-source false positive, so the projection is stated as a decision rule rather than a number:
+the ≥80% bar **survives exactly one** new-source false positive (6 of 7 = 86%) and **fails on
+two** (6 of 8 = 75%). Run 14 failing with one surprise means the source model was wrong again;
+failing with two means something structural changed. Banked series stays 22 → 43 → 60 → 75.
+
+### Consequences
+
+- The seed grows by one phrase entry with per-entry evidence (this run), inside an existing
+  category and its existing bound — no cap question is reopened.
+- The dictionary heuristic's residual (any real referent named after a common noun) is still
+  not bought. The cost of that: ordinary-noun false positives from genuinely novel sources will
+  keep appearing at up to one per run until sources stabilize, and the narrowed re-arm condition
+  is the escape valve if they stop being phrase-confinable or structure-initial.
+- The kind-assignment defect surfaced again: the balanced-tie mint carried no `entity_type`
+  from the inner adjudicator and received a person-name surrogate, so its block message named a
+  nonexistent person. Still a separate, already-filed defect; noted as recurring evidence.
+- #347's consolidation must carry this update and the #358 one.

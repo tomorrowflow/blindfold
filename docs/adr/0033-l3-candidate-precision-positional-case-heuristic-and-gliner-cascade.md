@@ -278,6 +278,62 @@ confidence to inform the escalation decision, if GLiNER is extended to return sc
   escape hatch this repo already uses for other GLiNER knobs is the natural place
   to add one if that need appears.
 
+- **Update (issue #360): table-cell starts join condition (b)'s boundary recognizer —
+  a margin-motivated flip, stated as that.** #74 run 13 measured one of its two
+  residual false positives as an ordinary noun (capitalized-dominant, 3 prose-lowercase
+  vs 5 capitalized at payload scope) whose every standalone capitalized occurrence is
+  structure-initial: markdown-heading-initial, bullet-initial, paragraph-initial after
+  a blank line — all *already* recognized boundaries per the #141 update — and
+  **table-cell-initial (the first word of a pipe-table cell), the one position the
+  recognizer did not know**. Those table-cell occurrences therefore read as
+  "capitalized mid-sentence" and disqualified the token under (b), even though its
+  lowercase form appears mid-sentence in the same hop (condition (a) held). The same
+  value, same profile, was measured in run 12. The amendment: a token occurrence
+  immediately following a table-cell boundary (`|`, optionally with whitespace) now
+  counts as positional for condition (b), alongside sentence/quotation/heading/
+  list-marker starts.
+
+  Two guardrails, both deliberate:
+
+  - **Table-cell position joins (b) only — NOT the #161 list-marker-evidence signal.**
+    Tables are precisely where genuine proper nouns concentrate (the run's own planted
+    contact table carries four real names in cells), so table-cell position must never
+    substitute for vocabulary evidence the way list-marker position may. A
+    table-cell-only token with no same-hop lowercase evidence keeps full candidacy.
+    The planted names in run 13's contact table stay discoverable by exactly this:
+    condition (a) can never fire on them (no lowercase forms exist), whichever
+    positions (b) recognizes — verified live in run 13, where all six planted
+    entities minted.
+  - **The mid-sentence gate stays load-bearing and untouched**: a token capitalized
+    mid-sentence anywhere in the hop is still never suppressed, whatever its other
+    positions. The Don/Mark/Stone guard is not weakened — its definition of
+    "mid-sentence" is corrected for one markdown structure it misread.
+
+  **Honesty about the trigger:** issue #360's own flip condition ("a second measured
+  structure-initial false positive") did not technically fire — run 13's second false
+  positive is mid-sentence-capitalized (handled in ADR-0023's run-13 update by a
+  phrase-seed), and the structure-initial instance is the *same value* recurring from
+  run 12, not a new member of the class. The flip is margin arithmetic instead: every
+  run since 10 has produced exactly one unprojected new-source false positive, and
+  without this amendment run 14's projection (7 mints) fails the ≥80% precision bar
+  on any single surprise (6/8 = 75%), while with it (6 mints) the bar survives one
+  (6/7 = 86%). Shipping a recognizer correction under existing guards was judged
+  cheaper than betting against a four-run pattern.
+
+  **Residual, stated plainly:** a real referent whose name appears *only* in
+  structural positions (headings, bullets, table cells, paragraph starts) *and* whose
+  lowercase form occurs mid-sentence in the same hop is now suppressed from L3
+  novelty discovery — the table-cell clause is new; the rest of that residual is
+  §1's original accepted risk. Registering the referent as a Term restores full
+  protection, and L1/L2 are untouched as always.
+
+  The fixture bar (in the #360 implementation issue): the measured false-positive
+  shape (structural-only capitalized + same-hop lowercase evidence) must be
+  suppressed; a table-cell name with no lowercase evidence must mint; a token also
+  capitalized mid-sentence must mint regardless of its table-cell occurrences; a
+  table-cell-only token with no vocabulary evidence must not be suppressed via the
+  list-marker path; a registered entity in a table cell is still blindfolded.
+
 ## Alternatives considered
 
 - **Condition (a) alone as a hard gate** — rejected: eats real names whenever the
