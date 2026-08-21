@@ -138,6 +138,108 @@ def test_seeded_allowlist_contains_the_issue_356_run_12_batch():
     assert {"Vault", "Presidio"} <= tokens
 
 
+def test_seeded_allowlist_contains_the_issue_361_run_13_phrase():
+    # Acceptance criterion (issue #361, ADR-0023 "Update (#74 run 13)", Decision
+    # A): the driving harness's own two-word permissions-settings label
+    # "Repository visibility" minted a false positive every run -- unreachable
+    # by any repo-side change, since it's Claude Code's own vocabulary, not the
+    # traffic Blindfold processes. Seeded as a phrase entry (issue #294
+    # mechanism) in the evidence-first category.
+    tokens = load_seeded_allowlist_tokens()
+
+    assert "Repository visibility" in tokens
+
+
+def test_issue_361_repository_visibility_phrase_is_never_flagged_as_an_l3_candidate_span():
+    # Acceptance criterion (issue #361): a capitalized token positioned inside
+    # a literal occurrence of the seeded phrase is excluded from L3 candidacy
+    # -- the issue #294 phrase-range mechanism, exercised here at the
+    # select_candidate_spans seam with zero adjudicator calls for "Repository"
+    # and "Visibility".
+    allowlist = Allowlist()
+    for token in load_seeded_allowlist_tokens():
+        allowlist.add(token)
+
+    text = "Repository visibility is set to private for this project."
+    candidates = select_candidate_spans(text, known_entities=[], allowlist=allowlist)
+
+    flagged = {c.text for c in candidates}
+    assert flagged.isdisjoint({"Repository", "Visibility"})
+
+
+def test_issue_361_repository_standalone_outside_the_phrase_still_becomes_a_candidate():
+    # Acceptance criterion (issue #361): component-suppression is not implicit
+    # (the #294 property, pinned for this entry) -- "Repository" occurring
+    # standalone, outside any literal occurrence of the seeded phrase, still
+    # becomes an L3 candidate and can mint.
+    allowlist = Allowlist()
+    for token in load_seeded_allowlist_tokens():
+        allowlist.add(token)
+
+    text = "The Repository was archived last week."
+    candidates = select_candidate_spans(text, known_entities=[], allowlist=allowlist)
+
+    flagged = {c.text for c in candidates}
+    assert "Repository" in flagged
+
+
+@pytest.mark.anyio
+async def test_registered_term_equal_to_the_issue_361_repository_visibility_phrase_is_still_blindfolded():
+    # Acceptance criterion (issue #361): protection always wins over
+    # suppression. A workspace that registers "Repository visibility" as its
+    # own protected Term must still see it blindfolded and restored, not
+    # silently egressed because the phrase is on the allowlist.
+    assert "Repository visibility" in load_seeded_allowlist_tokens()
+    mapping = SurrogateMapping.from_pairs([("Repository visibility", "Northwind Access Level")])
+    allowlist = Allowlist()
+    for token in load_seeded_allowlist_tokens():
+        allowlist.add(token)
+    detector = L3Detector(_NeverAnEntityAdjudicator(), allowlist=allowlist)
+    scripted_response = {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "Acknowledged, Northwind Access Level."}],
+        "model": "claude-3-5-sonnet",
+        "stop_reason": "end_turn",
+    }
+    recorded: list[httpx.Request] = []
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(
+        scripted_response, recorded
+    )
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_review_inbox] = lambda: ReviewInbox()
+    app.dependency_overrides[get_l3_detector] = lambda: detector
+    app.dependency_overrides[get_allowlist] = lambda: allowlist
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            resp = await client.post(
+                "/v1/messages",
+                json={
+                    "model": "m",
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": "Repository visibility is set to private.",
+                        }
+                    ],
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    egressed = recorded[0].content.decode("utf-8")
+    # Clause A: the real Term never crossed egress; only its surrogate did.
+    assert "Repository visibility" not in egressed
+    assert "Northwind Access Level" in egressed
+    # Clause B/D: the client gets the real value back, closed-world restored.
+    assert "Repository visibility" in resp.json()["content"][0]["text"]
+
+
 def test_issue_297_run_6_vendor_batch_excludes_notion():
     # Run 6's own named set (issue #297) includes "Notion", but the issue #281
     # GLiNER audit (tests/test_gliner_org_seed_audit.py,
