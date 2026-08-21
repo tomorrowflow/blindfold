@@ -31,9 +31,12 @@ absorbed.
 
 **Suppression** (CONTEXT.md) rules a token out of L3 candidacy — never protection: a
 suppressed token that is a registered Term or entity-graph surface is still blindfolded by
-L1/L2, which run first and always win (`select_candidate_spans` checks `known_surfaces`
-before any suppression condition). A region (system prompt, code fence) may inform a
-condition's evidence but is never skipped wholesale — every hop is still adjudicated.
+L1/L2, which run first and always win as their own detection layer, independent of L3
+candidacy — `select_candidate_spans`'s own loop checks the expanded-stopwords condition
+before `known_surfaces`, but that internal ordering has no bearing on L1/L2 protection,
+since L1/L2 never consult L3's candidate list. A region (system prompt, code fence) may
+inform a condition's evidence but is never skipped wholesale — every hop is still
+adjudicated.
 
 One span-granular exception exists (issue #294): a multi-word **allowlist** entry (learned
 or seeded) is matched against hop text as its own literal span
