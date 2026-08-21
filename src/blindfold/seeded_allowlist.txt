@@ -358,3 +358,14 @@ Processing trace
 Supervisor log
 Diagnostic session
 Exchange capture
+#
+# #74 run 13 harness-label false positive (issue #361, ADR-0023 "Update (#74
+# run 13)", Decision A). "Repository visibility" is the driving harness's own
+# two-word permissions-settings label -- the source of every one of its
+# prose-capitalized occurrences (system[] and messages[] both, so #301's
+# payload-region condition structurally can't fire), unreachable by any
+# repo-side change. Phrase entry (issue #294 span matching): only literal
+# occurrences of the two-word phrase are excluded from candidacy, never the
+# bare first word standalone. The sibling settings label visible in the same
+# rules text did NOT mint and is deliberately not seeded (evidence-first).
+Repository visibility
