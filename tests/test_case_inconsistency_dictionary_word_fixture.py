@@ -147,3 +147,132 @@ def test_shipped_default_keeps_both_dictionary_word_referents_and_suppresses_fal
         assert referent in reals
     for shape in _FALSE_POSITIVE_SHAPES:
         assert shape not in reals
+
+
+def test_tie_leading_a_clearing_run_is_suppressed():
+    # ADR-0023 "Update (issue #358)" AC 1 -- the run-12 failure shape: a run
+    # whose leading token sits at an exact nonzero tie (abstains) while its
+    # run-mate clears must be suppressed as a whole, closing the coin-flip
+    # veto that previously let a single tied token protect the run.
+    payload = {
+        "model": "m",
+        "messages": [
+            {
+                "role": "user",
+                "content": (
+                    "Please have Basic Falcon review the report before Friday. "
+                    "The team says this is a basic requirement everyone expects, "
+                    "and the falcon migration script needs another pass, and the "
+                    "falcon logo update is a separate matter."
+                ),
+            }
+        ],
+    }
+    mapping = SurrogateMapping.from_pairs([])
+    inbox = ReviewInbox()
+    detector = L3Detector(_ConfirmEverything())
+    evidence = extract_case_inconsistency_evidence_messages(payload)
+    assert evidence.lowercase_counts["basic"] == evidence.capitalized_counts["basic"]
+    assert evidence.lowercase_counts["falcon"] > evidence.capitalized_counts["falcon"]
+    suppression = CaseInconsistencySuppression(evidence=evidence)
+
+    blindfold_payload(payload, mapping, detector, inbox, case_inconsistency=suppression)
+
+    reals = {item.real for item in inbox.list()}
+    assert "Basic" not in reals
+    assert "Falcon" not in reals
+    assert "Basic Falcon" not in reals
+
+
+def test_all_abstain_run_mints():
+    # ADR-0023 "Update (issue #358)" AC 2 -- a run in which every member sits
+    # at an exact nonzero tie carries no clearing evidence at all, so it
+    # mints rather than being suppressed on zero evidence.
+    payload = {
+        "model": "m",
+        "messages": [
+            {
+                "role": "user",
+                "content": (
+                    "Please contact Quiet Harbor about the incident today. "
+                    "Everything stayed quiet during the harbor inspection."
+                ),
+            }
+        ],
+    }
+    mapping = SurrogateMapping.from_pairs([])
+    inbox = ReviewInbox()
+    detector = L3Detector(_ConfirmEverything())
+    evidence = extract_case_inconsistency_evidence_messages(payload)
+    assert evidence.lowercase_counts["quiet"] == evidence.capitalized_counts["quiet"]
+    assert evidence.lowercase_counts["harbor"] == evidence.capitalized_counts["harbor"]
+    suppression = CaseInconsistencySuppression(evidence=evidence)
+
+    blindfold_payload(payload, mapping, detector, inbox, case_inconsistency=suppression)
+
+    reals = {item.real for item in inbox.list()}
+    assert "Quiet Harbor" in reals
+
+
+def test_zero_lowercase_token_vetoes_at_any_capitalized_count():
+    # ADR-0023 "Update (issue #358)" AC 3 -- the distinctive-name signal
+    # stays an unconditional veto regardless of how high the capitalized
+    # count climbs.
+    payload = {
+        "model": "m",
+        "messages": [
+            {
+                "role": "user",
+                "content": (
+                    "Please schedule a briefing with Wisteria this week. "
+                    "Wisteria will also join the retro, and later Wisteria "
+                    "will send the summary, then Wisteria will archive the "
+                    "notes, and finally Wisteria signs off."
+                ),
+            }
+        ],
+    }
+    mapping = SurrogateMapping.from_pairs([])
+    inbox = ReviewInbox()
+    detector = L3Detector(_ConfirmEverything())
+    evidence = extract_case_inconsistency_evidence_messages(payload)
+    assert evidence.lowercase_counts.get("wisteria", 0) == 0
+    assert evidence.capitalized_counts["wisteria"] >= 5
+    suppression = CaseInconsistencySuppression(evidence=evidence)
+
+    blindfold_payload(payload, mapping, detector, inbox, case_inconsistency=suppression)
+
+    reals = {item.real for item in inbox.list()}
+    assert "Wisteria" in reals
+
+
+def test_capitalized_dominant_token_still_vetoes():
+    # ADR-0023 "Update (issue #358)" AC 4 -- the dictionary-class shape
+    # (Decision 2) keeps minting: capitalized dominance vetoes exactly as
+    # before, tie-abstain narrows only the exact-tie case.
+    payload = {
+        "model": "m",
+        "messages": [
+            {
+                "role": "user",
+                "content": (
+                    "Please note that Meadow will lead the workshop, Meadow "
+                    "will finalize the docs, and Meadow will also close "
+                    "things out, though Meadow still needs sign-off, and "
+                    "Meadow confirmed the date, since the meadow survey, the "
+                    "meadow report, and the meadow data need review."
+                ),
+            }
+        ],
+    }
+    mapping = SurrogateMapping.from_pairs([])
+    inbox = ReviewInbox()
+    detector = L3Detector(_ConfirmEverything())
+    evidence = extract_case_inconsistency_evidence_messages(payload)
+    assert evidence.capitalized_counts["meadow"] > evidence.lowercase_counts["meadow"]
+    suppression = CaseInconsistencySuppression(evidence=evidence)
+
+    blindfold_payload(payload, mapping, detector, inbox, case_inconsistency=suppression)
+
+    reals = {item.real for item in inbox.list()}
+    assert "Meadow" in reals

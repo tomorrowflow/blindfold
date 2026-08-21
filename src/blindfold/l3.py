@@ -31,6 +31,7 @@ import re
 import time
 from collections import OrderedDict
 from dataclasses import dataclass, field, replace
+from enum import Enum
 from functools import lru_cache
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
@@ -396,6 +397,19 @@ class L3ContentCache:
             self._entries.popitem(last=False)
 
 
+class CaseInconsistencyVerdict(Enum):
+    """A token's three-valued case-inconsistency evidence outcome (ADR-0023,
+    "Update (issue #358)"): ``CLEARS`` (lowercase dominance), ``VETOES``
+    (capitalized dominance or zero lowercase evidence at any count), or
+    ``ABSTAINS`` (an exact nonzero tie -- the token carries no evidence
+    either way).
+    """
+
+    CLEARS = "clears"
+    VETOES = "vetoes"
+    ABSTAINS = "abstains"
+
+
 @dataclass(frozen=True)
 class CaseInconsistencyEvidence:
     """Per-request case-inconsistency evidence (ADR-0023, "Update (issue #342)"),
@@ -420,15 +434,26 @@ class CaseInconsistencyEvidence:
     lowercase_counts: dict[str, int] = field(default_factory=dict)
     capitalized_counts: dict[str, int] = field(default_factory=dict)
 
-    def has_evidence(self, token: str) -> bool:
-        """True if ``token`` (a Title-Case candidate token) clears the
-        proportionate-evidence bar (issue #345): lowercase occurrences must
-        outnumber capitalized ones, so pervasive vocabulary (``pass``)
-        separates from incidental (``mark``).
+    def verdict(self, token: str) -> CaseInconsistencyVerdict:
+        """``token``'s (a Title-Case candidate token) three-valued case-
+        inconsistency verdict (ADR-0023, "Update (issue #358)"): ``CLEARS``
+        when lowercase occurrences outnumber capitalized ones (issue #345's
+        proportionate-evidence bar, unchanged); ``VETOES`` when capitalized
+        occurrences outnumber lowercase ones, or when there is zero lowercase
+        evidence at any capitalized count -- the distinctive-name signal;
+        ``ABSTAINS`` on an exact nonzero tie, where the token carries no
+        evidence either way.
         """
         key = token.casefold()
         lowercase_count = self.lowercase_counts.get(key, 0)
-        return lowercase_count > self.capitalized_counts.get(key, 0)
+        capitalized_count = self.capitalized_counts.get(key, 0)
+        if lowercase_count == 0:
+            return CaseInconsistencyVerdict.VETOES
+        if lowercase_count > capitalized_count:
+            return CaseInconsistencyVerdict.CLEARS
+        if lowercase_count == capitalized_count:
+            return CaseInconsistencyVerdict.ABSTAINS
+        return CaseInconsistencyVerdict.VETOES
 
 
 @dataclass(frozen=True)
@@ -462,7 +487,7 @@ SUPPRESSION_CONDITION_CASE_INCONSISTENCY = "case_inconsistency"
 @dataclass(frozen=True)
 class CaseInconsistencyRunToken:
     """One Title-Case run member's prose-lowercase/capitalized counts (issue
-    #350) -- the exact numbers ``CaseInconsistencyEvidence.has_evidence``
+    #350) -- the exact numbers ``CaseInconsistencyEvidence.verdict``
     compares for this token.
     """
 
@@ -476,13 +501,14 @@ class CaseInconsistencyRunDetail:
     """The case-inconsistency condition's evidence for one candidate's whole
     Title-Case run (issue #350): every member's counts, not just the
     candidate's own, plus the run's extent -- the exact inputs
-    ``_case_inconsistency_suppressed_starts``'s conjunctive rule evaluated.
+    ``_case_inconsistency_suppressed_starts``'s conjunctive-with-abstention
+    rule (ADR-0023 "Update (issue #358)", issue #359) evaluated.
 
     This is what lets a reviewer tell apart the two diagnoses #74 run 11
-    could not distinguish from its own output: a token whose own counts fail
-    ``has_evidence`` (a source-vocabulary cause) from a token whose own counts
-    pass but a run-mate's don't (a rule cause -- the conjunctive check
-    protected the whole run from suppression).
+    could not distinguish from its own output: a token whose own ``verdict``
+    is ``VETOES`` (a source-vocabulary cause) from a token whose own verdict
+    is ``CLEARS``/``ABSTAINS`` but a run-mate vetoes (a rule cause -- the
+    conjunctive check protected the whole run from suppression).
     """
 
     run_start: int
@@ -566,24 +592,32 @@ def _case_inconsistency_suppressed_starts(
     text: str, case_inconsistency: "CaseInconsistencySuppression | None"
 ) -> frozenset[int]:
     """Start offsets, in ``text``, of every capitalized token the fifth ADR-0023
-    suppression condition rules out (issue #344).
+    suppression condition rules out (issue #344; three-valued tie-abstain,
+    ADR-0023 "Update (issue #358)", issue #359).
 
     Adjacent Title-Case tokens separated only by whitespace in ``text`` (the
     same run a multi-word entity like "Project Halyard" would coalesce into
-    once confirmed) are evaluated together, **conjunctively**: every token of
-    the run must clear ``case_inconsistency.evidence.has_evidence`` for any of
-    them to be suppressed. A single unqualifying member (e.g. "Halyard", with
-    no prose-lowercase evidence) protects the whole run, including a token
-    that would individually qualify ("Project", if "project" appears
-    lowercase elsewhere in the payload) -- disjunctive matching was measured
-    and rejected (ADR-0023) because it preferentially eats real entity names,
-    which reliably pair a distinctive token with a generic one.
+    once confirmed) are evaluated together, **conjunctively with abstention**:
+    a run is suppressed iff no member's ``case_inconsistency.evidence.verdict``
+    is ``VETOES`` and at least one member's verdict is ``CLEARS``. A single
+    vetoing member (e.g. "Halyard", with no prose-lowercase evidence) protects
+    the whole run, including a token that would individually clear
+    ("Project", if "project" appears lowercase elsewhere in the payload) --
+    disjunctive matching was measured and rejected (ADR-0023) because it
+    preferentially eats real entity names, which reliably pair a distinctive
+    token with a generic one. An exact nonzero tie ``ABSTAINS`` rather than
+    protecting the run: it no longer single-handedly shields a run whose
+    other members clear (the run-12 failure shape), but an all-abstain run
+    still mints -- suppression on zero evidence would be unmeasured.
     """
     if case_inconsistency is None:
         return frozenset()
     suppressed: set[int] = set()
     for run in _capitalized_token_runs(text):
-        if all(case_inconsistency.evidence.has_evidence(m.group(0)) for m in run):
+        verdicts = [case_inconsistency.evidence.verdict(m.group(0)) for m in run]
+        vetoed = any(v is CaseInconsistencyVerdict.VETOES for v in verdicts)
+        cleared = any(v is CaseInconsistencyVerdict.CLEARS for v in verdicts)
+        if not vetoed and cleared:
             suppressed.update(m.start() for m in run)
     return frozenset(suppressed)
 
@@ -689,16 +723,18 @@ def select_candidate_spans(
     "Apple" or "Development" alone — components are not implicitly
     non-sensitive just because one phrase containing them was rejected.
 
-    ``case_inconsistency`` (ADR-0023, "Update (issue #342)", issue #345) is
-    the fifth suppression condition: a :class:`CaseInconsistencySuppression`
-    bundling per-request evidence (see
+    ``case_inconsistency`` (ADR-0023, "Update (issue #342)", issue #345;
+    three-valued tie-abstain, "Update (issue #358)", issue #359) is the fifth
+    suppression condition: a :class:`CaseInconsistencySuppression` bundling
+    per-request evidence (see
     :func:`~blindfold.engine.extract_case_inconsistency_evidence_messages` /
-    ``_chat_completions``) evaluated against the proportionate-evidence rule
-    (issue #344's fixture decided it; issue #345 shipped it as the only
-    rule). ``None`` (this function's own default) reproduces candidate
+    ``_chat_completions``) evaluated per token as ``CLEARS``/``VETOES``/
+    ``ABSTAINS`` (issue #344's fixture decided proportionate evidence;
+    issue #358 split the strict comparison into three outcomes on an exact
+    nonzero tie). ``None`` (this function's own default) reproduces candidate
     selection with the condition off; the app boundary constructs one for
     every real exchange. See :func:`_case_inconsistency_suppressed_starts`
-    for the conjunctive, run-granular mechanics.
+    for the conjunctive-with-abstention, run-granular mechanics.
 
     ``trace_suppression`` (issue #350) attaches a :class:`SuppressionTrace` to
     every surviving :class:`CandidateSpan`, naming each of the five ADR-0023

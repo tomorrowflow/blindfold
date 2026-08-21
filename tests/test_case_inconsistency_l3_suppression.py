@@ -54,6 +54,7 @@ from blindfold.l3 import (
     CandidateSpan,
     CaseInconsistencyEvidence,
     CaseInconsistencySuppression,
+    CaseInconsistencyVerdict,
     L3Adjudication,
     L3Detector,
     select_candidate_spans,
@@ -79,15 +80,46 @@ def test_no_case_inconsistency_argument_reproduces_todays_candidate_selection():
     assert {c.text for c in candidates} == {"Pass", "Mark", "Stone"}
 
 
-def test_has_evidence_takes_no_threshold_and_applies_proportionate_evidence():
-    # Issue #345: the threshold parameter is gone -- proportionate evidence
-    # (lowercase occurrences must outnumber capitalized ones) is the only rule.
+def test_verdict_clears_when_lowercase_outnumbers_capitalized():
+    # Issue #358/#359: token evidence is three-valued now -- lowercase
+    # dominance clears, unchanged from the old proportionate-evidence rule.
     evidence = CaseInconsistencyEvidence(
-        lowercase_counts={"pass": 5, "mark": 1}, capitalized_counts={"pass": 1, "mark": 3}
+        lowercase_counts={"pass": 5}, capitalized_counts={"pass": 1}
     )
 
-    assert evidence.has_evidence("Pass") is True
-    assert evidence.has_evidence("Mark") is False
+    assert evidence.verdict("Pass") is CaseInconsistencyVerdict.CLEARS
+
+
+def test_verdict_vetoes_when_capitalized_outnumbers_lowercase():
+    # ADR-0023 "Update (issue #358)", Decision 2: a capitalized-dominant
+    # token (the dictionary-class survivor's own shape) keeps vetoing --
+    # tie-abstain narrows only the exact-tie case, not this one.
+    evidence = CaseInconsistencyEvidence(
+        lowercase_counts={"mark": 3}, capitalized_counts={"mark": 5}
+    )
+
+    assert evidence.verdict("Mark") is CaseInconsistencyVerdict.VETOES
+
+
+def test_verdict_abstains_on_an_exact_nonzero_tie():
+    # Decision 1's namesake case: equal nonzero counts carry no evidence
+    # either way and neither protect nor condemn their run.
+    evidence = CaseInconsistencyEvidence(
+        lowercase_counts={"mark": 1}, capitalized_counts={"mark": 1}
+    )
+
+    assert evidence.verdict("Mark") is CaseInconsistencyVerdict.ABSTAINS
+
+
+def test_verdict_vetoes_on_zero_lowercase_at_any_capitalized_count():
+    # The distinctive-name signal stays an unconditional veto: zero lowercase
+    # evidence vetoes regardless of how many times the token is capitalized,
+    # including a token never seen lowercase at all (0-vs-0).
+    evidence = CaseInconsistencyEvidence(
+        lowercase_counts={}, capitalized_counts={"quentin": 7}
+    )
+
+    assert evidence.verdict("Quentin") is CaseInconsistencyVerdict.VETOES
 
 
 def test_case_inconsistency_suppression_no_longer_carries_a_threshold_field():
@@ -174,7 +206,7 @@ def test_conjunctive_rule_protects_a_multiword_candidate_missing_one_tokens_evid
     assert {c.text for c in candidates} == {"Project", "Halyard"}
 
 
-def test_conjunctive_rule_suppresses_whole_run_when_every_token_has_evidence():
+def test_conjunctive_rule_suppresses_whole_run_when_every_token_clears():
     text = "Northern Data handles this account."
     evidence = CaseInconsistencyEvidence(
         lowercase_counts={"northern": 2, "data": 2},
