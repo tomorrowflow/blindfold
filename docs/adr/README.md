@@ -36,7 +36,7 @@ Vocabulary follows [`../../CONTEXT.md`](../../CONTEXT.md).
 | [0020](0020-verify-pass-split-into-egress-gates.md) | Split verify pass into a pre-egress leak gate + a post-restore resolution gate (SEC-5/SEC-6) | Accepted |
 | [0021](0021-runnable-entrypoint-loopback-and-root-token-guard.md) | Runnable entry point — loopback-bound default + root-token startup guard (UX-2/SEC-11/SEC-2) | Accepted |
 | [0022](0022-wire-l3-adjudicator-local-ollama.md) | Wire the L3 adjudicator (local Ollama) — single mint-pass, local-only, fail-closed | Accepted |
-| [0023](0023-l3-suppression-token-granularity.md) | L3 suppression for coding-agent traffic — token-granularity only | Accepted |
+| [0023](0023-l3-suppression-token-granularity.md) | L3 suppression for coding-agent traffic — token-granularity only | Superseded by ADR-0053 |
 | [0024](0024-inflection-robust-restore-bounded-suffixes.md) | Inflection-robust restore — word-boundary matching + bounded German suffix set | Accepted |
 | [0026](0026-management-spa-built-bundle-one-process.md) | Management SPA rebuild — Vite+React, vendored built bundle, one process | Accepted |
 | [0027](0027-blocked-503s-carry-actionable-message-and-management-url.md) | Blocked 503s carry an actionable message + management_url deep link, never a synthetic 200 | Accepted |
@@ -51,5 +51,6 @@ Vocabulary follows [`../../CONTEXT.md`](../../CONTEXT.md).
 | [0049](0049-gliner-cascade-is-the-default-detection-path.md) | The GLiNER cascade is the default detection path, provisioned at Setup | Accepted |
 | [0050](0050-leak-gate-scope-symmetry-word-boundary-plus-mint-time-coverage.md) | Leak-gate scope symmetry — word-boundary matching + mint-time coverage refusal | Accepted (rejected-option section reversed by 0051) |
 | [0051](0051-deterministic-blinder-set-equals-leak-gate-set.md) | The deterministic blinder's known-value set equals the leak gate's checked set | Accepted |
+| [0053](0053-l3-suppression-consolidated-rule-set.md) | L3 suppression — consolidated rule set and acceptance gate (supersedes ADR-0023) | Accepted |
 
 New ADRs: copy [`0000-template.md`](0000-template.md), take the next number.

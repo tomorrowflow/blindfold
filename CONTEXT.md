@@ -287,8 +287,8 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   occurrence — still a bounded span the allowlist itself names, never a
   region. Suppression never affects L1/L2 protection — a suppressed token that
   is a known entity is still blindfolded.
-- **Payload-region confinement** — a **Suppression** condition (ADR-0023,
-  "Update (issue #301)") that treats a capitalized token's presence in
+- **Payload-region confinement** — a **Suppression** condition (ADR-0053; history:
+  ADR-0023 "Update (issue #301)") that treats a capitalized token's presence in
   `system[]` alone as evidence it is framework/product prose, not a protected
   referent: a token every one of whose occurrences across the whole payload
   falls inside `system[]` is suppressed from L3 candidacy, `system[]`'s own
@@ -300,8 +300,8 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   workspace persistence (issue #302). Run 7 evidence: 25 of 43 review-inbox
   mints were system-confined and every one was a false positive; all 6
   genuine referents occurred at least once in `messages[]`.
-- **Case-inconsistency suppression** — a **Suppression** condition (ADR-0023,
-  "Update (issue #342)") that treats a capitalized token's own lowercase form
+- **Case-inconsistency suppression** — a **Suppression** condition (ADR-0053; history:
+  ADR-0023 "Update (issue #342)") that treats a capitalized token's own lowercase form
   occurring in the same **request payload** as evidence it is ordinary
   vocabulary, not a protected referent. Only **prose** occurrences count: a
   lowercase form inside an email address, a URL, or a dotted-or-hyphenated
@@ -410,7 +410,7 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   occurring anywhere else in the payload still blocks normally. Free-text schema
   prose (`input_schema.properties.*.description`) is not in this closed set — it is
   blindable, so the symmetry there is restored by widening the blinder instead
-  (ADR-0023 §3), not by narrowing the gate.
+  (ADR-0053; history: ADR-0023 §3), not by narrowing the gate.
 - **Sliding-window restore** — streaming restore that holds back a tail buffer (≥
   the longest known surrogate) so surrogates split across stream chunks are matched
   before emitting; tool-call JSON is reassembled before restoring inside it.
