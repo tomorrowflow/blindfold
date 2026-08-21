@@ -634,11 +634,9 @@ def _is_dictionary_informed_clearing(
     """
     if len(run) != 1:
         return False
-    token = run[0].group(0)
-    lowercase_count = case_inconsistency.evidence.lowercase_counts.get(
-        token.casefold(), 0
-    )
-    return lowercase_count >= 1 and token.casefold() in _COMMON_ENGLISH_WORDS
+    key = run[0].group(0).casefold()
+    lowercase_count = case_inconsistency.evidence.lowercase_counts.get(key, 0)
+    return lowercase_count >= 1 and key in _COMMON_ENGLISH_WORDS
 
 
 def _case_inconsistency_suppressed_starts(
