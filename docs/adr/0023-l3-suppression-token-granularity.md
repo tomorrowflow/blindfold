@@ -714,7 +714,7 @@ Why this shape and not a broader one, decided against the run-12 evidence:
 
 - **`lowercase == 0` stays an unconditional veto.** Zero lowercase evidence is precisely the
   distinctive-name signal: 11 of the 12 genuine-mint tokens in run 12 have it, and it is what
-  keeps `Project Halyard`-class names minting. The #342 update's conjunctive-over-disjunctive
+  keeps `Project Larkmoor`-class names minting. The #342 update's conjunctive-over-disjunctive
   asymmetry ("a real entity name reliably pairs a distinctive token with a generic one") is
   preserved by construction — this change never weakens a distinctive token's veto, it only
   removes the veto from tokens whose evidence is an exact nonzero tie.
