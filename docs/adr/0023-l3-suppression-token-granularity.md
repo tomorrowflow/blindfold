@@ -1,6 +1,6 @@
 # ADR-0023: L3 suppression for coding-agent traffic — token-granularity only
 
-**Status:** Accepted
+**Status:** Superseded by [ADR-0053](0053-l3-suppression-consolidated-rule-set.md)
 **Date:** 2026-07-08
 
 ## Context
