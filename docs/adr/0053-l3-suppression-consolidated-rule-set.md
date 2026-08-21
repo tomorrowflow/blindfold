@@ -47,10 +47,13 @@ allowlist names, reachable only through an existing entry, never inferred from c
 and it is not implicit: rejecting a two-word phrase does not suppress either of its
 component words standing alone elsewhere.
 
-### The five suppression conditions, evaluated in order
+### The five suppression conditions
 
-`select_candidate_spans` (l3.py) evaluates five conditions, in this order
-(`SUPPRESSION_CONDITION_SEEDED_ALLOWLIST` through `SUPPRESSION_CONDITION_CASE_INCONSISTENCY`):
+`select_candidate_spans` (l3.py) applies five conditions, enumerated here in their canonical
+trace order (`SUPPRESSION_CONDITION_SEEDED_ALLOWLIST` through
+`SUPPRESSION_CONDITION_CASE_INCONSISTENCY`) — the order the `SuppressionTrace` reports and the
+constants are defined, not the order the loop's guards happen to fire (each is an exclusionary
+check, so guard order changes no outcome; the loop in fact tests expanded stopwords first):
 
 1. **Seeded allowlist** — a curated data file (`seeded_allowlist.txt`) loaded into the
    process-global `Allowlist` at startup with semantics identical to a learned reject.
