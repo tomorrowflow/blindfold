@@ -331,7 +331,15 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   is absent entirely (the distinctive-name signal), and *abstains* on an
   exact nonzero tie — equal counts carry no evidence either way, so a tie
   neither protects nor condemns its run, and a run in which every token
-  abstains mints. Issue #344's dictionary-word
+  abstains mints. **Dictionary-informed clearing (run-14 gate decision)**: a
+  **single-token** run whose casefolded form appears in the shipped
+  common-English wordlist and has at least one prose-lowercase occurrence in
+  the payload also clears — English-only (German surname homographs are
+  excluded by design), never for multi-word runs, and never when lowercase
+  evidence is absent entirely (zero prose-lowercase occurrences always mint,
+  whatever the wordlist says). Its residual: a real person referred to only
+  by a bare dictionary-word first name, with that word also used lowercase in
+  the same payload, is suppressed. Issue #344's dictionary-word
   fixture measured this against the alternative (bare presence — any single
   lowercase occurrence suffices), which loses a real referent built from an
   ordinary word right alongside every false positive; proportionate evidence

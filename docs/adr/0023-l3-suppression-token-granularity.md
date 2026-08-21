@@ -872,3 +872,127 @@ failing with two means something structural changed. Banked series stays 22 → 
   from the inner adjudicator and received a person-name surrogate, so its block message named a
   nonexistent person. Still a separate, already-filed defect; noted as recurring evidence.
 - #347's consolidation must carry this update and the #358 one.
+
+## Update (run-14 gate decisions, 2026-08-21): dictionary-informed clearing ships, and the acceptance bars become budgets
+
+### Context: the plateau is structural, not incidental
+
+Runs 11, 12 and 13 (43% → 60% → 75%, bar 80%) each missed their pre-run projection for the same
+reason: one novel false positive from **out-of-repo environment text** — the driving harness's
+permission-rule labels and its auto-loaded memory index. Run 12's writeup named this class as
+the source-side ceiling. No shipped mechanism reaches it: the #301 region confinement cannot
+fire (the source text occurs in `system[]` *and* `messages[]`), the #360 positional widening
+does not apply (mid-sentence capitalized), the case-evidence family cannot reach it by its own
+admission (ordinary nouns at ties or capitalized-dominant ratios), and per-token seeding (#356)
+does not generalize — every user environment carries different labels. Measure → seed-the-token
+→ re-run does not terminate, and the beta means arbitrary environments.
+
+### Decision 1: dictionary-informed clearing joins the fifth condition
+
+> For a **single-token** Title-Case run, a candidate whose casefolded form appears in a shipped
+> common-English wordlist **and** has at least one prose-lowercase occurrence in the payload
+> **clears** (is suppressed). Multi-word runs are untouched — the #358 three-valued rule governs
+> them unchanged. A token with **zero** prose-lowercase occurrences still mints unconditionally,
+> whatever the wordlist says: absence of lowercase evidence remains the universal
+> distinctive-name signal.
+
+This is ADR-0033 §3's deferred frequency lever finally arriving with decision-impact wiring.
+The wordlist is a **static vendored package-data file** (the `seeded_allowlist.txt` pattern):
+generated once by a committed script from `wordfreq` (dev-dependency only), reviewed and
+versioned as a flat diffable file. A runtime `wordfreq` dependency was considered and rejected
+on a decisive fact: upstream froze its data permanently in September 2024 (its `SUNSET.md` —
+post-2021 web text is too LLM-polluted to measure human usage), so a runtime dependency buys no
+update stream while costing supply-chain surface (plus transitive dependencies) inside a privacy
+proxy's detection path. The common-word tier this decision consumes is in any case static on
+decade timescales. If a maintained successor ever appears, the generation script is the single
+swap point.
+
+**Why not environment-text suppression (the structural alternative), rejected on two measured
+grounds.** (1) Run 13's own false positive breaks the confinement rule that option requires
+("suppress only when every occurrence sits inside recognizable scaffolding"): the token's payload
+occurrences include the session's *own* grep commands and tool-result echoes of the label, which
+sit outside any recognizable scaffolding — and patching that with an assistant-echo exclusion is
+a new carve-out with its own failure modes. (2) The option's required safety statement cannot be
+written: run 7 *measured* `CLAUDE.md`, the memory index and the operator's email arriving as
+`<system-reminder>` blocks — scaffolding-confinement suppression would blind novelty discovery
+exactly where this client concentrates operator vocabulary, the same premise-1 mistake this ADR
+has now twice refused (`system[]` skip; region skip).
+
+**Why not continued per-token seeding, rejected explicitly:** it cannot terminate. Each seed is
+reactive to one environment's labels, arrives only after the noise, and the vocabulary is
+unbounded across beta environments. The seed remains what it is — an evidence-first store for
+public vendor/tool identifiers — not a strategy for this class.
+
+**The flip, engaged rather than overwritten.** This ADR rejected the dictionary heuristic twice
+in three days (#358; the run-13 update above), and the second rejection wrote a narrowed re-arm
+condition that deliberately waited for another failing run. What changed is not run evidence —
+it is the question. Both rejections evaluated *instance fixes for the next run on this rig*, and
+were right on those terms; the wait-for-failure re-arm can only learn one environment per
+failure, which is structurally the wrong loop for "terminate against arbitrary beta
+environments". Recorded as a scope-driven decision, not an evidence contradiction. The narrowed
+re-arm condition is **superseded** by this ship decision.
+
+**The residual, stated plainly:** a real person referred to *only* by a bare dictionary-word
+first name, in a payload where that word also occurs prose-lowercase at least once, is now
+suppressed from L3 novelty discovery. Every genuine mint in runs 10–13 and both #344 fixture
+referents are multi-word and untouched by construction; the guard scope is **English-only**
+(German is excluded outright — the surname-homograph class ADR-0033 already names). The #344
+fixture family remains the regression bar: both dictionary-word referents keep minting under the
+shipped tie-abstain semantics, every genuine run-10–13 shape keeps minting, and the
+bare-first-name residual is pinned as *documented behavior* with its own test rather than left
+implicit. The #350 trace must record dictionary-informed clearing distinguishably from
+count-based clearing, so future run audits can attribute it. Implementation issue filed
+separately for Sandcastle.
+
+### Decisions 2 and 3: the acceptance bars become budgets, and the ratio stops gating
+
+The #342 update's two numeric bars (precision ≥ 80% AND zero terminal blocks) have a measurement
+defect at this denominator: with 6 brief-fixed genuine mints, precision moves in ~12-point steps
+and "≥80%" means "at most one false positive" — run outcomes are decided by whether the
+environment contributes one or two novel labels. A bar a single unlucky token can flip is not an
+acceptance gate. Pooling across runs was rejected (each run measures a different build; a pooled
+number averages exactly what the runs exist to distinguish). Enlarging the brief was rejected
+(recall is perfect, so every added planted referent is a guaranteed numerator point —
+denominator padding that moves the ratio without moving the variable; the genuine count is
+brief-fixed, so the ratio was always false-positive count wearing a misleading scale).
+
+**The amended #74/#59 acceptance gate, superseding the #342-update bars:**
+
+> 1. **Clause A clean** (no real entity value egresses — unchanged).
+> 2. **Zero terminal blocks** (unchanged).
+> 3. **At most 2 false positives per session**, where a false positive is one review-inbox item
+>    audited non-genuine after the run (a multi-word span is one item).
+
+The precision ratio is **demoted to a tracked metric** — the 22 → 43 → 60 → 75 series stays
+reported for trend, and gates nothing. Rationale: recall has been perfect and clause A clean for
+five consecutive runs; every block self-recovers or is gated by bar 2; the review inbox exists
+precisely to absorb false positives (ADR-0010's human-in-the-loop premise), and their cost —
+inbox items, occasional self-recovered 503s, odd surrogates in upstream traffic, never in the
+restored deliverable — is a UX cost, not a privacy cost. Privacy and availability catastrophes
+are gated by bars 1 and 2 in their own terms. **N=2 rationale:** the environment measurably
+contributes 1–2 novel labels per session; ≤2 passes a session with nominal environment noise and
+fails any detector or repo regression (historically ≥3). **Stated consequence, not discovered
+later:** run 13 (2 false positives) retroactively passes this gate; run 14 is therefore
+confirmation on the new build rather than a gate attempt, and #74 becomes closable on a passing
+run 14.
+
+### Run-14 projection, and what it does not model
+
+With #360 (table-cell recognizer), #361 (phrase seed) and this update's clearing shipped:
+**0 false positives from run-13 sources, against a budget of 2.** Explicitly un-modeled — the
+classes the projection cannot see, listed so run 14 cannot repeat runs 11–13's silent
+over-count: (1) **harness proper-noun vocabulary** (the run-12 memory-index mint's class: not a
+dictionary word, not phrase-confined, not structure-initial — reached by nothing shipped);
+(2) **model-output-minted artifacts** (the #304 class); (3) **out-of-repo tool results** the
+session pulls in (`gh` output, web content). Each novel instance from these classes consumes one
+of the two budget slots.
+
+### Consequences
+
+- The fifth condition's operative definition now has three clearing paths for a token
+  (lowercase-dominance; tie-abstain aggregation; dictionary-informed for single-token runs) and
+  one universal mint-protector (zero prose-lowercase evidence). CONTEXT.md's glossary entry is
+  amended to match.
+- #347's consolidation must swallow this update too — it is flipped to Sandcastle-ready
+  alongside this decision, so the successor lands before run 15.
+- The seed and allowlist are untouched by this decision.
