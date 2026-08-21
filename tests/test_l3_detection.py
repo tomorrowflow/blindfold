@@ -358,6 +358,89 @@ def test_positional_case_heuristic_does_not_suppress_a_bullet_initial_name_also_
     assert [candidate.text for candidate in candidates] == ["Mark", "Mark"]
 
 
+def test_positional_case_heuristic_covers_table_cell_starts():
+    # ADR-0033 "Update (issue #360)": the measured false-positive shape (#74 runs
+    # 12/13) is a token capitalized only at structure-initial positions --
+    # heading/bullet/paragraph starts (already recognised) plus table-cell-initial
+    # (the first word of a markdown pipe-table cell, the position the recognizer
+    # didn't know) -- with its lowercase form recurring mid-sentence in the same
+    # hop. "Status" sits only at a table-cell start here and "status" recurs
+    # lowercase later, so it must be suppressed exactly like a bullet-initial noise
+    # word.
+    text = (
+        "| status |\n"
+        "| --- |\n"
+        "| Status |\n"
+        "Please check the status before proceeding.\n"
+    )
+
+    candidates = select_candidate_spans(text, known_entities=[])
+
+    assert [candidate.text for candidate in candidates] == []
+
+
+def test_positional_case_heuristic_does_not_suppress_a_table_cell_name_with_no_vocabulary_evidence():
+    # ADR-0033 "Update (issue #360)" guardrail: table-cell position joins
+    # condition (b) (positional evidence) only -- it must never substitute for
+    # vocabulary evidence the way #161's list-marker signal may, because tables
+    # are precisely where genuine proper nouns concentrate (a contact table).
+    # "Nordwind" sits only at a table-cell start, with no lowercase recurrence
+    # anywhere in the hop, so it must still mint.
+    text = (
+        "| Company |\n"
+        "| --- |\n"
+        "| Nordwind |\n"
+        "Please review the attached contract.\n"
+    )
+
+    candidates = select_candidate_spans(text, known_entities=[])
+
+    flagged = {candidate.text for candidate in candidates}
+    assert "Nordwind" in flagged
+
+
+def test_positional_case_heuristic_does_not_suppress_a_table_cell_name_also_capitalized_mid_sentence():
+    # ADR-0033 "Update (issue #360)" guardrail: the mid-sentence gate stays
+    # load-bearing and untouched -- a token capitalized mid-sentence anywhere in
+    # the hop is never suppressed, whatever its other positions. "Mark" sits at
+    # a table-cell start here (no vocabulary evidence -- "mark" never recurs
+    # lowercase) but also appears mid-sentence later in the same hop, so
+    # positional evidence (b) fails and the table-cell signal never gets a
+    # chance to fire (the Don/Mark/Stone guard).
+    text = (
+        "| Assignee |\n"
+        "| --- |\n"
+        "| Mark |\n"
+        "The lawyer said Mark signed the contract yesterday.\n"
+    )
+
+    candidates = select_candidate_spans(text, known_entities=[])
+
+    assert [candidate.text for candidate in candidates].count("Mark") == 2
+
+
+def test_positional_case_heuristic_does_not_suppress_a_repeated_table_cell_only_token_via_list_marker_path():
+    # ADR-0033 "Update (issue #360)" guardrail 1, pinned directly: table-cell
+    # position joins condition (b) only -- it must never be treated as
+    # #161's list-marker-evidence signal, which alone (without vocabulary
+    # evidence) is enough to suppress. "Nordwind" recurs at table-cell starts
+    # across multiple rows here, with zero lowercase recurrence anywhere in the
+    # hop -- if table-cell position wrongly counted as list-marker evidence,
+    # this repeated-no-vocabulary shape is exactly what would flip to
+    # suppressed. It must still mint, on every occurrence.
+    text = (
+        "| Company |\n"
+        "| --- |\n"
+        "| Nordwind |\n"
+        "| Nordwind |\n"
+        "Please review the attached contracts.\n"
+    )
+
+    candidates = select_candidate_spans(text, known_entities=[])
+
+    assert [candidate.text for candidate in candidates].count("Nordwind") == 2
+
+
 def test_registered_entity_colliding_with_positional_case_noise_is_still_blindfolded():
     # Leak-audit / ADR-0033: suppression removes L3 novelty discovery only, never
     # L1/L2 protection. "Build" is positional-case noise here (sentence-start
@@ -427,6 +510,42 @@ def test_registered_entity_colliding_with_list_marker_noise_is_still_blindfolded
     assert surrogate in blinded["system"]
     message_text = blinded["messages"][0]["content"][0]["text"]
     assert "triage" not in message_text.lower()
+    assert surrogate in message_text
+
+
+def test_registered_entity_colliding_with_table_cell_noise_is_still_blindfolded():
+    # Leak-audit (clause A) / ADR-0033 "Update (issue #360)": the new
+    # table-cell-boundary positional-evidence path removes L3 novelty discovery
+    # only, never L1/L2 protection. "Status" here is table-cell-position noise
+    # (table-cell-initial, lowercase form recurs mid-sentence -- exactly the
+    # #360 shape) -- but a workspace that has registered "Status" as a known
+    # entity must still have every occurrence blindfolded, including the one
+    # inside the table cell, unaffected by the L3 candidate-span heuristic.
+    mapping = SurrogateMapping.from_pairs([("Status", "Projekt Nachtwind")])
+    payload = {
+        "model": "claude-3-5-sonnet",
+        "system": "| status |\n| --- |\n| Status |",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Please check the status before proceeding.",
+                    }
+                ],
+            }
+        ],
+    }
+
+    blinded, _session = blindfold_payload(payload, mapping)
+
+    surrogate = mapping.surrogate_for("Status")
+    assert surrogate is not None
+    assert "Status" not in blinded["system"]
+    assert surrogate in blinded["system"]
+    message_text = blinded["messages"][0]["content"][0]["text"]
+    assert "status" not in message_text.lower()
     assert surrogate in message_text
 
 

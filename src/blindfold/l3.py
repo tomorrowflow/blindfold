@@ -104,7 +104,11 @@ _PHONE_SHAPED_RE = re.compile(
 # line (covers markdown headings and bullet/numbered list markers, optionally
 # followed by a bold-label marker -- issue #141: "- **Assist**: ..." nests a
 # bold label inside a bullet, separated from the bullet marker by a space),
-# after sentence-ending punctuation, or right after an opening quotation mark.
+# after sentence-ending punctuation, right after an opening quotation mark, or
+# (issue #360) right after a markdown pipe-table cell boundary (`|`, optionally
+# followed by whitespace) -- the first word of a table cell, which none of the
+# other branches recognise since it is neither a line start nor sentence-final
+# punctuation.
 _POSITION_START_RE = re.compile(
     r"""
     (?: (?:\A|\n)[ \t]*(?:[#>*+-]+|\d+[.)])?[ \t]*(?:\*\*|__)?[ \t]*
@@ -113,6 +117,7 @@ _POSITION_START_RE = re.compile(
                                              # bold-label marker (**Label**/__Label__)
       | [.!?]["'’”)\]]*\s+                  # end of a sentence
       | ["'‘“]                              # an opening quotation mark
+      | \|[ \t]*                            # a markdown table-cell boundary (issue #360)
     )
     ["'‘“]?                                 # the marker may itself be followed by an opening quote
     \Z
@@ -743,12 +748,16 @@ def select_candidate_spans(
     A fourth suppression condition — the ADR-0033 positional case heuristic —
     runs after the three above: a token is suppressed when it has positional
     evidence (it is never capitalized mid-sentence in this hop — only at a
-    sentence, quotation, heading, or list-marker start) AND either vocabulary
-    evidence (its lowercase form appears as a standalone word elsewhere in
-    this hop) or list-marker evidence (issue #161: at least one occurrence
-    sits at a list/numbered-marker start specifically, the shape of an
-    agentic system prompt's one-off skill/tool list, where "vocabulary
-    evidence" would never fire since each item's name is used exactly once).
+    sentence, quotation, heading, list-marker, or table-cell start (issue
+    #360)) AND either vocabulary evidence (its lowercase form appears as a
+    standalone word elsewhere in this hop) or list-marker evidence (issue
+    #161: at least one occurrence sits at a list/numbered-marker start
+    specifically, the shape of an agentic system prompt's one-off skill/tool
+    list, where "vocabulary evidence" would never fire since each item's name
+    is used exactly once). Table-cell position joins positional evidence only
+    — never list-marker evidence — since tables are where genuine proper
+    nouns concentrate (a contact table); a table-cell-only token with no
+    vocabulary evidence still mints.
     The positional gate is load-bearing either way: vocabulary evidence alone
     would eat real names ("mark this as done" would suppress "Mark" the
     person too); the positional gate protects any token that is ever
@@ -966,8 +975,8 @@ def _is_positional_case_noise(
 ) -> bool:
     """ADR-0033: suppress ``token`` when positional evidence holds -- every
     capitalized occurrence of ``token`` in ``text`` is at a sentence/quotation/
-    heading/list-marker start (never mid-sentence) -- AND either of two signals
-    confirms it isn't a real referent:
+    heading/list-marker/table-cell start (issue #360; never mid-sentence) --
+    AND either of two signals confirms it isn't a real referent:
 
     (a) vocabulary evidence: its lowercase form appears as a standalone word
         elsewhere in ``text``; or
