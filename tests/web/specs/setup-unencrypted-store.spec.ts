@@ -97,6 +97,57 @@ test.describe("Setup — unencrypted-persistence banner shown (persistent store,
     const thirdParty = [...requestHosts].filter((host) => host !== firstPartyHost);
     expect(thirdParty, `unexpected non-loopback requests: ${thirdParty.join(", ")}`).toEqual([]);
   });
+
+  // Runs last in this describe block -- unlike the three read-only tests above,
+  // this one submits Setup and mutates the shared 8957 store (creates a
+  // workspace, flips the persisted activation flag), so it must not run before
+  // them.
+  test("submitting with the default-checked box provisions GLiNER end to end and never leaves the first-party origin (ADR-0049, issue #366)", async ({
+    unencryptedPage,
+  }) => {
+    // Complements setup-shell.spec.ts's "zero gliner-provision requests on a
+    // memory:// store" spec with the positive case this branch's diff is
+    // actually about: on a persistent store the checkbox's new default-ON
+    // state must drive a real POST .../gliner-provision through to the restart
+    // prompt when Setup is submitted, not merely render checked (the read-only
+    // spec above never clicks Create). This exact flow -- toggle visible ->
+    // submit -> provision -> restart message -- was left untested by the
+    // toggle's own original commit (a78fff3, issue #146) for lack of a
+    // persistent-store fixture; #227 later added one (this file's 8957/8958)
+    // but nothing came back to drive this flow through it until now.
+    // serve_fixture.py wires a network-free stub GLiNER hub client for this
+    // fixture too, so a real click here never reaches Hugging Face -- and
+    // provisionGliner (setupApi.ts) only ever calls the same-origin management
+    // API, so the browser itself should emit no non-loopback request even for
+    // a "download ~197 MB" action.
+    const requestHosts = new Set<string>();
+    unencryptedPage.on("request", (req) => requestHosts.add(new URL(req.url()).host));
+
+    await unencryptedPage.goto("/ui/setup");
+    await expect(unencryptedPage.getByTestId("setup-gliner-checkbox")).toBeChecked();
+    await unencryptedPage.getByTestId("setup-workspace-name").fill("Enhanced Detection Co");
+
+    const [provisionRequest] = await Promise.all([
+      unencryptedPage.waitForRequest(
+        (req) => req.url().includes("gliner-provision") && req.method() === "POST"
+      ),
+      unencryptedPage.getByTestId("setup-create-btn").click(),
+    ]);
+    expect(provisionRequest.url()).toContain(
+      "/v1/management/workspaces/enhanced-detection-co/gliner-provision"
+    );
+
+    await expect(unencryptedPage.getByTestId("setup-gliner-restart-message")).toContainText(
+      "Restart Blindfold to activate enhanced detection."
+    );
+
+    const firstPartyHost = new URL(UNENCRYPTED_BASE_URL).host;
+    const thirdParty = [...requestHosts].filter((host) => host !== firstPartyHost);
+    expect(thirdParty, `unexpected non-loopback requests: ${thirdParty.join(", ")}`).toEqual([]);
+
+    await unencryptedPage.getByTestId("setup-gliner-continue-btn").click();
+    await expect(unencryptedPage.getByTestId("setup-ready-message")).toBeVisible();
+  });
 });
 
 test.describe("Setup — unencrypted-persistence banner hidden (persistent store, Transit cipher configured)", () => {
@@ -137,5 +188,40 @@ test.describe("Setup — unencrypted-persistence banner hidden (persistent store
       thirdParty.map((r) => r.url),
       `unexpected non-loopback requests: ${thirdParty.map((r) => r.url).join(", ")}`
     ).toEqual([]);
+  });
+
+  // Runs last in this describe block -- the two tests above never submit, so
+  // this is the first to mutate the shared 8958 store.
+  test("explicitly unticking the checkbox submits with zero gliner-provision requests (ADR-0049, issue #366)", async ({
+    encryptedPage,
+  }) => {
+    // The default flipped to on (ADR-0049), but on a persistent store where the
+    // checkbox actually renders it stays a real opt-OUT, distinct from the
+    // memory:// case (setup-shell.spec.ts) where it's hidden and never reaches
+    // the operator at all. Per the issue's own AC ("a deliberate skip is
+    // labelled, never silent"), explicitly unticking must land the operator in
+    // their workspace with zero provisioning call -- exactly the same path a
+    // failed download falls through to (Setup.tsx has no separate branch for
+    // "explicitly skipped" vs. "never offered"; both simply skip the `if
+    // (hasPersistentStore && enhancedDetection)` block). The resulting
+    // "not_provisioned" status is what Settings -> Detection's persistent
+    // retry surface (settings-detection.spec.ts) and the Home/Status L3
+    // dependency card (home-status-degraded.spec.ts) already render whenever
+    // the model was never provisioned -- there is no separate "silent" state
+    // for this path to fall into.
+    const provisionRequests: string[] = [];
+    encryptedPage.on("request", (req) => {
+      if (req.url().includes("gliner-provision")) provisionRequests.push(req.url());
+    });
+
+    await encryptedPage.goto("/ui/setup");
+    const checkbox = encryptedPage.getByTestId("setup-gliner-checkbox");
+    await expect(checkbox).toBeChecked();
+    await checkbox.uncheck();
+    await encryptedPage.getByTestId("setup-workspace-name").fill("Skip Detection Co");
+    await encryptedPage.getByTestId("setup-create-btn").click();
+
+    await expect(encryptedPage.getByTestId("setup-ready-message")).toBeVisible();
+    expect(provisionRequests).toEqual([]);
   });
 });
