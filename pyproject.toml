@@ -71,6 +71,18 @@ dev = [
 # importable) in the freeze job before PyInstaller runs, so a developer who runs `uv sync
 # --all-groups` (or `--group devtools`) and then freezes meets a named cause there
 # instead of an unexplained one buried in PyInstaller's own bundling (issue #272).
+#
+# issue #363: as of typer 0.12.5, `rich` is typer's own hard dependency (not gated
+# behind an extra the way it was through 0.11.x) -- and `typer` is a transitive
+# dependency of three BASE-graph packages (presidio-analyzer -> spacy -> typer;
+# spacy -> weasel -> typer; the `gliner` extra's transformers -> typer), so a plain
+# `uv lock` now pulls `rich` into `dev + freeze` regardless of the `devtools` group
+# above. None of spacy/transformers/weasel request typer's `all` extra (the one that
+# used to gate rich), so constraining typer to the last line where its base install
+# has no rich dependency keeps the `dev + freeze` resolution rich-free without
+# touching the devtools/freeze separation this comment block already describes. See
+# `[tool.uv] constraint-dependencies` below and
+# tests/test_freeze_env_check.py::test_dev_plus_freeze_resolution_excludes_rich.
 freeze = [
     "pyinstaller==6.21.0",
 ]
@@ -93,6 +105,17 @@ devtools = [
 # ftfy, ...) stay confined to this group for the same reason.
 wordlist = [
     "wordfreq>=3.1",
+]
+
+# issue #363: typer >=0.12.5 hard-depends on rich; pin below that so the base-graph
+# route (presidio-analyzer -> spacy -> typer, spacy -> weasel -> typer, and the
+# `gliner` extra's transformers -> typer) can't reintroduce rich into `dev + freeze`
+# (see the `freeze` group comment above). spacy/transformers/weasel all accept
+# typer's `>=0.3.0,<1.0.0` range and none request its `all` extra (the one that used
+# to gate rich), so this resolves to typer's last rich-free release, 0.11.1.
+[tool.uv]
+constraint-dependencies = [
+    "typer<0.12",
 ]
 
 [build-system]

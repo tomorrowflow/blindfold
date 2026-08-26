@@ -17,10 +17,12 @@ import os
 import pathlib
 import subprocess
 import sys
+import tomllib
 
 import pytest
 
 SCRIPT = pathlib.Path(__file__).parent.parent / "packaging" / "freeze_env_check.py"
+LOCKFILE = pathlib.Path(__file__).parent.parent / "uv.lock"
 
 # The happy path probes THIS interpreter, so it is only meaningful in a freeze-shaped
 # environment (`dev`, or `dev + freeze` -- never `devtools`). A developer running
@@ -64,3 +66,50 @@ def test_fails_when_rich_is_importable(tmp_path: pathlib.Path) -> None:
     result = _run(env=env)
     assert result.returncode == 1
     assert "rich" in result.stdout
+
+
+def _dependency_closure(
+    start_edges: list[dict], packages_by_name: dict[str, dict]
+) -> set[str]:
+    """Traversal over uv.lock's own package graph (issue #363). An `extra` on an edge
+    (e.g. `psycopg`'s `binary` extra) is expanded into that same package's
+    `optional-dependencies[extra]` entries, mirroring how uv itself resolves extras."""
+    seen: set[str] = set()
+    queue = list(start_edges)
+    while queue:
+        edge = queue.pop()
+        name = edge["name"]
+        if name in seen:
+            continue
+        seen.add(name)
+        pkg = packages_by_name.get(name)
+        if pkg is None:
+            continue
+        queue.extend(pkg.get("dependencies", []))
+        for extra in edge.get("extra", []):
+            queue.extend(pkg.get("optional-dependencies", {}).get(extra, []))
+    return seen
+
+
+def test_dev_plus_freeze_resolution_excludes_rich() -> None:
+    # Static lockfile check (issue #363, extending the happy-path guard above): the
+    # `dev + freeze` closure -- exactly what `uv sync --group freeze` resolves, per
+    # pyproject.toml's freeze-group comment -- must never reach `rich`, regardless of
+    # which package pulls it in. The happy-path test above can only prove this in an
+    # interpreter that was actually synced `dev + freeze`; in THIS sandbox rich is
+    # already importable via the base dependency graph (presidio-analyzer -> spacy ->
+    # typer), so that test is permanently skipped here and would never catch a
+    # regression. Walking the lockfile itself catches it regardless of which groups
+    # happen to be installed in the interpreter running pytest.
+    lock = tomllib.loads(LOCKFILE.read_text(encoding="utf-8"))
+    packages_by_name = {pkg["name"]: pkg for pkg in lock["package"]}
+    root = packages_by_name["blindfold"]
+    start_edges = list(root.get("dependencies", []))
+    for group in ("dev", "freeze"):
+        start_edges.extend(root.get("dev-dependencies", {}).get(group, []))
+    reachable = _dependency_closure(start_edges, packages_by_name)
+    assert "rich" not in reachable, (
+        "rich is reachable from the `dev + freeze` resolution -- a fresh `uv sync "
+        "--group freeze` environment would fail packaging/freeze_env_check.py's "
+        "precondition (ADR-0047 §12, issue #272/#363)"
+    )
