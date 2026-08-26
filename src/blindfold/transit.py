@@ -12,6 +12,7 @@ Transit key names (decided in HITL comment on issue #10):
 from __future__ import annotations
 
 import base64
+from typing import Any
 
 import httpx
 
@@ -72,7 +73,7 @@ class TransitClient:
             headers={"X-Vault-Token": self._token},
         )
 
-    def _extract_data_field(self, resp: httpx.Response, *, operation: str, field: str) -> str:
+    def _extract_data_field(self, resp: httpx.Response, *, operation: str, field: str) -> Any:
         """Return ``resp.json()["data"][field]``, or raise a named :class:`TransitError`.
 
         Covers both failure shapes at this one seam (issue #364): a non-200
@@ -131,8 +132,8 @@ class TransitClient:
             f"{self._addr}/v1/auth/token/lookup-self",
             headers={"X-Vault-Token": self._token},
         )
-        resp.raise_for_status()
-        return resp.json()["data"]["policies"] == ["root"]
+        policies = self._extract_data_field(resp, operation="is_root_token", field="policies")
+        return policies == ["root"]
 
     def health_check(self) -> DependencyHealth:
         """Lightweight OpenBao liveness probe (issue #92) -- GET ``/v1/sys/health``.
@@ -156,5 +157,4 @@ class TransitClient:
             json={"input": encoded},
             headers={"X-Vault-Token": self._token},
         )
-        resp.raise_for_status()
-        return resp.json()["data"]["hmac"]
+        return self._extract_data_field(resp, operation="blind_index", field="hmac")

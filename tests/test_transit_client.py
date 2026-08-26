@@ -163,6 +163,54 @@ def test_transit_blind_index_sends_base64_input_and_returns_hmac():
     assert result == hmac
 
 
+def test_transit_blind_index_raises_named_error_on_non_200_response():
+    """issue #365: blind_index still raw-indexed the response body, so a
+    denied/errored call surfaced as an unnamed httpx exception rather than
+    the named TransitError #364 gave encrypt/decrypt.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"errors": ["permission denied"]})
+
+    client = TransitClient(
+        addr="http://openbao.test",
+        token="dev-root-token",
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(TransitError) as excinfo:
+        client.blind_index("Martin Bach")
+    assert excinfo.value.operation == "blind_index"
+    assert excinfo.value.status_code == 403
+    message = str(excinfo.value)
+    assert "403" in message
+    assert "blind_index" in message
+    assert "Martin Bach" not in message
+
+
+def test_transit_blind_index_raises_named_error_on_200_response_missing_hmac_field():
+    """issue #365: a 200 response shaped wrong (no data.hmac) must never
+    surface as a bare KeyError -- the same crown-jewel-seam class #364 fixed
+    for decrypt.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"ciphertext": "vault:v1:fixture-stub"}})
+
+    client = TransitClient(
+        addr="http://openbao.test",
+        token="dev-root-token",
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(TransitError) as excinfo:
+        client.blind_index("Martin Bach")
+    assert excinfo.value.operation == "blind_index"
+    assert excinfo.value.status_code == 200
+    message = str(excinfo.value)
+    assert "hmac" in message
+    assert "Martin Bach" not in message
+    assert "fixture-stub" not in message
+
+
 # ---------------------------------------------------------------------------
 # 4. Token header is forwarded
 # ---------------------------------------------------------------------------
@@ -212,6 +260,53 @@ def test_transit_is_root_token_false_for_a_scoped_policy_token():
         http=httpx.Client(transport=transport),
     )
     assert client.is_root_token() is False
+
+
+def test_transit_is_root_token_raises_named_error_on_non_200_response():
+    """issue #365: is_root_token still raw-indexed the response body, so a
+    denied/errored self-lookup surfaced as an unnamed httpx exception rather
+    than the named TransitError #364 gave encrypt/decrypt.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"errors": ["permission denied"]})
+
+    client = TransitClient(
+        addr="http://openbao.test",
+        token="dev-root-token",
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(TransitError) as excinfo:
+        client.is_root_token()
+    assert excinfo.value.operation == "is_root_token"
+    assert excinfo.value.status_code == 403
+    message = str(excinfo.value)
+    assert "403" in message
+    assert "is_root_token" in message
+    assert "dev-root-token" not in message
+
+
+def test_transit_is_root_token_raises_named_error_on_200_response_missing_policies_field():
+    """issue #365: a 200 response shaped wrong (no data.policies) must never
+    surface as a bare KeyError -- the same crown-jewel-seam class #364 fixed
+    for decrypt.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"id": "hmac-only-fixture"}})
+
+    client = TransitClient(
+        addr="http://openbao.test",
+        token="dev-root-token",
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(TransitError) as excinfo:
+        client.is_root_token()
+    assert excinfo.value.operation == "is_root_token"
+    assert excinfo.value.status_code == 200
+    message = str(excinfo.value)
+    assert "policies" in message
+    assert "dev-root-token" not in message
 
 
 # ---------------------------------------------------------------------------
