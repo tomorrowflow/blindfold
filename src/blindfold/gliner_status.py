@@ -64,10 +64,20 @@ def gliner_detection_status(
     the persisted activation flag is on but *this* process hasn't picked it up yet
     (ADR-0034 §1's restart-to-activate model) -- the "Restart Blindfold to activate
     enhanced detection" prompt.
+
+    ``currently_active`` reads ``l3_gliner_activation_is_explicit``, not merely
+    ``l3_provider == "gliner"`` (ADR-0049): the cascade is now
+    ``DEFAULT_L3_PROVIDER``'s bare fallback too, so a process that has never
+    restarted since the flag was set already reads ``l3_provider == "gliner"``
+    coincidentally -- keying off the raw string here would make the restart
+    prompt permanently false once the cascade became the default. The explicit
+    flag is only true when *this process's own* startup resolution saw a real
+    activation signal (an explicit env var or the persisted flag), which is what
+    "picked up the flag" actually means.
     """
     model_path = resolve_gliner_model_path(resolve_data_dir(), settings.l3_gliner_model_path)
     provisioned = is_already_provisioned(model_path)
-    currently_active = settings.l3_provider == "gliner"
+    currently_active = settings.l3_gliner_activation_is_explicit
 
     if last_error is not None:
         status = "verification_failed"
@@ -110,8 +120,8 @@ def retry_gliner_provisioning(
     ``verification_failed`` states (the frontend only offers the action there), so a
     successful retry always represents a newly-provisioned model that needs
     activation -- it persists the activation flag on ``activation_store`` when one is
-    configured (ADR-0034 §2: store-gated, a no-op on the ephemeral in-memory default,
-    where ``activation_store`` is ``None``), satisfying "prompts for restart when a
+    configured (ADR-0034 §2: store-gated, a no-op on the explicit ``memory://``
+    opt-out, where ``activation_store`` is ``None``), satisfying "prompts for restart when a
     newly-provisioned model needs activation" without a separate activate action.
     """
     try:

@@ -91,9 +91,14 @@ def _provision_a_model_on_disk(tmp_path: Path) -> None:
 def test_status_is_active_when_model_provisioned_and_flag_activated(tmp_path, monkeypatch):
     monkeypatch.setenv("BLINDFOLD_DATA_DIR", str(tmp_path))
     _provision_a_model_on_disk(tmp_path)
-    # This process itself has already picked up the activation (l3_provider ==
-    # "gliner", e.g. read at its own startup) -- no restart prompt.
-    settings = Settings(l3_gliner_model_path="", database_url="", l3_provider="gliner")
+    # This process itself has already picked up the activation (a real activation
+    # signal at its own startup, ADR-0049) -- no restart prompt.
+    settings = Settings(
+        l3_gliner_model_path="",
+        database_url="",
+        l3_provider="gliner",
+        l3_gliner_activation_is_explicit=True,
+    )
 
     result = gliner_detection_status(settings=settings, activated=True, last_error=None)
 
@@ -107,8 +112,32 @@ def test_status_active_prompts_restart_when_this_process_has_not_picked_up_the_f
     monkeypatch.setenv("BLINDFOLD_DATA_DIR", str(tmp_path))
     _provision_a_model_on_disk(tmp_path)
     # The persisted flag is on (activated=True), but this process started before
-    # that -- ADR-0034 §1's restart-to-activate model.
+    # that and is still running the bare LLM tier -- ADR-0034 §1's
+    # restart-to-activate model (ADR-0049 made "gliner" the *default* l3_provider,
+    # so simulating "not yet picked up" now needs an explicit non-cascade value).
+    settings = Settings(l3_gliner_model_path="", database_url="", l3_provider="ollama")
+
+    result = gliner_detection_status(settings=settings, activated=True, last_error=None)
+
+    assert result["status"] == "active"
+    assert result["restart_required"] is True
+
+
+def test_status_active_prompts_restart_when_gliner_is_only_the_unconfigured_default(
+    tmp_path, monkeypatch
+):
+    # ADR-0049: l3_provider == "gliner" is no longer proof this process picked up a
+    # real activation -- it is also DEFAULT_L3_PROVIDER's bare fallback, which a
+    # never-restarted process reads regardless of the persisted flag. A restart
+    # prompt driven off l3_provider alone would go permanently stale (never true)
+    # the moment the cascade became the default, so the status computation must
+    # key off settings.l3_gliner_activation_is_explicit instead.
+    monkeypatch.setenv("BLINDFOLD_DATA_DIR", str(tmp_path))
+    _provision_a_model_on_disk(tmp_path)
     settings = Settings(l3_gliner_model_path="", database_url="")
+
+    assert settings.l3_provider == "gliner"
+    assert settings.l3_gliner_activation_is_explicit is False
 
     result = gliner_detection_status(settings=settings, activated=True, last_error=None)
 
@@ -170,7 +199,11 @@ def test_retry_activates_the_persisted_flag_on_a_fresh_successful_provision(
     # model that needs activation (issue #147's "prompts for restart when a
     # newly-provisioned model needs activation").
     monkeypatch.setenv("BLINDFOLD_DATA_DIR", str(tmp_path))
-    settings = Settings(l3_gliner_model_path="", database_url="")
+    # l3_provider pinned to the bare LLM tier: ADR-0049 made "gliner" the default,
+    # but this test's whole point is that *this process's own* settings never
+    # change mid-process (ADR-0034 §1) -- it must still have started before the
+    # retry-driven activation below, exactly like a real not-yet-restarted process.
+    settings = Settings(l3_gliner_model_path="", database_url="", l3_provider="ollama")
     tracker = GlinerProvisioningTracker()
     store = _InMemoryActivationStore(activated=False)
     hub_client = _StubHubClientCorrectDigest()

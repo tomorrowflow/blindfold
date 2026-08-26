@@ -70,6 +70,20 @@ test.describe("Setup — unencrypted-persistence banner shown (persistent store,
     await expect(unencryptedPage.getByTestId("setup-create-btn")).toBeVisible();
   });
 
+  test("the Enhanced local detection checkbox defaults to checked (ADR-0049, issue #366)", async ({
+    unencryptedPage,
+  }) => {
+    // The GLiNER cascade is now the default detection path (93% vs. 21-36%
+    // recall for a bare LLM alone) -- Setup's opt-in must default on wherever
+    // it is offered at all (a persistent store configured), not merely be
+    // present. Read-only: no submit, so this never mutates the fixture's
+    // shared persistent store for the other tests in this file.
+    await unencryptedPage.goto("/ui/setup");
+    const checkbox = unencryptedPage.getByTestId("setup-gliner-checkbox");
+    await expect(checkbox).toBeVisible();
+    await expect(checkbox).toBeChecked();
+  });
+
   test("zero requests to a non-loopback origin", async ({ unencryptedPage }) => {
     const requestHosts = new Set<string>();
     unencryptedPage.on("request", (req) => requestHosts.add(new URL(req.url()).host));

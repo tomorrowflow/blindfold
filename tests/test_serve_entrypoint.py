@@ -196,7 +196,9 @@ def test_refuse_if_omlx_non_loopback_fires_for_the_gliner_cascades_omlx_inner(tm
 
 
 def test_refuse_if_gliner_model_missing_blocks_an_empty_path():
-    settings = Settings(l3_provider="gliner", l3_gliner_model_path="")
+    settings = Settings(
+        l3_provider="gliner", l3_gliner_model_path="", l3_gliner_activation_is_explicit=True
+    )
 
     with pytest.raises(GlinerModelMissingError):
         refuse_if_gliner_model_missing(settings)
@@ -204,7 +206,9 @@ def test_refuse_if_gliner_model_missing_blocks_an_empty_path():
 
 def test_refuse_if_gliner_model_missing_blocks_a_nonexistent_file(tmp_path):
     settings = Settings(
-        l3_provider="gliner", l3_gliner_model_path=str(tmp_path / "does-not-exist.onnx")
+        l3_provider="gliner",
+        l3_gliner_model_path=str(tmp_path / "does-not-exist.onnx"),
+        l3_gliner_activation_is_explicit=True,
     )
 
     with pytest.raises(GlinerModelMissingError):
@@ -218,7 +222,11 @@ def test_refuse_if_gliner_model_missing_blocks_a_single_file_path(tmp_path):
     # still fail closed, not be accepted as "readable".
     model_path = tmp_path / "gliner-pii-edge-v1.0.onnx"
     model_path.write_bytes(b"stub-onnx-bytes")
-    settings = Settings(l3_provider="gliner", l3_gliner_model_path=str(model_path))
+    settings = Settings(
+        l3_provider="gliner",
+        l3_gliner_model_path=str(model_path),
+        l3_gliner_activation_is_explicit=True,
+    )
 
     with pytest.raises(GlinerModelMissingError):
         refuse_if_gliner_model_missing(settings)
@@ -233,7 +241,11 @@ def test_refuse_if_gliner_model_missing_allows_a_provisioned_model_directory(tmp
     model_dir = tmp_path / "gliner-pii-edge-v1.0"
     model_dir.mkdir()
     (model_dir / "gliner_config.json").write_text("{}")
-    settings = Settings(l3_provider="gliner", l3_gliner_model_path=str(model_dir))
+    settings = Settings(
+        l3_provider="gliner",
+        l3_gliner_model_path=str(model_dir),
+        l3_gliner_activation_is_explicit=True,
+    )
 
     refuse_if_gliner_model_missing(settings)
 
@@ -243,7 +255,11 @@ def test_refuse_if_gliner_model_missing_blocks_an_empty_provisioned_directory(tm
     # mirrors is_already_provisioned's own any(path.iterdir()) check.
     model_dir = tmp_path / "gliner-pii-edge-v1.0"
     model_dir.mkdir()
-    settings = Settings(l3_provider="gliner", l3_gliner_model_path=str(model_dir))
+    settings = Settings(
+        l3_provider="gliner",
+        l3_gliner_model_path=str(model_dir),
+        l3_gliner_activation_is_explicit=True,
+    )
 
     with pytest.raises(GlinerModelMissingError):
         refuse_if_gliner_model_missing(settings)
@@ -252,6 +268,21 @@ def test_refuse_if_gliner_model_missing_blocks_an_empty_provisioned_directory(tm
 def test_refuse_if_gliner_model_missing_is_a_noop_for_the_ollama_provider():
     settings = Settings(l3_provider="ollama", l3_gliner_model_path="")
 
+    refuse_if_gliner_model_missing(settings)
+
+
+def test_refuse_if_gliner_model_missing_is_a_noop_when_the_cascade_is_only_the_unconfigured_default():
+    # ADR-0049: DEFAULT_L3_PROVIDER now names the cascade, so a bare/unconfigured
+    # Settings object resolves l3_provider="gliner" with nothing else set. That must
+    # NOT refuse to start -- a fresh, never-configured process (or one with only an
+    # LLM configured, no Setup-driven opt-in) needs to boot exactly like it does
+    # today and fail closed per-request via _UnconfiguredAdjudicator (ADR-0009),
+    # not refuse to start entirely. Only an *explicit* gliner choice (env var or
+    # the persisted Setup activation flag) is refused at startup for being
+    # unprovisioned -- see the explicit-selection tests above.
+    settings = Settings(l3_gliner_model_path="")
+
+    assert settings.l3_provider == "gliner"
     refuse_if_gliner_model_missing(settings)
 
 
@@ -953,7 +984,9 @@ def test_run_server_refuses_a_non_loopback_omlx_base_url_before_starting_the_asg
 def test_run_server_refuses_a_missing_gliner_model_before_starting_the_asgi_server():
     # ADR-0033 §2, issue #139: same no-override stance -- fails at startup, not on
     # the first request that happens to hit a novel candidate.
-    settings = Settings(l3_provider="gliner", l3_gliner_model_path="")
+    settings = Settings(
+        l3_provider="gliner", l3_gliner_model_path="", l3_gliner_activation_is_explicit=True
+    )
     calls = []
 
     with pytest.raises(GlinerModelMissingError):

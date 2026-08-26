@@ -424,12 +424,21 @@ def refuse_if_omlx_non_loopback(settings: Settings | None = None) -> None:
 
 
 def refuse_if_gliner_model_missing(settings: Settings | None = None) -> None:
-    """Fail fast (ADR-0033 §2) if ``BLINDFOLD_L3_PROVIDER=gliner`` names an empty or
-    unprovisioned GLiNER model path.
+    """Fail fast (ADR-0033 §2) if an *explicitly* chosen ``BLINDFOLD_L3_PROVIDER=gliner``
+    names an empty or unprovisioned GLiNER model path.
 
-    No-op for every other ``l3_provider`` value. ``settings.l3_gliner_model_path`` is
-    already Data-dir-resolved by :func:`~blindfold.config.get_settings` (issue #150) --
-    this only checks that a model is actually *provisioned* there
+    No-op for every other ``l3_provider`` value, and also a no-op when ``l3_provider
+    == "gliner"`` only via ``DEFAULT_L3_PROVIDER``'s bare fallback rather than a
+    deliberate choice (``settings.l3_gliner_activation_is_explicit``, ADR-0049) --
+    refusing to start over a default nobody asked for would make every
+    never-configured or LLM-only-configured install unable to start at all the
+    moment the cascade became the default. That case still fails closed, just at
+    request time via the honest ``_UnconfiguredAdjudicator`` (ADR-0009), exactly
+    like an unconfigured LLM does today.
+
+    ``settings.l3_gliner_model_path`` is already Data-dir-resolved by
+    :func:`~blindfold.config.get_settings` (issue #150) -- this only checks that a
+    model is actually *provisioned* there
     (:func:`~blindfold.gliner_provisioning.is_gliner_model_ready`, the same
     directory-shape check ``provision_gliner_model`` and the detection/settings status
     view use), not merely that the path string is non-empty. Like the other
@@ -439,7 +448,7 @@ def refuse_if_gliner_model_missing(settings: Settings | None = None) -> None:
     than a clear error before the process starts accepting traffic.
     """
     settings = settings or get_settings()
-    if settings.l3_provider != "gliner":
+    if settings.l3_provider != "gliner" or not settings.l3_gliner_activation_is_explicit:
         return
     path = settings.l3_gliner_model_path
     if not is_gliner_model_ready(path):

@@ -15,19 +15,23 @@
 // first run. Either way, the operator lands in that workspace's entity list --
 // empty if the checkbox was left unticked.
 //
-// "Enhanced local detection" (ADR-0034 §1/§2/§5, issue #146): a second opt-in
-// checkbox, default off, only rendered when GET /v1/status's
-// config.has_persistent_store is true -- restart-to-activate is incoherent on
-// the ephemeral in-memory default (ADR-0034 §2), so the toggle stays hidden
-// there entirely (server-side, the endpoint itself also refuses with 409, but
-// the SPA never gives an operator the option in the first place). Checking it
-// triggers provisioning (POST .../gliner-provision, #144/#145) right after the
-// workspace is created, same moment Sample data fires. Non-blocking, mirroring
-// Sample data's own try/catch: a failed download never blocks landing in the
-// workspace. A successful download instead shows "Restart Blindfold to activate
-// enhanced detection." and waits for an explicit Continue -- the cascade isn't
-// live until the next process start, so there is a real instruction to surface,
-// unlike Sample data's silent success.
+// "Enhanced local detection" (ADR-0034 §1/§2/§5, issue #146; default flipped on
+// by ADR-0049, issue #366): a second opt-in checkbox, default ON, only rendered
+// when GET /v1/status's config.has_persistent_store is true -- restart-to-activate
+// is incoherent on the explicit memory:// opt-out (ADR-0034 §2), so the toggle
+// stays hidden there entirely (server-side, the endpoint itself also refuses
+// with 409, but the SPA never gives an operator the option in the first place).
+// Checking it triggers provisioning (POST .../gliner-provision, #144/#145) right
+// after the workspace is created, same moment Sample data fires. Non-blocking,
+// mirroring Sample data's own try/catch: a failed download never blocks landing
+// in the workspace, but (ADR-0049) unlike Sample data's silent failure, a failed
+// or explicitly-skipped provisioning surfaces a persistent reduced-detection
+// state with a retry (Settings -> Detection, issue #147) rather than silently
+// reproducing the pre-#366 21-36% recall bare-LLM path. A successful download
+// instead shows "Restart Blindfold to activate enhanced detection." and waits
+// for an explicit Continue -- the cascade isn't live until the next process
+// start, so there is a real instruction to surface, unlike Sample data's silent
+// success.
 
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
@@ -42,7 +46,7 @@ export function Setup() {
   const { refresh, setActiveWorkspace } = useWorkspace();
   const [name, setName] = useState("");
   const [loadSample, setLoadSample] = useState(false);
-  const [enhancedDetection, setEnhancedDetection] = useState(false);
+  const [enhancedDetection, setEnhancedDetection] = useState(true);
   const [hasPersistentStore, setHasPersistentStore] = useState(false);
   const [mappingCipher, setMappingCipher] = useState<"transit" | "none">("none");
   const [submitting, setSubmitting] = useState(false);

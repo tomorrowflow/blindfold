@@ -5,7 +5,12 @@ import { test as base, expect, request as pwRequest } from "@playwright/test";
 // Runs against the SECOND serve_fixture.py instance (port 8952,
 // BLINDFOLD_FIXTURE_STATE=degraded, see playwright.config.ts) which leaves the
 // honest unconfigured-L3 default in place — a real fail-closed condition, not a
-// synthetic one.
+// synthetic one. ADR-0049 (issue #366) made the GLiNER cascade
+// DEFAULT_L3_PROVIDER's own default, so a never-configured process now reports
+// the cascade's own unprovisioned detail ("gliner model not provisioned")
+// rather than the older bare "no L3 adjudicator configured" -- still unhealthy,
+// still fail-closed, just a more specific detail naming the actual missing
+// piece.
 
 const DEGRADED_BASE_URL = "http://127.0.0.1:8952";
 
@@ -55,7 +60,7 @@ test.describe("Degraded state", () => {
     await alicePage.goto("/ui/status");
     const card = alicePage.getByTestId("dependency-card-l3");
     await expect(card).toContainText("Unhealthy");
-    await expect(card).toContainText("no L3 adjudicator configured");
+    await expect(card).toContainText("gliner model not provisioned");
     await expect(card.getByTestId("dependency-card-status-dot")).toHaveClass(
       /bf-dependency-card-status-dot--unhealthy/
     );

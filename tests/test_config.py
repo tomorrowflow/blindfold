@@ -85,15 +85,27 @@ def test_settings_l3_model_is_read_from_env(monkeypatch):
     assert get_settings().l3_model == "llama3.1"
 
 
-def test_settings_l3_provider_defaults_to_ollama(monkeypatch):
-    # ollama preserves today's exact behavior for existing deployments (ADR-0031 §2).
+def test_settings_l3_provider_defaults_to_the_gliner_cascade(monkeypatch):
+    # ADR-0049: the GLiNER cascade is the default detection path (measured 93%
+    # recall vs. 21-36% for a bare LLM alone) -- moving "LLM configured, GLiNER
+    # off" out of being the silent default.
     monkeypatch.delenv("BLINDFOLD_L3_PROVIDER", raising=False)
-    assert get_settings().l3_provider == DEFAULT_L3_PROVIDER == "ollama"
+    assert get_settings().l3_provider == DEFAULT_L3_PROVIDER == "gliner"
 
 
 def test_settings_l3_provider_is_overridable_via_env(monkeypatch):
     monkeypatch.setenv("BLINDFOLD_L3_PROVIDER", "omlx")
     assert get_settings().l3_provider == "omlx"
+
+
+def test_settings_l3_inner_provider_defaults_to_ollama_not_the_cascade(monkeypatch):
+    # ADR-0049: DEFAULT_L3_PROVIDER now names the cascade ("gliner"), but the
+    # cascade's own inner tier (l3_inner_provider) must stay a bare-LLM client --
+    # it is what a GLiNER negative escalates to (ADR-0033 §2). If this fell back
+    # to DEFAULT_L3_PROVIDER too, the inner tier would default to "gliner", which
+    # is not a real client name.
+    monkeypatch.delenv("BLINDFOLD_L3_INNER_PROVIDER", raising=False)
+    assert get_settings().l3_inner_provider == "ollama"
 
 
 def test_settings_l3_api_key_defaults_to_empty_string(monkeypatch):

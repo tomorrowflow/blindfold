@@ -707,7 +707,7 @@ def get_activation_settings_store() -> "PostgresActivationSettingsStore | None":
     ``database_url`` is falsy (``BLINDFOLD_DATABASE_URL=memory://``; unset now
     defaults to a durable SQLite store, ADR-0043 §1/issue #204). ``None`` is the
     store-gate signal the gliner-provision endpoint refuses on -- restart-to-activate
-    is incoherent on the ephemeral in-memory default (ADR-0034 §2).
+    is incoherent on the explicit ``memory://`` opt-out (ADR-0034 §2).
     """
     database_url = get_settings().database_url
     if not database_url:
@@ -2767,9 +2767,9 @@ async def provision_gliner(
     RBAC anchor Setup already has in hand at this point in the flow.
 
     Store-gated (ADR-0034 §2): refuses with 409 when no persistent store is
-    configured -- restart-to-activate would wipe the ephemeral in-memory default,
-    so the toggle that reaches this endpoint is hidden there client-side, and this
-    is the server-side backstop for that same invariant.
+    configured -- restart-to-activate would wipe the explicit ``memory://``
+    opt-out, so the toggle that reaches this endpoint is hidden there client-side,
+    and this is the server-side backstop for that same invariant.
 
     A digest mismatch (tampered/corrupted download, ADR-0034 §4), a missing
     ``blindfold[gliner]`` extra (ADR-0034 §6), or an activation-smoke-test failure
@@ -2786,7 +2786,7 @@ async def provision_gliner(
             detail=(
                 "Enhanced local detection requires a persistent store "
                 "(BLINDFOLD_DATABASE_URL) -- restart-to-activate is incoherent on "
-                "the ephemeral in-memory default (ADR-0034 §2)."
+                "the explicit memory:// opt-out (ADR-0034 §2)."
             ),
         )
 

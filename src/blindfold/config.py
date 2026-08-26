@@ -49,24 +49,38 @@ L3 adjudicator (ADR-0022 / ADR-0031 / issue #57, #121, #122):
                              tag names a remotely-executing model and is refused at
                              startup with no override (the local-only invariant).
   BLINDFOLD_L3_PROVIDER    — which client wires behind the L3Adjudicator seam:
-                             `ollama` (default -- preserves all current behavior) or
-                             `omlx` (OpenAI-compatible, ADR-0031 §2-3). `omlx` has its
-                             own local-only startup guard (a loopback-only base-url
-                             check, distinct from Ollama's `:cloud`-tag check --
-                             ADR-0031 §3) since it has no `:cloud`-equivalent signal.
+                             `gliner` (default, ADR-0049 -- the GLiNER cascade,
+                             measured 93% recall vs. 21-36% for a bare LLM alone),
+                             `ollama` (the bare LLM tier, ADR-0031 §2's original
+                             default -- still fully supported, just no longer the
+                             path of least resistance), or `omlx` (OpenAI-compatible,
+                             ADR-0031 §2-3). `omlx` has its own local-only startup
+                             guard (a loopback-only base-url check, distinct from
+                             Ollama's `:cloud`-tag check -- ADR-0031 §3) since it has
+                             no `:cloud`-equivalent signal.
                              When unset, `get_settings()` overlays a persisted
-                             activation Setting instead of falling straight to the
-                             `ollama` default (ADR-0034 §1/§2, issue #145): if
+                             activation Setting instead of falling straight to
+                             `DEFAULT_L3_PROVIDER` (ADR-0034 §1/§2, issue #145): if
                              `BLINDFOLD_DATABASE_URL` names a persistent store AND
                              that store's activation flag is set, this resolves to
                              `gliner`. Store-gated -- the flag is never consulted
-                             without a persistent store (the ephemeral in-memory
-                             default stays env-only), and explicit env always wins
+                             without a persistent store (the explicit `memory://`
+                             opt-out stays env-only), and explicit env always wins
                              over the persisted flag (operator/deploy intent). The
                              persisted read is cached for the process lifetime: a
                              flag flip takes effect on the *next start*, matching
                              the startup-resolved, no-runtime-reconfiguration config
                              model this ADR preserves.
+                             `Settings.l3_gliner_activation_is_explicit` records
+                             whether a `gliner` resolution came from one of the two
+                             signals above, as opposed to `DEFAULT_L3_PROVIDER`'s
+                             bare fallback with nothing configured at all (ADR-0049):
+                             only an explicit/persisted choice is refused at startup
+                             for being unprovisioned
+                             (`serve.refuse_if_gliner_model_missing`) -- the bare
+                             fallback instead fails closed per-request, exactly like
+                             an unconfigured LLM does today, so a never-configured
+                             or LLM-only install can still boot.
   BLINDFOLD_L3_API_KEY     — optional oMLX API key (ADR-0031 follow-up, issue #130).
                              Sent as `Authorization: Bearer <key>` on oMLX's
                              `/v1/chat/completions` and `/v1/models` calls. Empty
@@ -150,7 +164,13 @@ from .gliner_provisioning import resolve_gliner_model_path
 DEFAULT_UPSTREAM_BASE_URL = "https://api.anthropic.com"
 DEFAULT_OPENBAO_ADDR = "http://localhost:8200"
 DEFAULT_L3_BASE_URL = "http://localhost:11434"
-DEFAULT_L3_PROVIDER = "ollama"
+DEFAULT_L3_PROVIDER = "gliner"
+# The GLiNER cascade's inner-adjudicator tier (ADR-0033 §2) must stay a bare-LLM
+# client regardless of what DEFAULT_L3_PROVIDER names -- a cascade whose inner
+# tier defaulted to "gliner" too would have no LLM to escalate a GLiNER negative
+# to (ADR-0049 corollary 2). Kept as its own constant, distinct from
+# DEFAULT_L3_PROVIDER, so the two can never drift onto the same value by accident.
+DEFAULT_L3_INNER_PROVIDER = "ollama"
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 25463
 MEMORY_DATABASE_URL = "memory://"
@@ -174,7 +194,16 @@ class Settings:
     l3_api_key: str = ""
     l3_dismissal_log: str = ""
     l3_gliner_model_path: str = ""
-    l3_inner_provider: str = DEFAULT_L3_PROVIDER
+    l3_inner_provider: str = DEFAULT_L3_INNER_PROVIDER
+    # True iff ``l3_provider=="gliner"`` reflects a deliberate choice -- an explicit
+    # BLINDFOLD_L3_PROVIDER=gliner or the persisted Setup activation flag (ADR-0034
+    # §1/§2) -- rather than DEFAULT_L3_PROVIDER's bare fallback (ADR-0049). Only an
+    # explicit choice is refused at startup for being unprovisioned
+    # (serve.refuse_if_gliner_model_missing); the bare fallback must boot exactly
+    # like an unconfigured L3 does today and fail closed per-candidate instead
+    # (ADR-0009) -- refusing to start over a default nobody asked for would make
+    # every never-configured or LLM-only install unable to start at all.
+    l3_gliner_activation_is_explicit: bool = False
     openai_upstream_base_url: str = ""
     host: str = DEFAULT_HOST
     port: int = DEFAULT_PORT
@@ -359,17 +388,24 @@ def raw_l3_gliner_model_path_override() -> str:
 def get_settings() -> Settings:
     database_url = resolve_database_url()
     l3_provider_env = os.environ.get("BLINDFOLD_L3_PROVIDER")
+    # ADR-0049: l3_gliner_activation_is_explicit distinguishes a deliberate gliner
+    # choice (below) from DEFAULT_L3_PROVIDER's bare fallback -- see the field's
+    # own docstring on Settings for why that distinction matters to the startup
+    # guard.
+    l3_gliner_activation_is_explicit = False
     if l3_provider_env is not None:
         # Explicit env wins over the persisted flag -- operator/deploy intent
         # (ADR-0034 §1). The persisted-flag read is skipped entirely, not just
         # overridden after the fact.
         l3_provider = l3_provider_env
+        l3_gliner_activation_is_explicit = l3_provider_env == "gliner"
     elif database_url and _read_persisted_l3_gliner_activation(database_url):
         # Store-gated (ADR-0034 §2): the persisted flag is only ever consulted
-        # when a persistent store is configured. On the ephemeral in-memory
-        # default (database_url == "") this branch is never reached, so GLiNER
-        # stays env-only there.
+        # when a persistent store is configured. On the explicit memory:// opt-out
+        # (database_url == "") this branch is never reached, so GLiNER stays
+        # env-only there.
         l3_provider = "gliner"
+        l3_gliner_activation_is_explicit = True
     else:
         l3_provider = DEFAULT_L3_PROVIDER
 
@@ -388,12 +424,15 @@ def get_settings() -> Settings:
         l3_base_url=os.environ.get("BLINDFOLD_L3_BASE_URL", DEFAULT_L3_BASE_URL),
         l3_model=os.environ.get("BLINDFOLD_L3_MODEL", ""),
         l3_provider=l3_provider,
+        l3_gliner_activation_is_explicit=l3_gliner_activation_is_explicit,
         l3_api_key=os.environ.get("BLINDFOLD_L3_API_KEY", ""),
         l3_dismissal_log=os.environ.get("BLINDFOLD_L3_DISMISSAL_LOG", ""),
         l3_gliner_model_path=resolve_gliner_model_path(
             resolve_data_dir(), os.environ.get("BLINDFOLD_L3_GLINER_MODEL_PATH", "")
         ),
-        l3_inner_provider=os.environ.get("BLINDFOLD_L3_INNER_PROVIDER", DEFAULT_L3_PROVIDER),
+        l3_inner_provider=os.environ.get(
+            "BLINDFOLD_L3_INNER_PROVIDER", DEFAULT_L3_INNER_PROVIDER
+        ),
         openai_upstream_base_url=os.environ.get("BLINDFOLD_OPENAI_UPSTREAM_BASE_URL", ""),
         host=os.environ.get("BLINDFOLD_HOST", DEFAULT_HOST),
         port=int(os.environ.get("BLINDFOLD_PORT", DEFAULT_PORT)),

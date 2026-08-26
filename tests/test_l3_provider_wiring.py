@@ -28,12 +28,52 @@ from blindfold.ollama import OllamaAdjudicator
 from blindfold.review import Allowlist
 
 
-def test_build_l3_adjudicator_wires_ollama_client_by_default():
-    settings = Settings(l3_model="llama3.1", l3_base_url="http://localhost:11434")
+def test_build_l3_adjudicator_wires_ollama_client_when_explicitly_selected():
+    # ADR-0049: ollama is no longer the default provider, but
+    # BLINDFOLD_L3_PROVIDER=ollama remains a fully supported explicit choice.
+    settings = Settings(
+        l3_provider="ollama", l3_model="llama3.1", l3_base_url="http://localhost:11434"
+    )
 
     adjudicator = _build_l3_adjudicator(settings)
 
     assert isinstance(adjudicator, OllamaAdjudicator)
+
+
+def test_no_llm_configured_end_to_end_is_byte_identical_to_today_via_get_settings(
+    monkeypatch, tmp_path
+):
+    # ADR-0049 acceptance criterion: with no inner LLM configured, behavior stays a
+    # scrubbed fail-closed 503 (ADR-0009), exactly like before this issue's default
+    # flip -- driven through the real get_settings()/config resolution a fresh,
+    # never-configured install would actually hit, not a directly-constructed
+    # Settings object.
+    from blindfold.config import get_settings
+
+    monkeypatch.delenv("BLINDFOLD_L3_PROVIDER", raising=False)
+    monkeypatch.delenv("BLINDFOLD_L3_MODEL", raising=False)
+    monkeypatch.delenv("BLINDFOLD_L3_GLINER_MODEL_PATH", raising=False)
+    monkeypatch.setenv("BLINDFOLD_DATA_DIR", str(tmp_path))  # nothing provisioned here
+    monkeypatch.setenv("BLINDFOLD_DATABASE_URL", "memory://")
+
+    settings = get_settings()
+    adjudicator = _build_l3_adjudicator(settings)
+
+    assert isinstance(adjudicator, _UnconfiguredAdjudicator)
+
+
+def test_build_l3_adjudicator_defaults_to_the_gliner_cascade_and_fails_closed_when_unprovisioned():
+    # ADR-0049: an LLM configured with no other choice made now attempts the
+    # cascade by default (DEFAULT_L3_PROVIDER == "gliner") rather than silently
+    # running the bare LLM alone (the former "config 3", 21-36% recall, reporting
+    # healthy) -- an unprovisioned model still fails closed exactly like an
+    # unconfigured LLM would (ADR-0009), never a silent downgrade.
+    settings = Settings(l3_model="llama3.1", l3_base_url="http://localhost:11434")
+
+    assert settings.l3_provider == "gliner"
+    adjudicator = _build_l3_adjudicator(settings)
+
+    assert isinstance(adjudicator, _UnconfiguredAdjudicator)
 
 
 def test_build_l3_adjudicator_wires_openai_compatible_client_for_omlx():
@@ -150,6 +190,29 @@ def test_build_l3_adjudicator_wires_gliner_cascade_for_a_provisioned_model_direc
         l3_base_url="http://localhost:11434",
     )
 
+    adjudicator = _build_l3_adjudicator(settings)
+
+    assert isinstance(adjudicator, GlinerCascadeAdjudicator)
+    assert adjudicator._classifier._model_path == model_path
+
+
+def test_gliner_model_path_env_alone_activates_the_cascade_with_no_provider_set(
+    monkeypatch, tmp_path
+):
+    # ADR-0049 acceptance criterion: BLINDFOLD_L3_GLINER_MODEL_PATH (the air-gapped
+    # escape hatch, ADR-0034 §3/§4) must still activate the cascade with no download
+    # and, now that DEFAULT_L3_PROVIDER is "gliner", with no BLINDFOLD_L3_PROVIDER
+    # set either -- get_settings()'s own bare fallback already names the cascade.
+    from blindfold.config import get_settings
+
+    model_path = _make_provisioned_model_dir(tmp_path)
+    monkeypatch.delenv("BLINDFOLD_L3_PROVIDER", raising=False)
+    monkeypatch.setenv("BLINDFOLD_L3_GLINER_MODEL_PATH", model_path)
+    monkeypatch.setenv("BLINDFOLD_L3_MODEL", "llama3.1")
+
+    settings = get_settings()
+
+    assert settings.l3_provider == "gliner"
     adjudicator = _build_l3_adjudicator(settings)
 
     assert isinstance(adjudicator, GlinerCascadeAdjudicator)
