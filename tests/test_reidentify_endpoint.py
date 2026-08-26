@@ -32,7 +32,7 @@ import pytest
 from blindfold.app import app, get_audit_log, get_rbac, get_reidentify_store, get_transit_client
 from blindfold.policy import AuditLog
 from blindfold.rbac import RbacRegistry
-from blindfold.transit import TransitClient
+from blindfold.transit import TransitClient, TransitError
 
 
 def _b64(s: str) -> str:
@@ -349,7 +349,9 @@ async def test_reidentify_writes_audit_event_when_decrypt_raises():
     rbac.grant("alice", "default", "re-identifier")
 
     store = _store_with({(surrogate, "default"): ciphertext})
-    # Empty mapping: the stub Transit responds 400, so transit.decrypt() raises.
+    # Empty mapping: the stub Transit responds 400, so transit.decrypt() raises the
+    # named TransitError (issue #364 -- previously the unnamed httpx.HTTPStatusError
+    # raise_for_status() produced).
     transit = _stub_transit({})
     audit_log = AuditLog()
 
@@ -359,7 +361,7 @@ async def test_reidentify_writes_audit_event_when_decrypt_raises():
     app.dependency_overrides[get_audit_log] = lambda: audit_log
     try:
         async with _make_client() as client:
-            with pytest.raises(httpx.HTTPStatusError):
+            with pytest.raises(TransitError):
                 await client.get(
                     f"/v1/management/surrogate/{surrogate}/real",
                     headers={

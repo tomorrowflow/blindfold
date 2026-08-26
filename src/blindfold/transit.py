@@ -28,6 +28,25 @@ _HMAC_ALGORITHM = "sha2-256"
 CIPHERTEXT_PREFIX = "vault:v1:"
 
 
+class TransitError(RuntimeError):
+    """A named Transit-boundary failure (issue #364), mirroring
+    :class:`~blindfold.upstream.UpstreamError`'s scrubbed-by-construction contract.
+
+    Raised on a non-200 response or a 200 response missing the expected
+    ``data.<field>`` shape -- previously these surfaced as a bare, unnamed
+    ``KeyError`` from indexing straight into the response body (issue #364's
+    crown-jewel-seam repro: a stub/misconfigured/rewrapped-key Transit answering
+    with no ``plaintext`` field crashed decrypt with no named failure mode).
+    ``message`` never carries the ciphertext or plaintext value -- only the HTTP
+    status and the operation name.
+    """
+
+    def __init__(self, operation: str, status_code: int, message: str) -> None:
+        self.operation = operation
+        self.status_code = status_code
+        super().__init__(message)
+
+
 class TransitClient:
     """Synchronous OpenBao Transit client.
 
@@ -53,6 +72,33 @@ class TransitClient:
             headers={"X-Vault-Token": self._token},
         )
 
+    def _extract_data_field(self, resp: httpx.Response, *, operation: str, field: str) -> str:
+        """Return ``resp.json()["data"][field]``, or raise a named :class:`TransitError`.
+
+        Covers both failure shapes at this one seam (issue #364): a non-200
+        response (Transit denied or errored the call), and a 200 response whose
+        body doesn't carry the expected field (a stub or misconfigured Transit
+        answering the wrong shape) -- previously the second case surfaced as an
+        unnamed ``KeyError`` from indexing straight into the body.
+        """
+        if resp.status_code != 200:
+            raise TransitError(
+                operation=operation,
+                status_code=resp.status_code,
+                message=f"transit {operation} failed: HTTP {resp.status_code}",
+            )
+        try:
+            return resp.json()["data"][field]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise TransitError(
+                operation=operation,
+                status_code=resp.status_code,
+                message=(
+                    f"transit {operation} failed: HTTP {resp.status_code} response "
+                    f"missing data.{field}"
+                ),
+            ) from exc
+
     def encrypt(self, plaintext: str) -> str:
         """Encrypt ``plaintext`` via Transit; returns ciphertext (vault:v1:…)."""
         encoded = base64.b64encode(plaintext.encode()).decode()
@@ -61,8 +107,7 @@ class TransitClient:
             json={"plaintext": encoded},
             headers={"X-Vault-Token": self._token},
         )
-        resp.raise_for_status()
-        return resp.json()["data"]["ciphertext"]
+        return self._extract_data_field(resp, operation="encrypt", field="ciphertext")
 
     def decrypt(self, ciphertext: str) -> str:
         """Decrypt ``ciphertext`` via Transit; returns the original plaintext string."""
@@ -71,8 +116,7 @@ class TransitClient:
             json={"ciphertext": ciphertext},
             headers={"X-Vault-Token": self._token},
         )
-        resp.raise_for_status()
-        encoded = resp.json()["data"]["plaintext"]
+        encoded = self._extract_data_field(resp, operation="decrypt", field="plaintext")
         return base64.b64decode(encoded).decode()
 
     def is_root_token(self) -> bool:

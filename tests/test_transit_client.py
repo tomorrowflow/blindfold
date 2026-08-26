@@ -18,7 +18,7 @@ import json
 import httpx
 import pytest
 
-from blindfold.transit import TransitClient
+from blindfold.transit import TransitClient, TransitError
 
 
 def _b64(s: str) -> str:
@@ -73,6 +73,71 @@ def test_transit_decrypt_sends_ciphertext_and_returns_plaintext():
     )
     result = client.decrypt("vault:v1:abc123")
     assert result == plaintext
+
+
+# ---------------------------------------------------------------------------
+# 2b. decrypt — a non-200 response is a named TransitError (issue #364), never a
+#     bare KeyError from indexing a response body that was never a success body.
+# ---------------------------------------------------------------------------
+
+
+def test_transit_decrypt_raises_named_error_on_non_200_response():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, json={"errors": ["permission denied"]})
+
+    client = TransitClient(
+        addr="http://openbao.test",
+        token="dev-root-token",
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(TransitError) as excinfo:
+        client.decrypt("vault:v1:abc123")
+    assert excinfo.value.operation == "decrypt"
+    assert excinfo.value.status_code == 403
+    message = str(excinfo.value)
+    assert "403" in message
+    assert "decrypt" in message
+    assert "abc123" not in message
+
+
+def test_transit_decrypt_raises_named_error_on_200_response_missing_plaintext_field():
+    """issue #364's exact repro: a 200 response shaped like encrypt's own reply
+    (``data.ciphertext``, no ``data.plaintext``) must never surface as a bare
+    KeyError.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": {"ciphertext": "vault:v1:fixture-stub"}})
+
+    client = TransitClient(
+        addr="http://openbao.test",
+        token="dev-root-token",
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(TransitError) as excinfo:
+        client.decrypt("vault:v1:abc123")
+    assert excinfo.value.operation == "decrypt"
+    assert excinfo.value.status_code == 200
+    message = str(excinfo.value)
+    assert "plaintext" in message
+    assert "abc123" not in message
+    assert "fixture-stub" not in message
+
+
+def test_transit_encrypt_raises_named_error_on_non_200_response():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"errors": ["internal error"]})
+
+    client = TransitClient(
+        addr="http://openbao.test",
+        token="dev-root-token",
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    with pytest.raises(TransitError) as excinfo:
+        client.encrypt("Martin Bach")
+    assert excinfo.value.operation == "encrypt"
+    assert excinfo.value.status_code == 500
+    assert "Martin Bach" not in str(excinfo.value)
 
 
 # ---------------------------------------------------------------------------

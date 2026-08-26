@@ -102,6 +102,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from datetime import datetime
 
 import httpx
+from cryptography.exceptions import InvalidTag
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response, StreamingResponse
@@ -124,7 +125,7 @@ from .entity_graph import (
     SurrogateCollisionError,
 )
 from .reidentify import InMemoryReIdentificationStore, ReIdentificationStore
-from .transit import TransitClient
+from .transit import TransitClient, TransitError
 from .engine import (
     DeclaredToolVocabulary,
     ExchangeSession,
@@ -813,6 +814,23 @@ def hydrate_review_inbox_from_store(
         inbox.purge_surrogate_collisions(mapping)
 
 
+class MappingHydrationError(RuntimeError):
+    """Raised when the configured mapping cipher cannot decrypt a persisted
+    re-identify-store entry during startup hydration (ADR-0045 §7, issue #364).
+
+    The key-loss/misconfigured-Transit path for the mapping-hydration seam
+    specifically: distinct from ``serve.py``'s own ``UndecryptableStoreError``,
+    which samples the ``persons`` table and never touches ``reidentify_mappings``.
+    Fail-closed by construction -- ``hydrate_mapping_from_reidentify_store`` runs
+    at ``blindfold.app`` import time (module scope, mirroring every other
+    ``hydrate_*_from_store`` call below), so this propagates straight out of
+    ``import blindfold.app`` itself, refusing to start rather than serving a
+    mapping the durable store disagrees with silently. The message never carries
+    the ciphertext, the plaintext, or the underlying cipher error's own text (which
+    may echo response bodies) -- only that hydration failed and where to look.
+    """
+
+
 def hydrate_mapping_from_reidentify_store(
     mapping: SurrogateMapping,
     store: "ReIdentificationStore",
@@ -841,11 +859,30 @@ def hydrate_mapping_from_reidentify_store(
     in-memory fallback is empty at this point in startup, so calling this with
     it is a harmless no-op, exactly like the ``memory://`` sentinel everywhere
     else in this file.
+
+    A decrypt failure -- ``TransitError`` (named, issue #364) from the Transit
+    cipher, or ``InvalidTag`` from the Local key cipher (wrong key, corrupted
+    value, or a ciphertext written by the *other* cipher) -- is a hard,
+    fail-closed startup refusal (:class:`MappingHydrationError`), the same
+    posture ADR-0045 §7 already names for Store-key loss: "a startup refusal
+    with a scrubbed, actionable message." Never a silent skip -- a persisted
+    mapping this process cannot read is exactly the condition #343 exists to
+    protect against going unnoticed.
     """
     if mapping_cipher is None:
         return
     for surrogate, _workspace, ciphertext in store.all_entries():
-        mapping.seed(mapping_cipher.decrypt(ciphertext), surrogate)
+        try:
+            real_value = mapping_cipher.decrypt(ciphertext)
+        except (TransitError, InvalidTag) as exc:
+            raise MappingHydrationError(
+                "refusing to start: the re-identify store holds a persisted "
+                "mapping the configured mapping cipher cannot decrypt. The Store "
+                "key or Transit token may be wrong, revoked, or rewrapped -- "
+                "reconfigure the mapping cipher, or clear the re-identify store "
+                "and re-run Setup (ADR-0045 §7)."
+            ) from exc
+        mapping.seed(real_value, surrogate)
 
 
 def get_reidentify_store() -> ReIdentificationStore:

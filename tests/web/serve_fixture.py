@@ -79,24 +79,58 @@ os.environ.setdefault("BLINDFOLD_PORT", os.environ.get("BLINDFOLD_FIXTURE_PORT",
 
 
 def _start_stub_openbao_server() -> str:
-    """A minimal loopback-only HTTP stub answering Transit's encrypt/decrypt shape.
+    """A minimal loopback-only HTTP stub round-tripping Transit's encrypt/decrypt shape.
 
-    Only needed for the one real network call `blindfold.app`'s own module-level
-    startup bootstrap makes when `BLINDFOLD_OPENBAO_TOKEN` is set (issue #227's
-    "Transit cipher configured" banner-hidden case) -- that call fires before this
-    fixture's own `app.dependency_overrides[get_transit_client]` (the MockTransport
-    `_stub_transit()` below) exists to intercept it. Answers every POST with a
-    fixed, fabricated ciphertext -- never a real entity value, and never reachable
-    from outside loopback.
+    Needed for the real network calls `blindfold.app`'s own module-level startup
+    bootstrap makes when `BLINDFOLD_OPENBAO_TOKEN` is set (issue #227's "Transit
+    cipher configured" banner-hidden case): first `bootstrap_from_vendored_seed`
+    encrypts the vendored seed into the re-identify store, then (issue #343)
+    `hydrate_mapping_from_reidentify_store` decrypts it straight back out -- both
+    calls fire before this fixture's own `app.dependency_overrides[get_transit_client]`
+    (the MockTransport `_stub_transit()` below) exists to intercept them.
+
+    Issue #364: this used to answer every POST with the same fixed, fabricated
+    `{"data": {"ciphertext": ...}}` body regardless of path -- fine for the
+    encrypt-only call site that was here at issue #227, but #343's later decrypt
+    call against that same fixed body has no `data.plaintext` field, so
+    `TransitClient.decrypt` failed every fixture boot with a bare `KeyError`
+    (`transit.py` now names that failure -- see `TransitError` -- but the fixture
+    itself must still answer honestly). Mints a real per-request ciphertext on
+    encrypt and remembers its plaintext (still never a real entity value: the only
+    caller is the vendored-seed bootstrap) so a matching decrypt call resolves it,
+    the same in-process round-trip `_stub_transit()`'s own MockTransport handler
+    already does below -- just answered over a real loopback socket instead of a
+    MockTransport, since this path runs before dependency_overrides exist.
     """
+
+    plaintext_by_ciphertext: dict[str, str] = {}
+    minted_counter = [0]
 
     class _Handler(BaseHTTPRequestHandler):
         def do_POST(self) -> None:
-            body = json.dumps({"data": {"ciphertext": "vault:v1:fixture-stub-ciphertext"}})
-            self.send_response(200)
+            length = int(self.headers.get("Content-Length", 0))
+            body = json.loads(self.rfile.read(length) or b"{}")
+            if self.path.endswith("/encrypt/blindfold-mapping"):
+                minted_counter[0] += 1
+                ciphertext = f"vault:v1:fixture-stub-ciphertext-{minted_counter[0]}"
+                plaintext_by_ciphertext[ciphertext] = body["plaintext"]
+                self._respond(200, {"data": {"ciphertext": ciphertext}})
+                return
+            if self.path.endswith("/decrypt/blindfold-mapping"):
+                encoded = plaintext_by_ciphertext.get(body.get("ciphertext"))
+                if encoded is None:
+                    self._respond(404, {"errors": ["no such ciphertext"]})
+                    return
+                self._respond(200, {"data": {"plaintext": encoded}})
+                return
+            self._respond(404, {"errors": ["no such transit operation"]})
+
+        def _respond(self, status: int, payload: dict) -> None:
+            body = json.dumps(payload).encode()
+            self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
-            self.wfile.write(body.encode())
+            self.wfile.write(body)
 
         def log_message(self, format: str, *args: object) -> None:  # noqa: A002
             pass
@@ -477,7 +511,23 @@ def build_app():
     transit = _stub_transit()
 
     review_inbox = ReviewInbox()
-    review_item_one = review_inbox.upsert(REVIEW_ITEM_REAL_ONE, context=REVIEW_ITEM_CONTEXT_ONE)
+    # entity_type="person" (issue #364, second finding): review-inbox.spec.ts's
+    # "dual-encoded kind shape" spec needs one seeded candidate of each rendered
+    # kind side by side (round person / square term, issue #176 hard rule §6.2).
+    # This seed predates #346, which changed `_entity_kind_for`'s untyped (`None`)
+    # mapping from "person" to the less-committal "term" (a deliberate posture
+    # about *real*, adjudicator-minted verdicts -- l3_openai_compat.py/ollama.py
+    # never set entity_type, so `None` had to stop implying "confirmed human").
+    # Left untyped here, this fixture candidate silently started rendering as
+    # "term" too, same as the other seeded candidate -- losing the "person" shape
+    # this spec exists to cover. That drift was undiscoverable until issue #364's
+    # own fix (this file's `_start_stub_openbao_server`), since #343's hydration
+    # bug kept the whole fixture from booting at all. This fixture simulates an
+    # already-adjudicated candidate for UI coverage, not #346's untyped-verdict
+    # case, so pinning an explicit type here doesn't relitigate that decision.
+    review_item_one = review_inbox.upsert(
+        REVIEW_ITEM_REAL_ONE, context=REVIEW_ITEM_CONTEXT_ONE, entity_type="person"
+    )
     review_inbox.upsert(
         REVIEW_ITEM_REAL_TWO, context=REVIEW_ITEM_CONTEXT_TWO, entity_type="organization"
     )

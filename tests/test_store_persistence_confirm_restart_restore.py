@@ -331,6 +331,40 @@ def test_hydrate_mapping_from_reidentify_store_seeds_every_persisted_pair():
     assert mapping.is_known_surrogate("Berta Falke")
 
 
+def test_hydrate_mapping_from_reidentify_store_raises_named_error_when_cipher_cannot_decrypt():
+    """issue #364: a mapping cipher that cannot decrypt a persisted entry must
+    refuse hydration with a named, scrubbed error -- never an unnamed KeyError
+    escaping from inside the cipher's own response-shape indexing (the #343
+    web-verify repro: the fixture's OpenBao stub answers every POST, including
+    decrypt, with an encrypt-shaped body).
+    """
+    from blindfold.app import MappingHydrationError, hydrate_mapping_from_reidentify_store
+    from blindfold.reidentify import InMemoryReIdentificationStore
+    from blindfold.surrogates import SurrogateMapping
+    from blindfold.transit import TransitClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Always answers with an encrypt-shaped body, never a decrypt-shaped one --
+        # mirrors the broken fixture stub this issue's traceback came from.
+        return httpx.Response(200, json={"data": {"ciphertext": "vault:v1:stub"}})
+
+    cipher = TransitClient(
+        addr="http://openbao.test",
+        token="dev-root-token",
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    store = InMemoryReIdentificationStore()
+    store.seed("Alex Brenner", "acme", "vault:v1:some-ciphertext")
+    mapping = SurrogateMapping.from_pairs([])
+
+    with pytest.raises(MappingHydrationError) as excinfo:
+        hydrate_mapping_from_reidentify_store(mapping, store, cipher)
+
+    message = str(excinfo.value)
+    assert "some-ciphertext" not in message
+    assert mapping.real_values() == []
+
+
 def test_in_memory_reidentification_store_all_entries_returns_every_seeded_triple():
     from blindfold.reidentify import InMemoryReIdentificationStore
 
