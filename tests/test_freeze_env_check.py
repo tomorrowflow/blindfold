@@ -71,7 +71,7 @@ def test_fails_when_rich_is_importable(tmp_path: pathlib.Path) -> None:
 def _dependency_closure(
     start_edges: list[dict], packages_by_name: dict[str, dict]
 ) -> set[str]:
-    """BFS over uv.lock's own package graph (issue #363). An `extra` on an edge
+    """Traversal over uv.lock's own package graph (issue #363). An `extra` on an edge
     (e.g. `psycopg`'s `binary` extra) is expanded into that same package's
     `optional-dependencies[extra]` entries, mirroring how uv itself resolves extras."""
     seen: set[str] = set()
