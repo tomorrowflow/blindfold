@@ -170,3 +170,33 @@ test.describe("Setup — ready to connect (issue #264)", () => {
     await expect(operatorPage).toHaveURL(/\/ui\/entities$/);
   });
 });
+
+test.describe("Setup — enhanced detection never provisions on the in-memory default store (ADR-0049, issue #366)", () => {
+  // Runs last in this file (after "Setup — create first workspace" already
+  // populated the store with "Acme Corp") -- the founding-admin self-grant
+  // this file's earlier tests rely on only fires when the store was still
+  // empty at creation time, so a workspace created here must not run before it.
+  test("submitting Setup on a memory:// store issues zero gliner-provision requests", async ({
+    operatorPage,
+  }) => {
+    // The checkbox is hidden here (has_persistent_store=false, see the toggle-
+    // hidden test above), but `enhancedDetection`'s React state still defaults
+    // to true (ADR-0049) -- the submit path must not call provisionGliner for
+    // an option the operator was never offered, or a memory:// store
+    // spuriously fires a ~197MB download attempt that predictably 409s
+    // server-side (the has_persistent_store gate), surfacing a misleading
+    // "Downloading enhanced detection model…" for a checkbox that was never
+    // rendered.
+    const provisionRequests: string[] = [];
+    operatorPage.on("request", (req) => {
+      if (req.url().includes("gliner-provision")) provisionRequests.push(req.url());
+    });
+
+    await operatorPage.goto("/ui/setup");
+    await operatorPage.getByTestId("setup-workspace-name").fill("Ephemeral Co");
+    await operatorPage.getByTestId("setup-create-btn").click();
+
+    await expect(operatorPage.getByTestId("setup-ready-message")).toBeVisible();
+    expect(provisionRequests).toEqual([]);
+  });
+});

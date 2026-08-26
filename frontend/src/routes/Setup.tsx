@@ -114,7 +114,7 @@ export function Setup() {
       }
     }
 
-    if (enhancedDetection) {
+    if (hasPersistentStore && enhancedDetection) {
       setDownloadingModel(true);
       try {
         await provisionGliner(slug);
