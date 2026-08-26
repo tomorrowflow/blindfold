@@ -19,14 +19,17 @@ directory), then paste everything between the rules into a client pointed at the
 ---
 
 Read the engagement brief at
-tests/live-verify/74-engagement-brief.md
+<BRIEF-PATH>
 
 Then investigate how this repo's store layer actually persists and shares the mapping:
 1. Read CONTEXT.md's Store/Mapping/Workspace glossary entries and skim docs/DESIGN.md's backend-stack note.
-2. Explore src/blindfold/store/ — in particular repository.py (VendoredSeedRepository vs the
-   Postgres-backed PostgresSeedRepository and the seeded_pairs() seam), postgres.py, and migrations.sql.
-   Use grep/glob to trace how database_url flows into the store classes.
-3. Run the store tests (e.g. `pytest -k store -q`) and report what passes.
+2. Explore src/blindfold/store/ — in particular repository.py (VendoredSeedRepository) vs
+   sqlite.py (SQLiteSeedRepository), the shared seeded_pairs() seam, dialect.py, and
+   migrations.sql / migrations_sqlite.sql. Use grep/glob to trace how database_url flows into
+   the store classes. Note: PostgresSeedRepository is test-only (tests/support/) — nothing
+   shipped imports it.
+3. Run the store tests (e.g. `pytest -k store -q`) and report what passes (Postgres-backed
+   tests skip silently without Docker — say so if they skip).
 
 Then write a one-page persistence explainer to
 <OUT-PATH>/blindfold-74-onepager.md that Priya Nadkarni can hand to Annika Brückner at
