@@ -575,6 +575,15 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   adjudicator returning the same answer to the same request is that process's
   property — Blindfold pins what the protocol exposes (greedy decoding, fixed
   seed) and cannot verify the rest.
+- **Headers are never a hop.** Blindfold never reads, rewrites, blindfolds or leak-gates a
+  request header's value; which headers reach the provider is decided by header **name**
+  alone (an open `anthropic-*` prefix, a closed exact-name list for everything else — the
+  `x-claude-code-*` attribution identifiers are deliberately dropped). A forwarded name that is
+  not on the known list is recorded, name only, in the **Processing trace** so a new client
+  capability is visible rather than silent. Corollary for the body: an unrecognised top-level
+  request field is not a hop either — it passes through byte-identical so a capability's
+  header/body pair stays intact — but it *is* inside the **pre-egress leak gate**'s checked
+  surface, so a known real value there blocks rather than egresses (ADR-0054).
 - **No diagnostic code ships.** The ability to see real payload content exists only in a
   **Diagnostic session** run from source; every release artifact is asserted to contain no
   `blindfold_devtools` module — and the assertion carries a **positive control** (a canary
