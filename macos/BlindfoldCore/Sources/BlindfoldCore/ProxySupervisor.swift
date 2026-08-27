@@ -104,6 +104,12 @@ public final class ProxySupervisor: ProxySupervising, @unchecked Sendable {
     private var process: (any ProxyProcess)?
     private var everHealthy = false
     private var hasLoggedExitOutcome = false
+    /// Set by `restart()`, cleared once the killed child's exit is confirmed and the
+    /// replacement has been spawned (issue #285). Never set by an unrequested crash --
+    /// that is exactly what keeps ADR-0041's no-auto-restart-after-crash behaviour
+    /// unchanged: `currentLiveness()` only ever relaunches when this flag says a restart
+    /// was explicitly requested.
+    private var isRestartPending = false
 
     /// `environmentProvider` is called fresh on every `start()` (issue #237, ADR-0044) --
     /// the supervisor holds a provider it calls, never a captured snapshot, so a value
@@ -166,10 +172,48 @@ public final class ProxySupervisor: ProxySupervising, @unchecked Sendable {
         process?.kill()
     }
 
+    /// Issue #285: a user-initiated restart -- e.g. after a configuration change that
+    /// only takes effect on the next process start (ADR-0034 §1) -- that stops the
+    /// proxy, *confirms* its exit, then relaunches with the current resolved launch
+    /// environment (ADR-0044, via `environmentProvider`, read fresh exactly as `start()`
+    /// already does). Deliberately does not relaunch immediately after requesting the
+    /// kill: `kill()` only requests termination, and a replacement spawned before the
+    /// old child actually released the port can itself refuse to start ("port in use").
+    /// Never `process.waitUntilExit()` (see `RealProxyProcess`'s doc comment on that
+    /// hazard) -- the confirmation is observed the same way every other exit is in this
+    /// class: by polling `hasExited` on a later `currentLiveness()` call, driven by the
+    /// caller's own poll loop (the menu bar's `StatusPollingModel`), never by blocking
+    /// here.
+    ///
+    /// This is a distinct, explicit entry point from `stop()`/`start()` precisely so
+    /// ADR-0041's "no auto-restart after crash" stays untouched: only a call to
+    /// `restart()` ever arms the relaunch-on-confirmed-exit path (`isRestartPending`) --
+    /// an unrequested crash never does, no matter how many times liveness is polled
+    /// afterward.
+    public func restart() {
+        logSink.append("restart requested")
+        guard let process, !process.hasExited else {
+            // Nothing alive to wait for -- either never started or already exited, so a
+            // restart is just an immediate start.
+            start()
+            return
+        }
+        isRestartPending = true
+        process.kill()
+    }
+
     public func currentLiveness() -> ProxyLiveness {
         guard let process else { return .notStarted }
 
         if process.hasExited {
+            if isRestartPending {
+                // The killed child's exit is now confirmed -- relaunch with the launch
+                // environment read fresh, same as any other `start()`.
+                isRestartPending = false
+                start()
+                return .starting
+            }
+
             // Crash after healthy: notStarted, no auto-restart (ADR-0041) -- the same
             // bucket AppStateMachine already maps to the Stopped state.
             guard !everHealthy else { return .notStarted }
@@ -194,6 +238,15 @@ public final class ProxySupervisor: ProxySupervising, @unchecked Sendable {
             }
             logExitOutcomeOnce("exited: code=\(process.exitCode)")
             return .refused(reason: "startup failed: proxy process exited with code \(process.exitCode) before completing startup")
+        }
+
+        // Restart requested but the old child hasn't exited yet: never report `.running`
+        // here even though it was healthy moments ago -- we've already committed to
+        // killing it, so continuing to claim Running/Protected would be misleading, and
+        // this is what keeps the mid-restart window from ever reading as a crash either
+        // (issue #285's "observable, does not read as a crash" AC).
+        if isRestartPending {
+            return .starting
         }
 
         return everHealthy ? .running : .starting

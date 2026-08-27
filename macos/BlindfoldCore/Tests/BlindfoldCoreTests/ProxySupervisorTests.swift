@@ -274,6 +274,77 @@ private final class InvocationCounter: @unchecked Sendable {
     #expect(launcher.launches.count == 1)
 }
 
+/// Issue #285: a restart must wait for the *old* child's exit to be confirmed before
+/// spawning the replacement -- a naive `stop()` immediately followed by `start()` (the
+/// pre-#285 shape `SupervisorSettingsViewModel.restartProxy()` used) races the old
+/// child's port release, so the new child can itself refuse to start ("port in use").
+/// `kill()` only requests termination (SIGTERM); `restart()` must not relaunch until
+/// `hasExited` is observed true on a later poll.
+@Test func restartWaitsForConfirmedExitBeforeRelaunching() {
+    let launcher = FakeProxyProcessLauncher()
+    let supervisor = ProxySupervisor(launcher: launcher, exePath: "blindfold-proxy", args: ["serve"])
+    supervisor.start()
+    supervisor.notifyHealthy()
+    #expect(supervisor.currentLiveness() == .running)
+
+    supervisor.restart()
+
+    #expect(launcher.process.killed)
+    #expect(launcher.launches.count == 1, "must not relaunch before the old child's exit is confirmed")
+    #expect(supervisor.currentLiveness() == .starting, "mid-restart must read as Starting, never Running or a crash")
+    #expect(launcher.launches.count == 1, "polling liveness alone must not itself trigger a relaunch")
+
+    // The old child's exit is now observed on a later poll.
+    launcher.process.hasExited = true
+
+    #expect(supervisor.currentLiveness() == .starting)
+    #expect(launcher.launches.count == 2, "relaunches only once the old child's exit is confirmed")
+}
+
+/// Issue #285: `restart()` against a supervisor with nothing currently running (already
+/// `.notStarted`/`.refused`) has no child to wait for -- it starts immediately, same as a
+/// plain `start()` would.
+@Test func restartWithNothingRunningStartsImmediately() {
+    let launcher = FakeProxyProcessLauncher()
+    let supervisor = ProxySupervisor(launcher: launcher, exePath: "blindfold-proxy", args: ["serve"])
+
+    supervisor.restart()
+
+    #expect(launcher.launches.count == 1)
+    #expect(supervisor.currentLiveness() == .starting)
+}
+
+/// Issue #285's own regression AC: ADR-0041's no-auto-restart-after-crash is unchanged --
+/// a crash that nothing ever called `restart()` for must never trigger the new
+/// confirmed-exit relaunch path, however many times liveness is polled afterward.
+@Test func aCrashWithoutRestartHavingBeenRequestedNeverAutoRelaunches() {
+    let launcher = FakeProxyProcessLauncher()
+    let supervisor = ProxySupervisor(launcher: launcher, exePath: "blindfold-proxy", args: ["serve"])
+    supervisor.start()
+    supervisor.notifyHealthy()
+    launcher.process.hasExited = true
+    launcher.process.exitCode = 1
+    launcher.process.standardErrorText = "Segmentation fault"
+
+    for _ in 0..<5 {
+        #expect(supervisor.currentLiveness() == .notStarted)
+    }
+    #expect(launcher.launches.count == 1, "a plain crash must never trigger issue #285's restart-relaunch path")
+}
+
+/// Issue #285: `restart()` itself is a diagnosable lifecycle event (issue #239's log
+/// discipline) -- distinct from a plain `stop()`'s "stop requested" line.
+@Test func restartAppendsARestartRequestToTheLog() {
+    let launcher = FakeProxyProcessLauncher()
+    let log = RecordingLogSink()
+    let supervisor = ProxySupervisor(launcher: launcher, exePath: "blindfold-proxy", args: ["serve"], logSink: log)
+    supervisor.start()
+
+    supervisor.restart()
+
+    #expect(log.lines.contains { $0.contains("restart requested") })
+}
+
 /// A recorded double at the log seam (issue #239, mirroring `FakeProxyProcessLauncher`
 /// above) -- `ProxySupervisor` is asserted only through this seam, never by inspecting a
 /// real file from this test target.

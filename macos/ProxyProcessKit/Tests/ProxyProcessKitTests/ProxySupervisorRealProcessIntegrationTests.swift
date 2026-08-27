@@ -62,3 +62,68 @@ import BlindfoldCore
     }
     #expect(reason == "startup failed: proxy process terminated by signal 9 before completing startup")
 }
+
+/// Counts real launches while still delegating to a real `RealProxyProcessLauncher`
+/// (issue #285) -- lets a test observe *how many* real children were spawned without
+/// needing `ProxySupervisor` to expose its private `process` reference.
+private final class RecordingRealLauncher: ProxyProcessLaunching, @unchecked Sendable {
+    private let real = RealProxyProcessLauncher()
+    private let lock = NSLock()
+    private var _launchCount = 0
+    var launchCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return _launchCount
+    }
+
+    func launch(exePath: String, args: [String], environment: [String: String]) -> any ProxyProcess {
+        lock.lock()
+        _launchCount += 1
+        lock.unlock()
+        return real.launch(exePath: exePath, args: args, environment: environment)
+    }
+}
+
+/// Issue #285's own wiring gap, mirrored from the test above: `ProxySupervisor.restart()`
+/// verified against a real `Process`/`Pipe` child, not just the `FakeProxyProcess` double
+/// `ProxySupervisorTests.swift` uses. A short-lived real child stands in for the running
+/// proxy; `restart()` must not spawn the replacement while that real OS process is still
+/// alive, and must spawn a genuinely new one only once `RealProxyProcess` observes the
+/// exit. Deliberately a child that exits **on its own** shortly after `restart()`'s
+/// `kill()` rather than one that only exits in response to that signal: this sandbox's
+/// test-harness process inherits `SIGTERM` as ignored across `exec` (documented in
+/// `RealProxyProcessTests.swift`), so a spawned child would inherit the same ignored
+/// disposition and never actually die from `terminate()` here -- the same reason the
+/// sibling test above uses a self-`SIGKILL` rather than relying on an external kill.
+@Test func supervisorWiredToRealLauncherWaitsForARealChildsExitBeforeRestartRelaunches() throws {
+    let launcher = RecordingRealLauncher()
+    let supervisor = ProxySupervisor(launcher: launcher, exePath: "/bin/sh", args: ["-c", "sleep 0.3"])
+
+    supervisor.start()
+    #expect(launcher.launchCount == 1)
+    supervisor.notifyHealthy()
+    #expect(supervisor.currentLiveness() == .running)
+
+    supervisor.restart()
+
+    // The real child was only just SIGTERM'd -- it may take a moment to actually exit,
+    // so liveness must read Starting (never Running, never a crash-looking state) and no
+    // replacement may be spawned yet.
+    #expect(supervisor.currentLiveness() == .starting)
+    #expect(launcher.launchCount == 1, "must not relaunch before the real child's exit is confirmed")
+
+    // Wait for RealProxyProcess to observe the real exit and for the supervisor to spawn
+    // the replacement.
+    let deadline = Date().addingTimeInterval(5)
+    while launcher.launchCount < 2, Date() < deadline {
+        _ = supervisor.currentLiveness()
+        Thread.sleep(forTimeInterval: 0.02)
+    }
+
+    #expect(launcher.launchCount == 2, "the real killed child's exit must eventually be confirmed and relaunched")
+    #expect(supervisor.currentLiveness() == .starting)
+    supervisor.notifyHealthy()
+    #expect(supervisor.currentLiveness() == .running)
+
+    supervisor.stop()
+}
