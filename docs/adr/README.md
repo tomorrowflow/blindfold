@@ -55,5 +55,6 @@ Vocabulary follows [`../../CONTEXT.md`](../../CONTEXT.md).
 | [0054](0054-forwarded-headers-open-anthropic-prefix-names-only-trace.md) | Forwarded request headers — open `anthropic-*` prefix, closed list otherwise, unlisted names recorded in the trace | Accepted |
 | [0055](0055-phone-shaped-producer-stays-on-and-never-emits-reserved-namespace.md) | The phone-shaped producer stays default-on and never emits Blindfold's own reserved namespace | Accepted |
 | [0056](0056-test-connection-canary-and-failure-taxonomy.md) | Test connection — reserved-shape canary, honesty split, typed failure taxonomy | Accepted |
+| [0057](0057-claude-desktop-gateway-mode-is-a-redirectable-client.md) | Claude Desktop in 3P Gateway mode is a redirectable client — in scope, no interception, no new proxy | Proposed |
 
 New ADRs: copy [`0000-template.md`](0000-template.md), take the next number.

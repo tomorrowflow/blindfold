@@ -607,7 +607,9 @@ to add it via `/grill-with-docs`, not to invent a synonym.
 ## Non-goals
 
 - Intercepting apps whose endpoint can't be redirected (claude.ai web, ChatGPT
-  desktop/mobile). Scope is tools where the base URL is configurable.
+  desktop/mobile). Scope is tools where the base URL is configurable — which, since
+  Claude Desktop's third-party inference **Gateway** mode, includes Claude Desktop
+  (ADR-0057); interception of it is still out.
 - Irreversible anonymization. Blindfold is reversible pseudonymization by design.
 - Being a general secrets manager. Key custody is delegated — to OpenBao for the
   **shared** store, and to the **supervisor**'s platform secret store for a single-user
