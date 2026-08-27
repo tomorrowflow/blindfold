@@ -503,200 +503,172 @@ jobs:
       # (a deliberate contract split -- see Program.cs RunSmokeLaunchFull and ADR-0041's
       # "thin, logic-free front door"):
       #
-      #   1. ONE-HOP (L3) -- the frozen proxy's own capability. Launch blindfold-proxy.exe
-      #      directly with the L3 stub env set at PowerShell scope and assert /v1/status reaches
-      #      "protected". This proves the portable folder's proxy reaches Protected when its
-      #      L3 dependency is configured.
+      #   1. ONE-HOP (L3) -- the frozen proxy's own capability, exercised against a fresh,
+      #      model-less install: no GLiNER model provisioned, no inner LLM configured, exactly
+      #      what `windows/blindfold-proxy.exe` looks like straight out of the portable folder
+      #      with no Setup step having run. Since ADR-0049 that is `state: degraded` with
+      #      `dependencies.l3.detail == "gliner model not provisioned"` -- an honest, visible
+      #      reduced-detection state -- not "protected". (Issue #371: this assertion used to
+      #      require "protected", reached by pointing BLINDFOLD_L3_MODEL/BASE_URL at a stubbed
+      #      Ollama so the pre-ADR-0049 bare-LLM default's l3 probe reported healthy. ADR-0049
+      #      made the GLiNER cascade the default detection path instead, and that Ollama env is
+      #      never even consulted on the default gliner path -- see `_default_l3_probe`,
+      #      app.py -- so the stub no longer does anything, and asserting "protected" here was
+      #      asserting the exact silently-reduced-detection condition ADR-0049 exists to make
+      #      visible. Deliberately does NOT set BLINDFOLD_L3_PROVIDER=ollama to route around the
+      #      cascade default: that would re-test the pre-ADR-0049 world instead of what a fresh
+      #      install actually does.)
       #   2. ONE-HOP (Store key) -- issue #234's own isolation, added after five prior cycles
       #      (620102b..c691584) exhausted every hypothesis about RealProxyProcessLauncher/the
       #      tray's launch seam without landing a hosted fix: every one of those cycles assumed
       #      the gap was somewhere in the tray's TWO-HOP spawn, but none of them first confirmed
-      #      that BLINDFOLD_STORE_KEY -- as opposed to BLINDFOLD_L3_MODEL/BASE_URL, the only vars
-      #      assertion 1 has ever exercised -- actually survives even the simplest possible case:
+      #      that BLINDFOLD_STORE_KEY actually survives even the simplest possible case:
       #      PowerShell setting it directly, no tray involved at all. This launches
       #      blindfold-proxy.exe the same way assertion 1 does (memory:// database, so it can't
       #      touch the OS-default Store file the TWO-HOP run below depends on finding absent) and
-      #      asserts config.mapping_cipher == "local". A failure here would mean the loss is
-      #      inside blindfold-proxy.exe's own onefile parent/child re-exec (or something Windows-
-      #      runner-specific to this one variable), completely exonerating the tray and
-      #      RealProxyProcessLauncher that every prior cycle's fix attempts targeted.
+      #      asserts config.mapping_cipher == "local" -- unaffected by #371's change, since it
+      #      never depended on reaching "protected".
       #   3. TWO-HOP -- the tray's supervision job. Launch blindfold.exe --smoke-launch-full,
       #      which spawns the proxy, polls it, supervises it, and reduces its /v1/status; it
       #      exits 0 on any non-error terminal (Protected OR Degraded). It does NOT require
-      #      Protected: the single-file WinExe host does not reliably propagate ambient env to
-      #      its child, so the tray-spawned proxy's l3 probe stays unhealthy (Degraded) even
-      #      though the one-hop proxy above reaches Protected. Requiring Protected here would be
-      #      testing env-inheritance-through-a-GUI-host, not the tray's contract, and is what
-      #      previously deadlocked this gate. RunSmokeLaunchFull also checks whether the
-      #      tray-provisioned Store key (StoreKeyEnvironment.Build()) configured
-      #      config.mapping_cipher == "local" in the tray-spawned proxy, but that check is
-      #      non-blocking (issue #234's Scope decision, 2026-07-26): a real gap between this
-      #      TWO-HOP path and the passing ONE-HOP (Store key) assertion above is warned on stderr
-      #      and tracked at #236, not failed here -- see #236 for the diagnostic record.
-      #
-      # /v1/status only reports "protected" once every dependency probe is healthy
-      # (status.py's compute_state) -- with no BLINDFOLD_L3_MODEL configured, the l3 probe
-      # (ping_ollama) is unhealthy by construction ("no L3 adjudicator configured").
-      # windows/packaging/ollama-stub.py stands in for the real Ollama dependency at its
-      # network boundary -- answers GET /api/tags with a bare 200, same seam-stub discipline
-      # the leak-audit tests use -- so BLINDFOLD_L3_MODEL/BLINDFOLD_L3_BASE_URL can point at it
-      # and the one-hop l3 probe reports healthy.
+      #      Protected -- both because the single-file WinExe host does not reliably propagate
+      #      ambient env to its child (issue #234), and, since ADR-0049, because a fresh
+      #      model-less install is expected to land on Degraded on its own merits regardless of
+      #      env inheritance. Requiring Protected here would be testing env-inheritance-through-
+      #      a-GUI-host, not the tray's contract, and is what previously deadlocked this gate.
+      #      RunSmokeLaunchFull also checks whether the tray-provisioned Store key
+      #      (StoreKeyEnvironment.Build()) configured config.mapping_cipher == "local" in the
+      #      tray-spawned proxy, but that check is non-blocking (issue #234's Scope decision,
+      #      2026-07-26): a real gap between this TWO-HOP path and the passing ONE-HOP (Store
+      #      key) assertion above is warned on stderr and tracked at #236, not failed here --
+      #      see #236 for the diagnostic record.
       - name: Smoke-launch portable folder (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $stubPort = 25464
-          $stubStdout = "tray-app/publish/ollama-stub-stdout.log"
-          $stubStderr = "tray-app/publish/ollama-stub-stderr.log"
-          $stub = Start-Process -FilePath "python" `
-            -ArgumentList "windows/packaging/ollama-stub.py", "$stubPort" `
-            -PassThru -NoNewWindow `
-            -RedirectStandardOutput $stubStdout -RedirectStandardError $stubStderr
 
+          # ONE-HOP assertion (issue #197, revised #371): the frozen portable proxy, launched
+          # with no L3 env at all -- a fresh, model-less install -- must reach the honest
+          # reduced-detection state "degraded", with dependencies.l3.detail naming the reason,
+          # so this can't silently pass on some unrelated degradation.
+          $oneHopStdout = "tray-app/publish/onehop-proxy-stdout.log"
+          $oneHopStderr = "tray-app/publish/onehop-proxy-stderr.log"
+          # Issue #234: like the standalone smoke-launch step above, this one-hop assertion
+          # only cares about the proxy's own reduction, never persistence -- memory:// keeps it
+          # from touching the OS-default Store file, which the TWO-HOP tray-spawned run just
+          # below depends on finding absent (a "clean Windows machine" first launch, AC2/AC3).
+          $env:BLINDFOLD_DATABASE_URL = "memory://"
+          $oneHop = Start-Process -FilePath "tray-app/publish/blindfold-proxy.exe" `
+            -ArgumentList "serve", "--host", "127.0.0.1", "--port", "25465" `
+            -PassThru -NoNewWindow -RedirectStandardOutput $oneHopStdout -RedirectStandardError $oneHopStderr
           try {
-            # Same TCP-connect readiness loop the real-proxy smoke-launch step above uses
-            # (never a bare sleep-and-hope) -- a 1s sleep here previously raced the stub's own
-            # startup, so an unlucky slow start silently left BLINDFOLD_L3_BASE_URL pointed at
-            # nothing and the l3 probe unhealthy for the tray's entire poll window, indistinguishable
-            # from this fix never having landed.
-            $stubDeadline = (Get-Date).AddSeconds(10)
-            $stubUp = $false
-            while ((Get-Date) -lt $stubDeadline) {
-              if ($stub.HasExited) { throw "ollama-stub.py exited early with code $($stub.ExitCode)" }
+            $oneHopDeadline = (Get-Date).AddSeconds(30)
+            $oneHopDegraded = $false
+            $lastState = "<never answered>"
+            $lastL3Detail = "<never answered>"
+            while ((Get-Date) -lt $oneHopDeadline) {
+              if ($oneHop.HasExited) {
+                throw "one-hop blindfold-proxy.exe exited early with code $($oneHop.ExitCode)"
+              }
               try {
-                $conn = New-Object System.Net.Sockets.TcpClient
-                $conn.Connect("127.0.0.1", $stubPort)
-                $conn.Close()
-                $stubUp = $true
-                break
-              } catch {
-                Start-Sleep -Milliseconds 200
-              }
-            }
-            if (-not $stubUp) { throw "ollama-stub.py never bound 127.0.0.1:$stubPort" }
-
-            $env:BLINDFOLD_L3_MODEL = "smoke-test-stub"
-            $env:BLINDFOLD_L3_BASE_URL = "http://127.0.0.1:$stubPort"
-
-            # ONE-HOP assertion (issue #197): the frozen portable proxy, launched directly with
-            # the L3 stub env at PowerShell scope, must reach "protected". This proves the
-            # portable folder's blindfold-proxy.exe reaches Protected when every dependency probe
-            # is healthy -- independent of the tray. (The two-hop --smoke-launch-full below
-            # deliberately does NOT require Protected; see the step's header comment.)
-            $oneHopStdout = "tray-app/publish/onehop-proxy-stdout.log"
-            $oneHopStderr = "tray-app/publish/onehop-proxy-stderr.log"
-            # Issue #234: like the standalone smoke-launch step above, this one-hop assertion
-            # only cares about reaching Protected, never persistence -- memory:// keeps it from
-            # touching the OS-default Store file, which the TWO-HOP tray-spawned run just below
-            # depends on finding absent (a "clean Windows machine" first launch, AC2/AC3).
-            $env:BLINDFOLD_DATABASE_URL = "memory://"
-            $oneHop = Start-Process -FilePath "tray-app/publish/blindfold-proxy.exe" `
-              -ArgumentList "serve", "--host", "127.0.0.1", "--port", "25465" `
-              -PassThru -NoNewWindow -RedirectStandardOutput $oneHopStdout -RedirectStandardError $oneHopStderr
-            try {
-              $oneHopDeadline = (Get-Date).AddSeconds(30)
-              $oneHopProtected = $false
-              $lastState = "<never answered>"
-              while ((Get-Date) -lt $oneHopDeadline) {
-                if ($oneHop.HasExited) {
-                  throw "one-hop blindfold-proxy.exe exited early with code $($oneHop.ExitCode)"
+                $resp = Invoke-WebRequest -Uri "http://127.0.0.1:25465/v1/status" -UseBasicParsing
+                $body = $resp.Content | ConvertFrom-Json
+                $lastState = $body.state
+                $lastL3Detail = $body.dependencies.l3.detail
+                if ($lastState -eq "degraded" -and $lastL3Detail -eq "gliner model not provisioned") {
+                  $oneHopDegraded = $true; break
                 }
-                try {
-                  $resp = Invoke-WebRequest -Uri "http://127.0.0.1:25465/v1/status" -UseBasicParsing
-                  $lastState = ($resp.Content | ConvertFrom-Json).state
-                  if ($lastState -eq "protected") { $oneHopProtected = $true; break }
-                } catch { }
-                Start-Sleep -Milliseconds 500
-              }
-              if (-not $oneHopProtected) {
-                foreach ($log in @($oneHopStdout, $oneHopStderr)) {
-                  if ((Test-Path $log) -and (Get-Item $log).Length -gt 0) {
-                    Write-Host "---- $log ----"; Get-Content $log; Write-Host "----"
-                  }
-                }
-                throw "one-hop frozen proxy never reached Protected (last state: $lastState)"
-              }
-            } finally {
-              Stop-Process -Id $oneHop.Id -Force -ErrorAction SilentlyContinue
-              # Issue #234: this session-scoped override must not leak into the TWO-HOP launch
-              # just below -- that run needs the real OS-default persistence path (no override)
-              # to prove the tray's own DPAPI-provisioned Store key against a durable store.
-              Remove-Item Env:\BLINDFOLD_DATABASE_URL -ErrorAction SilentlyContinue
+              } catch { }
+              Start-Sleep -Milliseconds 500
             }
-
-            # ONE-HOP (Store key) assertion (issue #234) -- see this step's header comment for
-            # why this is its own assertion rather than folded into #1: it isolates the Store
-            # key specifically, with no tray involved, from the TWO-HOP spawn every prior cycle
-            # on this issue has been diagnosing.
-            $storeKeyStdout = "tray-app/publish/onehop-storekey-stdout.log"
-            $storeKeyStderr = "tray-app/publish/onehop-storekey-stderr.log"
-            # Must be valid base64 decoding to exactly 32 bytes (mapping_cipher._decode_store_key,
-            # ADR-0045 §3) -- the prior literal here ("smoke-test-one-hop-store-key-0123456789abcdef")
-            # contains hyphens, which base64.b64decode(..., validate=True) rejects outright
-            # (binascii.Error: "Only base64 data is allowed"). serve.py's refuse_if_malformed_store_key
-            # runs at startup before this assertion's poll loop ever gets a chance to observe
-            # mapping_cipher, so the prior literal would have made blindfold-proxy.exe refuse to
-            # start (fail-closed) and exit non-zero -- failing this assertion for an unrelated
-            # reason (a malformed test fixture) instead of actually isolating the ONE-HOP Store-key
-            # path this assertion exists to test (issue #234). Caught by inspection before this
-            # assertion's first hosted run: `smoke-test-one-hop-store-key-32b` (32 bytes) encodes to
-            # the base64 literal below.
-            $env:BLINDFOLD_STORE_KEY = "c21va2UtdGVzdC1vbmUtaG9wLXN0b3JlLWtleS0zMmI="
-            $env:BLINDFOLD_DATABASE_URL = "memory://"
-            $storeKeyHop = Start-Process -FilePath "tray-app/publish/blindfold-proxy.exe" `
-              -ArgumentList "serve", "--host", "127.0.0.1", "--port", "25466" `
-              -PassThru -NoNewWindow -RedirectStandardOutput $storeKeyStdout -RedirectStandardError $storeKeyStderr
-            try {
-              $storeKeyDeadline = (Get-Date).AddSeconds(30)
-              $storeKeyOk = $false
-              $lastCipher = "<never answered>"
-              while ((Get-Date) -lt $storeKeyDeadline) {
-                if ($storeKeyHop.HasExited) {
-                  throw "one-hop store-key blindfold-proxy.exe exited early with code $($storeKeyHop.ExitCode)"
+            if (-not $oneHopDegraded) {
+              foreach ($log in @($oneHopStdout, $oneHopStderr)) {
+                if ((Test-Path $log) -and (Get-Item $log).Length -gt 0) {
+                  Write-Host "---- $log ----"; Get-Content $log; Write-Host "----"
                 }
-                try {
-                  $resp = Invoke-WebRequest -Uri "http://127.0.0.1:25466/v1/status" -UseBasicParsing
-                  $lastCipher = ($resp.Content | ConvertFrom-Json).config.mapping_cipher
-                  if ($lastCipher -eq "local") { $storeKeyOk = $true; break }
-                } catch { }
-                Start-Sleep -Milliseconds 500
               }
-              if (-not $storeKeyOk) {
-                foreach ($log in @($storeKeyStdout, $storeKeyStderr)) {
-                  if ((Test-Path $log) -and (Get-Item $log).Length -gt 0) {
-                    Write-Host "---- $log ----"; Get-Content $log; Write-Host "----"
-                  }
-                }
-                throw ("one-hop store-key assertion: expected config.mapping_cipher=`"local`" with " +
-                  "BLINDFOLD_STORE_KEY set at PowerShell scope (no tray involved), got `"$lastCipher`" " +
-                  "-- isolates whether the TWO-HOP gap is inside blindfold-proxy.exe's own onefile " +
-                  "re-exec, independent of the tray/RealProxyProcessLauncher (issue #234)")
-              }
-            } finally {
-              Stop-Process -Id $storeKeyHop.Id -Force -ErrorAction SilentlyContinue
-              Remove-Item Env:\BLINDFOLD_STORE_KEY -ErrorAction SilentlyContinue
-              Remove-Item Env:\BLINDFOLD_DATABASE_URL -ErrorAction SilentlyContinue
+              throw ("one-hop frozen proxy never reached the expected fresh-install state " +
+                "degraded/`"gliner model not provisioned`" (last state: $lastState, " +
+                "l3 detail: $lastL3Detail)")
             }
-
-            $stdout = "tray-app/publish/smoke-launch-full-stdout.log"
-            $stderr = "tray-app/publish/smoke-launch-full-stderr.log"
-            $proc = Start-Process -FilePath "tray-app/publish/blindfold.exe" -ArgumentList "--smoke-launch-full" `
-              -PassThru -NoNewWindow `
-              -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-
-            $proc.WaitForExit()
-            $exitCode = $proc.ExitCode
-
-            foreach ($log in @($stdout, $stderr, $stubStdout, $stubStderr)) {
-              if ((Test-Path $log) -and (Get-Item $log).Length -gt 0) {
-                Write-Host "---- $log ----"
-                Get-Content $log
-                Write-Host "-------------------------------"
-              }
-            }
-
-            if ($exitCode -ne 0) { throw "blindfold.exe --smoke-launch-full exited $exitCode" }
           } finally {
-            Stop-Process -Id $stub.Id -Force -ErrorAction SilentlyContinue
+            Stop-Process -Id $oneHop.Id -Force -ErrorAction SilentlyContinue
+            # Issue #234: this session-scoped override must not leak into the TWO-HOP launch
+            # just below -- that run needs the real OS-default persistence path (no override)
+            # to prove the tray's own DPAPI-provisioned Store key against a durable store.
+            Remove-Item Env:\BLINDFOLD_DATABASE_URL -ErrorAction SilentlyContinue
           }
+
+          # ONE-HOP (Store key) assertion (issue #234) -- see this step's header comment for
+          # why this is its own assertion rather than folded into #1: it isolates the Store
+          # key specifically, with no tray involved, from the TWO-HOP spawn every prior cycle
+          # on this issue has been diagnosing.
+          $storeKeyStdout = "tray-app/publish/onehop-storekey-stdout.log"
+          $storeKeyStderr = "tray-app/publish/onehop-storekey-stderr.log"
+          # Must be valid base64 decoding to exactly 32 bytes (mapping_cipher._decode_store_key,
+          # ADR-0045 §3) -- the prior literal here ("smoke-test-one-hop-store-key-0123456789abcdef")
+          # contains hyphens, which base64.b64decode(..., validate=True) rejects outright
+          # (binascii.Error: "Only base64 data is allowed"). serve.py's refuse_if_malformed_store_key
+          # runs at startup before this assertion's poll loop ever gets a chance to observe
+          # mapping_cipher, so the prior literal would have made blindfold-proxy.exe refuse to
+          # start (fail-closed) and exit non-zero -- failing this assertion for an unrelated
+          # reason (a malformed test fixture) instead of actually isolating the ONE-HOP Store-key
+          # path this assertion exists to test (issue #234). Caught by inspection before this
+          # assertion's first hosted run: `smoke-test-one-hop-store-key-32b` (32 bytes) encodes to
+          # the base64 literal below.
+          $env:BLINDFOLD_STORE_KEY = "c21va2UtdGVzdC1vbmUtaG9wLXN0b3JlLWtleS0zMmI="
+          $env:BLINDFOLD_DATABASE_URL = "memory://"
+          $storeKeyHop = Start-Process -FilePath "tray-app/publish/blindfold-proxy.exe" `
+            -ArgumentList "serve", "--host", "127.0.0.1", "--port", "25466" `
+            -PassThru -NoNewWindow -RedirectStandardOutput $storeKeyStdout -RedirectStandardError $storeKeyStderr
+          try {
+            $storeKeyDeadline = (Get-Date).AddSeconds(30)
+            $storeKeyOk = $false
+            $lastCipher = "<never answered>"
+            while ((Get-Date) -lt $storeKeyDeadline) {
+              if ($storeKeyHop.HasExited) {
+                throw "one-hop store-key blindfold-proxy.exe exited early with code $($storeKeyHop.ExitCode)"
+              }
+              try {
+                $resp = Invoke-WebRequest -Uri "http://127.0.0.1:25466/v1/status" -UseBasicParsing
+                $lastCipher = ($resp.Content | ConvertFrom-Json).config.mapping_cipher
+                if ($lastCipher -eq "local") { $storeKeyOk = $true; break }
+              } catch { }
+              Start-Sleep -Milliseconds 500
+            }
+            if (-not $storeKeyOk) {
+              foreach ($log in @($storeKeyStdout, $storeKeyStderr)) {
+                if ((Test-Path $log) -and (Get-Item $log).Length -gt 0) {
+                  Write-Host "---- $log ----"; Get-Content $log; Write-Host "----"
+                }
+              }
+              throw ("one-hop store-key assertion: expected config.mapping_cipher=`"local`" with " +
+                "BLINDFOLD_STORE_KEY set at PowerShell scope (no tray involved), got `"$lastCipher`" " +
+                "-- isolates whether the TWO-HOP gap is inside blindfold-proxy.exe's own onefile " +
+                "re-exec, independent of the tray/RealProxyProcessLauncher (issue #234)")
+            }
+          } finally {
+            Stop-Process -Id $storeKeyHop.Id -Force -ErrorAction SilentlyContinue
+            Remove-Item Env:\BLINDFOLD_STORE_KEY -ErrorAction SilentlyContinue
+            Remove-Item Env:\BLINDFOLD_DATABASE_URL -ErrorAction SilentlyContinue
+          }
+
+          $stdout = "tray-app/publish/smoke-launch-full-stdout.log"
+          $stderr = "tray-app/publish/smoke-launch-full-stderr.log"
+          $proc = Start-Process -FilePath "tray-app/publish/blindfold.exe" -ArgumentList "--smoke-launch-full" `
+            -PassThru -NoNewWindow `
+            -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+
+          $proc.WaitForExit()
+          $exitCode = $proc.ExitCode
+
+          foreach ($log in @($stdout, $stderr)) {
+            if ((Test-Path $log) -and (Get-Item $log).Length -gt 0) {
+              Write-Host "---- $log ----"
+              Get-Content $log
+              Write-Host "-------------------------------"
+            }
+          }
+
+          if ($exitCode -ne 0) { throw "blindfold.exe --smoke-launch-full exited $exitCode" }

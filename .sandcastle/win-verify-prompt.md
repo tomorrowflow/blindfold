@@ -83,43 +83,31 @@ Additive to both builds above, runs last:
   tray-app\publish\blindfold-proxy.exe` -- ADR-0041's first-cut distribution is `blindfold.exe`
   and `blindfold-proxy.exe` in one directory, the tray discovering the proxy by relative path
   (`Program.cs`'s `AppContext.BaseDirectory` lookup already assumes this layout).
-- **Smoke-launch = `blindfold.exe --smoke-launch-full` exits 0, proving Protected is reached.**
-  Unlike `--smoke-test` (constructs the wiring only), `--smoke-launch-full` drives the real
-  `ProxySupervisor` + `StatusClient` poll loop headlessly: starts the frozen proxy from the
-  portable folder, polls `/v1/status` until `AppStateMachine` reduces to Protected or a 30s
-  timeout elapses, then stops the child. Exit 0 only on reaching Protected; a `Refused` startup
-  or a timeout both exit 1 with a diagnostic on stderr (captured via the same
-  `Start-Process -RedirectStandardOutput/-RedirectStandardError` pattern as `--smoke-test`).
-  This is the AC's "launching the tray starts the proxy and reaches Protected" — the one
-  assertion that proves the portable folder actually works end to end, not just that each half
-  builds in isolation.
-- **Reaching Protected requires a healthy l3 dependency, which requires a stub.**
-  `/v1/status`'s `state` is only `"protected"` once every dependency probe in
-  `status.compute_state` is healthy; the l3 probe (`ping_ollama`, `GET {base_url}/api/tags`) is
-  unhealthy by construction with no `BLINDFOLD_L3_MODEL` configured ("no L3 adjudicator
-  configured", `src/blindfold/app.py`'s `_default_l3_probe`) -- true by default on a runner with
-  no Ollama installed. The first hosted run of this step timed out for exactly this reason
-  (`--smoke-launch-full: proxy never reached Protected within the timeout`). The step now starts
-  `windows/packaging/ollama-stub.py` (a bare `GET /api/tags` → `200` responder, no other
-  behavior) before launching `blindfold.exe`, and points `BLINDFOLD_L3_MODEL`/
-  `BLINDFOLD_L3_BASE_URL` at it — the same seam-stub discipline the leak-audit tests use for
-  L3/Transit/upstream, applied here to a CI shell step instead of a pytest fixture. `openbao`
-  (unset token → healthy by default) and `store` (always healthy this slice) need no stub.
-- **The stub's own readiness is verified, never assumed.** A second hosted run of this step,
-  with the stub already wired, *still* timed out identically -- a bare `Start-Sleep -Seconds 1`
-  after starting `ollama-stub.py` raced its actual startup with no proof it had bound the port
-  yet, and its output went uncaptured (no `-RedirectStandardOutput/-Error`), so a slow or failed
-  stub start looked identical to the tray/proxy wiring itself being broken. Reproduced the
-  Python-side health-probe logic directly (`blindfold serve` + the stub, both on Linux) and
-  confirmed `/v1/status` reaches `"protected"` correctly once the stub is actually up --
-  the gap was CI-timing, not `status.compute_state`/`ping_ollama`. The step now waits on the
-  same TCP-connect readiness loop the real-proxy smoke-launch step above already uses (never a
-  bare sleep), and redirects the stub's stdout/stderr into the diagnostic dump alongside
-  `blindfold.exe`'s own logs.
+- **One-hop assertion (issue #197, revised #371): a fresh, model-less install must reach
+  `degraded`, honestly.** `blindfold-proxy.exe` is launched directly from the portable folder
+  with no L3 env at all, and the poll loop asserts `/v1/status` reaches `state: "degraded"`
+  with `dependencies.l3.detail == "gliner model not provisioned"` — not `"protected"`. Since
+  ADR-0049 the GLiNER cascade is `DEFAULT_L3_PROVIDER`, and an unprovisioned cascade is the
+  visible reduced-detection state the ADR exists to surface; asserting `"protected"` here would
+  be asserting the exact silently-degraded condition ADR-0049 was written to eliminate. No env
+  var (e.g. `BLINDFOLD_L3_PROVIDER=ollama`) is injected to dodge the cascade default and force
+  `"protected"` — that would re-test the pre-ADR-0049 world, not what a fresh install actually
+  does. (Before #371, this assertion required `"protected"`, reached by pointing
+  `BLINDFOLD_L3_MODEL`/`BLINDFOLD_L3_BASE_URL` at a stubbed Ollama server,
+  `windows/packaging/ollama-stub.py` — the pre-ADR-0049 bare-LLM default's l3 probe,
+  `ping_ollama`, consulted those vars. ADR-0049 made the gliner branch of
+  `src/blindfold/app.py`'s `_default_l3_probe` the bare default instead, which never consults
+  `BLINDFOLD_L3_MODEL`/`BASE_URL` at all, so the stub no longer has any effect on this
+  assertion and the step no longer starts it.)
+- **Two-hop (`--smoke-launch-full`) accepts either terminal, unaffected by #371.** Exit 0 on
+  `AppStateMachine` reducing to Protected **or** Degraded (never required Protected — issue
+  #234's single-file WinExe host does not reliably propagate ambient env to its spawned child,
+  and, since ADR-0049, a fresh model-less install is expected to land on Degraded regardless).
+  A `Refused` startup or a timeout both exit 1 with a diagnostic on stderr (captured via the
+  same `Start-Process -RedirectStandardOutput/-RedirectStandardError` pattern as `--smoke-test`).
 - **Leak-audit: N/A.** Same rationale as the two contracts above -- this proves process
   spawn/poll plumbing (a supervisor, CONTEXT.md), never entity/surrogate/mapping data. The real
-  `/v1/status` payload the poll loop reads is the proxy's own already-scrubbed narrow contract;
-  `ollama-stub.py` answers with a static, content-free `200`, never entity data.
+  `/v1/status` payload the poll loop reads is the proxy's own already-scrubbed narrow contract.
 - **A workflow-only fix never verifies itself unless the workflow's own path is in the
   trigger.** The readiness-loop fix above landed and pushed to origin, but `on.push.paths`
   only matched `macos/**`/`windows/**` -- a commit touching only
