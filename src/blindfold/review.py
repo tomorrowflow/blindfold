@@ -554,9 +554,11 @@ class ReviewInbox:
 
         ``entity_type`` (issue #167, ADR-0005) selects the surrogate pool: an
         ``"organization"`` candidate mints an org-shaped company name, not a
-        person name. Any other value (including ``None`` -- the inner LLM
-        adjudicators don't detect a type) falls back to today's default person
-        pool, unchanged.
+        person name. Any unrecognized value -- including ``None``, which is
+        *every* inner-LLM-only verdict (those adjudicators never type a
+        candidate) -- falls back to the term pool, not the person pool (issue
+        #89): an untyped verdict is no claim the referent is a human being,
+        matching how ``app.py``'s ``_entity_kind_for`` already renders it.
 
         ``workspace`` (issue #171) is the workspace this candidate was detected
         under -- captured on the item so confirm knows which workspace's
