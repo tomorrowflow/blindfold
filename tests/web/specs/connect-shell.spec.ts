@@ -143,6 +143,27 @@ test.describe("Connect page", () => {
     await context.close();
   });
 
+  test("Test connection states the cost before the button, and never fires automatically", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto("/ui/connect");
+    const section = alicePage.getByTestId("test-connection");
+    await expect(section).toBeVisible();
+
+    // Q1: the cost line renders before the button in DOM order, not just present
+    // somewhere on the page -- and no result panel exists until a click happens.
+    const cost = alicePage.getByTestId("test-connection-cost");
+    const btn = alicePage.getByTestId("test-connection-btn");
+    const boxes = await Promise.all([cost.boundingBox(), btn.boundingBox()]);
+    expect(boxes[0]!.y).toBeLessThan(boxes[1]!.y);
+    await expect(alicePage.getByTestId("test-connection-result")).toHaveCount(0);
+
+    // Explicit, user-initiated only (Q1): disabled until a model id is entered.
+    await expect(btn).toBeDisabled();
+    await alicePage.getByTestId("test-connection-model").fill("a-test-model");
+    await expect(btn).toBeEnabled();
+  });
+
   test("the sidebar Connect item and Home's Connect card both navigate to /connect", async ({
     alicePage,
   }) => {

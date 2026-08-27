@@ -2963,6 +2963,111 @@ body {
   color: var(--bf-person);
 }
 
+/* Test connection (issue #265) */
+
+.bf-test-connection-cost {
+  max-width: 640px;
+  margin: 4px 0 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--bf-ochre-bg);
+  border: 1px solid var(--bf-ochre-border);
+  color: var(--bf-ochre);
+  font-size: 0.8125rem;
+}
+
+.bf-test-connection-form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 480px;
+  margin-bottom: 12px;
+}
+
+.bf-test-connection-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.8125rem;
+}
+
+.bf-test-connection-field input {
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--bf-border);
+  font-family: inherit;
+  font-size: 0.8125rem;
+}
+
+.bf-test-connection-locked {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  font-size: 0.8125rem;
+  color: var(--bf-red);
+}
+
+.bf-test-connection-result {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  max-width: 640px;
+}
+
+.bf-test-connection-result-message {
+  margin: 0;
+  font-weight: 600;
+}
+
+.bf-test-connection-result-remedy {
+  margin: 4px 0 0;
+  font-size: 0.8125rem;
+}
+
+.bf-test-connection-result-ref {
+  margin: 4px 0 0;
+  font-size: 0.75rem;
+  font-family: var(--bf-font-mono);
+  opacity: 0.85;
+}
+
+.bf-test-connection-result--ok {
+  background: var(--bf-card);
+  border: 1px solid var(--bf-ok);
+  color: var(--bf-ok);
+}
+
+.bf-test-connection-result--informational {
+  background: var(--bf-card);
+  border: 1px solid var(--bf-border);
+  color: var(--bf-ink);
+}
+
+.bf-test-connection-result--warning {
+  background: var(--bf-ochre-bg);
+  border: 1px solid var(--bf-ochre-border);
+  color: var(--bf-ochre);
+}
+
+/* Q4: leak_flagged must be visually alarming -- deliberately not the same
+   muted ochre "warning" treatment every other block/failure code gets. */
+.bf-test-connection-result--alarm {
+  background: var(--bf-red);
+  border: 2px solid var(--bf-red);
+  color: #fff;
+}
+
+.bf-test-connection-scope-note {
+  max-width: 640px;
+  margin-top: 12px;
+  font-size: 0.75rem;
+  color: #6b7589;
+}
+
 .bf-copyable-snippet {
   display: flex;
   align-items: flex-start;
