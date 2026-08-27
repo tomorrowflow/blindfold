@@ -1,4 +1,4 @@
-# ADR-0054: The phone-shaped producer stays default-on and never emits Blindfold's own reserved namespace
+# ADR-0055: The phone-shaped producer stays default-on and never emits Blindfold's own reserved namespace
 
 **Status:** Accepted
 **Date:** 2026-08-27

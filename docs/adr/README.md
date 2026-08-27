@@ -52,7 +52,7 @@ Vocabulary follows [`../../CONTEXT.md`](../../CONTEXT.md).
 | [0050](0050-leak-gate-scope-symmetry-word-boundary-plus-mint-time-coverage.md) | Leak-gate scope symmetry — word-boundary matching + mint-time coverage refusal | Accepted (rejected-option section reversed by 0051) |
 | [0051](0051-deterministic-blinder-set-equals-leak-gate-set.md) | The deterministic blinder's known-value set equals the leak gate's checked set | Accepted |
 | [0053](0053-l3-suppression-consolidated-rule-set.md) | L3 suppression — consolidated rule set and acceptance gate (supersedes ADR-0023) | Accepted |
-| [0054](0054-phone-shaped-producer-stays-on-and-never-emits-reserved-namespace.md) | The phone-shaped producer stays default-on and never emits Blindfold's own reserved namespace | Accepted |
 | [0054](0054-forwarded-headers-open-anthropic-prefix-names-only-trace.md) | Forwarded request headers — open `anthropic-*` prefix, closed list otherwise, unlisted names recorded in the trace | Accepted |
+| [0055](0055-phone-shaped-producer-stays-on-and-never-emits-reserved-namespace.md) | The phone-shaped producer stays default-on and never emits Blindfold's own reserved namespace | Accepted |
 
 New ADRs: copy [`0000-template.md`](0000-template.md), take the next number.
