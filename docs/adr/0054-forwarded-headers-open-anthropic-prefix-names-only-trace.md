@@ -102,14 +102,32 @@ enumerates the fields it keeps. An unrecognised top-level field (`context_manage
 followed by in-place rewrites of `system`, `messages` and `tools`); this ADR makes it a
 tested invariant rather than an accident of implementation.
 
-The safety net is the **pre-egress leak gate**, which checks every string leaf of the
+The partial safety net is the **pre-egress leak gate**, which checks every string leaf of the
 outbound payload, including fields the blinder never touched. A *known* real value sitting in
 an unrecognised top-level field is therefore a fail-closed block (scrubbed 503), never a
 silent egress — and that block is precisely the signal that the field carries content and
-needs a hop decision of its own. We do **not** pre-emptively treat unknown top-level fields
-as hops: #323's deny-by-default rule is over string leaves *inside a hop* (content blocks of
-unknown type); a top-level field of unknown semantics is configuration until proven
-otherwise, and rewriting configuration is how a gateway breaks capabilities.
+needs a hop decision of its own.
+
+We do **not** pre-emptively treat unknown top-level fields as hops. State the real reason,
+because a weaker one is easy to reach for: extending #323's deny-by-default walk to them
+would **not** break the header/body pairing the protocol reference warns about — #323
+*substitutes surrogate text inside string leaves in place*, it never strips a field, so the
+pair still travels together. The actual cost is different and narrower: an unknown top-level
+field is, on today's evidence, **configuration** (`context_management`, `output_config` both
+are), and surrogate-substituting a configuration string — a model alias, an enum-ish or
+format value — produces a hard `400` on a capability that works today, in exchange for
+protecting a content-bearing field that does not yet exist. That trade is not worth taking
+pre-emptively.
+
+**The gap this leaves, stated so it is not mistaken for a property.** The leak gate only knows
+*known* real values (`mapping.real_values()` plus the review inbox). A **novel** entity — one
+no detection pass has ever seen — sitting in a future content-bearing top-level field would
+cross **provider egress** un-blindfolded *and* unflagged: the blinder never entered the field,
+so no candidate span was ever produced, and the gate has nothing to match. This is an accepted,
+bounded limit, not a covered case. What bounds it is that every field of this shape known today
+is configuration, and the moment one carries content the evidence arrives as either a leak-gate
+block (a known value) or a review-inbox miss traced to that field — at which point the field
+gets a hop decision of its own (a new ADR, or an amendment here), not a silent widening.
 
 ## Consequences
 
@@ -120,6 +138,11 @@ otherwise, and rewriting configuration is how a gateway breaks capabilities.
   operator's own configuration on their own machine, not content an LLM client generates or
   a hop could carry, and its name shows up in the trace (decision 3). It is the price of
   decision 2 and is judged acceptable.
+- **Accepted limit (decision 6).** A *novel* entity in a future content-bearing top-level body
+  field would egress un-blindfolded and unflagged — the blinder never enters the field and the
+  leak gate only matches *known* values. Every such field known today is configuration; the
+  trigger to revisit is the first one that carries content, evidenced by a leak-gate block or an
+  inbox miss traced to it. Do not read decision 6 as "unknown fields are covered."
 - **Invariant created:** *Headers are never a hop* (CONTEXT.md, Key invariants). Any
   proposal to forward headers by value pattern, or to blindfold header values, contradicts
   this ADR and needs a new one.
@@ -150,8 +173,11 @@ otherwise, and rewriting configuration is how a gateway breaks capabilities.
 - **Consume `x-claude-code-*` locally now** (group trace records per session). Useful, but a
   separate feature with its own trade-offs; folding it in here would widen the blast radius
   of a compatibility fix. Deferred, not rejected.
-- **Treat unknown top-level body fields as hops and blindfold their string leaves.** Would
-  protect a hypothetical future content-bearing field, at the cost of rewriting configuration
-  fields whose semantics Blindfold does not know — the very breakage the protocol reference
-  warns about — and it is unnecessary for known values, which the leak gate already blocks.
-  Rejected; a block there is the trigger for a per-field hop decision.
+- **Treat unknown top-level body fields as hops and blindfold their string leaves** (#323's
+  walk, extended upward). Not rejected for breaking the header/body pairing — in-place
+  surrogate substitution does not strip a field, so it would not. Rejected because it corrupts
+  *configuration* strings whose semantics Blindfold does not know (a model alias, an enum or
+  format value → a hard `400` on a working capability) to protect a content-bearing field that
+  does not yet exist. The residual exposure this leaves is written down as an accepted limit in
+  Consequences rather than papered over; the trigger to revisit is the first such field that
+  actually carries content.
