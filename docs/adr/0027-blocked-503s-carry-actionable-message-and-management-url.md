@@ -57,6 +57,16 @@ a retroactive body rewrite.
 - `blindfold_upstream_error` (#86, an availability/contract failure, not a privacy
   block) is deliberately untouched — it must never grow a `management_url` field of its
   own, so a client can keep telling the two error families apart by shape alone.
+- The menu bar item is the second delivery channel (recorded in the 2026-07-11 grill that
+  produced this decision): a block raises an Attention state and a notification whose click
+  opens the same deep link; Attention clears when the condition heals or the operator opens
+  the status page.
+- If a client that matters is found to swallow error bodies silently, that fact reopens
+  this decision — nothing else does. (ADR-0057 §D4 exercised this clause for Claude Desktop.)
+- History note: a second, shorter write-up of this same decision
+  (`0027-blocks-are-actionable-errors-never-synthetic-responses.md`, a session artifact
+  committed the same day and indexed nowhere) was folded into this file on 2026-08-27 and
+  removed, so ADR-0027 is one document.
 
 ## Alternatives considered
 
