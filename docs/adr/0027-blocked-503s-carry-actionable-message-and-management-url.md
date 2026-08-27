@@ -1,6 +1,6 @@
 # ADR-0027: Blocked 503s carry an actionable message + management_url deep link, never a synthetic 200
 
-**Status:** Accepted
+**Status:** Accepted — amended 2026-08-27 by [ADR-0057](0057-claude-desktop-gateway-mode-is-a-redirectable-client.md) §D4 (see "Amendment" below)
 **Date:** 2026-07-11
 
 ## Context
@@ -77,3 +77,16 @@ a retroactive body rewrite.
 - **A single hardcoded management URL constant** — rejected: it would silently point at
   the wrong host/port the moment an operator binds anywhere other than the documented
   loopback default (ADR-0021), and a stale deep link is worse than none.
+
+## Amendment (2026-08-27, [ADR-0057](0057-claude-desktop-gateway-mode-is-a-redirectable-client.md) §D4): the Anthropic error envelope
+
+This ADR's decision is unchanged: a block stays an HTTP error, never a synthetic model
+response. What ADR-0057 D4 adds is a top-level `"type": "error"` envelope — with
+`error.type`/`error.message` — around every Blindfold-authored error body (this ADR's
+`blindfold_blocked` block, and `blindfold_upstream_error`, issue #86), so a client that
+recognises that shape (Claude Desktop's 3P Gateway mode) renders it rather than a
+generic gateway failure. `message`, `management_url`, `code`, `sub_reason`, `event`,
+`reason`, `remedy` and `workspace` are unchanged, byte-for-byte — the envelope wraps
+around them, it does not replace or rename anything. This is exactly the reopening
+clause this ADR's own Consequences section named ("If a client that matters is found to
+swallow error bodies silently, that fact reopens this decision").

@@ -1300,6 +1300,12 @@ def _blocked_response(
     Issue #92: the identical scrubbed ``reason`` + ``management_url`` also land in
     ``block_history`` — the rolling window `/v1/status`'s ``blocks.recent`` reads,
     so that surface can never drift from or add a leak beyond this one funnel.
+
+    ADR-0057 D4 (issue #375): the body is additionally wrapped in the top-level
+    Anthropic error envelope (``{"type": "error", "error": {...}}``) so a client
+    that recognises that shape (Claude Desktop's 3P Gateway mode) renders it rather
+    than a generic gateway failure. Every field below is unchanged; the envelope is
+    additive, not a replacement.
     """
     logger.warning("blindfold_blocked: event=%s workspace=%s reason=%s", event, workspace, reason)
     audit_log.append(AuditRecord(workspace=workspace, event=event, reason=reason))
@@ -1311,6 +1317,7 @@ def _blocked_response(
     return JSONResponse(
         status_code=503,
         content={
+            "type": "error",
             "error": {
                 "type": "blindfold_blocked",
                 "code": "blindfold_fail_closed",
@@ -1349,6 +1356,11 @@ def _upstream_error_response(
     (never a single transient one); the matching success call sites
     (``upstream_health.mark_success()`` at each of ``messages``/``count_tokens``/
     ``chat_completions``) are what clears it again once real requests succeed.
+
+    ADR-0057 D4 (issue #375): the body gains the same top-level Anthropic error
+    envelope as :func:`_blocked_response` -- ``error.type`` stays
+    ``blindfold_upstream_error`` so a client can still tell the two error families
+    apart by shape alone (ADR-0027's consequence); the envelope is additive.
     """
     logger.warning(
         "blindfold_upstream_error: workspace=%s sub_reason=%s reason=%s",
@@ -1362,6 +1374,7 @@ def _upstream_error_response(
     return JSONResponse(
         status_code=exc.status_code,
         content={
+            "type": "error",
             "error": {
                 "type": "blindfold_upstream_error",
                 "code": "blindfold_upstream_error",
