@@ -204,6 +204,7 @@ from .status import (
 )
 from .store import VendoredSeedRepository, vendored_seed_repository
 from .surrogates import MintPoolExhaustedError, SurrogateMapping
+from .test_connection import is_loopback_base_url, run_test_connection
 from .ui import shell_router, ui_assets_app
 from .unprotected_mode import (
     CapabilityDisabledError,
@@ -2695,6 +2696,72 @@ async def list_processing_trace(
             for hop in record["hops"]
         ]
     return {"records": records}
+
+
+@app.post("/v1/management/test-connection")
+async def test_connection(
+    request: Request,
+    body: dict,
+    rbac: RbacRegistry = Depends(get_rbac),
+    mapping: SurrogateMapping = Depends(get_mapping),
+    trace: ProcessingTraceBuffer = Depends(get_processing_trace),
+) -> dict:
+    """POST /v1/management/test-connection -- prove the exchange was blindfolded,
+    with a typed failure taxonomy (issue #265).
+
+    The Connect page's "Test connection" button: an explicit, user-initiated
+    action (Q1) that runs exactly one capped-cost exchange through this same
+    process's own ``/v1/messages`` -- reached over a genuine loopback HTTP call
+    to ``body["base_url"]``, never an internal function call (Q3), so the
+    verdict proves the actual socket a client would hit, not just that this
+    process's Python objects are wired correctly.
+
+    ``body`` carries ``workspace`` (defaults to the request's own workspace
+    header/default), ``base_url`` and ``model`` (required -- the SPA already
+    computes/knows both), and an optional ``headers`` map forwarded verbatim on
+    the loopback call (e.g. ``x-api-key``) -- Blindfold never holds a provider
+    credential of its own (CONTEXT.md "Headers are never a hop"), so a client
+    wanting to prove *their* credential works supplies it for this one exchange
+    only; it is never logged or persisted here.
+
+    Gated on ``viewer`` (Q5: this reveals only a scrubbed verdict code/message/
+    remedy, the same operational-glance sensitivity as the processing trace this
+    reads), scoped to the same workspace the exchange itself runs under so the
+    trace lookup (:func:`~blindfold.test_connection.run_test_connection`) finds
+    its own record.
+
+    Scope honesty (Q5): the verdict claims exactly "Blindfold is reachable at
+    this URL and blindfolded this exchange" -- proxy-side only, no per-client
+    detection. The canary pair Q2's reserved-namespace mint registers is, by
+    that mint's own construction, absent from the persistent store, the entity
+    graph, and the review inbox -- ``mapping.mint_pii`` never touches any of the
+    three (see ``tests/test_test_connection_endpoint.py``, asserted directly).
+    """
+    workspace = body.get("workspace") or _workspace_slug(request)
+    _require_role(request, workspace, "viewer", rbac)
+    base_url = body.get("base_url", "")
+    model = body.get("model", "")
+    if not base_url or not model:
+        raise HTTPException(status_code=422, detail="base_url and model are required")
+    if not is_loopback_base_url(base_url):
+        raise HTTPException(
+            status_code=422,
+            detail="base_url must be a loopback address -- this endpoint only ever "
+            "proves reachability of this machine's own proxy, never an arbitrary URL",
+        )
+    forwarded_headers = dict(body.get("headers") or {})
+    if workspace != DEFAULT_WORKSPACE:
+        forwarded_headers[WORKSPACE_HEADER] = workspace
+
+    verdict = await run_test_connection(
+        base_url=base_url,
+        model=model,
+        headers=forwarded_headers,
+        workspace=workspace,
+        mapping=mapping,
+        trace=trace,
+    )
+    return verdict.to_dict()
 
 
 @app.get("/v1/management/workspaces")

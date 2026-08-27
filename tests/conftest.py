@@ -1,9 +1,13 @@
 import os
+import socket
 import sys
+import threading
+import time
 from dataclasses import dataclass, field
 
 import httpx
 import pytest
+import uvicorn
 
 # Pin the whole suite to the explicit in-memory sentinel by default (ADR-0043 §1,
 # issue #204), set at conftest import time -- before pytest collection imports any
@@ -163,3 +167,54 @@ def wired_app() -> WiredApp:
     app.dependency_overrides[get_audit_log] = lambda: stubs.audit_log
 
     return stubs
+
+
+def _free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def _wait_for_port(port: int, *, timeout: float = 10.0) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            if s.connect_ex(("127.0.0.1", port)) == 0:
+                return
+        time.sleep(0.02)
+    raise TimeoutError(f"nothing listening on 127.0.0.1:{port} after {timeout}s")
+
+
+@pytest.fixture
+def live_proxy_server():
+    """Serve ``blindfold.app.app`` on a real loopback TCP socket (issue #265, Q3).
+
+    Test-connection's own defining property is that its exchange crosses a genuine
+    socket -- "never an internal function call, because the point is to prove the
+    socket a client would hit" -- so its test suite needs a real listener too. The
+    ``httpx.ASGITransport`` pattern used everywhere else in this suite (e.g.
+    ``test_provisional_leak_gate_request_path.py``) deliberately does *not* open a
+    socket, so it can't stand in here.
+
+    Runs uvicorn in a background thread of this same process -- shares the exact
+    ``app`` singleton/module state (``app.dependency_overrides``, the in-process
+    ``_mapping``/processing-trace buffer) the rest of the suite already wires via
+    ``wired_app``, so a test can set overrides before requesting this fixture and
+    the live server honors them like any other ASGI call would.
+    """
+    from blindfold.app import app
+
+    port = _free_port()
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="error")
+    server = uvicorn.Server(config)
+    # A background thread can't install process signal handlers (uvicorn's default
+    # behavior raises ValueError there); this fixture owns shutdown via should_exit.
+    server.install_signal_handlers = lambda: None
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    try:
+        _wait_for_port(port)
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        server.should_exit = True
+        thread.join(timeout=10)

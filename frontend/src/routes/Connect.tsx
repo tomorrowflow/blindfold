@@ -14,6 +14,7 @@ import { useEffect, useState } from "react";
 import { useWorkspace } from "../components/WorkspaceContext";
 import { CopyableSnippet } from "../components/CopyableSnippet";
 import { TerminalAlwaysTabs } from "../components/TerminalAlwaysTabs";
+import { TestConnection } from "../components/TestConnection";
 import { ExternalLink } from "../components/icons";
 
 const DEFAULT_HOST = "127.0.0.1";
@@ -230,6 +231,10 @@ export function Connect() {
         >
           Track progress in #263 <ExternalLink size={14} aria-hidden="true" />
         </a>
+      </section>
+
+      <section className="bf-connect-card bf-card" data-testid="connect-card-test-connection">
+        <TestConnection workspace={workspaceSlug ?? "default"} baseUrl={base} />
       </section>
     </div>
   );

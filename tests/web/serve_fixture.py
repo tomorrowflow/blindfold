@@ -165,6 +165,7 @@ from blindfold.app import (
     get_store_health_probe,
     get_transit_client,
     get_transit_health_probe,
+    get_upstream_client,
     get_upstream_health,
 )
 from blindfold.entity_graph import EntityGraph
@@ -175,10 +176,11 @@ from blindfold.rbac import RbacRegistry
 from blindfold.reidentify import InMemoryReIdentificationStore
 from blindfold.relationships import RelationshipStore
 from blindfold.review import Allowlist, ReviewInbox
-from blindfold.status import DependencyHealth
+from blindfold.status import DependencyHealth, RecentFailureHealth
 from blindfold.store import vendored_seed_repository
 from blindfold.surrogates import SurrogateMapping
 from blindfold.transit import TransitClient
+from blindfold.upstream import UpstreamClient
 
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("BLINDFOLD_FIXTURE_PORT", "8951"))
@@ -284,6 +286,52 @@ def _stub_transit() -> TransitClient:
     )
 
 
+# Test connection (issue #265): a network-free stand-in for the shared
+# `get_upstream_client` seam `POST /v1/messages` egresses through. Left
+# unstubbed, a real browser click on the Connect page's "Test connection"
+# button would build a real `httpx.AsyncClient` pointed at the compiled-in
+# `DEFAULT_UPSTREAM_BASE_URL` (https://api.anthropic.com) and place a genuine
+# outbound call -- non-hermetic (depends on this sandbox's network egress and
+# a real provider credential) and non-deterministic (whatever that live call
+# happens to return). Mirrors tests/test_test_connection_endpoint.py's own
+# `_echoing_stub_upstream`: echoes the canary's surrogate back verbatim so
+# restore has something to resolve, landing every ordinary click on
+# `blindfolded_ok` (never `blindfolded_ok_restore_unproven`, since that needs a
+# *non*-echoing upstream). One sentinel model id (`TEST_CONNECTION_TRIGGER_401`)
+# answers 401 instead, so a browser-verify spec can also exercise a second,
+# visually-distinct point in the typed failure taxonomy (Q4) against this
+# feature's one real user-facing input field -- `base_url` itself is not a form
+# field on the Connect page (Q3: proxy-side only), so no other taxonomy entry
+# is reachable from a real click without stubbing the SPA's own endpoint.
+TEST_CONNECTION_TRIGGER_401 = "trigger-test-connection-401"
+
+
+def _stub_upstream() -> UpstreamClient:
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent = json.loads(request.content)
+        if sent.get("model") == TEST_CONNECTION_TRIGGER_401:
+            return httpx.Response(401, json={"error": {"message": "invalid api key"}})
+        blinded_text = sent["messages"][0]["content"]
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": blinded_text}],
+                "model": sent.get("model", "m"),
+                "stop_reason": "end_turn",
+            },
+        )
+
+    return UpstreamClient(
+        base_url="http://upstream.test",
+        client=httpx.AsyncClient(
+            base_url="http://upstream.test", transport=httpx.MockTransport(handler)
+        ),
+    )
+
+
 # Settings -> Detection (issue #147, ADR-0034 §5): a network-free stand-in for the
 # GLiNER hub client, and its own small stand-in manifest -- writes/verifies against
 # fabricated bytes rather than the real ~197 MB pinned model, so a browser-driven
@@ -386,8 +434,17 @@ def _build_empty_app():
         # health is the passive RecentFailureHealth signal), so a fabricated number
         # there would be dishonest, not just untestable (issue #110).
         _all_healthy = lambda: _StaticHealthProbe(DependencyHealth(healthy=True, latency_ms=8.0))
-        _upstream_healthy = lambda: _StaticHealthProbe(DependencyHealth(healthy=True))
-        app.dependency_overrides[get_upstream_health] = _upstream_healthy
+        # RecentFailureHealth, not a static double (issue #265): unlike the other
+        # three dependencies, production's real get_upstream_health is this exact
+        # class, updated by every real exchange's own mark_success()/mark_failure()
+        # calls (app.py's _exchange). A one-off `_StaticHealthProbe(...)` answers
+        # `.check()` fine but has neither method -- invisible as long as nothing
+        # ever drove a real /v1/messages exchange through this fixture, which
+        # Test Connection now does. One shared instance (not a fresh one per
+        # lambda call) for the same reason _apply_gliner_detection_overrides's own
+        # activation_store/tracker are shared: state must persist across requests.
+        _upstream_health = RecentFailureHealth()
+        app.dependency_overrides[get_upstream_health] = lambda: _upstream_health
         app.dependency_overrides[get_l3_health_probe] = _all_healthy
         app.dependency_overrides[get_transit_health_probe] = _all_healthy
         app.dependency_overrides[get_store_health_probe] = _all_healthy
@@ -621,12 +678,14 @@ def build_app():
     app.dependency_overrides[get_allowlist] = lambda: allowlist
     app.dependency_overrides[get_processing_trace] = lambda: processing_trace
     app.dependency_overrides[get_mapping] = lambda: processing_trace_mapping
+    app.dependency_overrides[get_upstream_client] = _stub_upstream
 
     if FORCE_DEPENDENCIES_HEALTHY:
-        # See build_app()'s identical override for why upstream is excluded.
+        # See _build_empty_app()'s identical override for why upstream gets its
+        # own RecentFailureHealth instance rather than joining `_all_healthy`.
         _all_healthy = lambda: _StaticHealthProbe(DependencyHealth(healthy=True, latency_ms=8.0))
-        _upstream_healthy = lambda: _StaticHealthProbe(DependencyHealth(healthy=True))
-        app.dependency_overrides[get_upstream_health] = _upstream_healthy
+        _upstream_health = RecentFailureHealth()
+        app.dependency_overrides[get_upstream_health] = lambda: _upstream_health
         app.dependency_overrides[get_l3_health_probe] = _all_healthy
         app.dependency_overrides[get_transit_health_probe] = _all_healthy
         app.dependency_overrides[get_store_health_probe] = _all_healthy
