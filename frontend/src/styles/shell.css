@@ -2880,6 +2880,25 @@ body {
   margin-bottom: 20px;
 }
 
+.bf-connect-trust-boundary {
+  max-width: 640px;
+  margin: 0 0 20px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: var(--bf-ochre-bg);
+  border: 1px solid var(--bf-ochre-border);
+  color: var(--bf-ochre);
+  font-size: 0.8125rem;
+}
+
+.bf-connect-trust-boundary a {
+  color: inherit;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
 .bf-connect-card {
   max-width: 640px;
   margin-bottom: 16px;
