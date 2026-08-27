@@ -25,27 +25,36 @@ from blindfold.l3 import (
 )
 
 
+# Issue #369 (ADR-0055): 0100..0199 is the NANPA fictional range Blindfold's own
+# minter draws phone surrogates from, and the tightening this issue makes excludes
+# exactly that range at the matcher -- so a fixture proving the shapes are still
+# caught can no longer use a guaranteed-unassignable number from that range. 0242
+# is a line number elsewhere in the `555` exchange: no subscriber in practice, but
+# not the reserved range either. Do not "fix" this back to 0142-style values --
+# that would silently disarm these tests (ADR-0055 Consequences).
+
+
 def test_flags_a_bare_nanpa_local_number_without_a_leading_plus():
     # The issue's own live repro: `_PHONE_RE` requires `+`, so this NANPA-shaped
     # local number (exchange-line, no area code) is invisible to L1 today.
-    text = "the on-call pager is 555-0142."
+    text = "the on-call pager is 555-0242."
     candidates = select_phone_candidate_spans(text)
 
-    assert [c.text for c in candidates] == ["555-0142"]
+    assert [c.text for c in candidates] == ["555-0242"]
 
 
 def test_flags_a_dash_separated_area_code_number():
-    text = "reach the desk at 415-555-0142 during business hours."
+    text = "reach the desk at 415-555-0242 during business hours."
     candidates = select_phone_candidate_spans(text)
 
-    assert [c.text for c in candidates] == ["415-555-0142"]
+    assert [c.text for c in candidates] == ["415-555-0242"]
 
 
 def test_flags_a_parenthesized_area_code_number():
-    text = "reach the desk at (415) 555-0142 during business hours."
+    text = "reach the desk at (415) 555-0242 during business hours."
     candidates = select_phone_candidate_spans(text)
 
-    assert [c.text for c in candidates] == ["(415) 555-0142"]
+    assert [c.text for c in candidates] == ["(415) 555-0242"]
 
 
 def test_does_not_flag_an_order_reference_number():
@@ -95,6 +104,42 @@ def test_does_not_flag_a_decimal_gps_coordinate():
     assert candidates == []
 
 
+def test_does_not_flag_a_bare_reserved_namespace_line_number():
+    # Issue #369 (ADR-0055): Blindfold's own minted phone surrogates draw from
+    # the NANPA fictional 555-0100..0199 range, and this producer used to
+    # re-detect them as novel candidates on the very hop L1 just rewrote --
+    # measured on #74 live-verify run 3 (3 of 4 distinct phone-shaped values
+    # were the process's own surrogates). Excluded at the matcher, lossless:
+    # NANPA reserves that line-number range for fiction under every area code.
+    text = "call me back at 555-0142 once you land."
+    candidates = select_phone_candidate_spans(text)
+
+    assert candidates == []
+
+
+def test_does_not_flag_an_area_coded_reserved_namespace_line_number():
+    text = "call me back at 415-555-0142 once you land."
+    candidates = select_phone_candidate_spans(text)
+
+    assert candidates == []
+
+
+def test_does_not_flag_a_parenthesized_area_coded_reserved_namespace_line_number():
+    text = "call me back at (415) 555-0142 once you land."
+    candidates = select_phone_candidate_spans(text)
+
+    assert candidates == []
+
+
+def test_does_not_flag_a_plus_one_prefixed_reserved_namespace_line_number():
+    # The minted form itself, exactly as `_mint_pii_surrogate` emits it and as
+    # a client would echo it back on a later hop.
+    text = "the assistant said to reach it at +1-555-0142 next time."
+    candidates = select_phone_candidate_spans(text)
+
+    assert candidates == []
+
+
 @dataclass
 class _Call:
     text: str
@@ -118,11 +163,11 @@ def test_detect_adjudicates_a_phone_shaped_candidate_alongside_a_capitalized_tok
     # select_candidate_spans's capitalized-token producer already feeds.
     adjudicator = _RecordingAdjudicator()
     detector = L3Detector(adjudicator)
-    text = "Klaus said the on-call pager is 555-0142 today."
+    text = "Klaus said the on-call pager is 555-0242 today."
 
     detector.detect(text, known_entities=[])
 
-    assert {call.text for call in adjudicator.calls} == {"Klaus", "555-0142"}
+    assert {call.text for call in adjudicator.calls} == {"Klaus", "555-0242"}
 
 
 def test_detect_omits_phone_shaped_candidates_when_the_workspace_opted_out():
@@ -132,7 +177,7 @@ def test_detect_omits_phone_shaped_candidates_when_the_workspace_opted_out():
     # entirely; this is narrower).
     adjudicator = _RecordingAdjudicator()
     detector = L3Detector(adjudicator)
-    text = "Klaus said the on-call pager is 555-0142 today."
+    text = "Klaus said the on-call pager is 555-0242 today."
 
     detector.detect(text, known_entities=[], phone_candidates_enabled=False)
 
@@ -148,7 +193,7 @@ def test_content_cache_never_serves_a_phone_shaped_verdict_to_an_opted_out_works
     # up in a cache shared with an opted-in workspace (e.g. two workspaces behind
     # the same process-wide L3 singleton with a shared allowlist) -- there is no
     # cache key for it to bleed through.
-    text = "Klaus said the on-call pager is 555-0142 today."
+    text = "Klaus said the on-call pager is 555-0242 today."
     shared_cache = L3ContentCache()
 
     on_adjudicator = _RecordingAdjudicator()

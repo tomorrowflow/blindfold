@@ -22,6 +22,12 @@ Leak-audit clause analysis:
   trade-off, not a bug (ADR-0009's "the degrade opt-in must be audited" mandate,
   applied to this narrower switch).
 - B/C/D/G: unaffected by this slice, already covered by the phone-mint tests above.
+
+Fixture note (issue #369, ADR-0055): tests proving the opt-out/no-adjudicator
+block use `555-0242`, outside the `555-0100..0199` reserved range the phone-shaped
+producer now excludes at the matcher -- a reserved-range value would pass with or
+without the opt-out and prove nothing about it. The one test proving the
+reserved-range exclusion itself uses `555-0142` deliberately.
 """
 
 from __future__ import annotations
@@ -57,13 +63,15 @@ class _UnavailableAdjudicator:
 def test_blindfold_payload_threads_the_opt_out_to_the_l3_detector():
     # Engine-level seam: a phone-shaped-only hop that would otherwise raise
     # L3Unavailable (no adjudicator wired) must not even propose the candidate
-    # when the caller passes phone_candidates_enabled=False.
+    # when the caller passes phone_candidates_enabled=False. 0242 (outside the
+    # 555-0100..0199 reserved range, issue #369) so this is the opt-out doing
+    # the work, not the reserved-range exclusion proven separately.
     mapping = SurrogateMapping.from_pairs([])
     detector = L3Detector(_UnavailableAdjudicator())
     payload = {
         "model": "m",
         "messages": [
-            {"role": "user", "content": "the on-call pager is 555-0142 today."}
+            {"role": "user", "content": "the on-call pager is 555-0242 today."}
         ],
     }
 
@@ -71,7 +79,7 @@ def test_blindfold_payload_threads_the_opt_out_to_the_l3_detector():
         payload, mapping, detector, phone_candidates_enabled=False
     )
 
-    assert blinded["messages"][0]["content"] == "the on-call pager is 555-0142 today."
+    assert blinded["messages"][0]["content"] == "the on-call pager is 555-0242 today."
 
 
 def _make_stub_upstream(recorded: list[httpx.Request]) -> UpstreamClient:
@@ -88,8 +96,44 @@ def _make_stub_upstream(recorded: list[httpx.Request]) -> UpstreamClient:
 @pytest.mark.anyio
 async def test_default_wiring_blocks_a_phone_shaped_request_with_no_adjudicator_wired():
     # Control: default posture (phone_candidates_enabled unset -> True) behaves
-    # exactly like today for a phone-shaped digit run -- the AC1 upgrade-safety
-    # property, for this producer specifically.
+    # exactly like today for a genuine phone-shaped digit run -- the AC1
+    # upgrade-safety property, for this producer specifically. 0242 sits outside
+    # the reserved 555-0100..0199 range (issue #369, ADR-0055) -- unlike that
+    # range, it's a live candidate this producer still hands to L3, so with no
+    # adjudicator wired the request still fails closed.
+    recorded: list[httpx.Request] = []
+    audit_log = get_audit_log()
+    audit_log.records.clear()
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(recorded)
+    app.dependency_overrides[get_l3_detector] = lambda: L3Detector(_UnavailableAdjudicator())
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://proxy.test") as client:
+            resp = await client.post(
+                "/v1/messages",
+                json={
+                    "model": "m",
+                    "messages": [
+                        {"role": "user", "content": "the on-call pager is 555-0242 today."}
+                    ],
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 503
+    assert resp.json()["error"]["event"] == "blocked-l3-unavailable"
+    assert recorded == []
+
+
+@pytest.mark.anyio
+async def test_a_reserved_range_phone_shaped_run_succeeds_with_no_adjudicator_wired():
+    # Acceptance criterion (issue #369, ADR-0055): this is the measured regression
+    # #278 found -- a hop whose only phone-shaped run is Blindfold's own reserved
+    # namespace (555-0100..0199) used to reach the adjudicator and block the whole
+    # request when none was wired. The producer now excludes that range at the
+    # matcher, so the request succeeds instead -- with no opt-out and no
+    # adjudicator wired at all.
     recorded: list[httpx.Request] = []
     audit_log = get_audit_log()
     audit_log.records.clear()
@@ -110,16 +154,18 @@ async def test_default_wiring_blocks_a_phone_shaped_request_with_no_adjudicator_
     finally:
         app.dependency_overrides.clear()
 
-    assert resp.status_code == 503
-    assert resp.json()["error"]["event"] == "blocked-l3-unavailable"
-    assert recorded == []
+    assert resp.status_code == 200
+    assert len(recorded) == 1
 
 
 @pytest.mark.anyio
 async def test_opting_out_phone_candidates_lets_the_same_request_pass():
     # Acceptance criterion: with the flag off, a request that would have blocked
     # with no adjudicator wired now passes -- the escape hatch this issue exists
-    # to build.
+    # to build. 0242 (outside the 555-0100..0199 reserved range, issue #369) is
+    # deliberate: this must be the opt-out doing the work, not the reserved-range
+    # exclusion also proven above -- a reserved-range value would pass regardless
+    # of this flag and prove nothing about the opt-out itself.
     recorded: list[httpx.Request] = []
     audit_log = get_audit_log()
     audit_log.records.clear()
@@ -136,7 +182,7 @@ async def test_opting_out_phone_candidates_lets_the_same_request_pass():
                 json={
                     "model": "m",
                     "messages": [
-                        {"role": "user", "content": "the on-call pager is 555-0142 today."}
+                        {"role": "user", "content": "the on-call pager is 555-0242 today."}
                     ],
                 },
                 headers={"x-blindfold-workspace": "alpha"},

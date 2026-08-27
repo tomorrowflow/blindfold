@@ -72,6 +72,28 @@ def is_reserved_namespace_surrogate(surrogate: str) -> bool:
     return any(pattern.match(surrogate) for pattern in _RESERVED_NAMESPACE_PATTERNS)
 
 
+# Span-aware, not full-string-anchored like `_RESERVED_NAMESPACE_PATTERNS` above:
+# a phone-shaped candidate span's own text may carry an area code or the minted
+# `+1-` prefix, or neither, so an exact match against the minter's own output
+# shape doesn't answer "is this the reserved range" -- only the exchange-line
+# pair at the end of the span does (issue #369, ADR-0055 Decision 1).
+_RESERVED_PHONE_EXCHANGE_LINE_RE = re.compile(r"555-01\d{2}\Z")
+
+
+def is_reserved_phone_range(phone_shaped_text: str) -> bool:
+    """True if ``phone_shaped_text`` -- a phone-*shaped* candidate span's own
+    text, with or without an area code or the minted ``+1-`` prefix -- ends in
+    the exchange-line pair :func:`_mint_pii_surrogate` draws phone surrogates
+    from (NANPA's fictional ``555-0100..0199`` range).
+
+    NANPA reserves that line-number range for fiction under *every* area code,
+    so an area-coded variant is exactly as fictional as the bare form Blindfold
+    mints -- that's what makes a trailing-pair string check lossless rather
+    than merely heuristic (ADR-0055 Decision 1).
+    """
+    return _RESERVED_PHONE_EXCHANGE_LINE_RE.search(phone_shaped_text) is not None
+
+
 def _mint_pii_surrogate(kind: str, index: int) -> str:
     """Return the ``index``-th reserved-namespace surrogate for a PII ``kind``.
 

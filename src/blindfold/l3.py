@@ -916,9 +916,23 @@ def select_phone_candidate_spans(text: str) -> list[CandidateSpan]:
     L3 candidate path (:meth:`L3Detector.detect`). Pure function of ``text`` alone,
     same as the capitalized-token pass is pure over its own inputs (#261's
     invariant: candidate selection never depends on history or process state).
+
+    Never flags a span inside Blindfold's own reserved phone-surrogate namespace
+    (issue #369, ADR-0055): a hop L1 just rewrote, or a client's echo of a prior
+    response, would otherwise re-propose the process's own minted surrogate as a
+    novel candidate. ``is_reserved_phone_range`` is the one place that range is
+    defined (``surrogates.py``); this module keeps no second copy of it.
     """
+    # Deferred import: surrogates.py sits on the other side of a pre-existing
+    # module cycle (surrogates -> store -> store._mint -> l3, for the shared
+    # stopword set), so importing it at l3.py's top level breaks that cycle at
+    # process start. By call time every module involved has finished loading.
+    from .surrogates import is_reserved_phone_range
+
     candidates: list[CandidateSpan] = []
     for match in _PHONE_SHAPED_RE.finditer(text):
+        if is_reserved_phone_range(match.group(0)):
+            continue
         start, end = match.start(), match.end()
         context, context_offset = _context_window(text, start, end)
         candidates.append(
