@@ -130,3 +130,33 @@ Decisions, following this ADR's own reasoning:
 
 CONTEXT.md is untouched — this is CI-gate vocabulary, which per this ADR's own precedent
 lives in the ADR and code comments, not the product glossary.
+
+## Amendment (2026-08-27, issue #370): macOS signing + notarization land, secrets-conditional
+
+This ADR's own "Decision" section deferred signing to "a v2 issue," and BETA.md's known-
+limitations table pointed at #198 for it. Issue #370 is that v2 issue's macOS/CI half
+(the human half — provisioning the Developer ID certificate, the notary API key, and the
+GitHub secrets — is a maintainer wizard outside the repo, out of this ADR's scope).
+
+- **The macOS job's signing step is now secrets-conditional, not branch-conditional.**
+  `platform-verify.yml` computes `HAS_MACOS_SIGNING_SECRETS` once, at job scope, from the
+  presence of all five signing/notary secrets — never from `github.ref` or
+  `github.event_name`. A maintainer push on this repo (where the wizard has provisioned the
+  secrets) takes the real Developer ID + notarization path; a fork or a PR from a fork
+  (which never sees this repo's secrets, regardless of branch name) takes the pre-existing
+  ad-hoc (`--sign -`) path unchanged. This is what this ADR's original "hosted runners have
+  nothing to leak" premise required revisiting for: the runner still needs no long-lived
+  local identity (ADR-0040's rejected alternative), because the identity now lives in
+  GitHub's encrypted secrets store and is imported into a throwaway, per-job keychain that
+  is deleted (`always()`) before the runner is torn down.
+- **Notarization runs after both existing smoke-launch steps**, not before — no point
+  spending a `notarytool submit --wait` round trip on a bundle that would already fail its
+  own smoke test. `spctl --assess --type execute` then gates the job on the stapled bundle,
+  only on the real-signing path (an ad-hoc-signed bundle is expected to fail that
+  assessment, so the gate does not apply to the fallback path).
+- **The Windows/Authenticode half of #198 stays open** — beta is macOS-only (BETA.md), so
+  it was out of #370's scope by the issue's own text.
+
+BETA.md's "Unsigned app" known-limitation row is updated to describe this split: CI-built
+releases are now signed/notarized when the secrets are present; a locally-built app (`swift
+build` from source) is still ad-hoc signed.

@@ -9,8 +9,13 @@
 #
 # Both jobs run on GitHub-hosted standard runners — free/unlimited on this public repo
 # (ADR-0042 revises ADR-0040's self-hosted-macOS plan now that the repo is public).
-# No secrets: signing (Authenticode/notarization) is deferred to a v2 issue, which is
-# exactly what lets this run hosted with nothing to leak.
+# Signing was originally deferred to a v2 issue specifically because that let both jobs
+# run hosted with nothing to leak; issue #370 (ADR-0042's amendment) landed the macOS
+# half of that v2 work, secrets-conditional: the real Developer ID identity is imported
+# into a throwaway, per-job keychain (deleted before the runner is torn down) only when
+# the maintainer wizard's signing secrets are present on this repo, so a fork or a PR
+# from a fork — which never sees those secrets — still runs the original ad-hoc,
+# nothing-to-leak path unchanged. The Windows/Authenticode half stays open (#198).
 #
 # BlindfoldCore (Swift) and Blindfold.Core (C#) are cross-platform and already tested
 # in-sandbox on Linux (#190/#193/#194) — this workflow does NOT re-run swift test/dotnet
@@ -72,6 +77,19 @@ jobs:
       matrix:
         os: [macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    # Issue #370 (CI half of #198): whether the maintainer wizard has provisioned the
+    # Developer ID cert/notary secrets on THIS repo -- true on a maintainer push, false
+    # on a fork or a PR from a fork (forks never see this repo's secrets). Keys on secret
+    # presence, never on branch/event name, per the issue's explicit constraint: a
+    # branch-name check would sign a fork's build if it happened to be named right, and
+    # would skip signing a legitimate maintainer branch that isn't `main`.
+    env:
+      HAS_MACOS_SIGNING_SECRETS: >-
+        ${{ secrets.MACOS_SIGNING_CERT_P12_BASE64 != '' &&
+            secrets.MACOS_SIGNING_CERT_PASSWORD != '' &&
+            secrets.NOTARY_API_KEY_ID != '' &&
+            secrets.NOTARY_API_ISSUER_ID != '' &&
+            secrets.NOTARY_API_KEY_P8_BASE64 != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -178,16 +196,89 @@ jobs:
       # created after signing invalidates the seal ("unsealed contents"); this bundle has
       # none today (no SwiftPM resource bundle is referenced -- MenuBarIconLabel uses SF
       # Symbols, not Bundle.module), but if one is ever added it must be created before
-      # this step, not after. Developer ID signing and notarization stay deferred to #198.
-      - name: Codesign embedded blindfold-proxy (ad-hoc)
-        if: runner.os == 'macOS'
+      # this step, not after. This ad-hoc path is the fallback for forks/PRs-from-forks,
+      # which never see this repo's signing secrets (issue #370); when the secrets ARE
+      # present, the Developer ID signing steps below run instead (never both).
+      - name: Codesign embedded blindfold-proxy (ad-hoc fallback)
+        if: runner.os == 'macOS' && env.HAS_MACOS_SIGNING_SECRETS != 'true'
         shell: bash
         run: codesign --force --sign - menu-bar-app/BlindfoldMenuBar.app/Contents/MacOS/blindfold-proxy
 
-      - name: Codesign BlindfoldMenuBar.app (ad-hoc)
-        if: runner.os == 'macOS'
+      - name: Codesign BlindfoldMenuBar.app (ad-hoc fallback)
+        if: runner.os == 'macOS' && env.HAS_MACOS_SIGNING_SECRETS != 'true'
         shell: bash
         run: codesign --force --sign - menu-bar-app/BlindfoldMenuBar.app
+
+      # Real-signing path (issue #370, CI half of #198). Imports the Developer ID
+      # Application identity into a throwaway keychain scoped to $RUNNER_TEMP (the
+      # runner's own per-job temp dir, wiped when the VM is torn down regardless of the
+      # explicit cleanup step below) so it never touches the runner's default/login
+      # keychain. The keychain password is generated fresh every run and never leaves
+      # this step (not exported to $GITHUB_ENV, never printed) -- nothing depends on it
+      # after `set-key-partition-list` grants codesign non-interactive access.
+      - name: Import Developer ID signing identity
+        if: runner.os == 'macOS' && env.HAS_MACOS_SIGNING_SECRETS == 'true'
+        shell: bash
+        env:
+          MACOS_SIGNING_CERT_P12_BASE64: ${{ secrets.MACOS_SIGNING_CERT_P12_BASE64 }}
+          MACOS_SIGNING_CERT_PASSWORD: ${{ secrets.MACOS_SIGNING_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          CERT_PATH="$RUNNER_TEMP/macos-signing-cert.p12"
+          KEYCHAIN_PATH="$RUNNER_TEMP/macos-signing.keychain-db"
+          KEYCHAIN_PASSWORD=$(openssl rand -base64 24)
+
+          echo -n "$MACOS_SIGNING_CERT_P12_BASE64" | base64 --decode -o "$CERT_PATH"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security import "$CERT_PATH" -P "$MACOS_SIGNING_CERT_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH" login.keychain-db
+
+          rm -f "$CERT_PATH"
+
+      # Sign the embedded frozen blindfold-proxy binary and the assembled .app with the
+      # real Developer ID Application identity -- inside-out order, same rule the ad-hoc
+      # steps above follow (embedded binary before the bundle that contains it, so the
+      # bundle's own seal covers an already-sealed nested binary rather than invalidating
+      # it by signing outside-in). --options runtime enables the hardened runtime
+      # notarization requires; --timestamp requests a secure timestamp so the signature
+      # stays valid past the cert's own expiry.
+      #
+      # Entitlements (packaging/macos/blindfold-proxy.entitlements.plist), applied only to
+      # the frozen CPython binary, not the Swift .app executable:
+      #   - com.apple.security.cs.allow-unsigned-executable-memory: PyInstaller-frozen
+      #     CPython commonly needs this under hardened runtime for the interpreter's own
+      #     dynamic code paths (e.g. ctypes, ahead-of-time-compiled C-extension trampolines).
+      #   - com.apple.security.cs.allow-dyld-environment-variables: the PyInstaller onefile
+      #     bootloader sets DYLD_LIBRARY_PATH internally to locate its bundled shared
+      #     libraries at runtime; hardened runtime strips DYLD_* env vars by default unless
+      #     this is set.
+      #   UNVERIFIED IN THIS SANDBOX (no macOS/codesign/notarytool available here) -- the
+      #   issue's own guidance is "measure, don't assume": these are the two entitlements it
+      #   names as commonly required, added on that basis, but the first secrets-present
+      #   hosted run is the actual proof. If that run's codesign/notarization/smoke-launch
+      #   still fails, watch first for com.apple.security.cs.disable-library-validation
+      #   (needed if any bundled dylib isn't signed by this identity's Team ID) before
+      #   adding anything further.
+      - name: Codesign embedded blindfold-proxy (Developer ID)
+        if: runner.os == 'macOS' && env.HAS_MACOS_SIGNING_SECRETS == 'true'
+        shell: bash
+        run: |
+          codesign --force --sign "${{ vars.MACOS_SIGN_IDENTITY }}" \
+            --options runtime --timestamp \
+            --entitlements packaging/macos/blindfold-proxy.entitlements.plist \
+            menu-bar-app/BlindfoldMenuBar.app/Contents/MacOS/blindfold-proxy
+
+      - name: Codesign BlindfoldMenuBar.app (Developer ID)
+        if: runner.os == 'macOS' && env.HAS_MACOS_SIGNING_SECRETS == 'true'
+        shell: bash
+        run: |
+          codesign --force --sign "${{ vars.MACOS_SIGN_IDENTITY }}" \
+            --options runtime --timestamp \
+            menu-bar-app/BlindfoldMenuBar.app
 
       # Smoke-launch = the bundle's executable exits 0 under --smoke-test: constructs the
       # loopback StatusClient wiring and the BlindfoldCore reduction calls headlessly, no
@@ -210,6 +301,69 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: ./menu-bar-app/BlindfoldMenuBar.app/Contents/MacOS/BlindfoldMenuBar --smoke-launch-full
+
+      # Notarization runs after both smoke-launch steps above have already proven the
+      # Developer ID-signed bundle actually executes -- no point spending a notarytool
+      # round trip (which can take minutes) on a bundle that would fail its own smoke
+      # test anyway. Zips with ditto (preserves the bundle structure/resource forks the
+      # way `zip` does not), submits and waits synchronously so a rejected notarization
+      # fails this job with Apple's own reason inline in the log, then staples the
+      # ticket so the bundle can be verified offline (spctl below, and on an end user's
+      # machine with no network path to Apple). The decoded .p8 key file is scoped to
+      # this step's $RUNNER_TEMP and removed again in the cleanup step below.
+      - name: Notarize BlindfoldMenuBar.app
+        if: runner.os == 'macOS' && env.HAS_MACOS_SIGNING_SECRETS == 'true'
+        shell: bash
+        env:
+          NOTARY_API_KEY_P8_BASE64: ${{ secrets.NOTARY_API_KEY_P8_BASE64 }}
+          NOTARY_API_KEY_ID: ${{ secrets.NOTARY_API_KEY_ID }}
+          NOTARY_API_ISSUER_ID: ${{ secrets.NOTARY_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          KEY_PATH="$RUNNER_TEMP/notary-api-key.p8"
+          ZIP_PATH="$RUNNER_TEMP/BlindfoldMenuBar.zip"
+
+          echo -n "$NOTARY_API_KEY_P8_BASE64" | base64 --decode -o "$KEY_PATH"
+          ditto -c -k --keepParent menu-bar-app/BlindfoldMenuBar.app "$ZIP_PATH"
+
+          xcrun notarytool submit "$ZIP_PATH" \
+            --key "$KEY_PATH" \
+            --key-id "$NOTARY_API_KEY_ID" \
+            --issuer "$NOTARY_API_ISSUER_ID" \
+            --wait
+
+          xcrun stapler staple menu-bar-app/BlindfoldMenuBar.app
+
+          rm -f "$KEY_PATH" "$ZIP_PATH"
+
+      # Gate: a stapled, Developer ID-signed, hardened-runtime bundle must pass Gatekeeper's
+      # own assessment -- the acceptance criterion a real user's Mac enforces. Only
+      # meaningful on the real-signing path; an ad-hoc-signed bundle (`--sign -`, no
+      # identity, not notarized) is expected to fail spctl --assess, so this gate does not
+      # run on the fallback path.
+      - name: Gatekeeper assessment (spctl)
+        if: runner.os == 'macOS' && env.HAS_MACOS_SIGNING_SECRETS == 'true'
+        shell: bash
+        run: spctl --assess --type execute --verbose menu-bar-app/BlindfoldMenuBar.app
+
+      - name: Upload signed BlindfoldMenuBar.app
+        if: runner.os == 'macOS' && env.HAS_MACOS_SIGNING_SECRETS == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: BlindfoldMenuBar-signed
+          path: menu-bar-app/BlindfoldMenuBar.app
+
+      # Always runs, even if an earlier signing/notarization step failed -- the ephemeral
+      # keychain and decoded key files must never survive the job. Deleting the keychain by
+      # path (not by name) works even if it was never added to the login keychain's search
+      # list list; `|| true` covers the step never having run at all (e.g. secrets absent),
+      # since a delete on a keychain that doesn't exist would otherwise fail this step.
+      - name: Clean up macOS signing keychain and key material
+        if: always() && runner.os == 'macOS' && env.HAS_MACOS_SIGNING_SECRETS == 'true'
+        shell: bash
+        run: |
+          security delete-keychain "$RUNNER_TEMP/macos-signing.keychain-db" || true
+          rm -f "$RUNNER_TEMP/macos-signing-cert.p12" "$RUNNER_TEMP/notary-api-key.p8" "$RUNNER_TEMP/BlindfoldMenuBar.zip"
 
       # Windows: build the real WinForms tray supervisor (issue #196, ADR-0041) --
       # unsigned, self-contained single-file per the ADR's first-cut distribution -- and

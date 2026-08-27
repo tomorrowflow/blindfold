@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Entitlements for the hardened-runtime Developer ID signature on the frozen
+  blindfold-proxy binary (issue #370, CI half of #198). Applied only to this binary,
+  not to BlindfoldMenuBar.app's own Swift executable, which needs neither.
+
+  UNVERIFIED IN THIS SANDBOX: no macOS/codesign/notarytool is available here, so
+  these two are the entitlements the issue itself names as commonly required for a
+  frozen CPython binary under hardened runtime, added on that basis rather than
+  measured against a real run. The first secrets-present hosted run
+  (.github/workflows/platform-verify.yml) is the actual proof; if signing,
+  notarization, or the smoke-launch step still fails on that run, that's the signal
+  to add another entitlement (starting with
+  com.apple.security.cs.disable-library-validation, if a bundled dylib isn't signed
+  by this identity's Team ID), not to add one preemptively here.
+-->
+<plist version="1.0">
+<dict>
+  <!-- PyInstaller-frozen CPython commonly needs this under hardened runtime for the
+       interpreter's own dynamic code paths (e.g. ctypes, ahead-of-time-compiled
+       C-extension trampolines). -->
+  <key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+  <true/>
+  <!-- The PyInstaller onefile bootloader sets DYLD_LIBRARY_PATH internally to locate
+       its bundled shared libraries at runtime; hardened runtime strips DYLD_* env
+       vars by default unless this is set. -->
+  <key>com.apple.security.cs.allow-dyld-environment-variables</key>
+  <true/>
+</dict>
+</plist>

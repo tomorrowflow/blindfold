@@ -96,7 +96,7 @@ way:
 | **Claude Code only.** Codex now requires the `/v1/responses` endpoint, which Blindfold does not yet serve; OpenAI-SDK clients work at the transport level but are not beta-verified. | #263 |
 | **macOS only.** The Windows tray supervisor has a known key-injection defect that needs real hardware to diagnose. | #236 |
 | **Non-redirectable clients unsupported.** Claude Desktop and similar closed clients cannot be pointed at a local base URL today. | #62 |
-| **Unsigned app.** Until code signing and notarization land, the menu-bar app is ad-hoc signed: install from source per the README, or expect Gatekeeper friction on a downloaded bundle. | #198 |
+| **Signing is CI-only so far.** The release pipeline now Developer ID-signs and notarizes the menu-bar app when it builds on this repo with the maintainer's signing secrets present (#370, the CI half of #198); a locally-built app (`swift build` from source per the README) is still ad-hoc signed, same as before. The Windows/Authenticode half of #198 is still open. | #198, #370 |
 | **Restart after Setup.** Detection activation takes effect on the next process start; Setup's final restart instruction is by design. | ADR-0034 |
 | **Added latency.** Blindfolding adds per-request latency dominated by novel-entity handling; a formal per-hop cost model is planned. Sessions feel slower than direct connections, most noticeably on the first requests of a session. | #58 |
 | **Rare blocked requests on phone-shaped strings.** Digit runs that look like phone numbers can, in narrow cases, block a request in the default configuration; the default posture is under active decision. Blocked requests self-describe and retry cleanly. | #278 |
