@@ -10,16 +10,23 @@ Leak-audit clauses asserted here:
 - D (streaming): no injected surrogate was ever client-visible — not even the
   half-surrogate prefix that split the chunk boundary.
 
-N/A this slice: C (no coincidental lookalike in this fixture), E reserved-namespace,
-G mapping secrecy. F fail-closed: no L3 wired here, so (issue #48, SEC-7) each
-workspace exercised below explicitly opts into the documented deterministic-only
-degrade (ADR-0009) rather than relying on there being no pipeline to fail.
+N/A this slice: E reserved-namespace, G mapping secrecy. F fail-closed: no L3 wired
+here, so (issue #48, SEC-7) each workspace exercised below explicitly opts into the
+documented deterministic-only degrade (ADR-0009) rather than relying on there being
+no pipeline to fail.
 
 Issue #84 adds a second scenario: a thinking block (index 0) precedes the text block
 (index 1) that carries the split surrogate. Beyond A/B/D above, that test also asserts
 Messages-API ordering -- the synthesized tail delta is addressed to the text block's
 own index and emitted before that block's ``content_block_stop``, never stitched on
 with a hardcoded index after ``message_stop`` has already reached the client.
+
+Issue #373 (ADR-0057 D6.1) extends the sliding-window restore to ``thinking_delta``
+itself: a surrogate split across two thinking deltas, the held-back tail flushed at
+the thinking block's own ``content_block_stop`` before a following text block starts,
+``signature_delta`` passing through byte-identical, buffered/streamed restore parity,
+and clause C (closed-world: a coincidental surrogate-shaped token this exchange never
+injected passes through a thinking delta untouched).
 """
 
 import json
@@ -28,6 +35,7 @@ import httpx
 import pytest
 
 from blindfold.app import app, get_audit_log, get_upstream_client, get_workspace_policies
+from blindfold.engine import ExchangeSession, restore_response
 from blindfold.policy import DEFAULT_WORKSPACE, WorkspacePolicies
 from blindfold.store import vendored_seed_repository
 from blindfold.surrogates import SurrogateMapping
@@ -309,6 +317,326 @@ async def test_streamed_text_block_holdback_flushed_at_its_own_stop_with_correct
 
 
 @pytest.mark.anyio
+async def test_streamed_thinking_delta_restores_surrogate_split_across_two_chunks():
+    # Issue #373 (ADR-0057 D6.1): thinking_delta must go through the same
+    # sliding-window restorer as text_delta -- a surrogate split across two
+    # thinking_delta events should be restored, and re-emitted as thinking_delta
+    # (never text_delta), addressed to its own index.
+    mapping = _seeded_mapping()
+    martin = "Martin Bach"
+    martin_surrogate = mapping.surrogate_for(martin)
+    assert martin_surrogate is not None and martin_surrogate != martin
+
+    head_len = len(martin_surrogate) // 2
+    head, tail = martin_surrogate[:head_len], martin_surrogate[head_len:]
+    chunks = [
+        _sse_event(
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "thinking", "thinking": ""},
+            }
+        ),
+        _sse_event(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": f"Hello {head}"},
+            }
+        ),
+        _sse_event(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": f"{tail}, welcome."},
+            }
+        ),
+        _sse_event({"type": "content_block_stop", "index": 0}),
+        _sse_event(
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn"}}
+        ),
+        _sse_event({"type": "message_stop"}),
+    ]
+    recorded: list[httpx.Request] = []
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_streaming_upstream(
+        chunks, recorded
+    )
+    app.dependency_overrides[get_workspace_policies] = lambda: _deterministic_only_policies(
+        DEFAULT_WORKSPACE
+    )
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            received: list[bytes] = []
+            async with client.stream(
+                "POST",
+                "/v1/messages",
+                json={
+                    "model": "claude-3-5-sonnet",
+                    "stream": True,
+                    "messages": [
+                        {"role": "user", "content": f"Greet {martin} for me."}
+                    ],
+                },
+                headers={"x-api-key": "secret-token"},
+            ) as resp:
+                assert resp.status_code == 200
+                async for chunk in resp.aiter_bytes():
+                    received.append(chunk)
+    finally:
+        app.dependency_overrides.clear()
+
+    events = _parsed_sse_events(b"".join(received))
+
+    # Every restored delta for block 0 must still be a thinking_delta, never a
+    # text_delta -- the fix must not change the delta's wire type.
+    thinking_deltas = [
+        e
+        for e in events
+        if e.get("type") == "content_block_delta"
+        and e.get("delta", {}).get("type") == "thinking_delta"
+    ]
+    assert thinking_deltas, "expected at least one restored thinking_delta"
+    assert all(e["index"] == 0 for e in thinking_deltas)
+    assert all(
+        "text_delta" != e.get("delta", {}).get("type")
+        for e in events
+        if e.get("index") == 0
+    )
+
+    # --- Clause A: only the surrogate egressed; the real value never crossed the wire. ---
+    assert len(recorded) == 1
+    egressed = recorded[0].content.decode("utf-8")
+    assert martin not in egressed
+    assert martin_surrogate in egressed
+
+    # --- Clause B + D (streaming): real value visible to client, surrogate never is. ---
+    full = b"".join(received).decode("utf-8")
+    assert martin_surrogate not in full
+    assert martin in full
+    restored_thinking = "".join(d["delta"]["thinking"] for d in thinking_deltas)
+    assert martin in restored_thinking
+
+
+@pytest.mark.anyio
+async def test_streamed_signature_delta_passes_through_byte_identical():
+    # Issue #373 AC3: signature_delta is a thinking block's provider-signed field
+    # over the exact thinking text (issue #323's _BLOCK_NON_HOP_KEYS "signature")
+    # -- never restored, never buffered, forwarded byte-identical.
+    mapping = _seeded_mapping()
+    martin = "Martin Bach"
+    martin_surrogate = mapping.surrogate_for(martin)
+    assert martin_surrogate is not None and martin_surrogate != martin
+
+    signature_event = _sse_event(
+        {
+            "type": "content_block_delta",
+            "index": 0,
+            "delta": {"type": "signature_delta", "signature": "sig-opaque-blob"},
+        }
+    )
+    chunks = [
+        _sse_event(
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "thinking", "thinking": ""},
+            }
+        ),
+        _sse_event(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": f"Hello {martin_surrogate}."},
+            }
+        ),
+        signature_event,
+        _sse_event({"type": "content_block_stop", "index": 0}),
+        _sse_event(
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn"}}
+        ),
+        _sse_event({"type": "message_stop"}),
+    ]
+    recorded: list[httpx.Request] = []
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_streaming_upstream(
+        chunks, recorded
+    )
+    app.dependency_overrides[get_workspace_policies] = lambda: _deterministic_only_policies(
+        DEFAULT_WORKSPACE
+    )
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            received: list[bytes] = []
+            async with client.stream(
+                "POST",
+                "/v1/messages",
+                json={
+                    "model": "claude-3-5-sonnet",
+                    "stream": True,
+                    "messages": [
+                        {"role": "user", "content": f"Greet {martin} for me."}
+                    ],
+                },
+                headers={"x-api-key": "secret-token"},
+            ) as resp:
+                assert resp.status_code == 200
+                async for chunk in resp.aiter_bytes():
+                    received.append(chunk)
+    finally:
+        app.dependency_overrides.clear()
+
+    full = b"".join(received)
+    assert signature_event in full
+
+
+@pytest.mark.anyio
+async def test_streamed_thinking_block_holdback_flushed_at_its_own_stop_before_next_block():
+    # Issue #373 AC2: a thinking block's held-back tail is flushed -- as a
+    # thinking_delta, addressed to its own index -- before that block's own
+    # content_block_stop, and nothing carries into the following text block.
+    mapping = _seeded_mapping()
+    martin = "Martin Bach"
+    martin_surrogate = mapping.surrogate_for(martin)
+    assert martin_surrogate is not None and martin_surrogate != martin
+
+    head_len = len(martin_surrogate) // 2
+    head, tail = martin_surrogate[:head_len], martin_surrogate[head_len:]
+    chunks = [
+        _sse_event(
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "thinking", "thinking": ""},
+            }
+        ),
+        _sse_event(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": f"Hello {head}"},
+            }
+        ),
+        _sse_event(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": f"{tail}, welcome."},
+            }
+        ),
+        _sse_event({"type": "content_block_stop", "index": 0}),
+        _sse_event(
+            {
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {"type": "text", "text": ""},
+            }
+        ),
+        _sse_event(
+            {
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {"type": "text_delta", "text": "Nice to meet you."},
+            }
+        ),
+        _sse_event({"type": "content_block_stop", "index": 1}),
+        _sse_event(
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn"}}
+        ),
+        _sse_event({"type": "message_stop"}),
+    ]
+    recorded: list[httpx.Request] = []
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_streaming_upstream(
+        chunks, recorded
+    )
+    app.dependency_overrides[get_workspace_policies] = lambda: _deterministic_only_policies(
+        DEFAULT_WORKSPACE
+    )
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            received: list[bytes] = []
+            async with client.stream(
+                "POST",
+                "/v1/messages",
+                json={
+                    "model": "claude-3-5-sonnet",
+                    "stream": True,
+                    "messages": [
+                        {"role": "user", "content": f"Greet {martin} for me."}
+                    ],
+                },
+                headers={"x-api-key": "secret-token"},
+            ) as resp:
+                assert resp.status_code == 200
+                async for chunk in resp.aiter_bytes():
+                    received.append(chunk)
+    finally:
+        app.dependency_overrides.clear()
+
+    events = _parsed_sse_events(b"".join(received))
+
+    # Every thinking_delta must be addressed to block 0, and text_delta only to
+    # block 1 -- nothing from the thinking restorer carries into the text block.
+    thinking_deltas = [
+        e
+        for e in events
+        if e.get("type") == "content_block_delta"
+        and e.get("delta", {}).get("type") == "thinking_delta"
+    ]
+    text_deltas = [
+        e
+        for e in events
+        if e.get("type") == "content_block_delta"
+        and e.get("delta", {}).get("type") == "text_delta"
+    ]
+    assert thinking_deltas and all(e["index"] == 0 for e in thinking_deltas)
+    assert text_deltas and all(e["index"] == 1 for e in text_deltas)
+    assert "".join(e["delta"]["text"] for e in text_deltas) == "Nice to meet you."
+
+    # The held-back thinking tail must be flushed before block 0's own
+    # content_block_stop, well before block 1 even starts.
+    stop_0_pos = next(
+        i
+        for i, e in enumerate(events)
+        if e.get("type") == "content_block_stop" and e.get("index") == 0
+    )
+    last_thinking_delta_pos = max(
+        i
+        for i, e in enumerate(events)
+        if e.get("type") == "content_block_delta"
+        and e.get("delta", {}).get("type") == "thinking_delta"
+    )
+    assert last_thinking_delta_pos < stop_0_pos
+
+    start_1_pos = next(
+        i
+        for i, e in enumerate(events)
+        if e.get("type") == "content_block_start" and e.get("index") == 1
+    )
+    assert stop_0_pos < start_1_pos
+
+    # --- Clause A/B/D: only the surrogate egressed; the real value is restored
+    # client-side, closed-world, and never carries into the text block. ---
+    assert len(recorded) == 1
+    egressed = recorded[0].content.decode("utf-8")
+    assert martin not in egressed
+    assert martin_surrogate in egressed
+
+    full = b"".join(received).decode("utf-8")
+    assert martin_surrogate not in full
+    assert martin in full
+    restored_thinking = "".join(d["delta"]["thinking"] for d in thinking_deltas)
+    assert martin in restored_thinking
+
+
+@pytest.mark.anyio
 async def test_streaming_terminal_resolution_check_catches_an_unresolved_surrogate():
     # SEC-6 / issue #47: the streaming path gets the pre-egress leak gate for free, but
     # also needs its own terminal resolution check — the same net the buffered path has
@@ -374,3 +702,192 @@ async def test_streaming_terminal_resolution_check_catches_an_unresolved_surroga
         r.workspace == "delta" and r.event == "blocked-unresolved-surrogate"
         for r in audit_log.records
     ), f"expected a blocked-unresolved-surrogate audit record; got: {audit_log.records}"
+
+
+@pytest.mark.anyio
+async def test_streamed_and_buffered_thinking_restore_agree():
+    # Issue #373 AC4: non-streaming and streaming restore must now agree -- the
+    # same response body with a surrogate in `thinking`, restored buffered
+    # (engine.restore_response, the generic block walk) and streamed (this
+    # module's per-block sliding-window restore), yields the same restored
+    # thinking text.
+    mapping = _seeded_mapping()
+    martin = "Martin Bach"
+    martin_surrogate = mapping.surrogate_for(martin)
+    assert martin_surrogate is not None and martin_surrogate != martin
+    thinking_prose = f"I should greet {martin_surrogate} warmly."
+
+    # --- Buffered restore (engine.py's generic block walk). ---
+    session = ExchangeSession()
+    session.record(martin_surrogate, martin)
+    buffered_response = {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "thinking", "thinking": thinking_prose, "signature": "sig"}],
+    }
+    buffered_restored = restore_response(buffered_response, session)
+    buffered_thinking = buffered_restored["content"][0]["thinking"]
+    assert martin in buffered_thinking
+    assert martin_surrogate not in buffered_thinking
+
+    # --- Streamed restore (this module's sliding-window per-block restore). ---
+    head_len = len(martin_surrogate) // 2
+    head, tail = martin_surrogate[:head_len], martin_surrogate[head_len:]
+    prefix, suffix = thinking_prose.split(martin_surrogate)
+    chunks = [
+        _sse_event(
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "thinking", "thinking": ""},
+            }
+        ),
+        _sse_event(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": f"{prefix}{head}"},
+            }
+        ),
+        _sse_event(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "thinking_delta", "thinking": f"{tail}{suffix}"},
+            }
+        ),
+        _sse_event({"type": "content_block_stop", "index": 0}),
+        _sse_event(
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn"}}
+        ),
+        _sse_event({"type": "message_stop"}),
+    ]
+    recorded: list[httpx.Request] = []
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_streaming_upstream(
+        chunks, recorded
+    )
+    app.dependency_overrides[get_workspace_policies] = lambda: _deterministic_only_policies(
+        DEFAULT_WORKSPACE
+    )
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            received: list[bytes] = []
+            async with client.stream(
+                "POST",
+                "/v1/messages",
+                json={
+                    "model": "claude-3-5-sonnet",
+                    "stream": True,
+                    "messages": [
+                        {"role": "user", "content": f"Greet {martin} for me."}
+                    ],
+                },
+                headers={"x-api-key": "secret-token"},
+            ) as resp:
+                assert resp.status_code == 200
+                async for chunk in resp.aiter_bytes():
+                    received.append(chunk)
+    finally:
+        app.dependency_overrides.clear()
+
+    events = _parsed_sse_events(b"".join(received))
+    thinking_deltas = [
+        e
+        for e in events
+        if e.get("type") == "content_block_delta"
+        and e.get("delta", {}).get("type") == "thinking_delta"
+    ]
+    streamed_thinking = "".join(d["delta"]["thinking"] for d in thinking_deltas)
+
+    assert streamed_thinking == buffered_thinking == thinking_prose.replace(
+        martin_surrogate, martin
+    )
+
+
+@pytest.mark.anyio
+async def test_streamed_thinking_delta_closed_world_unknown_surrogate_shaped_token_untouched():
+    # Leak-audit closed-world clause: restore only reverses surrogates this
+    # session actually injected (ADR-0006). A coincidental surrogate-shaped
+    # token the provider emits on its own -- e.g. another seeded surrogate this
+    # exchange never referenced -- must pass through a thinking_delta untouched,
+    # not be mistaken for a restore target.
+    mapping = _seeded_mapping()
+    martin = "Martin Bach"
+    martin_surrogate = mapping.surrogate_for(martin)
+    unrelated_surrogate = mapping.surrogate_for("Stefan Wegner")
+    assert unrelated_surrogate is not None
+    assert unrelated_surrogate != martin_surrogate
+
+    chunks = [
+        _sse_event(
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "thinking", "thinking": ""},
+            }
+        ),
+        _sse_event(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {
+                    "type": "thinking_delta",
+                    "thinking": f"{unrelated_surrogate} is not who I was asked about.",
+                },
+            }
+        ),
+        _sse_event({"type": "content_block_stop", "index": 0}),
+        _sse_event(
+            {"type": "message_delta", "delta": {"stop_reason": "end_turn"}}
+        ),
+        _sse_event({"type": "message_stop"}),
+    ]
+    recorded: list[httpx.Request] = []
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_streaming_upstream(
+        chunks, recorded
+    )
+    app.dependency_overrides[get_workspace_policies] = lambda: _deterministic_only_policies(
+        DEFAULT_WORKSPACE
+    )
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            received: list[bytes] = []
+            async with client.stream(
+                "POST",
+                "/v1/messages",
+                json={
+                    "model": "claude-3-5-sonnet",
+                    "stream": True,
+                    "messages": [
+                        {"role": "user", "content": f"Greet {martin} for me."}
+                    ],
+                },
+                headers={"x-api-key": "secret-token"},
+            ) as resp:
+                assert resp.status_code == 200
+                async for chunk in resp.aiter_bytes():
+                    received.append(chunk)
+    finally:
+        app.dependency_overrides.clear()
+
+    events = _parsed_sse_events(b"".join(received))
+    thinking_deltas = [
+        e
+        for e in events
+        if e.get("type") == "content_block_delta"
+        and e.get("delta", {}).get("type") == "thinking_delta"
+    ]
+    streamed_thinking = "".join(d["delta"]["thinking"] for d in thinking_deltas)
+
+    # Closed-world: the unrelated surrogate was never injected into *this*
+    # session, so it must survive restore untouched -- not resolved to
+    # "Stefan Wegner", and not stripped.
+    assert unrelated_surrogate in streamed_thinking
+    assert "Stefan Wegner" not in streamed_thinking

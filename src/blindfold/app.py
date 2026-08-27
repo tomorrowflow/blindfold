@@ -2328,16 +2328,21 @@ async def _stream_restored(
     exchange produces (ADR-0035 decision 1) carries it regardless of which outcome
     this generator ultimately records.
 
-    Parses upstream SSE events line-by-line, feeds ``text_delta`` payloads through a
-    ``StreamingRestorer`` so a surrogate split across upstream chunks is held back
-    until matched, and re-emits restored ``content_block_delta`` events.
+    Parses upstream SSE events line-by-line, feeds ``text_delta`` and ``thinking_delta``
+    (issue #373, ADR-0057 D6.1) payloads through a ``StreamingRestorer`` so a surrogate
+    split across upstream chunks is held back until matched, and re-emits restored
+    ``content_block_delta`` events with the same delta type they arrived as.
+    ``signature_delta`` (a thinking block's provider-signed field, issue #323) is left
+    unbuffered and unrestored, passed through byte-identical.
 
-    A text block's held-back tail is flushed when *that block's own*
+    A text or thinking block's held-back tail is flushed when *that block's own*
     ``content_block_stop`` arrives (issue #84) — emitted as a ``content_block_delta``
-    addressed to that block's index, before the stop event is forwarded. This keeps
-    Messages-API ordering valid (nothing after a block's own stop, nothing after
-    ``message_stop``) and keeps the restorer from carrying text across a block
-    boundary, since a surrogate can never span two content blocks.
+    addressed to that block's index and re-emitted with that block's own delta type,
+    before the stop event is forwarded. This keeps Messages-API ordering valid
+    (nothing after a block's own stop, nothing after ``message_stop``) and keeps the
+    restorer from carrying text across a block boundary, since a surrogate can never
+    span two content blocks. Anthropic streams one content block at a time, so a
+    single restorer instance serves text and thinking blocks alike.
 
     For ``tool_use`` blocks (issue #11), ``input_json_delta`` fragments are held back
     per content_block index, reassembled on ``content_block_stop``, and emitted as
@@ -2354,10 +2359,14 @@ async def _stream_restored(
     # Per-content-block index → accumulated partial_json fragments. Presence in this
     # dict marks the block as a tool_use whose deltas must be held back.
     tool_use_buffers: dict[int, list[str]] = {}
-    # Indices that have received at least one text_delta and not yet been flushed by
-    # their own content_block_stop (issue #84) -- the restorer's held-back tail must
-    # be attributed to the block it came from, not a hardcoded index.
-    text_block_indices: set[int] = set()
+    # Indices that have received at least one text_delta or thinking_delta and not
+    # yet been flushed by their own content_block_stop (issue #84, extended by issue
+    # #373 to thinking_delta) -- the restorer's held-back tail must be attributed to
+    # the block it came from, not a hardcoded index. Anthropic streams one content
+    # block at a time (never interleaves deltas from two open blocks), so the same
+    # restorer instance and held-back tail can serve both prose kinds; the value
+    # records which delta type to re-emit the flushed tail as.
+    prose_block_deltas: dict[int, str] = {}
     emitted: list[bytes] = []
     buffer = ""
     # Issue #313: network chunks from aiter_bytes() are transport-sized, not
@@ -2376,7 +2385,7 @@ async def _stream_restored(
             while "\n\n" in buffer:
                 event, buffer = buffer.split("\n\n", 1)
                 async for out in _process_sse_event(
-                    event, restorer, tool_use_buffers, text_block_indices, session
+                    event, restorer, tool_use_buffers, prose_block_deltas, session
                 ):
                     emitted.append(out)
                     yield out
@@ -2387,7 +2396,7 @@ async def _stream_restored(
         buffer += decoder.decode(b"", final=True)
         if buffer.strip():
             async for out in _process_sse_event(
-                buffer, restorer, tool_use_buffers, text_block_indices, session
+                buffer, restorer, tool_use_buffers, prose_block_deltas, session
             ):
                 emitted.append(out)
                 yield out
@@ -2487,7 +2496,7 @@ async def _process_sse_event(
     event: str,
     restorer: StreamingRestorer,
     tool_use_buffers: dict[int, list[str]],
-    text_block_indices: set[int],
+    prose_block_deltas: dict[int, str],
     session: ExchangeSession,
 ) -> AsyncIterator[bytes]:
     """Split one SSE event into ``event:`` / ``data:`` lines and rewrite text/tool deltas."""
@@ -2515,10 +2524,24 @@ async def _process_sse_event(
         index = payload.get("index", 0)
         delta = payload.get("delta", {})
         if delta.get("type") == "text_delta" and isinstance(delta.get("text"), str):
-            text_block_indices.add(index)
+            prose_block_deltas[index] = "text_delta"
             restored_text = restorer.feed(delta["text"])
             if restored_text:
                 yield _emit_text_delta(restored_text, index=index)
+            return
+        if delta.get("type") == "thinking_delta" and isinstance(
+            delta.get("thinking"), str
+        ):
+            # issue #373 (ADR-0057 D6.1): thinking_delta goes through the same
+            # sliding-window restorer as text_delta, per-block, and is re-emitted
+            # with its own delta type -- never coerced into a text_delta.
+            # signature_delta (the block's provider-signed field) is deliberately
+            # left unhandled here and falls through to the pass-through branch
+            # below, byte-identical (see _BLOCK_NON_HOP_KEYS' "signature").
+            prose_block_deltas[index] = "thinking_delta"
+            restored_thinking = restorer.feed(delta["thinking"])
+            if restored_thinking:
+                yield _emit_thinking_delta(restored_thinking, index=index)
             return
         if (
             delta.get("type") == "input_json_delta"
@@ -2537,14 +2560,19 @@ async def _process_sse_event(
             yield _emit_input_json_delta(restored_json, index=index)
             yield (event + "\n\n").encode("utf-8")
             return
-        if index in text_block_indices:
-            # Flush this text block's held-back tail -- addressed to its own index,
-            # before forwarding its content_block_stop (issue #84). A surrogate can't
-            # span two content blocks, so the restorer carries nothing into the next.
-            text_block_indices.discard(index)
+        if index in prose_block_deltas:
+            # Flush this block's held-back tail -- addressed to its own index and
+            # re-emitted with the delta type that block actually used, before
+            # forwarding its content_block_stop (issue #84, extended by #373 to
+            # thinking_delta). A surrogate can't span two content blocks, so the
+            # restorer carries nothing into the next.
+            delta_type = prose_block_deltas.pop(index)
             tail = restorer.flush()
             if tail:
-                yield _emit_text_delta(tail, index=index)
+                if delta_type == "thinking_delta":
+                    yield _emit_thinking_delta(tail, index=index)
+                else:
+                    yield _emit_text_delta(tail, index=index)
             yield (event + "\n\n").encode("utf-8")
             return
 
@@ -2574,6 +2602,15 @@ def _emit_text_delta(text: str, index: int = 0) -> bytes:
         "type": "content_block_delta",
         "index": index,
         "delta": {"type": "text_delta", "text": text},
+    }
+    return f"event: content_block_delta\ndata: {json.dumps(payload)}\n\n".encode("utf-8")
+
+
+def _emit_thinking_delta(thinking: str, index: int = 0) -> bytes:
+    payload = {
+        "type": "content_block_delta",
+        "index": index,
+        "delta": {"type": "thinking_delta", "thinking": thinking},
     }
     return f"event: content_block_delta\ndata: {json.dumps(payload)}\n\n".encode("utf-8")
 
