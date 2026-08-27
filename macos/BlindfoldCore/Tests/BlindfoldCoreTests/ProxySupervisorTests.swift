@@ -276,8 +276,9 @@ private final class InvocationCounter: @unchecked Sendable {
 
 /// Issue #285: a restart must wait for the *old* child's exit to be confirmed before
 /// spawning the replacement -- a naive `stop()` immediately followed by `start()` (the
-/// pre-#285 shape `SupervisorSettingsViewModel.restartProxy()` used) races the old
-/// child's port release, so the new child can itself refuse to start ("port in use").
+/// shape `SupervisorSettingsViewModel.restartProxy()` still uses, pending a follow-up
+/// slice that rewires it through this new primitive) races the old child's port release,
+/// so the new child can itself refuse to start ("port in use").
 /// `kill()` only requests termination (SIGTERM); `restart()` must not relaunch until
 /// `hasExited` is observed true on a later poll.
 @Test func restartWaitsForConfirmedExitBeforeRelaunching() {
