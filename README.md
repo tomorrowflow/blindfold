@@ -269,6 +269,7 @@ ChatGPT desktop/mobile) — those are out of scope by design.
 
 | Doc | Contents |
 |-----|----------|
+| [`docs/BETA.md`](docs/BETA.md) | **Beta contract**: scope, the localhost trust boundary, what the privacy guarantee is and is not, known limitations. |
 | [`docs/PRD.md`](docs/PRD.md) | Product requirements: problem, solution, user stories, scope. |
 | [`docs/DESIGN.md`](docs/DESIGN.md) | Architecture narrative, request flow, landscape analysis, decision log, risks. |
 | [`CONTEXT.md`](CONTEXT.md) | The project's **ubiquitous language** — glossary, key invariants, non-goals. |
