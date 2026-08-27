@@ -518,7 +518,9 @@ async def test_provisional_surrogate_round_trips_so_client_sees_real_value_back(
     detector = L3Detector(adjudicator, allowlist=allowlist)
 
     novel = "Iris"
-    provisional = "Alex Brenner"  # first slot in _PROVISIONAL_POOL, ADR-0010
+    # No entity_type -- the untyped inner-LLM path (issue #89) -- so this mints
+    # from the term pool, first slot, not the person pool.
+    provisional = "Aktion Feuerturm"  # first slot in _PROVISIONAL_TERM_POOL
     scripted_response = {
         "id": "msg_1",
         "type": "message",

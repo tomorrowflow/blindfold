@@ -71,3 +71,23 @@ def test_provisional_pool_exhausted_error_names_only_the_pool_kind(monkeypatch):
         assert "person" in str(exc)
     else:
         pytest.fail("expected ProvisionalPoolExhaustedError")
+
+
+def test_term_pool_exhaustion_is_bounded_and_fails_closed_same_as_person(monkeypatch):
+    # Issue #89: the term pool (an untyped verdict's mint target) is a new
+    # named pool wired through the same generic ``_next_provisional`` walk --
+    # ADR-0052's bounded-fallback/fail-closed guarantee must hold for it too,
+    # not just for the pre-existing person/organization pools.
+    monkeypatch.setattr(review, "_MAX_FALLBACK_ATTEMPTS", _BOUND)
+    known_values = _exact_match_known_values(_POOL_SIZE, _BOUND)
+
+    start = time.monotonic()
+    try:
+        _next_provisional("term", _POOL_SIZE, known_values, "")
+    except ProvisionalPoolExhaustedError as exc:
+        assert "BFX" not in str(exc)
+        assert "term" in str(exc)
+    else:
+        pytest.fail("expected ProvisionalPoolExhaustedError")
+    elapsed = time.monotonic() - start
+    assert elapsed < 3

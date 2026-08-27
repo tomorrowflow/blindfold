@@ -134,11 +134,65 @@ _PROVISIONAL_ORG_POOL: tuple[str, ...] = (
     "Kraehenmoor Feinmechanik",
 )
 
-_DEFAULT_PROVISIONAL_POOL_KEY = "person"
+# Plausible term/codename-shaped stand-ins for a candidate with no typed verdict
+# (issue #89): the inner-LLM-only adjudication path (ollama.py, l3_openai_compat.py)
+# never sets ``entity_type`` -- GLiNER (ADR-0033) is the only producer of a typed
+# verdict, and it only ever types "person"/"organization" (l3_gliner.py's
+# ``_GLINER_LABELS``). An untyped candidate must not draw a person name (it may
+# not be a person at all -- CONTEXT.md's Term is the non-person counterpart), and
+# this is also the pool app.py's ``_entity_kind_for`` already renders such an item
+# as on the review inbox (issue #346, ``kind="term"``) -- this is what makes mint
+# selection agree with that rendering instead of silently disagreeing with it.
+# Kept disjoint (distinctive-word level) from _PROVISIONAL_POOL/_PROVISIONAL_ORG_POOL
+# above and from every pool in store/_mint.py, the same discipline every other pool
+# here follows (see tests/test_surrogate_pool_enlargement.py's precedent). Falls back
+# past the pool to the same opaque ``BFX{N}`` reserved-namespace scheme (ADR-0052).
+_PROVISIONAL_TERM_POOL: tuple[str, ...] = (
+    "Aktion Feuerturm",
+    "Mission Silberkamm",
+    "Konzept Nachtwind",
+    "Strategie Klippenpfad",
+    "Studie Moorlicht",
+    "Analyse Sandkorn",
+    "Kampagne Weizenfeld",
+    "Entwurf Kiesgrund",
+    "Skizze Schilfrohr",
+    "Vision Tauwind",
+    "Vorlage Frostgrenze",
+    "Muster Gletscherhang",
+    "Modell Kalksteinbruch",
+    "Vorstoss Torfmoor",
+    "Ansatz Duenensand",
+    "Vorschlag Salzwiese",
+    "Testphase Bernsteinkueste",
+    "Uebung Nebelgrund",
+    "Pruefung Eichenlaub",
+    "Erprobung Buchenblatt",
+    "Massnahme Fichtenzweig",
+    "Betrieb Ahornblatt",
+    "Einsatz Reifenacht",
+    "Regelwerk Hagelkorn",
+    "Aktion Blitzschlag",
+    "Mission Regenschauer",
+    "Konzept Wolkenband",
+    "Strategie Sturmboe",
+    "Studie Flutwelle",
+    "Analyse Ebbestrand",
+    "Kampagne Gezeitentuempel",
+    "Entwurf Kuestenriff",
+)
+
 _PROVISIONAL_POOLS: dict[str, tuple[str, ...]] = {
-    _DEFAULT_PROVISIONAL_POOL_KEY: _PROVISIONAL_POOL,
+    "person": _PROVISIONAL_POOL,
     "organization": _PROVISIONAL_ORG_POOL,
+    "term": _PROVISIONAL_TERM_POOL,
 }
+
+# Issue #89: an untyped candidate (``entity_type`` is ``None`` -- not a dict key,
+# so it never matches ``_PROVISIONAL_POOLS`` directly) falls back to the term
+# pool, never the person pool -- an untyped verdict is not a claim the referent
+# is a human being any more than app.py's ``_entity_kind_for`` treats it as one.
+_DEFAULT_PROVISIONAL_POOL_KEY = "term"
 
 # ADR-0052 (issue #330): past pool exhaustion, the fallback surrogate is a single
 # opaque ASCII token -- no natural-language word, no free-standing integer, no

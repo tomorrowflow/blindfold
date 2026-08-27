@@ -104,7 +104,10 @@ def test_mining_does_not_assign_a_named_pool_entry_occurring_verbatim_in_the_tra
     pool_entry = _PROVISIONAL_POOL[0]
     mapping = SurrogateMapping()
     inbox = ReviewInbox()
-    detector = L3Detector(_ConfirmSetOrg({"Priyanka"}, entity_type=None))
+    # entity_type="person" (issue #89: an untyped verdict now mints from the
+    # term pool, not this person pool -- pin the type explicitly so the
+    # colliding pool_entry below actually is the pool this mint draws from).
+    detector = L3Detector(_ConfirmSetOrg({"Priyanka"}, entity_type="person"))
 
     filler = "x" * 60
     transcript = (
