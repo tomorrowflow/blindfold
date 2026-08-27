@@ -356,8 +356,9 @@ jobs:
       # Always runs, even if an earlier signing/notarization step failed -- the ephemeral
       # keychain and decoded key files must never survive the job. Deleting the keychain by
       # path (not by name) works even if it was never added to the login keychain's search
-      # list list; `|| true` covers the step never having run at all (e.g. secrets absent),
-      # since a delete on a keychain that doesn't exist would otherwise fail this step.
+      # list; `|| true` covers the import step having failed before it created the keychain
+      # (e.g. the p12 decode failed), since a delete on a keychain that doesn't exist would
+      # otherwise fail this step.
       - name: Clean up macOS signing keychain and key material
         if: always() && runner.os == 'macOS' && env.HAS_MACOS_SIGNING_SECRETS == 'true'
         shell: bash
