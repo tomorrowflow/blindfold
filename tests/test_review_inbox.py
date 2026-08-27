@@ -46,14 +46,38 @@ def test_upsert_mints_an_org_shaped_surrogate_for_an_organization_entity_type():
     assert item.provisional_surrogate not in _PROVISIONAL_POOL
 
 
-def test_upsert_keeps_the_default_person_pool_when_entity_type_is_unknown():
-    from blindfold.review import _PROVISIONAL_POOL
+def test_upsert_mints_a_person_shaped_surrogate_for_a_person_entity_type():
+    # Issue #89 AC: a typed verdict draws from its matching pool -- asserted
+    # directly, since (per the maintainer's re-scope note) this held for the
+    # GLiNER "person" path only by observation before this test existed.
+    from blindfold.review import _PROVISIONAL_POOL, _PROVISIONAL_TERM_POOL
+
+    inbox = ReviewInbox()
+
+    item = inbox.upsert(
+        "Klaus Bergmann",
+        context="Please brief Klaus Bergmann tomorrow.",
+        entity_type="person",
+    )
+
+    assert item.provisional_surrogate in _PROVISIONAL_POOL
+    assert item.provisional_surrogate not in _PROVISIONAL_TERM_POOL
+
+
+def test_upsert_mints_a_term_pool_surrogate_when_entity_type_is_unknown():
+    # Issue #89: an untyped verdict (entity_type=None -- every inner-LLM-only
+    # adjudication; ollama.py/l3_openai_compat.py never set entity_type) must
+    # never draw a person name -- app.py's _entity_kind_for already renders
+    # this exact item as kind=term on the review inbox (issue #346); the mint
+    # path disagreed until now, handing out a person-shaped surrogate instead.
+    from blindfold.review import _PROVISIONAL_POOL, _PROVISIONAL_TERM_POOL
 
     inbox = ReviewInbox()
 
     item = inbox.upsert("Klaus", context="Please brief Klaus tomorrow.")
 
-    assert item.provisional_surrogate in _PROVISIONAL_POOL
+    assert item.provisional_surrogate in _PROVISIONAL_TERM_POOL
+    assert item.provisional_surrogate not in _PROVISIONAL_POOL
 
 
 def test_upsert_stores_the_entity_type_on_the_item():

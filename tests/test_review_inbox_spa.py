@@ -182,6 +182,9 @@ async def test_list_reports_the_dual_encoded_kind_for_each_candidate():
         context="Nordwind Systems signed the contract.",
         entity_type="organization",
     )
+    untyped_item = inbox.upsert(
+        "Mythos", context="Mythos ships next quarter."
+    )
 
     app.dependency_overrides[get_review_inbox] = lambda: inbox
     app.dependency_overrides[get_mapping] = lambda: mapping
@@ -203,4 +206,15 @@ async def test_list_reports_the_dual_encoded_kind_for_each_candidate():
         app.dependency_overrides.clear()
 
     by_real = {item["real"]: item["kind"] for item in listed}
-    assert by_real == {"Klaus Bergmann": "person", "Nordwind Systems": "term"}
+    assert by_real == {
+        "Klaus Bergmann": "person",
+        "Nordwind Systems": "term",
+        "Mythos": "term",
+    }
+    # Issue #89: the untyped item's rendered kind (term, above) must agree with
+    # the pool its mint actually drew from -- a person-shaped surrogate for a
+    # row rendered "term" is exactly the mismatch this issue closes.
+    from blindfold.review import _PROVISIONAL_POOL, _PROVISIONAL_TERM_POOL
+
+    assert untyped_item.provisional_surrogate in _PROVISIONAL_TERM_POOL
+    assert untyped_item.provisional_surrogate not in _PROVISIONAL_POOL

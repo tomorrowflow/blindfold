@@ -142,12 +142,14 @@ async def test_pending_novel_surrogate_is_classified_with_its_review_item_id():
     trace.record(
         workspace="ws-a", endpoint="messages", streamed=False,
         outcome="passed", detected=1, duration_ms=5.0,
-        hops=[_hop(["Alex Brenner"])],
+        hops=[_hop(["Aktion Feuerturm"])],
     )
     mapping = SurrogateMapping()
     inbox = ReviewInbox()
+    # No entity_type -- the untyped inner-LLM path (issue #89) -- so this mints
+    # from the term pool, first slot, not the person pool.
     item = inbox.upsert("Priya", context="Ping Priya about the deploy.")
-    assert item.provisional_surrogate == "Alex Brenner"
+    assert item.provisional_surrogate == "Aktion Feuerturm"
 
     app.dependency_overrides[get_rbac] = lambda: rbac
     app.dependency_overrides[get_processing_trace] = lambda: trace
@@ -166,7 +168,7 @@ async def test_pending_novel_surrogate_is_classified_with_its_review_item_id():
     assert resp.status_code == 200
     surrogates = resp.json()["records"][0]["hops"][0]["surrogates"]
     assert surrogates == [
-        {"token": "Alex Brenner", "lifecycle": "pending", "review_item_id": item.id}
+        {"token": "Aktion Feuerturm", "lifecycle": "pending", "review_item_id": item.id}
     ]
 
 

@@ -21,7 +21,12 @@ import pathlib
 import re
 
 from blindfold.l3 import _SENTENCE_STOPWORDS
-from blindfold.review import _LEGAL_FORM_SUFFIXES, _PROVISIONAL_ORG_POOL, _PROVISIONAL_POOL
+from blindfold.review import (
+    _LEGAL_FORM_SUFFIXES,
+    _PROVISIONAL_ORG_POOL,
+    _PROVISIONAL_POOL,
+    _PROVISIONAL_TERM_POOL,
+)
 from blindfold.store._mint import (
     _ORG_POOL,
     _PERSON_POOL,
@@ -32,10 +37,13 @@ from blindfold.store._mint import (
 _REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 _MIN_POOL_SIZE = 32
 
-# All six pools this issue enlarges, keyed by name for readable failure output.
+# The six pools issue #338 enlarged, plus review._PROVISIONAL_TERM_POOL (issue
+# #89's untyped-verdict pool) -- kept in this same disjointness net since it is
+# a plausible-name pool of the same shape/hazard class as the rest.
 _ALL_POOLS: dict[str, tuple[str, ...]] = {
     "review._PROVISIONAL_POOL": _PROVISIONAL_POOL,
     "review._PROVISIONAL_ORG_POOL": _PROVISIONAL_ORG_POOL,
+    "review._PROVISIONAL_TERM_POOL": _PROVISIONAL_TERM_POOL,
     "store._mint._PERSON_POOL": _PERSON_POOL,
     "store._mint._TERM_POOL": _TERM_POOL,
     "store._mint._ORG_POOL": _ORG_POOL,
