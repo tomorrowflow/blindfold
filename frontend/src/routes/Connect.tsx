@@ -19,6 +19,32 @@ import { ExternalLink } from "../components/icons";
 const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 25463;
 const CODEX_ISSUE_URL = "https://github.com/tomorrowflow/blindfold/issues/263";
+const BETA_TRUST_BOUNDARY_URL =
+  "https://github.com/tomorrowflow/blindfold/blob/main/docs/BETA.md#trust-boundary";
+
+function TrustBoundaryBanner() {
+  return (
+    <p
+      className="bf-connect-trust-boundary"
+      role="status"
+      data-testid="connect-trust-boundary"
+    >
+      <strong>Localhost trust boundary:</strong> Blindfold runs unauthenticated
+      on localhost, by design (single-owner machine). Anything on this machine
+      that can reach the proxy port can send traffic using your configured
+      provider credential and read restored (real-value) responses -- the
+      management app is equally localhost-trusted.{" "}
+      <a
+        href={BETA_TRUST_BOUNDARY_URL}
+        target="_blank"
+        rel="noreferrer"
+        data-testid="connect-trust-boundary-link"
+      >
+        Read more in BETA.md <ExternalLink size={12} aria-hidden="true" />
+      </a>
+    </p>
+  );
+}
 
 function ProxyDependencyWarning() {
   return (
@@ -81,6 +107,8 @@ export function Connect() {
         endpoint can't be redirected (claude.ai web, ChatGPT desktop/mobile) -- those are
         out of scope by design.
       </p>
+
+      <TrustBoundaryBanner />
 
       <section className="bf-connect-card bf-card" data-testid="connect-card-claude-code">
         <h2 className="bf-card-title">Claude Code</h2>

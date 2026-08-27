@@ -23,6 +23,28 @@ test.describe("Connect page", () => {
     await expect(alicePage.getByTestId("connect-card-codex")).toBeVisible();
   });
 
+  test("states the localhost trust boundary, always visible above the connection snippets, linking to BETA.md", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto("/ui/connect");
+    const banner = alicePage.getByTestId("connect-trust-boundary");
+    await expect(banner).toBeVisible();
+    await expect(banner).toContainText("unauthenticated on localhost");
+    await expect(banner).toContainText("configured provider credential");
+    await expect(banner).toContainText("restored");
+
+    const link = banner.getByTestId("connect-trust-boundary-link");
+    await expect(link).toHaveAttribute("href", /BETA\.md/);
+    await expect(link).toHaveAttribute("target", "_blank");
+    await expect(link).toHaveAttribute("rel", "noreferrer");
+
+    // "Adjacent to the snippets" -- precedes the first client card in DOM order,
+    // not hidden behind a tab/toggle inside it.
+    const card = alicePage.getByTestId("connect-card-claude-code");
+    const boxes = await Promise.all([banner.boundingBox(), card.boundingBox()]);
+    expect(boxes[0]!.y).toBeLessThan(boxes[1]!.y);
+  });
+
   test("Claude Code's terminal snippet interpolates the real fixture host/port from /v1/status, not the compiled-in default", async ({
     alicePage,
     baseURL,
