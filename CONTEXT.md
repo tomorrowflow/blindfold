@@ -134,7 +134,10 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   spans, not payload size. A span already occupied by an injected **surrogate** is
   never a candidate span — L3 adjudicates unknown real-world referents, not our own
   fakes. The exclusion is position-scoped: the same string at a different,
-  unoccupied position can still be a candidate. The two producers are not
+  unoccupied position can still be a candidate — with one exception: a value inside
+  the **reserved namespace** Blindfold mints contactable PII surrogates from is
+  never a phone-shaped candidate wherever it occurs, because nothing in that
+  namespace is ever a real referent (ADR-0054). The two producers are not
   symmetric, and one setting follows from that: a mis-flagged capitalized token
   self-explains to whoever reviews it, a mis-flagged digit run does not — so the
   phone-shaped producer alone can be switched off per **workspace**, an audited
