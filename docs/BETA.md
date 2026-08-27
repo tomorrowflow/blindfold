@@ -99,8 +99,8 @@ way:
 | **Signing is CI-only so far.** The release pipeline now Developer ID-signs and notarizes the menu-bar app when it builds on this repo with the maintainer's signing secrets present (#370, the CI half of #198); a locally-built app (`swift build` from source per the README) is still ad-hoc signed, same as before. The Windows/Authenticode half of #198 is still open. | #198, #370 |
 | **Restart after Setup.** Detection activation takes effect on the next process start; Setup's final restart instruction is by design. | ADR-0034 |
 | **Added latency.** Blindfolding adds per-request latency dominated by novel-entity handling; a formal per-hop cost model is planned. Sessions feel slower than direct connections, most noticeably on the first requests of a session. | #58 |
-| **Rare blocked requests on phone-shaped strings.** Digit runs that look like phone numbers can, in narrow cases, block a request in the default configuration; the default posture is under active decision. Blocked requests self-describe and retry cleanly. | #278 |
-| **Brand-new Claude Code capabilities may lag.** Request headers are currently forwarded from a fixed allowlist, so a header introduced by a future Claude Code release could be stripped until the open-prefix decision lands. | #266 |
+| **Rare blocked requests on phone-shaped strings.** Digit runs that look like phone numbers can, in narrow cases, block a request in the default configuration (the producer no longer re-detects Blindfold's own surrogate range, which removed the measured false positives — ADR-0055). Blocked requests self-describe and retry cleanly. | ADR-0055 |
+| **Unknown non-Anthropic headers are not forwarded.** `anthropic-*` headers pass through as an open prefix (so new Claude Code capabilities keep working — ADR-0054), and unlisted forwarded names are visible in the processing trace; headers outside that prefix stay on a deliberate allowlist for egress hygiene. | ADR-0054 |
 
 ## Feedback
 
