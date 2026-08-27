@@ -533,6 +533,29 @@ _FORWARDED_HEADERS = (
     "openai-project",
 )
 
+# ADR-0054 §2 (issue #367): anthropic-* is an OPEN prefix, not a closed list --
+# every request header whose lowercased name starts with this is forwarded
+# unchanged, regardless of whether Blindfold has ever seen it, so a future
+# Claude Code capability header (or anthropic-workspace-id today) doesn't break
+# silently on a release Blindfold didn't ship. Matched on the lowercased name;
+# header names are case-insensitive on the wire. `openai-*` deliberately stays
+# a closed exact-name pair (ADR-0054 §2) -- revisit belongs to #263.
+_ANTHROPIC_HEADER_PREFIX = "anthropic-"
+
+# ADR-0054 §3 (issue #367): the subset of the open anthropic-* prefix already
+# well-known enough to not need a trace callout. Anything anthropic-* outside
+# this set is still forwarded (decision 2 above) but its name is recorded in
+# the exchange's processing-trace record and logged once per process -- see
+# `_unlisted_forwarded_header_names` -- so a new Claude Code capability header
+# becomes visible instead of silently passing.
+_KNOWN_ANTHROPIC_HEADERS = frozenset({"anthropic-version", "anthropic-beta"})
+
+# ADR-0054 §4 (issue #367): x-claude-code-session-id / -agent-id /
+# -parent-agent-id are stable correlation identifiers the gateway protocol
+# reference says a gateway "need not forward". Blindfold drops them --
+# deliberately, for minimisation, not as a side effect of a closed list they
+# were never on -- and does not consume them either.
+
 
 def get_mapping() -> SurrogateMapping:
     return _mapping
@@ -1052,7 +1075,35 @@ def _forwarded_headers(request: Request) -> dict[str, str]:
         key: value
         for key, value in request.headers.items()
         if key.lower() in _FORWARDED_HEADERS
+        or key.lower().startswith(_ANTHROPIC_HEADER_PREFIX)
     }
+
+
+# ADR-0054 §3 (issue #367): process-scoped set of unlisted anthropic-* names
+# already logged at INFO once -- so a long-running process doesn't re-log the
+# same new capability header on every request that carries it.
+_logged_unlisted_headers: set[str] = set()
+
+
+def _unlisted_forwarded_header_names(forwarded: dict[str, str]) -> tuple[str, ...]:
+    """Names only (ADR-0054 §3) of ``forwarded`` headers outside the known set.
+
+    Logs each new name once per process at INFO as a side effect -- never the
+    header's value, only ever its name.
+    """
+    names = sorted(
+        {
+            key.lower()
+            for key in forwarded
+            if key.lower().startswith(_ANTHROPIC_HEADER_PREFIX)
+            and key.lower() not in _KNOWN_ANTHROPIC_HEADERS
+        }
+    )
+    for name in names:
+        if name not in _logged_unlisted_headers:
+            _logged_unlisted_headers.add(name)
+            logger.info("blindfold_unlisted_anthropic_header_forwarded: name=%s", name)
+    return tuple(names)
 
 
 def _workspace_slug(request: Request) -> str:
@@ -1168,6 +1219,7 @@ def _record_trace(
     session: ExchangeSession | None = None,
     upstream_duration_ms: float | None = None,
     declared_collisions: Sequence[str] = (),
+    unlisted_forwarded_headers: Sequence[str] = (),
 ) -> None:
     """Append one scrubbed processing-trace record for this exchange (ADR-0035).
 
@@ -1186,6 +1238,11 @@ def _record_trace(
     ``declared_collisions`` (ADR-0051 amendment, issue #303/#307) is whatever
     :func:`_leak_gate_or_block` already logged/audited for this exchange --
     already-scrubbed reason strings, threaded straight through, never re-derived.
+
+    ``unlisted_forwarded_headers`` (ADR-0054 §3, issue #367) is whatever
+    :func:`_unlisted_forwarded_header_names` already computed from this
+    exchange's own forwarded-header dict -- names only, threaded straight
+    through, never re-derived.
     """
     hops = [hop.to_dict() for hop in session.hops] if session is not None else []
     l3_hops = [hop for hop in session.hops if hop.l3_provider is not None] if session else []
@@ -1204,6 +1261,7 @@ def _record_trace(
         l3_duration_ms=l3_duration_ms,
         upstream_duration_ms=upstream_duration_ms,
         declared_collisions=declared_collisions,
+        unlisted_forwarded_headers=unlisted_forwarded_headers,
     )
 
 
@@ -1764,6 +1822,7 @@ async def _exchange(
     policy = policies.for_workspace(workspace)
     streamed = streaming_supported and bool(payload.get("stream"))
     forwarded = _forwarded_headers(request)
+    unlisted_forwarded_headers = _unlisted_forwarded_header_names(forwarded)
 
     if unprotected_mode.is_active():
         # ADR-0038: the detection pipeline is skipped entirely and the pre-egress
@@ -1798,6 +1857,7 @@ async def _exchange(
             _record_trace(
                 trace, workspace, endpoint, streamed, OUTCOME_BLOCKED, 0, start,
                 reason=_block_reason(result),
+                unlisted_forwarded_headers=unlisted_forwarded_headers,
             )
             return result
         blinded, session = result
@@ -1809,6 +1869,7 @@ async def _exchange(
             _record_trace(
                 trace, workspace, endpoint, streamed, OUTCOME_BLOCKED,
                 len(session.injected), start, reason=_block_reason(block), session=session,
+                unlisted_forwarded_headers=unlisted_forwarded_headers,
             )
             return block
 
@@ -1822,6 +1883,7 @@ async def _exchange(
                 len(session.injected), start, reason=str(exc), session=session,
                 upstream_duration_ms=(time.monotonic() - upstream_start) * 1000,
                 declared_collisions=declared_collisions,
+                unlisted_forwarded_headers=unlisted_forwarded_headers,
             )
             return _upstream_error_response(exc, workspace, audit_log, upstream_health)
         upstream_health.mark_success()
@@ -1830,6 +1892,7 @@ async def _exchange(
             _stream_restored(
                 upstream_response, session, workspace, audit_log, trace, start,
                 open_stream_duration_ms, declared_collisions,
+                unlisted_forwarded_headers=unlisted_forwarded_headers,
             ),
             media_type="text/event-stream",
         )
@@ -1843,6 +1906,7 @@ async def _exchange(
             len(session.injected), start, reason=str(exc), session=session,
             upstream_duration_ms=(time.monotonic() - upstream_start) * 1000,
             declared_collisions=declared_collisions,
+            unlisted_forwarded_headers=unlisted_forwarded_headers,
         )
         return _upstream_error_response(exc, workspace, audit_log, upstream_health)
     upstream_health.mark_success()
@@ -1859,6 +1923,7 @@ async def _exchange(
                 len(session.injected), start, reason=_block_reason(block), session=session,
                 upstream_duration_ms=upstream_duration_ms,
                 declared_collisions=declared_collisions,
+                unlisted_forwarded_headers=unlisted_forwarded_headers,
             )
             return block
     else:
@@ -1869,6 +1934,7 @@ async def _exchange(
         len(session.injected), start, session=session,
         upstream_duration_ms=upstream_duration_ms,
         declared_collisions=declared_collisions,
+        unlisted_forwarded_headers=unlisted_forwarded_headers,
     )
     return result_body
 
@@ -2228,6 +2294,7 @@ async def _stream_restored(
     start: float,
     open_stream_duration_ms: float,
     declared_collisions: Sequence[str] = (),
+    unlisted_forwarded_headers: Sequence[str] = (),
 ) -> AsyncIterator[bytes]:
     """Stream restored SSE bytes to the client.
 
@@ -2380,6 +2447,7 @@ async def _stream_restored(
             len(session.injected), start, reason=reason, session=session,
             upstream_duration_ms=upstream_duration_ms,
             declared_collisions=declared_collisions,
+            unlisted_forwarded_headers=unlisted_forwarded_headers,
         )
         raise
 
@@ -2389,6 +2457,7 @@ async def _stream_restored(
             len(session.injected), start, reason=disconnect_reason, session=session,
             upstream_duration_ms=upstream_duration_ms,
             declared_collisions=declared_collisions,
+            unlisted_forwarded_headers=unlisted_forwarded_headers,
         )
     else:
         _record_trace(
@@ -2396,6 +2465,7 @@ async def _stream_restored(
             len(session.injected), start, session=session,
             upstream_duration_ms=upstream_duration_ms,
             declared_collisions=declared_collisions,
+            unlisted_forwarded_headers=unlisted_forwarded_headers,
         )
 
 
