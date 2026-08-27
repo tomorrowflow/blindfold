@@ -52,6 +52,15 @@ class ProcessingTraceRecord:
     never a block (the exchange's own ``outcome`` is unaffected), just an
     observable record that the collision occurred. Empty for the overwhelming
     majority of exchanges, which have none.
+
+    ``unlisted_forwarded_headers`` (ADR-0054 §3, issue #367) carries the
+    lowercased **names** -- never values -- of request headers this exchange
+    forwarded upstream under the open ``anthropic-*`` prefix rule but that
+    aren't on the small known exact-name set (``anthropic-version`` /
+    ``anthropic-beta``). Empty for the overwhelming majority of exchanges,
+    which forward only known names. A header name is a protocol identifier
+    from Anthropic's own namespace, not user content, so recording it does not
+    touch this record's scrub invariant.
     """
 
     ts: str
@@ -67,6 +76,7 @@ class ProcessingTraceRecord:
     l3_duration_ms: float | None = None
     upstream_duration_ms: float | None = None
     declared_collisions: tuple[str, ...] = ()
+    unlisted_forwarded_headers: tuple[str, ...] = ()
 
     def to_dict(self) -> dict:
         return {
@@ -83,6 +93,7 @@ class ProcessingTraceRecord:
             "l3_duration_ms": self.l3_duration_ms,
             "upstream_duration_ms": self.upstream_duration_ms,
             "declared_collisions": list(self.declared_collisions),
+            "unlisted_forwarded_headers": list(self.unlisted_forwarded_headers),
         }
 
 
@@ -115,6 +126,7 @@ class ProcessingTraceBuffer:
         l3_duration_ms: float | None = None,
         upstream_duration_ms: float | None = None,
         declared_collisions: Sequence[str] = (),
+        unlisted_forwarded_headers: Sequence[str] = (),
     ) -> None:
         self._entries.append(
             ProcessingTraceRecord(
@@ -131,6 +143,7 @@ class ProcessingTraceBuffer:
                 l3_duration_ms=l3_duration_ms,
                 upstream_duration_ms=upstream_duration_ms,
                 declared_collisions=tuple(declared_collisions),
+                unlisted_forwarded_headers=tuple(unlisted_forwarded_headers),
             )
         )
 
