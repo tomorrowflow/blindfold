@@ -530,11 +530,14 @@ def _text_leaves_in_content(content: Any) -> list[str]:
 def _text_leaves_in_block(block: Any) -> list[str]:
     """The evidence-collector counterpart to :func:`_blindfold_block` (issue #354):
     identical deny-by-default dispatch, reusing the very same
-    :data:`_BLOCK_NON_HOP_KEYS`/:data:`_TOOL_RESULT_BLOCK_TYPES`/
+    :func:`_non_hop_keys_for_block_type`/:data:`_TOOL_RESULT_BLOCK_TYPES`/
     :data:`_TOOL_CALL_BLOCK_TYPES` sets, so evidence coverage cannot fall behind
     blinder coverage by parallel maintenance -- a block type the blinder newly
     reaches (``thinking``, ``document``, ``search_result``, ...) is a leaf source
-    here too, with no separate enumeration to keep in sync.
+    here too, with no separate enumeration to keep in sync. Issue #379 extended
+    this to the per-block-type layer (:data:`_BLOCK_TYPE_NON_HOP_KEYS`, e.g.
+    ``redacted_thinking.data``): the blinder excluded it in #374, this collector
+    had not.
     """
     if not isinstance(block, dict):
         return []
@@ -545,9 +548,10 @@ def _text_leaves_in_block(block: Any) -> list[str]:
         return _text_leaves_in_content(block.get("content"))
     if block_type in _TOOL_CALL_BLOCK_TYPES:
         return _text_leaves_in_json_value(block.get("input"))
+    non_hop_keys = _non_hop_keys_for_block_type(block_type)
     leaves: list[str] = []
     for key, value in block.items():
-        if key in _BLOCK_NON_HOP_KEYS:
+        if key in non_hop_keys:
             continue
         leaves.extend(_text_leaves_in_block_value(value))
     return leaves
@@ -974,6 +978,20 @@ _BLOCK_TYPE_NON_HOP_KEYS: dict[str, frozenset[str]] = {
 
 def _non_hop_keys_for_block_type(block_type: Any) -> frozenset[str]:
     return _BLOCK_NON_HOP_KEYS | _BLOCK_TYPE_NON_HOP_KEYS.get(block_type, frozenset())
+
+
+def non_hop_block_type_fields(block_type: Any) -> frozenset[str]:
+    """Public accessor for :data:`_BLOCK_TYPE_NON_HOP_KEYS` (issue #379).
+
+    Lets a caller outside this module -- the streaming terminal resolution_gate
+    check in app.py, which sees a parsed ``content_block_start`` payload before it
+    is ever flattened into the checkable text blob :func:`resolution_gate` scans --
+    ask "does this block type carry a declared non-hop field" against the one
+    closed set, rather than importing the private dict or keeping a second copy.
+    """
+    if not isinstance(block_type, str):
+        return frozenset()
+    return _BLOCK_TYPE_NON_HOP_KEYS.get(block_type, frozenset())
 
 
 # tool_use / server_tool_use / mcp_tool_use all carry the tool call's structured
@@ -2866,8 +2884,17 @@ def resolution_gate(restored_response: dict[str, Any], session: ExchangeSession)
 
     The failure is logged at WARNING level naming the offending surrogate before the
     exception is raised, so the operator is warned on a dedicated log surface.
+
+    Issue #379 (#374 residual, ADR-0057 D6.2): a :data:`_BLOCK_TYPE_NON_HOP_KEYS`
+    field (today, only ``redacted_thinking.data``) is excluded from the walk via
+    :func:`_strip_block_type_non_hop_fields`, the same stripper :func:`leak_gate`
+    uses pre-egress -- it is provider ciphertext restore never touches, so a
+    this-exchange surrogate coincidentally present inside it is not a restore
+    miss and must not fail-close the response.
     """
-    restored_text = _collect_text(restored_response)
+    forbidden: list[str] = []
+    checked_view = _strip_block_type_non_hop_fields(restored_response, forbidden)
+    restored_text = _collect_text(checked_view)
     for surrogate in session.injected:
         if _surrogate_pattern(surrogate).search(restored_text):
             message = f"injected surrogate left unresolved in response: {surrogate!r}"

@@ -239,3 +239,31 @@ def test_suppression_trace_case_inconsistency_counts_reflect_a_thinking_block_oc
     assert condition.suppressed is False
     pass_token = next(t for t in condition.detail.tokens if t.token == "Pass")
     assert pass_token.lowercase_count == 1
+
+
+def test_redacted_thinking_data_contributes_no_suppression_evidence():
+    # Issue #379 (#374 residual): #374 declared redacted_thinking.data a non-hop
+    # for the blinder/restore/leak_gate, but left the suppression-evidence
+    # collectors on the flat _BLOCK_NON_HOP_KEYS -- a base64 ciphertext chunk that
+    # happens to contain a mixed-case run reads as ordinary prose evidence and
+    # feeds the case-inconsistency heuristic noise. "Kestrel" (a sibling, genuinely
+    # evidentiary field) confirms the fix isn't vacuously excluding everything.
+    payload = {
+        "model": "m",
+        "messages": [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "redacted_thinking",
+                        "data": "b3BhcXVlLQ==Zolfgang=Y2lwaGVydGV4dA==",
+                    },
+                    {"type": "text", "text": "Kestrel manages the account."},
+                ],
+            }
+        ],
+    }
+
+    evidence = extract_case_inconsistency_evidence_messages(payload)
+
+    assert evidence.capitalized_counts == {"kestrel": 1}

@@ -141,6 +141,7 @@ from .engine import (
     extract_system_confined_tokens_chat_completions,
     extract_system_confined_tokens_messages,
     leak_gate,
+    non_hop_block_type_fields,
     resolution_gate,
     restore_chat_completion,
     restore_response,
@@ -2388,7 +2389,11 @@ async def _stream_restored(
     actually emitted to the client is checked via :func:`resolution_gate` — the same
     post-restore net the buffered path has. A stream can't un-send bytes already on
     the wire, so a violation here is audited (``blocked-unresolved-surrogate``) and
-    raised rather than the exchange silently completing as if nothing leaked.
+    raised rather than the exchange silently completing as if nothing leaked. Issue
+    #379 (#374 residual): the checked text excludes any ``content_block_start``
+    event introducing a block type with a declared non-hop field (today, only
+    ``redacted_thinking.data``) via :func:`_resolution_gate_checked_stream_text`,
+    symmetric with the buffered path's own exclusion in :func:`resolution_gate`.
     """
     restorer = StreamingRestorer(session)
     # Per-content-block index → accumulated partial_json fragments. Presence in this
@@ -2486,7 +2491,7 @@ async def _stream_restored(
 
     try:
         resolution_gate(
-            {"stream": b"".join(emitted).decode("utf-8", errors="replace")}, session
+            {"stream": _resolution_gate_checked_stream_text(emitted)}, session
         )
     except UnresolvedSurrogateError as exc:
         reason = (
@@ -2525,6 +2530,47 @@ async def _stream_restored(
             declared_collisions=declared_collisions,
             unlisted_forwarded_headers=unlisted_forwarded_headers,
         )
+
+
+def _resolution_gate_checked_stream_text(emitted: list[bytes]) -> str:
+    """Build the text the streaming terminal :func:`resolution_gate` call scans.
+
+    Issue #379 (#374 residual, ADR-0057 D6.2): reparses the already-emitted SSE
+    bytes back into individual events -- the same ``"\\n\\n"``-delimited unit
+    :func:`_stream_restored`'s own consume loop splits on -- and drops any
+    ``content_block_start`` event whose ``content_block`` type carries a declared
+    non-hop field (:func:`~blindfold.engine.non_hop_block_type_fields`, today only
+    ``redacted_thinking.data``) from the checked text. That event's bytes are
+    still forwarded to the client byte-identical (this function never touches
+    ``emitted`` itself, only what :func:`resolution_gate` is asked to scan) --
+    symmetric with the buffered path's own exclusion, and with the pre-egress
+    leak gate's (#374) and the blinder/restore's (#323/#374) identical carve-out.
+    A malformed/non-JSON event is kept in the checked text unchanged (fail closed:
+    when in doubt, still scan it).
+    """
+    full = b"".join(emitted).decode("utf-8", errors="replace")
+    parts: list[str] = []
+    for event in full.split("\n\n"):
+        if not event.strip():
+            continue
+        event_name, data_line = None, None
+        for line in event.split("\n"):
+            if line.startswith("event:"):
+                event_name = line[len("event:") :].strip()
+            elif line.startswith("data:"):
+                data_line = line[len("data:") :].strip()
+        if event_name == "content_block_start" and data_line:
+            try:
+                payload = json.loads(data_line)
+            except json.JSONDecodeError:
+                payload = None
+            if isinstance(payload, dict):
+                block = payload.get("content_block")
+                block_type = block.get("type") if isinstance(block, dict) else None
+                if non_hop_block_type_fields(block_type):
+                    continue
+        parts.append(event)
+    return "\n\n".join(parts)
 
 
 async def _process_sse_event(

@@ -384,3 +384,18 @@ excluded on the `redacted_thinking` block type only (`_BLOCK_TYPE_NON_HOP_KEYS`,
 `_BLOCK_NON_HOP_KEYS`) — not added to the flat set, since `data` is ordinary prose on other block
 shapes (a `document`'s embedded source). The blinder, the leak gate's `_gate_excluded_view`, and
 restore all honor the same exclusion, symmetric per this ADR's own rule.
+
+**Addendum (issue #379, #374 residual): the post-restore resolution gate and the ADR-0023
+suppression-evidence collectors close the same gap.** #374 excluded `redacted_thinking.data` on
+the blinder, the pre-egress leak gate, and restore, but left two collectors on the pre-existing,
+un-scoped walk: `resolution_gate`'s own `_collect_text` call (a this-exchange surrogate appearing
+verbatim inside ciphertext would raise `UnresolvedSurrogateError` and over-block the response —
+fail-safe, never a leak, but the worst client-visible shape on the streaming path, where it kills
+a stream after headers are already committed) and `_text_leaves_in_block`'s suppression-evidence
+dispatch (a ciphertext chunk read as mixed-case prose, adding noise to the layer-4/layer-5
+heuristics). Both now route through `_non_hop_keys_for_block_type` — `resolution_gate` via the
+same `_strip_block_type_non_hop_fields` stripper the leak gate uses (buffered path), and the
+streaming terminal check via a public accessor (`non_hop_block_type_fields`) consulted while the
+SSE stream is still structured JSON, before `_stream_restored` flattens it into the text blob
+`resolution_gate` scans. One dict (`_BLOCK_TYPE_NON_HOP_KEYS`) remains the sole source of truth
+across blinder, restore, both gates, the streaming check, and the suppression-evidence collectors.
