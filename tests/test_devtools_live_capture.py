@@ -159,10 +159,10 @@ async def test_a_non_streaming_exchange_produces_a_capture_with_all_four_payload
     table (footer.injected).
 
     Uses an L1 PII value (an email) so the injected pair is exactly what
-    :meth:`SurrogateMapping.mint_pii` mints -- the ``_CapturingMapping``
-    wrapper's own recorded mint, not a value aligned/guessed from payload
-    text (ADR-0047 §4 explicitly rules out reconstructing the pair table by
-    aligning payloads).
+    :meth:`SurrogateMapping.mint_pii` mints -- read straight off the engine's
+    authoritative ``ExchangeSession.injected`` (issue #382), not a value
+    aligned/guessed from payload text (ADR-0047 §4 explicitly rules out
+    reconstructing the pair table by aligning payloads).
     """
     directory = CaptureDirectory(tmp_path / "captures")
     recorded_outbound: list[dict] = []
