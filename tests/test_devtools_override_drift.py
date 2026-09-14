@@ -18,6 +18,7 @@ def _fake_app_module(**overrides) -> types.ModuleType:
     module.get_upstream_client = lambda: None
     module.get_mapping = lambda: None
     module.get_l3_detector = lambda: None
+    module.blindfold_payload = lambda payload, mapping, *args, **kwargs: (payload, None)
     for name, value in overrides.items():
         setattr(module, name, value)
     return module
@@ -56,6 +57,43 @@ def test_a_target_that_now_requires_an_argument_refuses_naming_it():
 
     assert raised
     assert "get_mapping" in message
+
+
+def test_a_renamed_or_removed_substitution_target_refuses_naming_it():
+    # Issue #382: `blindfold_payload` is the fourth ADR-0047 §4 seam -- a plain
+    # module attribute substitution, not a `dependency_overrides` entry, but the
+    # same "capture that silently omits the pair table is worse than no
+    # capture" reasoning applies to it.
+    module = _fake_app_module()
+    del module.blindfold_payload
+
+    try:
+        check_override_targets(module)
+        raised = False
+    except OverrideDriftError as exc:
+        raised = True
+        message = str(exc)
+
+    assert raised
+    assert "blindfold_payload" in message
+
+
+def test_a_substitution_target_that_no_longer_requires_any_argument_refuses_naming_it():
+    # `blindfold_payload` must take `payload`/`mapping` by design (devtools'
+    # wrapper forwards to it, never supplies them itself) -- a target with no
+    # required parameter at all means something else now occupies the name,
+    # the inverse anomaly from the three zero-arg DI providers above.
+    module = _fake_app_module(blindfold_payload=lambda: (None, None))
+
+    try:
+        check_override_targets(module)
+        raised = False
+    except OverrideDriftError as exc:
+        raised = True
+        message = str(exc)
+
+    assert raised
+    assert "blindfold_payload" in message
 
 
 def test_the_real_blindfold_app_module_passes_today():

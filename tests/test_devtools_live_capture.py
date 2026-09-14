@@ -31,6 +31,7 @@ from blindfold_devtools.capture import (
     read_capture,
 )
 from blindfold_devtools.capture_directory import CaptureDirectory
+from blindfold_devtools.capture_listing import list_captures
 from blindfold_devtools.live_capture import install_capture
 
 
@@ -218,6 +219,89 @@ async def test_a_non_streaming_exchange_produces_a_capture_with_all_four_payload
     surrogate = outbound.payload["messages"][-1]["content"].split()[-1]
     assert footer.injected == {surrogate: real_email}
     assert footer.outcome == "passed"
+
+
+@pytest.mark.anyio
+async def test_a_graph_known_lookup_exchange_produces_a_footer_whose_injected_contains_the_pair(
+    tmp_path,
+):
+    """Issue #382: a substitution sourced from the entity graph (``mapping.seed``,
+    the ordinary case for a seeded install) is a **lookup**, not a mint -- it never
+    calls ``mapping.mint_pii``/``mapping.seed`` during the request, so the old
+    ``_CapturingMapping``-only recording left ``footer.injected`` empty for it. The
+    engine's own ``ExchangeSession.injected`` (``session.record``, engine.py) is the
+    authoritative pair table (ADR-0047 §3) and must be what the footer reflects.
+    """
+    directory = CaptureDirectory(tmp_path / "captures")
+    real_name = "Martin Bach"
+    injected_surrogate = "Bernhard Vogt"
+
+    mapping = SurrogateMapping()
+    mapping.seed(real_name, injected_surrogate)
+    app.dependency_overrides[get_upstream_client] = lambda: _stub_upstream("hi")
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_workspace_policies] = _deterministic_only_policies
+
+    request_body = {
+        "model": "claude-opus",
+        "messages": [{"role": "user", "content": f"tell {real_name} hi"}],
+    }
+
+    try:
+        wrapped = install_capture(app, directory)
+        transport = httpx.ASGITransport(app=wrapped)
+        async with httpx.AsyncClient(transport=transport, base_url="http://proxy.test") as client:
+            response = await client.post("/v1/messages", json=request_body)
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+
+    capture_files = sorted((tmp_path / "captures").glob("*.jsonl"))
+    assert len(capture_files) == 1
+    capture = read_capture(capture_files[0])
+    footer = next(r for r in capture.records if isinstance(r, FooterRecord))
+
+    assert footer.injected == {injected_surrogate: real_name}
+
+
+@pytest.mark.anyio
+async def test_captures_listing_detected_count_is_not_zero_for_a_graph_known_only_exchange(
+    tmp_path,
+):
+    """Issue #382 acceptance criterion 2: ``blindfold captures``' detected
+    count (``capture_listing.py``'s ``detected_count=len(footer.injected)``)
+    must reflect a graph-known substitution, the same as the Processing
+    trace's own ``detected`` for the identical exchange (both now read off
+    the one ``ExchangeSession.injected`` the engine records)."""
+    directory = CaptureDirectory(tmp_path / "captures")
+    real_name = "Martin Bach"
+    injected_surrogate = "Bernhard Vogt"
+
+    mapping = SurrogateMapping()
+    mapping.seed(real_name, injected_surrogate)
+    app.dependency_overrides[get_upstream_client] = lambda: _stub_upstream("hi")
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_workspace_policies] = _deterministic_only_policies
+
+    request_body = {
+        "model": "claude-opus",
+        "messages": [{"role": "user", "content": f"tell {real_name} hi"}],
+    }
+
+    try:
+        wrapped = install_capture(app, directory)
+        transport = httpx.ASGITransport(app=wrapped)
+        async with httpx.AsyncClient(transport=transport, base_url="http://proxy.test") as client:
+            response = await client.post("/v1/messages", json=request_body)
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 200, response.text
+
+    summaries = list_captures(tmp_path / "captures")
+    assert len(summaries) == 1
+    assert summaries[0].detected_count == 1
 
 
 class _MultiChunkStream(httpx.AsyncByteStream):

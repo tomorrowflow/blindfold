@@ -1,13 +1,22 @@
-"""Live-session capture (ADR-0047 §4, issue #254).
+"""Live-session capture (ADR-0047 §4, issue #254; issue #382).
 
 Composes an **Exchange capture** (issue #253) around a real exchange through
-``blindfold.app:app`` on two seams only, per the ADR -- no new hook is added
+``blindfold.app:app`` on three seams only, per the ADR -- no new hook is added
 to the request path:
 
 - ``app.dependency_overrides`` for ``get_upstream_client`` / ``get_mapping`` /
   ``get_l3_detector`` -- the test suite's own established substitution
   mechanism (:func:`check_override_targets` resolves and shape-checks these
   three at install time, failing loudly on drift).
+- A plain module-attribute substitution of ``blindfold.app.blindfold_payload``
+  (a new seam, issue #382 -- ADR-0047 §4 named only the three overrides above,
+  but the same "no new hook" discipline applies) -- ``_exchange`` (app.py)
+  reads this name from its own module namespace at call time, so replacing
+  the attribute composes the same way as the three dependency overrides.
+  This is what tees the engine's own ``ExchangeSession.injected`` --
+  ADR-0047 §3's "complete pair table", covering both a graph-known
+  **lookup** and a novel **mint** -- into the capture; also resolved and
+  checked at install time.
 - A plain ASGI callable wrapping ``blindfold.app:app`` for the client side
   (the real inbound payload, the restored response) -- deliberately *not*
   registered via Starlette's ``app.add_middleware`` (which refuses once the
@@ -18,6 +27,7 @@ to the request path:
 
 from __future__ import annotations
 
+import contextvars
 import json
 import time
 from dataclasses import dataclass, field
@@ -65,8 +75,11 @@ def _now_iso() -> str:
 
 @dataclass
 class _CaptureContext:
-    """Per-request capture state, shared (via ``request.state.capture``) between
-    the ASGI middleware and the three wrapped dependency providers."""
+    """Per-request capture state, shared between the ASGI middleware and the
+    wrapped dependency providers (via ``request.state.capture``) and the
+    wrapped ``blindfold_payload`` substitution (via ``_active_capture``,
+    below -- that seam has no ``Request`` to hang state off, only the
+    module-level function it replaces)."""
 
     writer: CaptureWriter
     capture_id: str
@@ -74,28 +87,43 @@ class _CaptureContext:
     upstream_duration_ms: float | None = None
 
 
-class _CapturingMapping:
-    """Delegates to the real mapping; records every ``seed()``/``mint_pii()``
-    call made during this request -- the "mint" half of ADR-0047 §4's
-    "recording wrapper yielding the authoritative mint/lookup list".
-    """
+# Issue #382: `blindfold_payload` is substituted as a plain module attribute,
+# not a FastAPI dependency -- so, unlike the three `dependency_overrides`
+# providers, its wrapper has no `Request` to read
+# `request.state.capture` from. The ASGI middleware and the wrapped function
+# run in the same asyncio task for a given request, so a `ContextVar` carries
+# the active `_CaptureContext` across that boundary without adding any new
+# hook to the request path.
+_active_capture: contextvars.ContextVar["_CaptureContext | None"] = contextvars.ContextVar(
+    "_active_capture", default=None
+)
 
-    def __init__(self, inner, ctx: _CaptureContext) -> None:
-        self._inner = inner
-        self._ctx = ctx
+# Bound at import time, before `install_capture` can ever wrap it -- so every
+# `install_capture` call re-wraps the true original rather than stacking a new
+# layer onto whatever a previous call already installed (this module attribute,
+# unlike `app.dependency_overrides`, is never reset between installs).
+_ORIGINAL_BLINDFOLD_PAYLOAD = blindfold_app.blindfold_payload
 
-    def seed(self, real, surrogate):
-        result = self._inner.seed(real, surrogate)
-        self._ctx.injected[surrogate] = real
-        return result
 
-    def mint_pii(self, kind, value):
-        surrogate = self._inner.mint_pii(kind, value)
-        self._ctx.injected[surrogate] = value
-        return surrogate
+def _wrap_blindfold_payload(existing):
+    """Tee ``session.injected`` -- the engine's own authoritative pair table
+    (ADR-0047 §3: it records both a graph-known **lookup** and a novel
+    **mint**, via ``session.record``) -- into the active request's capture
+    context. A passthrough otherwise: ``payload``/``mapping`` are declared
+    explicitly (rather than folded into ``*args``) only so this wrapper keeps
+    ``check_override_targets``'s "still requires an argument" shape check
+    meaningful on a re-``install_capture`` call, which sees this wrapper
+    itself as the current ``blindfold_payload``; everything else ``_exchange``
+    (app.py) passes is forwarded unchanged."""
 
-    def __getattr__(self, name):
-        return getattr(self._inner, name)
+    def _wrapped(payload, mapping, *args, **kwargs):
+        out, session = existing(payload, mapping, *args, **kwargs)
+        ctx = _active_capture.get()
+        if ctx is not None:
+            ctx.injected.update(session.injected)
+        return out, session
+
+    return _wrapped
 
 
 class _TeeingProviderResponse:
@@ -187,12 +215,18 @@ def _wrap_upstream_provider(existing):
 
 
 def _wrap_mapping_provider(existing):
+    # Issue #382: the pair table used to be reconstructed here, from every
+    # `seed()`/`mint_pii()` call the mapping saw -- but a lookup (a value the
+    # entity graph already knows, minted on a *prior* request) never calls
+    # either: detection attaches `span.surrogate` from the graph and the
+    # engine records the pair straight onto its own `ExchangeSession.injected`
+    # (engine.py's `session.record`). That session -- teed by
+    # `_wrap_blindfold_payload` below -- is ADR-0047 §3's "complete pair
+    # table"; this provider composes cleanly with drift detection (one of the
+    # ADR's three named override targets) but no longer needs to record
+    # anything itself.
     def _provider(request: Request):
-        inner = existing()
-        ctx = getattr(request.state, "capture", None)
-        if ctx is None:
-            return inner
-        return _CapturingMapping(inner, ctx)
+        return existing()
 
     return _provider
 
@@ -209,8 +243,9 @@ def _wrap_l3_detector_provider(existing):
 
 def install_capture(app: FastAPI, directory: CaptureDirectory):
     """Install the three dependency overrides (wrapping whatever is *currently*
-    the effective provider -- production or a test's own stub, composably)
-    and return a plain ASGI callable wrapping ``app`` for the client side.
+    the effective provider -- production or a test's own stub, composably),
+    substitute ``blindfold_payload`` (a new seam, issue #382), and return a
+    plain ASGI callable wrapping ``app`` for the client side.
 
     Deliberately returns a new callable rather than mutating ``app``'s own
     middleware stack (``app.add_middleware`` refuses once that stack has
@@ -236,6 +271,7 @@ def install_capture(app: FastAPI, directory: CaptureDirectory):
     app.dependency_overrides[blindfold_app.get_l3_detector] = _wrap_l3_detector_provider(
         existing_l3_detector
     )
+    blindfold_app.blindfold_payload = _wrap_blindfold_payload(_ORIGINAL_BLINDFOLD_PAYLOAD)
     return CaptureMiddleware(app, directory)
 
 
@@ -345,7 +381,11 @@ class CaptureMiddleware:
                     writer.close()
             await send(message)
 
-        await self._replay(scope, messages, receive, send_and_capture)
+        token = _active_capture.set(ctx)
+        try:
+            await self._replay(scope, messages, receive, send_and_capture)
+        finally:
+            _active_capture.reset(token)
 
     async def _replay(self, scope, messages, receive, send):
         index = 0
