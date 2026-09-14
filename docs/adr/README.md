@@ -32,7 +32,7 @@ Vocabulary follows [`../../CONTEXT.md`](../../CONTEXT.md).
 | [0016](0016-merge-collapses-same-kind-entities.md) | Merge collapses two same-kind canonical entities into one | Accepted |
 | [0017](0017-management-graph-renders-in-surrogate-space.md) | Management graph renders in surrogate-space; reveal is the gated re-identify exception | Accepted |
 | [0018](0018-entity-list-real-name-search-audit-on-miss.md) | Entity-list real-name search emits audit on every attempt; surrogate-space viewing is decrypt-free | Accepted |
-| [0019](0019-proxy-config-auth-contract.md) | Proxy config & auth contract — env-var split (v1, Anthropic path) | Accepted |
+| [0019](0019-proxy-config-auth-contract.md) | Proxy config & auth contract — env-var split (v1, Anthropic path) | Accepted (amended 2026-09-14, issue #380 — upstream status-class preservation) |
 | [0020](0020-verify-pass-split-into-egress-gates.md) | Split verify pass into a pre-egress leak gate + a post-restore resolution gate (SEC-5/SEC-6) | Accepted |
 | [0021](0021-runnable-entrypoint-loopback-and-root-token-guard.md) | Runnable entry point — loopback-bound default + root-token startup guard (UX-2/SEC-11/SEC-2) | Accepted |
 | [0022](0022-wire-l3-adjudicator-local-ollama.md) | Wire the L3 adjudicator (local Ollama) — single mint-pass, local-only, fail-closed | Accepted |

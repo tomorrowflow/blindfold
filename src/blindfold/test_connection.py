@@ -125,6 +125,16 @@ _REMEDIES: dict[str, str] = {
 _UPSTREAM_HTTP_STATUS_RE = re.compile(r"upstream returned HTTP (\d+)")
 _AUTH_REJECTED_STATUSES = frozenset({"401", "403"})
 
+# Issue #380 (option B): a preserved-status-class upstream error carries its own
+# Anthropic-vocabulary error.type (upstream.py's _UPSTREAM_STATUS_CLASSES) instead of
+# the generic "blindfold_upstream_error" + regex-parsed message the statuses outside
+# that preserved set still produce. Same auth-rejected/unreachable split as the
+# regex path below, just keyed off the new shape directly.
+_AUTH_REJECTED_ERROR_TYPES = frozenset({"authentication_error", "permission_error"})
+_UPSTREAM_REJECTED_ERROR_TYPES = frozenset(
+    {"invalid_request_error", "rate_limit_error", "overloaded_error"}
+)
+
 # Q3: this feature's own stated purpose is to prove reachability of *this
 # machine's own proxy* -- never to place an arbitrary outbound POST (carrying
 # caller-supplied headers) on Blindfold's behalf. Restricting to loopback closes
@@ -216,6 +226,10 @@ def classify_response(status_code: int, body: Any) -> TestConnectionVerdict | No
             if sub_reason in _LEAK_SUB_REASONS:
                 return _verdict(CODE_LEAK_FLAGGED, ref=ref)
             return _verdict(CODE_FAIL_CLOSED_BLOCK, ref=ref)
+        if error_type in _AUTH_REJECTED_ERROR_TYPES:
+            return _verdict(CODE_UPSTREAM_AUTH_REJECTED)
+        if error_type in _UPSTREAM_REJECTED_ERROR_TYPES:
+            return _verdict(CODE_UPSTREAM_UNREACHABLE)
         if error_type == "blindfold_upstream_error":
             message = error.get("message", "")
             match = _UPSTREAM_HTTP_STATUS_RE.search(message)

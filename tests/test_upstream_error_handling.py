@@ -101,3 +101,123 @@ async def test_send_chat_completions_maps_transport_errors_the_same_way():
 
     assert excinfo.value.status_code == 502
     assert excinfo.value.sub_reason == "upstream_unreachable"
+
+
+@pytest.mark.anyio
+async def test_send_messages_maps_an_upstream_401_to_its_own_status_class_not_a_generic_502():
+    # Issue #380 (option B, trusted-maintainer decision): a buffered upstream HTTP
+    # error status that falls in the preserved class set (401/403/429/400/529) keeps
+    # its own status code instead of being genericised to 502 -- so a Claude Desktop
+    # user who mistyped their key sees 401, not a generic gateway failure.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            401,
+            json={
+                "type": "error",
+                "error": {
+                    "type": "authentication_error",
+                    "message": "invalid x-api-key sk-ant-REALSECRET",
+                },
+            },
+        )
+
+    client = _stub_client(handler)
+
+    with pytest.raises(UpstreamError) as excinfo:
+        await client.send_messages({"model": "m"}, {})
+
+    assert excinfo.value.status_code == 401
+    # Relay no upstream text (option B): the mapped error's message is a fixed
+    # Blindfold-authored string, never the upstream body -- even a credential
+    # fragment the upstream happened to echo back never reaches it.
+    assert "sk-ant-REALSECRET" not in str(excinfo.value)
+
+
+@pytest.mark.anyio
+async def test_send_messages_maps_an_upstream_403_to_its_own_status_class():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            json={"type": "error", "error": {"type": "permission_error", "message": "denied"}},
+        )
+
+    client = _stub_client(handler)
+
+    with pytest.raises(UpstreamError) as excinfo:
+        await client.send_messages({"model": "m"}, {})
+
+    assert excinfo.value.status_code == 403
+    assert excinfo.value.anthropic_error_type == "permission_error"
+
+
+@pytest.mark.anyio
+async def test_send_messages_preserves_retry_after_on_an_upstream_429():
+    # AC2: "Upstream retry-after on 429/529 is preserved."
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            429,
+            headers={"retry-after": "37"},
+            json={"type": "error", "error": {"type": "rate_limit_error", "message": "slow down"}},
+        )
+
+    client = _stub_client(handler)
+
+    with pytest.raises(UpstreamError) as excinfo:
+        await client.send_messages({"model": "m"}, {})
+
+    assert excinfo.value.status_code == 429
+    assert excinfo.value.anthropic_error_type == "rate_limit_error"
+    assert excinfo.value.retry_after == "37"
+
+
+@pytest.mark.anyio
+async def test_send_messages_maps_an_upstream_400_to_its_own_status_class():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={"type": "error", "error": {"type": "invalid_request_error", "message": "bad"}},
+        )
+
+    client = _stub_client(handler)
+
+    with pytest.raises(UpstreamError) as excinfo:
+        await client.send_messages({"model": "m"}, {})
+
+    assert excinfo.value.status_code == 400
+    assert excinfo.value.anthropic_error_type == "invalid_request_error"
+
+
+@pytest.mark.anyio
+async def test_send_messages_maps_an_upstream_529_and_preserves_retry_after():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            529,
+            headers={"retry-after": "5"},
+            json={"type": "error", "error": {"type": "overloaded_error", "message": "busy"}},
+        )
+
+    client = _stub_client(handler)
+
+    with pytest.raises(UpstreamError) as excinfo:
+        await client.send_messages({"model": "m"}, {})
+
+    assert excinfo.value.status_code == 529
+    assert excinfo.value.anthropic_error_type == "overloaded_error"
+    assert excinfo.value.retry_after == "5"
+
+
+@pytest.mark.anyio
+async def test_send_messages_keeps_the_generic_502_mapping_for_an_unmapped_upstream_status():
+    # A status outside the preserved class set (e.g. a bare 500) keeps the
+    # pre-existing generic ``blindfold_upstream_error`` shape, unchanged.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"error": "internal"})
+
+    client = _stub_client(handler)
+
+    with pytest.raises(UpstreamError) as excinfo:
+        await client.send_messages({"model": "m"}, {})
+
+    assert excinfo.value.status_code == 502
+    assert excinfo.value.sub_reason == "upstream_http_error"
+    assert excinfo.value.anthropic_error_type is None
