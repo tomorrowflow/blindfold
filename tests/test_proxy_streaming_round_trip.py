@@ -705,6 +705,77 @@ async def test_streaming_terminal_resolution_check_catches_an_unresolved_surroga
 
 
 @pytest.mark.anyio
+async def test_streamed_redacted_thinking_data_does_not_trip_the_terminal_resolution_check():
+    # Issue #379 (#374 residual, ADR-0057 D6.2): a redacted_thinking block arrives
+    # as one content_block_start event (never a delta -- it's opaque, handed back
+    # whole) and passes through this module's "non-handled event" branch byte-
+    # identical, same as the buffered path's restore. #374 declared `data`
+    # ciphertext a non-hop for the blinder/leak_gate/restore; this pins the
+    # streaming terminal resolution_gate check (issue #373's own new net) to the
+    # same exclusion -- a this-exchange surrogate coincidentally present verbatim
+    # inside `data` must not raise UnresolvedSurrogateError and kill the stream
+    # after headers are already committed (the worst client-visible shape).
+    mapping = _seeded_mapping()
+    martin = "Martin Bach"
+    martin_surrogate = mapping.surrogate_for(martin)
+    assert martin_surrogate is not None and martin_surrogate != martin
+
+    redacted_block_start = _sse_event(
+        {
+            "type": "content_block_start",
+            "index": 0,
+            "content_block": {
+                "type": "redacted_thinking",
+                "data": f"b3BhcXVlLQ=={martin_surrogate}=Y2lwaGVydGV4dA==",
+            },
+        }
+    )
+    chunks = [
+        redacted_block_start,
+        _sse_event({"type": "content_block_stop", "index": 0}),
+        _sse_event({"type": "message_stop"}),
+    ]
+    recorded: list[httpx.Request] = []
+    audit_log = get_audit_log()
+    audit_log.records.clear()
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_streaming_upstream(
+        chunks, recorded
+    )
+    app.dependency_overrides[get_workspace_policies] = lambda: _deterministic_only_policies(
+        DEFAULT_WORKSPACE
+    )
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            received: list[bytes] = []
+            async with client.stream(
+                "POST",
+                "/v1/messages",
+                json={
+                    "model": "claude-3-5-sonnet",
+                    "stream": True,
+                    "messages": [
+                        {"role": "user", "content": f"Greet {martin} for me."}
+                    ],
+                },
+                headers={"x-api-key": "secret-token"},
+            ) as resp:
+                assert resp.status_code == 200
+                async for chunk in resp.aiter_bytes():
+                    received.append(chunk)
+    finally:
+        app.dependency_overrides.clear()
+
+    assert not any(
+        r.event == "blocked-unresolved-surrogate" for r in audit_log.records
+    ), f"unexpected block; got: {audit_log.records}"
+    full = b"".join(received)
+    assert redacted_block_start in full
+
+
+@pytest.mark.anyio
 async def test_streamed_and_buffered_thinking_restore_agree():
     # Issue #373 AC4: non-streaming and streaming restore must now agree -- the
     # same response body with a surrogate in `thinking`, restored buffered

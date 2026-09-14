@@ -219,6 +219,36 @@ def test_resolution_gate_accepts_a_clean_round_trip():
     resolution_gate(restored, session)
 
 
+def test_resolution_gate_does_not_block_on_a_surrogate_coincidentally_inside_redacted_thinking_data():
+    # Issue #379 (#374 residual): #374 declared redacted_thinking.data a non-hop
+    # for the blinder, leak_gate, and restore, but resolution_gate's own
+    # _collect_text walk had no type-scoped exclusion -- an injected surrogate
+    # appearing verbatim inside provider ciphertext (astronomically improbable,
+    # never a real restore miss) would raise UnresolvedSurrogateError and
+    # over-block the response. Driven through restore_response + resolution_gate
+    # together (the "response path"), not resolution_gate on a hand-built dict
+    # alone -- #374's AC4 only pinned restore_response's own byte-identical
+    # output, never fed it through resolution_gate.
+    mapping = _mapping()
+    session = ExchangeSession()
+    surrogate = mapping.surrogate_for("Anna Schmidt")
+    session.record(surrogate, "Anna Schmidt")
+
+    ciphertext = f"b3BhcXVlLQ=={surrogate}=Y2lwaGVydGV4dA=="
+    response = {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "redacted_thinking", "data": ciphertext}],
+    }
+
+    restored = restore_response(response, session)
+
+    assert restored["content"][0]["data"] == ciphertext
+    # Should not raise.
+    resolution_gate(restored, session)
+
+
 def test_resolution_gate_raises_when_an_injected_surrogate_is_left_unresolved():
     mapping = _mapping()
     payload = {
@@ -229,6 +259,34 @@ def test_resolution_gate_raises_when_an_injected_surrogate_is_left_unresolved():
     anna_surrogate = mapping.surrogate_for("Anna Schmidt")
     # Restore failed to reverse the injected surrogate (it is still client-visible).
     unrestored = {"content": [{"type": "text", "text": f"{anna_surrogate} replied."}]}
+
+    with pytest.raises(UnresolvedSurrogateError):
+        resolution_gate(unrestored, session)
+
+
+def test_resolution_gate_still_raises_on_a_sibling_thinking_block_left_unresolved():
+    # Issue #379 AC2: the redacted_thinking.data exclusion is type-scoped, not a
+    # blanket exemption -- a plain (non-redacted) thinking block's own prose field
+    # must still trip the gate when an injected surrogate is left unresolved in
+    # it, exactly as before, even though redacted_thinking.data alongside it is
+    # excluded.
+    mapping = _mapping()
+    payload = {
+        "model": "m",
+        "messages": [{"role": "user", "content": "Hi Anna Schmidt"}],
+    }
+    blinded, session = blindfold_payload(payload, mapping)
+    anna_surrogate = mapping.surrogate_for("Anna Schmidt")
+    unrestored = {
+        "content": [
+            {
+                "type": "thinking",
+                "thinking": f"I should mention {anna_surrogate}.",
+                "signature": "sig-opaque-blob",
+            },
+            {"type": "redacted_thinking", "data": "b3BhcXVlLWNpcGhlcnRleHQ="},
+        ]
+    }
 
     with pytest.raises(UnresolvedSurrogateError):
         resolution_gate(unrestored, session)
