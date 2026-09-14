@@ -263,15 +263,26 @@ def test_default_l3_probe_threads_the_api_key_into_ping_omlx(monkeypatch):
     assert captured == {"base_url": "http://localhost:8080", "api_key": "sk-omlx-secret"}
 
 
-def test_default_l3_probe_reports_healthy_for_a_provisioned_gliner_model_directory(
+def test_default_l3_probe_reports_healthy_for_a_provisioned_gliner_model_directory_with_reachable_inner(
     monkeypatch, tmp_path
 ):
     # ADR-0033 §2 / ADR-0034 §3, issue #139 / #150: a fast local provisioned-
     # directory check, no model load -- and matches the directory shape
-    # provision_gliner_model/is_already_provisioned actually use.
+    # provision_gliner_model/is_already_provisioned actually use. Issue #381: the
+    # directory check alone is no longer sufficient for "healthy" -- the inner
+    # adjudicator every GLiNER-negative candidate escalates to must also answer.
     model_path = _make_provisioned_model_dir(tmp_path)
     monkeypatch.setenv("BLINDFOLD_L3_PROVIDER", "gliner")
     monkeypatch.setenv("BLINDFOLD_L3_GLINER_MODEL_PATH", model_path)
+    monkeypatch.setenv("BLINDFOLD_L3_MODEL", "llama3.1")
+    monkeypatch.setenv("BLINDFOLD_L3_BASE_URL", "http://localhost:11434")
+
+    def fake_ping_ollama(base_url, **kwargs):
+        from blindfold.status import DependencyHealth
+
+        return DependencyHealth(healthy=True)
+
+    monkeypatch.setattr(app, "ping_ollama", fake_ping_ollama)
 
     health = _default_l3_probe()
 
@@ -302,3 +313,110 @@ def test_default_l3_probe_reports_unhealthy_for_an_unconfigured_gliner_model_pat
     health = _default_l3_probe()
 
     assert health.healthy is False
+
+
+def test_default_l3_probe_reports_unhealthy_when_gliner_cascade_inner_adjudicator_is_unreachable(
+    monkeypatch, tmp_path
+):
+    # Issue #381: the gliner branch used to stop at the model-directory check and
+    # report healthy=True unconditionally -- but every GLiNER-negative candidate
+    # escalates to the inner LLM adjudicator (ADR-0033 §2), and an unreachable inner
+    # adjudicator fails the hop closed (ADR-0009) on the very next real request.
+    # /v1/status must surface that before the fact, not just the model-directory
+    # provisioning state.
+    model_path = _make_provisioned_model_dir(tmp_path)
+    monkeypatch.setenv("BLINDFOLD_L3_PROVIDER", "gliner")
+    monkeypatch.setenv("BLINDFOLD_L3_GLINER_MODEL_PATH", model_path)
+    monkeypatch.setenv("BLINDFOLD_L3_MODEL", "llama3.1")
+    monkeypatch.setenv("BLINDFOLD_L3_BASE_URL", "http://localhost:11434")
+
+    def fake_ping_ollama(base_url, **kwargs):
+        from blindfold.status import DependencyHealth
+
+        return DependencyHealth(healthy=False, detail="ollama unreachable")
+
+    monkeypatch.setattr(app, "ping_ollama", fake_ping_ollama)
+
+    health = _default_l3_probe()
+
+    assert health.healthy is False
+    assert health.detail == "ollama unreachable"
+
+
+def test_default_l3_probe_reports_unconfigured_when_gliner_cascade_has_no_inner_model(
+    monkeypatch, tmp_path
+):
+    # Issue #381 AC3: the pre-fix `if not settings.l3_model: ...` check sat *after*
+    # the gliner branch's unconditional early return, so it was unreachable on the
+    # cascade path -- an empty BLINDFOLD_L3_MODEL under l3_provider=gliner reported
+    # healthy=True instead of the honest "no L3 adjudicator configured".
+    model_path = _make_provisioned_model_dir(tmp_path)
+    monkeypatch.setenv("BLINDFOLD_L3_PROVIDER", "gliner")
+    monkeypatch.setenv("BLINDFOLD_L3_GLINER_MODEL_PATH", model_path)
+    monkeypatch.setenv("BLINDFOLD_L3_MODEL", "")
+
+    health = _default_l3_probe()
+
+    assert health.healthy is False
+    assert health.detail == "no L3 adjudicator configured"
+
+
+def test_default_l3_probe_does_not_probe_the_network_when_gliner_model_is_unprovisioned(
+    monkeypatch, tmp_path
+):
+    # Issue #381 AC4: the model-directory failure must stay first and short-circuit
+    # before any inner-provider network call -- an unprovisioned GLiNER install has
+    # nothing more informative to learn from probing the inner adjudicator.
+    monkeypatch.setenv("BLINDFOLD_DATA_DIR", str(tmp_path))
+    monkeypatch.setenv("BLINDFOLD_L3_PROVIDER", "gliner")
+    monkeypatch.setenv("BLINDFOLD_L3_GLINER_MODEL_PATH", "")
+    monkeypatch.setenv("BLINDFOLD_L3_MODEL", "llama3.1")
+    monkeypatch.setenv("BLINDFOLD_L3_BASE_URL", "http://localhost:11434")
+
+    calls: list[str] = []
+
+    def fake_ping_ollama(base_url, **kwargs):
+        calls.append(base_url)
+        from blindfold.status import DependencyHealth
+
+        return DependencyHealth(healthy=True)
+
+    monkeypatch.setattr(app, "ping_ollama", fake_ping_ollama)
+
+    health = _default_l3_probe()
+
+    assert health.healthy is False
+    assert health.detail == "gliner model not provisioned"
+    assert calls == []
+
+
+def test_status_endpoint_polls_the_gliner_cascade_inner_adjudicator_at_most_once_per_ttl_window(
+    monkeypatch, tmp_path
+):
+    # Issue #381 AC5: /v1/status is polled roughly every 5s by the menu bar --
+    # CachedHealthProbe's existing TTL must collapse repeated polls into a single
+    # inner-provider probe, exactly like it already does for the plain ollama/omlx
+    # path (this is the same cache, not a second one for the cascade).
+    from blindfold.status import CachedHealthProbe, DependencyHealth
+
+    model_path = _make_provisioned_model_dir(tmp_path)
+    monkeypatch.setenv("BLINDFOLD_L3_PROVIDER", "gliner")
+    monkeypatch.setenv("BLINDFOLD_L3_GLINER_MODEL_PATH", model_path)
+    monkeypatch.setenv("BLINDFOLD_L3_MODEL", "llama3.1")
+    monkeypatch.setenv("BLINDFOLD_L3_BASE_URL", "http://localhost:11434")
+
+    calls: list[str] = []
+
+    def fake_ping_ollama(base_url, **kwargs):
+        calls.append(base_url)
+        return DependencyHealth(healthy=True)
+
+    monkeypatch.setattr(app, "ping_ollama", fake_ping_ollama)
+
+    probe = CachedHealthProbe(_default_l3_probe, ttl_seconds=5.0, clock=lambda: 0.0)
+
+    probe.check()
+    probe.check()
+    probe.check()
+
+    assert len(calls) == 1

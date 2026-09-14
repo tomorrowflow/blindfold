@@ -397,8 +397,11 @@ _processing_trace = ProcessingTraceBuffer()
 #   - l3: `settings.l3_model` unset means no adjudicator is wired at all (the
 #     `_UnconfiguredAdjudicator` case, ADR-0009) -- reported unhealthy without a network
 #     call, since that state is already certain; configured means a live ping_ollama or
-#     ping_omlx, dispatched on `settings.l3_provider` (ADR-0031 §2, issue #122) -- same
-#     contract from the caller's perspective either way.
+#     ping_omlx, dispatched on `settings.effective_inner_l3_provider` (ADR-0031 §2,
+#     issue #122) -- same contract from the caller's perspective either way. The
+#     `gliner` cascade (issue #139) adds a provisioned-directory check first, then
+#     probes this same inner adjudicator too (issue #381) -- a provisioned model
+#     directory alone does not mean the cascade can actually adjudicate.
 #   - transit: `settings.openbao_token` unset means Transit isn't wired for this
 #     deployment (ADR-0021: "Transit is optional") -- reported healthy without a probe;
 #     configured means a live TransitClient.health_check().
@@ -416,23 +419,42 @@ _upstream_health = RecentFailureHealth(
 )
 
 
+def _inner_l3_probe(settings: Settings) -> DependencyHealth:
+    """Probe the inner LLM adjudicator (ADR-0031 §2, issue #381).
+
+    Shared by the plain ollama/omlx path and, as of issue #381, the GLiNER cascade's
+    inner slot -- every GLiNER-negative candidate escalates to this same adjudicator
+    (:func:`_build_inner_l3_adjudicator`), so a cascade whose model directory is
+    provisioned but whose inner adjudicator is unreachable must report unhealthy
+    too, not just healthy-because-the-directory-exists. Dispatches on
+    ``settings.effective_inner_l3_provider`` -- the single reconciliation point
+    (config.py) also used by the adjudicator builder and the omlx-loopback startup
+    guard -- so this probe can never disagree with which client actually receives
+    inner-adjudicator calls.
+    """
+    if not settings.l3_model:
+        return DependencyHealth(healthy=False, detail="no L3 adjudicator configured")
+    if settings.effective_inner_l3_provider == "omlx":
+        return ping_omlx(settings.l3_base_url, api_key=settings.l3_api_key)
+    return ping_ollama(settings.l3_base_url)
+
+
 def _default_l3_probe() -> DependencyHealth:
     settings = get_settings()
     if settings.l3_provider == "gliner":
         # ADR-0033 §2 / ADR-0034 §3, issue #139 / #150: a fast local provisioned-
-        # directory check, not a live ping -- GLiNER has no network client to probe,
-        # and loading the ONNX model on every /v1/status poll (~5s cadence) would be
-        # far too expensive. Same shape check as the startup guard and the
+        # directory check first -- GLiNER has no network client to probe, and
+        # loading the ONNX model on every /v1/status poll (~5s cadence) would be far
+        # too expensive. Same shape check as the startup guard and the
         # detection/settings status view (is_gliner_model_ready), so none of the
-        # three ever disagree on the same on-disk state.
+        # three ever disagree on the same on-disk state. Issue #381: a provisioned
+        # directory is not the whole cascade -- every GLiNER-negative candidate
+        # still escalates to the inner adjudicator, so that must be probed too
+        # before reporting healthy.
         if not is_gliner_model_ready(settings.l3_gliner_model_path):
             return DependencyHealth(healthy=False, detail="gliner model not provisioned")
-        return DependencyHealth(healthy=True)
-    if not settings.l3_model:
-        return DependencyHealth(healthy=False, detail="no L3 adjudicator configured")
-    if settings.l3_provider == "omlx":
-        return ping_omlx(settings.l3_base_url, api_key=settings.l3_api_key)
-    return ping_ollama(settings.l3_base_url)
+        return _inner_l3_probe(settings)
+    return _inner_l3_probe(settings)
 
 
 def _default_transit_probe() -> DependencyHealth:
