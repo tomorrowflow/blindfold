@@ -32,23 +32,80 @@ class UpstreamError(Exception):
     request/response payload content, only the transport-level failure shape -- so it
     is safe to route to the response body, the audit record, and the log, the same
     single-funnel pattern :func:`~blindfold.app._blocked_response` uses.
+
+    ``anthropic_error_type``/``retry_after`` (issue #380, option B, dated amendment to
+    ADR-0019): set only for the preserved upstream status-class case (401/403/429/400/
+    529) -- ``_map_httpx_error`` below relays the upstream's status *class*, never its
+    body text, so ``message`` stays a fixed, Blindfold-authored string per class and
+    ``anthropic_error_type`` carries the matching Anthropic-vocabulary ``error.type``
+    (e.g. ``authentication_error``) so a client that keys off that shape (Claude
+    Desktop's 3P Gateway mode) can render it meaningfully instead of a generic gateway
+    failure. ``None`` (the default) means "no class mapping" -- the generic
+    ``blindfold_upstream_error`` shape applies, unchanged.
     """
 
-    def __init__(self, status_code: int, sub_reason: str, message: str) -> None:
+    def __init__(
+        self,
+        status_code: int,
+        sub_reason: str,
+        message: str,
+        *,
+        anthropic_error_type: str | None = None,
+        retry_after: str | None = None,
+    ) -> None:
         self.status_code = status_code
         self.sub_reason = sub_reason
+        self.anthropic_error_type = anthropic_error_type
+        self.retry_after = retry_after
         super().__init__(message)
+
+
+# Issue #380 (option B, trusted-maintainer decision, dated amendment to ADR-0019):
+# the upstream status *class* is preserved for these five statuses -- each maps to a
+# fixed, Blindfold-authored message and the matching Anthropic-vocabulary
+# ``error.type`` so a client that keys off that shape (Claude Desktop's 3P Gateway
+# mode) can render a bad key / rate limit meaningfully. No upstream body text is ever
+# relayed. Any status not in this table keeps the pre-existing generic 502 mapping.
+_UPSTREAM_STATUS_CLASSES: dict[int, tuple[str, str]] = {
+    400: ("invalid_request_error", "Upstream rejected the request as malformed."),
+    401: ("authentication_error", "Upstream rejected the configured API key."),
+    403: ("permission_error", "Upstream denied access with the configured credentials."),
+    429: ("rate_limit_error", "Upstream is rate-limiting the configured API key."),
+    529: ("overloaded_error", "Upstream is temporarily overloaded."),
+}
+
+# Statuses whose ``retry-after`` response header is preserved onto the mapped error
+# (issue #380 AC2) -- the class table above additionally carries this hint.
+_RETRY_AFTER_PRESERVED_STATUSES = {429, 529}
 
 
 def _map_httpx_error(exc: httpx.HTTPError) -> UpstreamError:
     """Map an httpx transport/HTTP error to the structured, scrubbed ``UpstreamError``.
 
-    - ``HTTPStatusError`` (from ``raise_for_status``) -> 502, the upstream itself
-      returned an error status; only the status code is reported, never the body.
+    - ``HTTPStatusError`` (from ``raise_for_status``) whose status is one of
+      ``_UPSTREAM_STATUS_CLASSES`` -> preserved as that status, with the matching
+      ``anthropic_error_type`` and a fixed message (issue #380, option B): the
+      upstream status *class* is kept, the body is not.
+    - ``HTTPStatusError`` at any other status -> 502, the upstream itself returned an
+      error status; only the status code is reported, never the body.
     - ``TimeoutException`` (connect/read/write/pool timeout) -> 504.
     - Any other transport error (DNS failure, connection refused, reset) -> 502.
     """
     if isinstance(exc, httpx.HTTPStatusError):
+        status_code = exc.response.status_code
+        mapped = _UPSTREAM_STATUS_CLASSES.get(status_code)
+        if mapped is not None:
+            anthropic_error_type, message = mapped
+            retry_after = None
+            if status_code in _RETRY_AFTER_PRESERVED_STATUSES:
+                retry_after = exc.response.headers.get("retry-after")
+            return UpstreamError(
+                status_code=status_code,
+                sub_reason=f"upstream_{status_code}",
+                message=message,
+                anthropic_error_type=anthropic_error_type,
+                retry_after=retry_after,
+            )
         return UpstreamError(
             status_code=502,
             sub_reason="upstream_http_error",

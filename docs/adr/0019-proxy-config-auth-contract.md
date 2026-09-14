@@ -1,6 +1,6 @@
 # ADR-0019: Proxy config & auth contract — env-var split (v1, Anthropic path)
 
-**Status:** Accepted
+**Status:** Accepted — amended 2026-09-14 (issue #380, see "Amendment" below)
 **Date:** 2026-07-04
 
 ## Context
@@ -61,6 +61,39 @@ headers beyond this pass-through.
   `BLINDFOLD_OPENAI_UPSTREAM_BASE_URL` (proxy → upstream, `/v1/chat/completions` only;
   empty falls back to the shared `BLINDFOLD_UPSTREAM_BASE_URL`, i.e. today's behavior).
   The inbound-auth-policy half stays parked in #37; header forwarding is unchanged.
+
+## Amendment (2026-09-14, issue #380): upstream status-class preservation, option B
+
+This ADR's env-var/forwarding contract is unchanged. This amendment closes a residual
+`#375` left open: the *response* side of the credential/auth contract — what a client
+sees when the forwarded credential (or another upstream-rejected request) comes back as
+a 4xx/5xx. Before this amendment, `src/blindfold/upstream.py`'s `_map_httpx_error`
+discarded every buffered upstream HTTP error status and body, remapping all of them to
+a generic `blindfold_upstream_error` at 502 — so a Claude Desktop user who mistyped the
+`x-api-key` this ADR says the proxy forwards verbatim saw a gateway failure indistinguishable
+from a dead upstream, not Anthropic's own 401 `authentication_error`; a 429 lost its
+`retry-after` hint entirely.
+
+Two options were on the table (`#380`'s Agent Brief): (A) relay the upstream body's
+`error.message` through the scrubbed-reason treatment, opening a new client-facing
+surface that could echo request content (Anthropic 400s sometimes quote field values);
+or (B) preserve only the upstream *status class*, with a fixed, Blindfold-authored
+message per class and no upstream text relayed at all. The trusted-maintainer decision
+on `#380` took **option B** as the default, since it needs no new scrubbed-reason proof
+and Option A stays open as a follow-up if `#372` shows per-class messages aren't enough.
+
+**Decision:** `_map_httpx_error` now preserves five upstream status classes —
+400 → `invalid_request_error`, 401 → `authentication_error`, 403 → `permission_error`,
+429 → `rate_limit_error`, 529 → `overloaded_error` — each keeping the upstream's own
+HTTP status code and carrying a fixed Blindfold message inside the ADR-0057 D4
+Anthropic error envelope (`error.type` set to the class above; `code` stays
+`blindfold_upstream_error`, unchanged, marking the error family). 429/529 additionally
+relay the upstream's `retry-after` value as a real `retry-after` response header. No
+upstream response body text ever reaches the client on this path — the message is a
+literal per class, not a transform of the upstream's own message. Any status outside
+this set (404, 500, a bare 503, …) keeps the pre-existing generic 502
+`blindfold_upstream_error` mapping. Transport failures (connect refused, TTFB timeout,
+upstream unreachable) are entirely unaffected — still 502/504, generic.
 
 ## Alternatives considered
 

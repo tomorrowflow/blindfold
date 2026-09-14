@@ -101,6 +101,63 @@ def test_an_upstream_error_body_reporting_http_401_classifies_as_upstream_auth_r
     assert verdict.code == CODE_UPSTREAM_AUTH_REJECTED
 
 
+def test_a_status_class_preserved_401_body_still_classifies_as_upstream_auth_rejected():
+    # Issue #380 (option B): a preserved-status-class upstream error carries the real
+    # HTTP status (401, not 502) and error.type "authentication_error", not the old
+    # generic "blindfold_upstream_error" + regex-parsed message -- classify_response
+    # must recognize this new shape the same way it recognized the old one.
+    body = {
+        "error": {
+            "type": "authentication_error",
+            "code": "blindfold_upstream_error",
+            "sub_reason": "upstream_401",
+            "message": "Upstream rejected the configured API key.",
+            "workspace": "default",
+        }
+    }
+
+    verdict = classify_response(401, body)
+
+    assert verdict is not None
+    assert verdict.code == CODE_UPSTREAM_AUTH_REJECTED
+
+
+def test_a_status_class_preserved_403_body_classifies_as_upstream_auth_rejected():
+    body = {
+        "error": {
+            "type": "permission_error",
+            "code": "blindfold_upstream_error",
+            "sub_reason": "upstream_403",
+            "message": "Upstream denied access with the configured credentials.",
+            "workspace": "default",
+        }
+    }
+
+    verdict = classify_response(403, body)
+
+    assert verdict is not None
+    assert verdict.code == CODE_UPSTREAM_AUTH_REJECTED
+
+
+def test_a_status_class_preserved_429_body_classifies_as_upstream_unreachable():
+    # Not an auth rejection -- closest existing taxonomy entry (matches the old
+    # behavior for any non-401/403 upstream HTTP error).
+    body = {
+        "error": {
+            "type": "rate_limit_error",
+            "code": "blindfold_upstream_error",
+            "sub_reason": "upstream_429",
+            "message": "Upstream is rate-limiting the configured API key.",
+            "workspace": "default",
+        }
+    }
+
+    verdict = classify_response(429, body)
+
+    assert verdict is not None
+    assert verdict.code == CODE_UPSTREAM_UNREACHABLE
+
+
 def test_an_upstream_error_body_reporting_http_500_classifies_as_upstream_unreachable():
     body = {
         "error": {

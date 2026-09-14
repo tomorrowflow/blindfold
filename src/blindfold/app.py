@@ -1383,6 +1383,17 @@ def _upstream_error_response(
     envelope as :func:`_blocked_response` -- ``error.type`` stays
     ``blindfold_upstream_error`` so a client can still tell the two error families
     apart by shape alone (ADR-0027's consequence); the envelope is additive.
+
+    Issue #380 (option B, dated amendment to ADR-0019): when ``exc`` carries a
+    preserved upstream status class (``exc.anthropic_error_type`` set --
+    401/403/429/400/529, see ``upstream._map_httpx_error``), ``error.type`` becomes
+    that Anthropic-vocabulary value instead of the generic
+    ``blindfold_upstream_error`` -- so a client that keys off that shape (Claude
+    Desktop's 3P Gateway mode) can render a bad key / rate limit meaningfully. `code`
+    stays ``blindfold_upstream_error`` regardless: it marks the error family
+    (upstream-boundary, not a privacy block), while `type` carries the finer class.
+    A preserved ``retry_after`` (429/529) is relayed as the real ``retry-after`` HTTP
+    response header, matching how the upstream itself communicates it.
     """
     logger.warning(
         "blindfold_upstream_error: workspace=%s sub_reason=%s reason=%s",
@@ -1393,12 +1404,14 @@ def _upstream_error_response(
     audit_log.append(AuditRecord(workspace=workspace, event="upstream-error", reason=str(exc)))
     if upstream_health is not None:
         upstream_health.mark_failure(exc.sub_reason)
+    response_headers = {"retry-after": exc.retry_after} if exc.retry_after else None
     return JSONResponse(
         status_code=exc.status_code,
+        headers=response_headers,
         content={
             "type": "error",
             "error": {
-                "type": "blindfold_upstream_error",
+                "type": exc.anthropic_error_type or "blindfold_upstream_error",
                 "code": "blindfold_upstream_error",
                 "sub_reason": exc.sub_reason,
                 "message": str(exc),
