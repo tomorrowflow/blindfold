@@ -441,19 +441,19 @@ def _inner_l3_probe(settings: Settings) -> DependencyHealth:
 
 def _default_l3_probe() -> DependencyHealth:
     settings = get_settings()
-    if settings.l3_provider == "gliner":
-        # ADR-0033 §2 / ADR-0034 §3, issue #139 / #150: a fast local provisioned-
-        # directory check first -- GLiNER has no network client to probe, and
-        # loading the ONNX model on every /v1/status poll (~5s cadence) would be far
-        # too expensive. Same shape check as the startup guard and the
-        # detection/settings status view (is_gliner_model_ready), so none of the
-        # three ever disagree on the same on-disk state. Issue #381: a provisioned
-        # directory is not the whole cascade -- every GLiNER-negative candidate
-        # still escalates to the inner adjudicator, so that must be probed too
-        # before reporting healthy.
-        if not is_gliner_model_ready(settings.l3_gliner_model_path):
-            return DependencyHealth(healthy=False, detail="gliner model not provisioned")
-        return _inner_l3_probe(settings)
+    # ADR-0033 §2 / ADR-0034 §3, issue #139 / #150: the gliner cascade gets a fast
+    # local provisioned-directory check first -- GLiNER has no network client to
+    # probe, and loading the ONNX model on every /v1/status poll (~5s cadence) would
+    # be far too expensive. Same shape check as the startup guard and the
+    # detection/settings status view (is_gliner_model_ready), so none of the three
+    # ever disagree on the same on-disk state. Issue #381: a provisioned directory is
+    # not the whole cascade -- every GLiNER-negative candidate still escalates to the
+    # inner adjudicator, so that (via _inner_l3_probe, shared with the plain path
+    # below) must be probed too before reporting healthy.
+    if settings.l3_provider == "gliner" and not is_gliner_model_ready(
+        settings.l3_gliner_model_path
+    ):
+        return DependencyHealth(healthy=False, detail="gliner model not provisioned")
     return _inner_l3_probe(settings)
 
 
