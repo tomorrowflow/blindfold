@@ -46,6 +46,15 @@ one supported way to launch the proxy, safe by default on both axes:
   acceptable cost paid once per process start, not per request.
 - README now documents the real run command end-to-end, replacing the previous
   dead-end instructions.
+- **`--host` is security-critical, not a convenience flag (confirmed live, #372).** The
+  loopback bind is the entire boundary between model-authored sandbox code and the
+  unauthenticated management API (`/v1/management/*` — no proxy-added auth layer exists
+  yet; ADR-0019 defers that to #38). The Claude Desktop Cowork live contract spike (#372)
+  measured this directly: a sandboxed VM with no listener on any routable address could not
+  reach the proxy at all. An operator who sets `--host 0.0.0.0` to make Blindfold reachable
+  from a container exposes the entity graph, the review inbox and the surrogate-to-real
+  re-identification endpoint to every other sandbox on that machine, not only to the client
+  they meant to reach.
 
 ## Alternatives considered
 

@@ -1,6 +1,6 @@
 # ADR-0057: Claude Desktop in 3P Gateway mode is a redirectable client — in scope, no interception, no new proxy
 
-**Status:** Proposed — flips to Accepted when the live contract spike (#372, HITL) confirms the wire contract; the two defects it names are Accepted-grade fixes under ADR-0006 / ADR-0051 regardless
+**Status:** Accepted — amended 2026-09-15 (issue #389, see Amendment below). The live contract spike (#372, HITL) confirmed the wire contract; the corrections it surfaced in D5, D6.1 and D7 are recorded in the Amendment rather than rewritten into the original Decision text.
 **Date:** 2026-08-27
 **Resolves:** issue #62 (scope + feasibility of closed clients, starting with Claude Desktop)
 **Amends:** ADR-0027 (error envelope, §D4 below)
@@ -191,6 +191,54 @@ the compliance-grade path, not something the proxy does.
 - **No conversation scoping, by design.** `x-claude-code-session-id` is still dropped and not
   consumed (ADR-0054 §4). If a future per-conversation feature needs it, that is ADR-0054's
   "separate, future decision", not a Desktop prerequisite.
+
+## Amendment (2026-09-15, issue #389): live contract spike close-out (#372) — D5 rationale, D6.1 premise, D7 auth scheme
+
+This ADR's decision that Claude Desktop in 3P Gateway mode is an ordinary redirectable
+client (D1) is unchanged, and so is every other Decision and Consequence above. This
+amendment closes #372, the live contract spike this ADR's Status clause was waiting on, and
+corrects three places where the spike showed the stated *rationale* — not the decision — was
+wrong. No entity value observed during the spike is quoted below or anywhere in this ADR
+(`docs/agents/domain.md`); every finding is stated structurally.
+
+**D5 — decision unchanged, two stated reasons retracted.** `GET /v1/models` stays
+unimplemented, and the spike confirms the reopening condition is not met: Desktop fell back
+to the pinned `inferenceModels` list, and pinning full model IDs stopped discovery probes
+entirely (twenty probes observed while `inferenceModels` was unset, zero once it was
+pinned). But two of the reasons D5 originally gave do not hold:
+
+- The config-disclosure argument is wrong. A passthrough would disclose only what the
+  configured credential can already access, and the only caller of a loopback-bound proxy
+  is that credential's own owner — they can ask the provider directly, so there is nothing
+  disclosed *to them*. The rationale for leaving the endpoint unimplemented is staleness (a
+  hardcoded model list drifts) and not growing a request-path surface no client needs, not
+  disclosure.
+- The failure mode D5 must guard against is not a client hard-failing on the endpoint's
+  absence; it is a hand-configured profile with an empty `inferenceModels` list. The spike's
+  observed failure was exactly this shape: an operator who finds Developer Mode before
+  finding the Connect page (D7) can configure a profile that leaves `inferenceModels` empty
+  and lands in the empty-picker hole D5 already warns the *emitted* profile must avoid.
+
+**D6.1 — premise false for this client; the fix stays for others.** D6.1 named Desktop with
+summarized thinking on as "the client most likely to hit" the `thinking_delta` restore gap.
+The spike shows that premise does not hold for Desktop's 3P Gateway mode: the provider
+returns an empty `thinking` content block plus its `signature` — the thinking *text* never
+crosses the wire in this mode, because the reasoning tokens are billed but not transmitted.
+With no thinking text arriving, there is no surrogate for it to carry, so the
+`thinking_delta` restore defect is unreachable from this client in this mode. The fix itself
+is not retracted — #373 shipped `thinking_delta.thinking` restore through the same
+sliding-window restorer as `text_delta` under ADR-0006 on its own merits, and any client or
+mode that does stream thinking text still needs it. What is retracted is the claim that
+Desktop verified this defect live: it did not, and structurally could not, in 3P Gateway
+mode.
+
+**D7 — auth scheme corrected.** D7 specified `inferenceGatewayAuthScheme: bearer` for the
+profile Blindfold emits. The spike shows this is wrong: Desktop's own profile validation
+warns against configuring a `gateway` provider with `bearer` against a loopback-shaped base
+URL — exactly the combination D7 specified — and the scheme that is confirmed live to work
+is `x-api-key`. The emitted profile must pin `x-api-key`, not `bearer`. #376 (Connect page
+profile) and #377 (CLI writer) were blocked on #372 for exactly this question and are now
+unblocked; both must emit `x-api-key`.
 
 ## Alternatives considered
 
