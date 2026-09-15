@@ -34,6 +34,13 @@ STATUS_COMPLETE = "complete"
 STATUS_IN_FLIGHT = "in-flight"
 STATUS_TRUNCATED = "truncated"
 
+# Issue #385: a devtools-only footer outcome (no Processing-trace equivalent --
+# ADR-0035 decision 7's 3 outcome buckets cover what the *proxy* decided; this one
+# covers a live capture's own ASGI teardown dying before that decision was ever
+# reached). Written by live_capture.py when the exchange's own coroutine tears down
+# -- a client disconnect, a mid-stream exception -- before a normal footer could be.
+OUTCOME_ABANDONED = "abandoned"
+
 
 @dataclass(frozen=True)
 class _CaptureRecord:

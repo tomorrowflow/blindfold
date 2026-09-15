@@ -47,6 +47,7 @@ from blindfold.processing_trace import (
 from blindfold.upstream import UpstreamClient
 
 from .capture import (
+    OUTCOME_ABANDONED,
     SECTION_OBSERVED,
     CaptureWriter,
     FooterRecord,
@@ -85,6 +86,18 @@ class _CaptureContext:
     capture_id: str
     injected: dict[str, str] = field(default_factory=dict)
     upstream_duration_ms: float | None = None
+    # Issue #385: set once the outbound record is written, by whichever seam gets
+    # there first -- ``_wrap_blindfold_payload`` (every exchange that blinds,
+    # including one the leak gate goes on to block) or ``_CapturingUpstreamClient``
+    # (unprotected mode, ADR-0038, where blinding is bypassed entirely). Guards
+    # against writing it twice for the ordinary pass/upstream-error outcomes, where
+    # both seams run.
+    outbound_recorded: bool = False
+    # Issue #385: set once the completion-marker footer is written (the normal
+    # pass/blocked/upstream-error path, in ``send_and_capture`` below). Lets the
+    # middleware's own teardown tell a normal finish apart from one that never got
+    # there, so it never overwrites a real footer with an "abandoned" one.
+    footer_written: bool = False
 
 
 # Issue #382: `blindfold_payload` is substituted as a plain module attribute,
@@ -109,8 +122,21 @@ def _wrap_blindfold_payload(existing):
     """Tee ``session.injected`` -- the engine's own authoritative pair table
     (ADR-0047 §3: it records both a graph-known **lookup** and a novel
     **mint**, via ``session.record``) -- into the active request's capture
-    context. A passthrough otherwise: ``payload``/``mapping`` are declared
-    explicitly (rather than folded into ``*args``) only so this wrapper keeps
+    context, and record the blindfolded outbound payload itself (issue #385).
+
+    Writing the ``OutboundRecord`` here -- the moment blinding produces it --
+    rather than only at the actual upstream call, is what makes a **blocked**
+    exchange's capture forensic: ``_leak_gate_or_block`` (app.py) returns
+    straight to the client on a block, never reaching
+    ``upstream.send_*``/``open_stream``, so a capture that only teed at that
+    later seam had no ``outbound`` record at all for the one outcome the
+    payload is most worth inspecting for. ``ctx.outbound_recorded`` guards
+    against a second, redundant write once the (still-blinded, unchanged)
+    payload actually reaches ``_CapturingUpstreamClient`` on a pass or an
+    upstream error.
+
+    A passthrough otherwise: ``payload``/``mapping`` are declared explicitly
+    (rather than folded into ``*args``) only so this wrapper keeps
     ``check_override_targets``'s "still requires an argument" shape check
     meaningful on a re-``install_capture`` call, which sees this wrapper
     itself as the current ``blindfold_payload``; everything else ``_exchange``
@@ -121,6 +147,11 @@ def _wrap_blindfold_payload(existing):
         ctx = _active_capture.get()
         if ctx is not None:
             ctx.injected.update(session.injected)
+            if not ctx.outbound_recorded:
+                ctx.writer.write(
+                    OutboundRecord(section=SECTION_OBSERVED, ts=_now_iso(), payload=out)
+                )
+                ctx.outbound_recorded = True
         return out, session
 
     return _wrapped
@@ -168,9 +199,15 @@ class _CapturingUpstreamClient:
         return self._inner.base_url
 
     def _record_outbound(self, payload: dict) -> None:
+        # Issue #385: already written by ``_wrap_blindfold_payload`` for the
+        # ordinary (blinded) case -- this fires only under unprotected mode
+        # (ADR-0038), which bypasses blinding entirely and never reaches that seam.
+        if self._ctx.outbound_recorded:
+            return
         self._ctx.writer.write(
             OutboundRecord(section=SECTION_OBSERVED, ts=_now_iso(), payload=payload)
         )
+        self._ctx.outbound_recorded = True
 
     async def _send_buffered(self, inner_send, payload, headers):
         """Tee a non-streaming send: record the blindfolded outbound, time the
@@ -378,12 +415,35 @@ class CaptureMiddleware:
                             injected=dict(ctx.injected),
                         )
                     )
+                    ctx.footer_written = True
                     writer.close()
             await send(message)
 
         token = _active_capture.set(ctx)
         try:
             await self._replay(scope, messages, receive, send_and_capture)
+        except BaseException as exc:
+            # Issue #385: the exchange's own coroutine is tearing down without ever
+            # reaching `send_and_capture`'s own completion marker above -- a client
+            # disconnect or a mid-stream failure `_stream_restored` (app.py) does not
+            # itself catch. Record what had arrived, with the incomplete state
+            # explicit (`OUTCOME_ABANDONED`), rather than leaving a footer-less file
+            # that reads identically to one still genuinely in flight (ADR-0047 §5).
+            if not ctx.footer_written:
+                writer.write(
+                    FooterRecord(
+                        section=SECTION_OBSERVED,
+                        ts=_now_iso(),
+                        outcome=OUTCOME_ABANDONED,
+                        reason=f"{type(exc).__name__}: {exc}",
+                        duration_ms=(time.monotonic() - start) * 1000,
+                        upstream_duration_ms=ctx.upstream_duration_ms,
+                        injected=dict(ctx.injected),
+                    )
+                )
+                ctx.footer_written = True
+                writer.close()
+            raise
         finally:
             _active_capture.reset(token)
 
