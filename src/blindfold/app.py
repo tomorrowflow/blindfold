@@ -1195,6 +1195,16 @@ def _management_url(sub_reason: str, settings: Settings) -> str:
     return f"http://{settings.host}:{settings.port}{path}"
 
 
+_CONNECT_URL_PATH = "/ui/connect"
+
+
+def _connect_url(settings: Settings) -> str:
+    """Deep link into the management app's Connect page (ADR-0027's remedy-URL
+    precedent), derived from the actual serve bind like :func:`_management_url`.
+    """
+    return f"http://{settings.host}:{settings.port}{_CONNECT_URL_PATH}"
+
+
 # ADR-0009 / SEC-7 (issue #48): the l3-unavailable 503's remedy names all three
 # on-ramps -- curating a candidate is often cheaper than waiting for an Ollama fix.
 _L3_UNAVAILABLE_REMEDY = (
@@ -3911,6 +3921,58 @@ async def search_workspace_entities(
     )
 
     return {"hits": _surrogate_space_rows(matches, all_entities, edges)}
+
+
+# Unrouted /v1/* -- the D4 error envelope, not FastAPI's bare 404 (issue #384).
+#
+# ADR-0057 D4 wrapped every Blindfold-authored error body in the Anthropic
+# envelope; an unrouted /v1/* path (the first thing a freshly configured Claude
+# Desktop probes -- GET /v1/models -- D5 keeps it unimplemented) still fell
+# through to FastAPI's bare `{"detail": "Not Found"}`, a shape no client
+# recognises as an Anthropic error. Registered last among the /v1/* handlers
+# (Starlette tries routes in registration order) so it only ever fires once
+# every real /v1/* route above has already failed to match.
+#
+# /v1/management/* (ADR-0011, a different contract whose consumers expect
+# today's bare shape) is excluded explicitly rather than by route ordering --
+# the `{full_path:path}` converter would otherwise swallow it too.
+_V1_NOT_FOUND_MESSAGE = (
+    "Blindfold does not serve this endpoint. If your client is probing for a "
+    "model list, configure explicit model IDs in the client instead of relying "
+    "on discovery. See {connect_url} for setup guidance."
+)
+
+
+@app.api_route(
+    "/v1/{full_path:path}",
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+    include_in_schema=False,
+)
+async def _v1_not_found(
+    full_path: str, settings: Settings = Depends(get_settings)
+) -> JSONResponse:
+    """Catch-all for a `/v1/*` path no route above matched.
+
+    Leak-audit (issue #384): the body is a fixed, Blindfold-authored literal --
+    ``full_path`` and the request's query string are never interpolated into it,
+    so a probed path or query carrying a real value never reaches the response.
+    ``/v1/management/*`` is excluded so its unrouted paths keep today's bare
+    FastAPI 404, asserted unchanged by test.
+    """
+    if full_path == "management" or full_path.startswith("management/"):
+        raise HTTPException(status_code=404)
+
+    message = _V1_NOT_FOUND_MESSAGE.format(connect_url=_connect_url(settings))
+    return JSONResponse(
+        status_code=404,
+        content={
+            "type": "error",
+            "error": {
+                "type": "not_found_error",
+                "message": message,
+            },
+        },
+    )
 
 
 # NOTE: /ui/entity-list route removed by issue #128 — the last embedded SPA
