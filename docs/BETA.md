@@ -12,12 +12,15 @@ The beta is deliberately narrow. Inside scope — and verified end to end:
 - **macOS**, single machine, single user.
 - **Claude Code** as the client, connected via `ANTHROPIC_BASE_URL` (the Connect
   page renders the exact snippet for your install).
+- **Claude Desktop** in 3P Gateway mode, connected via the flat-key profile the
+  Connect page renders (ADR-0057) — a redirectable client, not a non-redirectable
+  one; see the Connect page for the billing caveat (no subscription in this mode).
 - The **embedded SQLite store** (the default) with the local mapping cipher;
   the opt-in shared Postgres backend works but is not the beta's focus.
 
 Outside scope for this beta (tracked, not forgotten — see
-[Known limitations](#known-limitations)): Windows, OpenAI-protocol clients,
-Codex, and clients whose base URL cannot be redirected (e.g. Claude Desktop).
+[Known limitations](#known-limitations)): Windows, OpenAI-protocol clients, and
+Codex.
 
 ## Install & connect
 
@@ -95,7 +98,7 @@ way:
 |---|---|
 | **Claude Code only.** Codex now requires the `/v1/responses` endpoint, which Blindfold does not yet serve; OpenAI-SDK clients work at the transport level but are not beta-verified. | #263 |
 | **macOS only.** The Windows tray supervisor has a known key-injection defect that needs real hardware to diagnose. | #236 |
-| **Non-redirectable clients unsupported.** Claude Desktop and similar closed clients cannot be pointed at a local base URL today. | #62 |
+| **Claude Desktop supported via 3P Gateway mode.** Configured through the Connect page's Desktop profile, applied by hand today (a CLI writer is tracked separately); billed per token via a Console API key, never a claude.ai subscription. | ADR-0057, #376 |
 | **Signing is CI-only so far.** The release pipeline now Developer ID-signs and notarizes the menu-bar app when it builds on this repo with the maintainer's signing secrets present (#370, the CI half of #198); a locally-built app (`swift build` from source per the README) is still ad-hoc signed, same as before. The Windows/Authenticode half of #198 is still open. | #198, #370 |
 | **Restart after Setup.** Detection activation takes effect on the next process start; Setup's final restart instruction is by design. | ADR-0034 |
 | **Added latency.** Blindfolding adds per-request latency dominated by novel-entity handling; a formal per-hop cost model is planned. Sessions feel slower than direct connections, most noticeably on the first requests of a session. | #58 |

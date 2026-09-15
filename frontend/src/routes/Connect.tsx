@@ -22,6 +22,17 @@ const DEFAULT_PORT = 25463;
 const CODEX_ISSUE_URL = "https://github.com/tomorrowflow/blindfold/issues/263";
 const BETA_TRUST_BOUNDARY_URL =
   "https://github.com/tomorrowflow/blindfold/blob/main/docs/BETA.md#trust-boundary";
+// ADR-0057 D5: GET /v1/models stays unimplemented, so the profile Blindfold emits
+// must never leave inferenceModels empty (the spike measured a hand-configured
+// profile with no models hitting a 404 wall). One place so a later model change
+// is one edit -- shared by #377's CLI writer only in the shape it emits, not this
+// literal constant.
+const DESKTOP_INFERENCE_MODELS = [
+  "claude-opus-4-8-20260514",
+  "claude-sonnet-4-6-20260214",
+  "claude-haiku-4-6-20260214",
+];
+const DESKTOP_CLI_WRITER_ISSUE_URL = "https://github.com/tomorrowflow/blindfold/issues/377";
 
 function TrustBoundaryBanner() {
   return (
@@ -93,6 +104,21 @@ export function Connect() {
   );
   const workspaceHeaderSnippet = `export ANTHROPIC_CUSTOM_HEADERS="x-blindfold-workspace: ${workspaceSlug}"`;
   const openAiTerminalSnippet = `export OPENAI_BASE_URL=${base}/v1`;
+
+  const desktopProfileSnippet = JSON.stringify(
+    {
+      inferenceProvider: "gateway",
+      inferenceGatewayBaseUrl: base,
+      inferenceGatewayAuthScheme: "x-api-key",
+      chatTabEnabled: true,
+      inferenceModels: DESKTOP_INFERENCE_MODELS,
+      ...(showWorkspaceHeader
+        ? { inferenceCustomHeaders: { "x-blindfold-workspace": workspaceSlug } }
+        : {}),
+    },
+    null,
+    2
+  );
 
   return (
     <div className="bf-status-view">
@@ -184,6 +210,79 @@ export function Connect() {
               Code's attribution block from the system prompt outright. Blindfold's own
               system-block handling preserves the upstream's positional strip of it either
               way, so this just removes the dependency on that ordering.
+            </li>
+          </ul>
+        </div>
+      </section>
+
+      <section className="bf-connect-card bf-card" data-testid="connect-card-claude-desktop">
+        <h2 className="bf-card-title">Claude Desktop</h2>
+        <p className="bf-card-subtitle">
+          Third-Party (3P) Gateway mode: a profile you apply once, not an
+          environment variable.
+        </p>
+        <p data-testid="connect-desktop-no-subscription">
+          <strong>No subscription applies here.</strong> Unlike Claude Code above,
+          Desktop in 3P Gateway mode never signs in to an Anthropic account, so a
+          claude.ai subscription cannot carry this traffic. The API key you enter in
+          the Desktop panel (never here -- this page does not ask for or show it) is
+          billed per token to whoever owns it, i.e. metered Console API billing.
+        </p>
+        <CopyableSnippet code={desktopProfileSnippet} label="Claude Desktop 3P Gateway profile JSON" />
+        <ol className="bf-connect-desktop-steps" data-testid="connect-desktop-steps">
+          <li>
+            In Claude Desktop, turn on <strong>Developer Mode</strong>, then open{" "}
+            <strong>Configure Third-Party Inference</strong> and pick provider{" "}
+            <strong>Gateway</strong>.
+          </li>
+          <li>
+            Paste the fields from the JSON above, and enter your own API key directly
+            in that panel.
+          </li>
+          <li>
+            Fill in the <strong>Models</strong> field with the pinned model IDs above
+            even if you configure by hand rather than pasting the JSON --
+            Blindfold doesn't serve <code>GET /v1/models</code> (ADR-0057), and a
+            profile that leaves Models empty hits a 404 wall telling you to add
+            entries there.
+          </li>
+          <li>
+            <strong>Apply</strong>, then fully quit and relaunch Claude Desktop -- the
+            profile is only read once, at launch.
+          </li>
+          <li>
+            Use the panel's own <strong>Test connection</strong>, or the{" "}
+            <strong>Test connection</strong> section below. It sends a one-token
+            probe to the first pinned model, so if it fails, check the model list
+            first.
+          </li>
+        </ol>
+        <div className="bf-connect-good-to-know" data-testid="connect-claude-desktop-notes">
+          <h3>Good to know</h3>
+          <ul>
+            <li>
+              The profile lives on disk at{" "}
+              <code>~/Library/Application Support/Claude-3p/configLibrary/&lt;id&gt;.json</code>
+              , paired with a <code>_meta.json</code> naming which profile is applied
+              -- a separate Electron profile directory from Desktop's regular{" "}
+              <code>Claude/</code> config, not something to hand-edit day to day.
+            </li>
+            <li>
+              A plain <code>http://127.0.0.1:&lt;port&gt;</code> base URL is accepted
+              as-is -- no TLS, no <code>localhost</code> fallback needed.
+            </li>
+            <li>
+              Once the CLI writer ships, one command will do all of the above for
+              you --{" "}
+              <a
+                href={DESKTOP_CLI_WRITER_ISSUE_URL}
+                target="_blank"
+                rel="noreferrer"
+                data-testid="connect-desktop-cli-writer-link"
+              >
+                track progress in #377 <ExternalLink size={12} aria-hidden="true" />
+              </a>
+              .
             </li>
           </ul>
         </div>
