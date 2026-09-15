@@ -515,60 +515,82 @@ def run_server(
     # Do not "fix" this omission by adding a scrub-reason entry for it.
     refuse_if_legacy_l3_env_vars()
     refuse_if_legacy_root_token_opt_in_env_var()
-    settings = settings or get_settings()
-    refuse_if_root_token(settings, transit_client=transit_client)
-    refuse_if_ambiguous_mapping_cipher(settings)
-    refuse_if_malformed_store_key(settings)
-    refuse_if_undecryptable_store(settings, entity_graph=entity_graph)
-    # Reused below for the empty-store detection: refuse_if_populated_plaintext_store
-    # already constructs the backend-dispatched store as part of its own check, so
-    # run_server doesn't pay for a second construction (and a second migration pass)
-    # just to answer "is the store empty?".
-    store = refuse_if_populated_plaintext_store(settings, entity_graph=entity_graph)
-    refuse_if_cloud_model(settings)
-    refuse_if_omlx_non_loopback(settings)
-    refuse_if_gliner_model_missing(settings)
-    # A no-op if the process already configured logging (e.g. an embedding app, or
-    # pytest's own log capture); otherwise this is the only thing standing between
-    # the line below and Python's logging module silently dropping it (issue #82 —
-    # `blindfold serve` emitted it on a module logger with no handler attached yet).
-    logging.basicConfig(level=logging.INFO)
-    logger.info(
-        "blindfold_startup: openai_upstream_base_url=%s",
-        settings.effective_openai_upstream_base_url,
-    )
-    # Empty-store detection (issue #106, Setup slice 3/5): points a first-run
-    # operator at Setup, or otherwise names the management UI -- either way the
-    # line carries only a URL, never entity values or other sensitive data.
-    if store.is_empty():
-        url = _console_management_url("/ui/setup", settings)
-        logger.info("blindfold: first run — no workspace yet. Open %s to finish setup.", url)
-    else:
-        url = _console_management_url("/ui/status", settings)
-        logger.info("blindfold: management UI at %s", url)
-    # Ephemeral-store honesty banner (issue #199, ADR-0043's interim honesty
-    # slice): a falsy settings.database_url runs on in-memory module-level
-    # singletons -- every workspace/entity is lost on restart. Say so on the
-    # console line an operator actually reads at startup. Framed as a permanent
-    # "opted out of persistence" indicator, this survived ADR-0043's later
-    # unset-default -> SQLite flip (issue #204) with no code change here: the
-    # trigger for this branch moved from an unset BLINDFOLD_DATABASE_URL to the
-    # explicit memory:// sentinel, but the falsy-database_url check itself didn't.
-    if not settings.database_url:
+    # Issue #388: `host`/`port` here -- not BLINDFOLD_HOST/BLINDFOLD_PORT -- are the
+    # actual ASGI bind (see the unconditional `runner(APP_TARGET, host=host,
+    # port=port)` below). get_settings() otherwise has no way to learn a bind that
+    # diverged from its own env/default (e.g. `--port` picked because the configured
+    # default was already taken), so every later get_settings() call in this process
+    # -- the blocked-503 management_url (ADR-0027) and /v1/status's reported config --
+    # would keep naming a dead instance. Mirroring the real bind into the env for the
+    # life of this call closes that gap without a second settings-like singleton.
+    prev_host = os.environ.get("BLINDFOLD_HOST")
+    prev_port = os.environ.get("BLINDFOLD_PORT")
+    os.environ["BLINDFOLD_HOST"] = host
+    os.environ["BLINDFOLD_PORT"] = str(port)
+    try:
+        settings = settings or get_settings()
+        refuse_if_root_token(settings, transit_client=transit_client)
+        refuse_if_ambiguous_mapping_cipher(settings)
+        refuse_if_malformed_store_key(settings)
+        refuse_if_undecryptable_store(settings, entity_graph=entity_graph)
+        # Reused below for the empty-store detection: refuse_if_populated_plaintext_store
+        # already constructs the backend-dispatched store as part of its own check, so
+        # run_server doesn't pay for a second construction (and a second migration pass)
+        # just to answer "is the store empty?".
+        store = refuse_if_populated_plaintext_store(settings, entity_graph=entity_graph)
+        refuse_if_cloud_model(settings)
+        refuse_if_omlx_non_loopback(settings)
+        refuse_if_gliner_model_missing(settings)
+        # A no-op if the process already configured logging (e.g. an embedding app, or
+        # pytest's own log capture); otherwise this is the only thing standing between
+        # the line below and Python's logging module silently dropping it (issue #82 —
+        # `blindfold serve` emitted it on a module logger with no handler attached yet).
+        logging.basicConfig(level=logging.INFO)
         logger.info(
-            "blindfold: store is ephemeral (in-memory) -- entities and workspaces "
-            "are lost on restart. Set BLINDFOLD_DATABASE_URL to configure a "
-            "durable store."
+            "blindfold_startup: openai_upstream_base_url=%s",
+            settings.effective_openai_upstream_base_url,
         )
-    elif settings.mapping_cipher == MAPPING_CIPHER_NONE:
-        # "No mapping cipher" honesty banner (ADR-0045 §10/§12, issue #227/#229):
-        # persons are ephemeral (in-process only, lost on restart) because the DB
-        # schema is ciphertext-only for persons (ADR-0045 §5). Terms and other
-        # entities persist normally (plaintext for terms is an accepted interim
-        # posture, ADR-0045 §12). Configure a mapping cipher to persist persons.
-        logger.info(
-            "blindfold: no mapping cipher configured -- persons are in-memory and "
-            "ephemeral (lost on restart). Set BLINDFOLD_STORE_KEY (local cipher) or "
-            "BLINDFOLD_OPENBAO_TOKEN (Transit) to persist persons."
-        )
-    runner(APP_TARGET, host=host, port=port)
+        # Empty-store detection (issue #106, Setup slice 3/5): points a first-run
+        # operator at Setup, or otherwise names the management UI -- either way the
+        # line carries only a URL, never entity values or other sensitive data.
+        if store.is_empty():
+            url = _console_management_url("/ui/setup", settings)
+            logger.info("blindfold: first run — no workspace yet. Open %s to finish setup.", url)
+        else:
+            url = _console_management_url("/ui/status", settings)
+            logger.info("blindfold: management UI at %s", url)
+        # Ephemeral-store honesty banner (issue #199, ADR-0043's interim honesty
+        # slice): a falsy settings.database_url runs on in-memory module-level
+        # singletons -- every workspace/entity is lost on restart. Say so on the
+        # console line an operator actually reads at startup. Framed as a permanent
+        # "opted out of persistence" indicator, this survived ADR-0043's later
+        # unset-default -> SQLite flip (issue #204) with no code change here: the
+        # trigger for this branch moved from an unset BLINDFOLD_DATABASE_URL to the
+        # explicit memory:// sentinel, but the falsy-database_url check itself didn't.
+        if not settings.database_url:
+            logger.info(
+                "blindfold: store is ephemeral (in-memory) -- entities and workspaces "
+                "are lost on restart. Set BLINDFOLD_DATABASE_URL to configure a "
+                "durable store."
+            )
+        elif settings.mapping_cipher == MAPPING_CIPHER_NONE:
+            # "No mapping cipher" honesty banner (ADR-0045 §10/§12, issue #227/#229):
+            # persons are ephemeral (in-process only, lost on restart) because the DB
+            # schema is ciphertext-only for persons (ADR-0045 §5). Terms and other
+            # entities persist normally (plaintext for terms is an accepted interim
+            # posture, ADR-0045 §12). Configure a mapping cipher to persist persons.
+            logger.info(
+                "blindfold: no mapping cipher configured -- persons are in-memory and "
+                "ephemeral (lost on restart). Set BLINDFOLD_STORE_KEY (local cipher) or "
+                "BLINDFOLD_OPENBAO_TOKEN (Transit) to persist persons."
+            )
+        runner(APP_TARGET, host=host, port=port)
+    finally:
+        if prev_host is None:
+            os.environ.pop("BLINDFOLD_HOST", None)
+        else:
+            os.environ["BLINDFOLD_HOST"] = prev_host
+        if prev_port is None:
+            os.environ.pop("BLINDFOLD_PORT", None)
+        else:
+            os.environ["BLINDFOLD_PORT"] = prev_port
