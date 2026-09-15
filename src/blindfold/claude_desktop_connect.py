@@ -170,8 +170,9 @@ def connect_claude_desktop(
 
     previous_meta: dict = {}
     if meta_path.exists():
-        previous_meta = json.loads(meta_path.read_text())
-        (backup_dir / _META_FILENAME).write_text(meta_path.read_text())
+        meta_text = meta_path.read_text()
+        previous_meta = json.loads(meta_text)
+        (backup_dir / _META_FILENAME).write_text(meta_text)
         previous_applied_id = previous_meta.get("appliedId")
         if previous_applied_id:
             previous_profile_path = config_library / f"{previous_applied_id}.json"
