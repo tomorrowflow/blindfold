@@ -79,7 +79,9 @@ enters their own Anthropic (or Bedrock/Vertex/Foundry-compatible) key as a *stat
 in the Desktop profile; Blindfold forwards it verbatim. The August draft's "inject the real
 key server-side, the real key never reaches the client" is rejected: it inverts the trust
 model (the client *is* the key's owner), creates a secret the proxy must custody (a
-non-goal), and turns a loopback single-owner proxy into a credential-bearing service.
+non-goal), and turns a loopback single-owner proxy into a credential-bearing service. The
+user-facing cost of this decision — Desktop in 3P Gateway mode cannot use a subscription —
+is recorded in Consequences below.
 
 **D4 — Error bodies gain the Anthropic error envelope (amends ADR-0027).** Blocks stay HTTP
 errors, never synthetic model responses — ADR-0027's decision is unchanged. What changes is
@@ -136,6 +138,25 @@ the compliance-grade path, not something the proxy does.
 
 ## Consequences
 
+- **Billing posture: Desktop in 3P Gateway mode cannot use a subscription (D3).** The mode
+  that makes Desktop redirectable is the same mode that drops subscription-backed inference —
+  they are one switch, not two. Desktop in 3P Gateway mode has no signed-in Anthropic account:
+  the research note's fact 4 ("There is no sign-in step, no cloud-stored conversation history,
+  and no per-user state on Anthropic infrastructure") and fact 15 ("User identity: Local device
+  identity only" — claude.ai org settings do not apply) hold regardless of which
+  `inferenceCredentialKind` the profile uses (`static`, `helper-script`, `interactive` OIDC
+  PKCE, `vendor-profile`, `oauth`, `workforce`); each authenticates the user to *their gateway*,
+  and whatever it yields is still forwarded upstream as the billed credential. So
+  subscription-backed inference is structurally unavailable in this mode — this follows from
+  D1's redirectability, not from any Blindfold choice. The credential the user configures in
+  the Desktop profile (D3) is billed per token to whoever owns it, i.e. metered Console API
+  billing. **The asymmetry with Claude Code is the point:** a redirected Claude Code keeps its
+  subscription — it remains signed in and forwards its own credential — while Desktop in 3P
+  mode cannot attach one to any account. Client-onboarding copy must state the billing posture
+  per client and must not generalise Claude Code's promise to Desktop. The alternative that
+  would avoid this — Blindfold holding a server-side upstream credential so the client needs
+  none — is already rejected by D3; this bullet records the cost of that rejection, not a new
+  argument against it.
 - #62's three acceptance criteria are met: the decision (this ADR), the feasibility question
   (moot — vendor redirect, D2), and the slice plan: #372 HITL contract spike; #373 `thinking_delta` restore; #374
   `redacted_thinking` opacity; #375 Anthropic error envelope; #376 Connect page profile;
