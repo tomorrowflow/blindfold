@@ -9,10 +9,15 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
 
+import httpx
 import pytest
+import uvicorn
 
-from blindfold.config import Settings
+from conftest import _free_port, _wait_for_port
+
+from blindfold.config import Settings, get_settings
 from blindfold.entity_graph import EntityGraph
 from blindfold.serve import (
     DEFAULT_HOST,
@@ -818,6 +823,81 @@ def test_run_server_binding_elsewhere_is_an_explicit_opt_in():
 
     assert calls[0][1]["host"] == "0.0.0.0"
     assert calls[0][1]["port"] == 9000
+
+
+def test_run_server_makes_the_actual_bind_port_visible_to_get_settings():
+    # Issue #388: a Diagnostic session started on a non-default port (e.g. because
+    # the configured default was already taken) must report *that* port everywhere
+    # get_settings() is later consulted (the blocked-503 management_url, /v1/status'
+    # config) -- not BLINDFOLD_PORT/DEFAULT_PORT, which is silent on what the ASGI
+    # runner was actually told to bind. The default-port case can't distinguish the
+    # two sources, so this pins a non-default one.
+    observed = {}
+
+    def runner(app, **kwargs):
+        observed["settings"] = get_settings()
+
+    run_server(host="127.0.0.1", port=25464, runner=runner)
+
+    assert observed["settings"].host == "127.0.0.1"
+    assert observed["settings"].port == 25464
+
+
+def test_run_server_end_to_end_block_and_status_name_the_actual_bound_port(wired_app):
+    # Issue #388 acceptance: the spike observed a block on a session serving 25464
+    # pointing the operator at 25463 -- a dead instance. Exercises the real chain
+    # (run_server's actual ASGI bind -> get_settings() -> both the blocked-503
+    # management_url, ADR-0027, and /v1/status' config) over a real loopback
+    # socket, on a non-default port. The default-port case can't distinguish "reports
+    # the bind" from "reports the default", so this pins a non-default one.
+    from blindfold.app import app, get_l3_detector
+    from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
+
+    class _UnavailableAdjudicator:
+        def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
+            raise ConnectionError("ollama unreachable")
+
+    port = _free_port()
+    server_holder = {}
+
+    def runner(app_target, *, host, port):
+        # A blocking runner, same shape as the real default (uvicorn.run) -- this is
+        # what keeps run_server's env-synced BLINDFOLD_HOST/PORT (issue #388) live for
+        # exactly as long as the server is actually up. run_server itself runs on a
+        # background thread below so this call can block here without hanging the test.
+        config = uvicorn.Config(app_target, host=host, port=port, log_level="error")
+        server = uvicorn.Server(config)
+        server.install_signal_handlers = lambda: None
+        server_holder["server"] = server
+        server.run()
+
+    app.dependency_overrides[get_l3_detector] = lambda: L3Detector(_UnavailableAdjudicator())
+    server_thread = threading.Thread(
+        target=run_server,
+        kwargs={"host": "127.0.0.1", "port": port, "runner": runner},
+        daemon=True,
+    )
+    try:
+        server_thread.start()
+        _wait_for_port(port)
+
+        status_resp = httpx.get(f"http://127.0.0.1:{port}/v1/status")
+        assert status_resp.json()["config"]["port"] == port
+
+        block_resp = httpx.post(
+            f"http://127.0.0.1:{port}/v1/messages",
+            json={
+                "model": "m",
+                "messages": [{"role": "user", "content": "Please brief Quentin."}],
+            },
+        )
+        assert block_resp.status_code == 503
+        management_url = block_resp.json()["error"]["management_url"]
+        assert management_url == f"http://127.0.0.1:{port}/ui/status"
+    finally:
+        server_holder["server"].should_exit = True
+        server_thread.join(timeout=10)
+        app.dependency_overrides.pop(get_l3_detector, None)
 
 
 def test_run_server_refuses_a_legacy_l3_env_var_before_starting_the_asgi_server(monkeypatch):
