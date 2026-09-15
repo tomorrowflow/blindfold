@@ -415,6 +415,155 @@ async def test_a_streaming_exchange_produces_provider_and_restored_chunks_in_ord
     assert footer.outcome == "passed"
 
 
+class _LeakyMapping(SurrogateMapping):
+    """Test double: ``real_values()`` knows about an entity that ``entities()`` does
+    NOT expose as a detection surface -- simulates an engine miss, so the blinder
+    passes ``leaked_real`` through unsubstituted and the pre-egress leak gate is the
+    one that catches and blocks it (mirrors ``tests/test_proxy_fail_closed.py``'s
+    own double for the same gate).
+    """
+
+    def __init__(self, leaked_real: str) -> None:
+        super().__init__()
+        self._leaked_real = leaked_real
+
+    def real_values(self) -> list[str]:
+        return [self._leaked_real]
+
+
+@pytest.mark.anyio
+async def test_a_leak_gate_blocked_exchange_captures_the_outbound_payload_the_gate_rejected(
+    tmp_path,
+):
+    """Issue #385 acceptance criterion 1: a blocked exchange's capture contains the
+    outbound payload as it stood when the leak gate rejected it -- the same
+    blindfolded payload :func:`~blindfold.engine.leak_gate` actually scanned, complete
+    with whatever occurrence it was the blinder failed to substitute. Before this
+    fix, the capture had a header and a footer (outcome=blocked) but no ``outbound``
+    record at all, since the leak-gate block returns before ``upstream.send_*``/
+    ``open_stream`` is ever called -- the one seam that used to write it.
+    """
+    directory = CaptureDirectory(tmp_path / "captures")
+    recorded: list[dict] = []
+    app.dependency_overrides[get_upstream_client] = lambda: _echoing_stub_upstream(recorded)
+    app.dependency_overrides[get_mapping] = lambda: _LeakyMapping(leaked_real="Quentin")
+    app.dependency_overrides[get_workspace_policies] = _deterministic_only_policies
+
+    request_body = {
+        "model": "claude-opus",
+        "messages": [{"role": "user", "content": "Brief Quentin now."}],
+    }
+
+    try:
+        wrapped = install_capture(app, directory)
+        transport = httpx.ASGITransport(app=wrapped)
+        async with httpx.AsyncClient(transport=transport, base_url="http://proxy.test") as client:
+            response = await client.post("/v1/messages", json=request_body)
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 503, response.text
+    assert response.json()["error"]["event"] == "blocked-leak"
+    assert recorded == [], "leak gate must still block before egress -- unaffected by capture"
+
+    capture_files = sorted((tmp_path / "captures").glob("*.jsonl"))
+    assert len(capture_files) == 1
+    capture = read_capture(capture_files[0])
+
+    footer = next(r for r in capture.records if isinstance(r, FooterRecord))
+    assert footer.outcome == "blocked"
+
+    outbound = next(r for r in capture.records if isinstance(r, OutboundRecord))
+    # The forensic payoff (acceptance criterion 4): the un-substituted occurrence is
+    # right there in the captured payload, inspectable on its own.
+    assert "Quentin" in json.dumps(outbound.payload)
+
+
+class _AbandonedMidStream(httpx.AsyncByteStream):
+    """Yields ``chunks`` and then raises, simulating an exchange abandoned
+    mid-stream (a client disconnect surfaces the same way: the read loop dies
+    before the stream completes) -- distinct from the already-handled mid-stream
+    *disconnect* case (``httpx.HTTPError``, caught inside ``_stream_restored`` and
+    turned into a clean ``upstream-error`` finish); this is an exception
+    ``_stream_restored`` does NOT catch, so it propagates all the way out of the
+    ASGI call before the client-facing response ever completes.
+    """
+
+    def __init__(self, chunks: list[bytes]) -> None:
+        self._chunks = chunks
+
+    async def __aiter__(self):
+        for chunk in self._chunks:
+            yield chunk
+        raise RuntimeError("simulated abandonment mid-stream")
+
+    async def aclose(self) -> None:
+        return None
+
+
+@pytest.mark.anyio
+async def test_an_exchange_abandoned_mid_stream_records_what_it_had_with_an_explicit_incomplete_outcome(
+    tmp_path,
+):
+    """Issue #385 acceptance criterion 2: an exchange abandoned mid-stream (the
+    ASGI call tears down before the footer's completion marker is ever written)
+    must record what it had, with its incomplete state explicit -- not a bare
+    footer-less file that reads identically to one still genuinely in flight.
+    """
+    directory = CaptureDirectory(tmp_path / "captures")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        chunks = [
+            _sse_event("message_start", {"type": "message_start"}),
+            _sse_event(
+                "content_block_start",
+                {"type": "content_block_start", "index": 0, "content_block": {"type": "text", "text": ""}},
+            ),
+        ]
+        return httpx.Response(
+            200,
+            stream=_AbandonedMidStream(chunks),
+            headers={"content-type": "text/event-stream"},
+        )
+
+    client = httpx.AsyncClient(base_url="http://upstream.test", transport=httpx.MockTransport(handler))
+    upstream = UpstreamClient(base_url="http://upstream.test", client=client)
+
+    app.dependency_overrides[get_upstream_client] = lambda: upstream
+    app.dependency_overrides[get_mapping] = lambda: SurrogateMapping()
+    app.dependency_overrides[get_workspace_policies] = _deterministic_only_policies
+
+    request_body = {
+        "model": "claude-opus",
+        "stream": True,
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+
+    try:
+        wrapped = install_capture(app, directory)
+        transport = httpx.ASGITransport(app=wrapped)
+        async with httpx.AsyncClient(transport=transport, base_url="http://proxy.test") as ac:
+            with pytest.raises(RuntimeError, match="simulated abandonment mid-stream"):
+                await ac.post("/v1/messages", json=request_body)
+    finally:
+        app.dependency_overrides.clear()
+
+    capture_files = sorted((tmp_path / "captures").glob("*.jsonl"))
+    assert len(capture_files) == 1
+    capture = read_capture(capture_files[0])
+
+    # What it had: the provider chunks that did arrive before the abandonment.
+    provider_chunks = [r for r in capture.records if isinstance(r, ProviderChunkRecord)]
+    assert len(provider_chunks) >= 1
+
+    # Its incomplete state explicit: a footer IS written (capture.status reads
+    # "complete" per the schema's own completion-marker convention), but its
+    # outcome names the abandonment rather than claiming "passed".
+    footer = next(r for r in capture.records if isinstance(r, FooterRecord))
+    assert footer.outcome not in ("passed", "blocked", "upstream_error")
+    assert "abandon" in footer.outcome
+
+
 @pytest.mark.anyio
 async def test_chat_completions_is_not_captured_since_its_own_upstream_seam_is_unwrapped(tmp_path):
     """``/v1/chat/completions`` egresses through ``get_openai_upstream_client``,
