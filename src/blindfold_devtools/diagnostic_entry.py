@@ -25,7 +25,7 @@ import uvicorn
 
 from blindfold.app import app as _blindfold_app
 from blindfold.config import DEFAULT_HOST, DEFAULT_PORT, Settings, get_settings
-from blindfold.serve import refuse_if_root_token
+from blindfold.serve import mirror_bind_into_env, refuse_if_root_token
 from blindfold.transit import TransitClient
 
 from .capture_directory import CaptureDirectory
@@ -85,8 +85,17 @@ def run_diagnostic_server(
     ``host``/``port`` default to the same loopback constants ordinary
     ``blindfold serve`` binds to (``blindfold.config.DEFAULT_HOST``/
     ``DEFAULT_PORT``), not a second copy of that default.
+
+    Issue #396 (a residual of #388, which fixed this for ``blindfold.serve``'s
+    own ``run_server`` but never reached this entry point): mirrors the actual
+    bind into ``BLINDFOLD_HOST``/``BLINDFOLD_PORT`` for the life of the call via
+    ``blindfold.serve.mirror_bind_into_env`` -- shared with ``run_server`` rather
+    than reimplemented -- so a Diagnostic session bound to a non-default port
+    reports *that* port in every later ``get_settings()`` call: ``/v1/status``'s
+    config and a block's 503 ``management_url`` (ADR-0027).
     """
-    settings = settings if settings is not None else get_settings()
-    refuse_if_root_token(settings, transit_client=transit_client)
-    app = build_diagnostic_app(settings=settings, devtools_settings=devtools_settings)
-    runner(app, host=host, port=port)
+    with mirror_bind_into_env(host, port):
+        settings = settings if settings is not None else get_settings()
+        refuse_if_root_token(settings, transit_client=transit_client)
+        app = build_diagnostic_app(settings=settings, devtools_settings=devtools_settings)
+        runner(app, host=host, port=port)

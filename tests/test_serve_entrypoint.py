@@ -7,6 +7,7 @@ blindfold/restore/verify-pass/fail-closed request-path invariants are untouched.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import threading
@@ -29,6 +30,7 @@ from blindfold.serve import (
     LocalOnlyModelRequiredError,
     MalformedStoreKeyError,
     OmlxLoopbackRequiredError,
+    mirror_bind_into_env,
     refuse_if_ambiguous_mapping_cipher,
     refuse_if_cloud_model,
     refuse_if_gliner_model_missing,
@@ -841,6 +843,22 @@ def test_run_server_makes_the_actual_bind_port_visible_to_get_settings():
 
     assert observed["settings"].host == "127.0.0.1"
     assert observed["settings"].port == 25464
+
+
+def test_mirror_bind_into_env_restores_symmetrically(monkeypatch):
+    # Issue #396: the mirroring shared by run_server and the devtools Diagnostic
+    # entry point must restore whatever was there before -- a previously-unset
+    # var removed again, a previously-set one restored verbatim -- regardless of
+    # which caller entered the context.
+    monkeypatch.delenv("BLINDFOLD_HOST", raising=False)
+    monkeypatch.setenv("BLINDFOLD_PORT", "12345")
+
+    with mirror_bind_into_env("0.0.0.0", 9999):
+        assert os.environ["BLINDFOLD_HOST"] == "0.0.0.0"
+        assert os.environ["BLINDFOLD_PORT"] == "9999"
+
+    assert "BLINDFOLD_HOST" not in os.environ
+    assert os.environ["BLINDFOLD_PORT"] == "12345"
 
 
 def test_run_server_end_to_end_block_and_status_name_the_actual_bound_port(wired_app):

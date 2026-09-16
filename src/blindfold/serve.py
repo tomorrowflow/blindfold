@@ -13,9 +13,11 @@ SEC-2's root-token escape hatch, there is no opt-in here).
 
 from __future__ import annotations
 
+import contextlib
 import ipaddress
 import logging
 import os
+from collections.abc import Iterator
 from typing import Callable
 from urllib.parse import urlparse
 
@@ -484,6 +486,45 @@ def _console_management_url(path: str, settings: Settings) -> str:
     return f"http://{settings.host}:{settings.port}{path}"
 
 
+@contextlib.contextmanager
+def mirror_bind_into_env(host: str, port: int) -> Iterator[None]:
+    """Mirror an actual ASGI bind into ``BLINDFOLD_HOST``/``BLINDFOLD_PORT`` for the
+    life of the ``with`` block (issue #388, and its devtools residual #396).
+
+    ``host``/``port`` here are the actual bind a ``runner(app, host=host,
+    port=port)`` call is given -- not ``BLINDFOLD_HOST``/``BLINDFOLD_PORT``, which
+    is silent on a bind that diverged from its own env/default (e.g. ``--port``
+    picked because the configured default was already taken). Every later
+    ``get_settings()`` call in this process -- the blocked-503
+    ``management_url`` (ADR-0027) and ``/v1/status``'s reported config -- would
+    otherwise keep naming a dead instance. Mirroring the real bind into the env
+    for the life of the call closes that gap without a second settings-like
+    singleton, and this is the one place that does the reconciling: every entry
+    point that hands a bind to a ``uvicorn``-compatible runner (``blindfold.serve``'s
+    own ``run_server``, and ``blindfold_devtools``'s Diagnostic-session
+    ``run_diagnostic_server``) shares it rather than re-deriving it.
+
+    Restoration is symmetrical: a previously-unset variable is removed again,
+    a previously-set one restored verbatim -- regardless of what ran inside the
+    block.
+    """
+    prev_host = os.environ.get("BLINDFOLD_HOST")
+    prev_port = os.environ.get("BLINDFOLD_PORT")
+    os.environ["BLINDFOLD_HOST"] = host
+    os.environ["BLINDFOLD_PORT"] = str(port)
+    try:
+        yield
+    finally:
+        if prev_host is None:
+            os.environ.pop("BLINDFOLD_HOST", None)
+        else:
+            os.environ["BLINDFOLD_HOST"] = prev_host
+        if prev_port is None:
+            os.environ.pop("BLINDFOLD_PORT", None)
+        else:
+            os.environ["BLINDFOLD_PORT"] = prev_port
+
+
 def run_server(
     host: str = DEFAULT_HOST,
     port: int = DEFAULT_PORT,
@@ -515,19 +556,10 @@ def run_server(
     # Do not "fix" this omission by adding a scrub-reason entry for it.
     refuse_if_legacy_l3_env_vars()
     refuse_if_legacy_root_token_opt_in_env_var()
-    # Issue #388: `host`/`port` here -- not BLINDFOLD_HOST/BLINDFOLD_PORT -- are the
-    # actual ASGI bind (see the unconditional `runner(APP_TARGET, host=host,
-    # port=port)` below). get_settings() otherwise has no way to learn a bind that
-    # diverged from its own env/default (e.g. `--port` picked because the configured
-    # default was already taken), so every later get_settings() call in this process
-    # -- the blocked-503 management_url (ADR-0027) and /v1/status's reported config --
-    # would keep naming a dead instance. Mirroring the real bind into the env for the
-    # life of this call closes that gap without a second settings-like singleton.
-    prev_host = os.environ.get("BLINDFOLD_HOST")
-    prev_port = os.environ.get("BLINDFOLD_PORT")
-    os.environ["BLINDFOLD_HOST"] = host
-    os.environ["BLINDFOLD_PORT"] = str(port)
-    try:
+    # Issue #388: see mirror_bind_into_env's own docstring for why this mirrors the
+    # actual ASGI bind (the unconditional `runner(APP_TARGET, host=host, port=port)`
+    # below) into the env for the life of this call.
+    with mirror_bind_into_env(host, port):
         settings = settings or get_settings()
         refuse_if_root_token(settings, transit_client=transit_client)
         refuse_if_ambiguous_mapping_cipher(settings)
@@ -585,12 +617,3 @@ def run_server(
                 "BLINDFOLD_OPENBAO_TOKEN (Transit) to persist persons."
             )
         runner(APP_TARGET, host=host, port=port)
-    finally:
-        if prev_host is None:
-            os.environ.pop("BLINDFOLD_HOST", None)
-        else:
-            os.environ["BLINDFOLD_HOST"] = prev_host
-        if prev_port is None:
-            os.environ.pop("BLINDFOLD_PORT", None)
-        else:
-            os.environ["BLINDFOLD_PORT"] = prev_port
