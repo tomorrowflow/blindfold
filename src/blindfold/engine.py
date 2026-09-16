@@ -1693,13 +1693,28 @@ def _blindfold_text(
             hop_ctx.surrogates.append(span.surrogate)
     l2_ranges = [(span.start, span.end) for span in l2_spans]
 
+    # Issue #394 (reviewer-found regression, this same issue's cycle 1): the
+    # confirmed-component pass below re-runs over already-blinded text on the
+    # cross-hop closing sweep (#386's _close_cross_hop_mint_gap) exactly like the
+    # provisional-pair pass does, so it needs the identical #68/#292 self-poisoning
+    # guard -- an occurrence inside an already-injected surrogate's own literal
+    # text must never be treated as a fresh confirmed-component match, or the
+    # closing sweep could rewrite a live surrogate's own substring in place (e.g.
+    # entity B's real component "Brenner" matching literally inside entity A's
+    # already-injected surrogate "Alex Brenner"). Computed unconditionally --
+    # not gated on ``inbox is not None`` -- because the confirmed-component pass
+    # itself runs regardless of ``inbox`` (reads ``mapping.entities()`` alone),
+    # so the guard must exist on the no-inbox call path too.
+    injected_ranges = _injected_surrogate_ranges(text, mapping, session, inbox)
+
     # Issue #394: a CONFIRMED entity's own bare-word component (e.g. "Doe" once
     # "Jane Doe" -> "Alex Brenner" is in the entity graph) -- the confirmed-side
     # mirror of #306's provisional-pair component pass, run at L2 precedence
-    # (excludes only L2's own claimed ranges) so a confirmed component always
-    # wins over a provisional one for the same literal text below.
+    # (excludes L2's own claimed ranges plus the injected-surrogate guard above)
+    # so a confirmed component always wins over a provisional one for the same
+    # literal text below.
     confirmed_component_spans = _collect_confirmed_component_spans(
-        text, mapping, session, hop_ctx, exclude=l2_ranges
+        text, mapping, session, hop_ctx, exclude=l2_ranges + injected_ranges
     )
     confirmed_component_ranges = [
         (span.start, span.end) for span in confirmed_component_spans
@@ -1724,11 +1739,6 @@ def _blindfold_text(
     # time over already-blinded text (the cross-hop closing sweep below) could
     # rewrite a live surrogate's own substring in place -- corrupting it, not
     # protecting anything.
-    injected_ranges = (
-        _injected_surrogate_ranges(text, mapping, session, inbox)
-        if inbox is not None
-        else []
-    )
     pp_spans = _collect_provisional_pair_spans(
         text,
         inbox,
@@ -2276,7 +2286,10 @@ def _resolve_group_suppression_trace(
 
 
 def _live_surrogate_values(
-    text: str, mapping: SurrogateMapping, session: ExchangeSession, inbox: ReviewInbox
+    text: str,
+    mapping: SurrogateMapping,
+    session: ExchangeSession,
+    inbox: ReviewInbox | None,
 ) -> set[str]:
     """Every surrogate value that actually occurs at least once in ``text``.
 
@@ -2285,6 +2298,11 @@ def _live_surrogate_values(
     PII-minted), surrogates already recorded in ``session`` for this exchange, and
     provisional surrogates the review inbox has actually minted (this and prior
     exchanges — the inbox is process-global).
+
+    ``inbox=None`` (issue #394) contributes no provisional surrogates -- the
+    confirmed-component pass needs this guard available even on the no-inbox
+    call path (:func:`_blindfold_text` when ``inbox is None``), where there is no
+    provisional vocabulary to begin with.
 
     Filtered down to values literally present in ``text`` rather than the full
     process-global vocabulary: a "Bernhard Vogt" seed surrogate for an unrelated
@@ -2298,12 +2316,16 @@ def _live_surrogate_values(
     """
     values: set[str] = set(mapping.known_surrogates())
     values.update(session.injected)
-    values.update(item.provisional_surrogate for item in inbox.list())
+    if inbox is not None:
+        values.update(item.provisional_surrogate for item in inbox.list())
     return {value for value in values if value and value in text}
 
 
 def _injected_surrogate_ranges(
-    result: str, mapping: SurrogateMapping, session: ExchangeSession, inbox: ReviewInbox
+    result: str,
+    mapping: SurrogateMapping,
+    session: ExchangeSession,
+    inbox: ReviewInbox | None,
 ) -> list[tuple[int, int]]:
     """Character ranges in ``result`` a candidate must fall entirely inside to be
     refused as a fresh novel candidate — i.e. where an already-injected surrogate

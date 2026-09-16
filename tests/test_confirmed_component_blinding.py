@@ -226,3 +226,52 @@ def test_restore_round_trips_both_the_bare_component_and_the_full_surrogate():
     assert restored["content"][0]["text"] == (
         "Sure -- I'll ping Doe now. Jane Doe already reviewed it."
     )
+
+
+def test_closing_sweep_does_not_rewrite_a_live_surrogate_word_shared_with_another_confirmed_entitys_component():
+    # Reviewer-found regression (cycle 1 review of this same issue): the confirmed-
+    # component pass omitted #386's own injected_ranges self-poison guard. Two
+    # confirmed entities where entity A's surrogate word ("Brenner") is also entity
+    # B's real canonical component: the cross-hop closing sweep
+    # (_close_cross_hop_mint_gap) re-runs the full deterministic pipeline over A's
+    # own already-blinded hop text ("Alex Brenner reviewed it."). Without the
+    # guard, B's confirmed-component pass ("Brenner" -> "Zoe") matches the literal
+    # "Brenner" INSIDE A's already-injected surrogate and rewrites it in place,
+    # corrupting "Alex Brenner" into "Alex Zoe" -- a clause-B restore corruption
+    # (restores to the wrong entity, not to "Jane Doe"). Exact reviewer repro.
+    #
+    # leak_gate is deliberately NOT asserted clean here: B's own real component
+    # ("Brenner") is, by construction of this cross-entity collision, literally
+    # present in the outbound text as a substring of A's surrogate. leak_gate has
+    # no way to attribute that substring to A's (correct, already-applied)
+    # surrogate rather than to B's real value, and blocking on a genuine
+    # ambiguity is fail-closed-correct, not a defect -- resolving it in favor of
+    # "let it through" is exactly the over-widening #303/#328's own ADR-0051
+    # amendments warn against, and this issue's own body scopes the fix to a
+    # single entity's OWN component, not cross-entity surrogate/real collisions
+    # (out of scope here; mint-time collision avoidance, store._mint.
+    # pool_entry_collides_with_corpus, is what prevents this shape from arising
+    # through the normal L3-mint-then-confirm path -- this test reaches it only
+    # via two direct ``mapping.seed()`` calls).
+    mapping = SurrogateMapping()
+    mapping.seed("Jane Doe", "Alex Brenner")
+    mapping.seed("Brenner Court", "Zoe Lin")
+
+    payload = {
+        "messages": [{"role": "user", "content": "Jane Doe reviewed it."}]
+    }
+    blinded, session = blindfold_payload(payload, mapping, None, None)
+
+    text = blinded["messages"][0]["content"]
+    assert text == "Alex Brenner reviewed it."
+
+    response = {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "Confirmed: Alex Brenner reviewed it."}],
+        "model": "claude-3-5-sonnet",
+        "stop_reason": "end_turn",
+    }
+    restored = restore_response(response, session)
+    assert restored["content"][0]["text"] == "Confirmed: Jane Doe reviewed it."

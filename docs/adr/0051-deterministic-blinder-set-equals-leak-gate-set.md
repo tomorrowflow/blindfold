@@ -515,3 +515,35 @@ derivation). One shared function, not two call sites kept in sync by hand — th
 - Restore is unaffected: a bare component's surrogate word is `session.record`ed as a direct
   `(surrogate -> real)` pair the moment it's injected, so the existing first-pass restore lookup
   (`session.injected`) already resolves it — `_component_restore_map` (ADR-0036) is untouched.
+
+**Correction (same issue, cycle 2 — reviewer-found):** the first cycle's
+`_collect_confirmed_component_spans` omitted `#386`'s own self-poisoning guard
+(`_injected_surrogate_ranges`, `#68`/`#292`). `#386`'s cross-hop closing sweep
+(`_close_cross_hop_mint_gap`) re-runs the full deterministic pipeline, including this new pass,
+over text an earlier hop already blinded. Without the guard, a second confirmed entity whose
+canonical component happens to equal a word inside a *different*, already-injected surrogate
+was rewritten in place — corrupting a live surrogate, a clause-B restore-correctness defect
+(surrogate → surrogate, so still fail-safe on egress; verified with a planted repro naming two
+confirmed entities whose real/surrogate word spaces collide by construction — see
+`tests/test_confirmed_component_blinding.py`, not reproduced here per
+`test_no_pool_entry_appears_as_a_literal_example_in_docs`'s own #292-motivated guard against
+quoting live pool entries in docs).
+
+Fix: compute `injected_ranges` once, unconditionally (not gated on `inbox is not None` — the
+confirmed-component pass runs regardless of `inbox`), *before* the confirmed-component pass, and
+exclude it there exactly as the provisional-pair pass already does. `_live_surrogate_values`/
+`_injected_surrogate_ranges` now accept `inbox=None` (contributing no provisional-surrogate
+vocabulary in that case, only `mapping.known_surrogates()` + `session.injected` — the only
+vocabulary that exists on the no-inbox call path anyway).
+
+Left deliberately unaddressed, as out of this issue's scope (its own body binds the invariant to
+a *single* entity's own sub-spans, not cross-entity collisions): once the corruption above is
+fixed, `leak_gate` can still block on this same two-entity construction, because entity B's real
+component is, by construction of the collision, literally present in the outbound text as a
+substring of entity A's surrogate — `leak_gate`'s pattern search has no way to attribute that
+substring to A's already-correct surrogate rather than to B's real value. Blocking on that
+genuine ambiguity is fail-closed-correct (not a leak), not a new defect, and resolving it in
+favor of "let it through" would be exactly the over-widening the `#303`/`#328` amendments warn
+against. This class of collision is what `store._mint.pool_entry_collides_with_corpus` already
+exists to prevent at mint time; it is reachable here only via two direct `mapping.seed()` calls
+that bypass that guard, not through the ordinary L3-mint-then-confirm path.
