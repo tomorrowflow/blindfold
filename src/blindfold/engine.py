@@ -303,9 +303,56 @@ def blindfold_payload(
             _finish_hop(ctx, _hop_kind_for_message(message), len(session.hops))
         )
 
+    if system is not None:
+        out["system"] = _close_cross_hop_mint_gap(
+            out["system"], mapping, session, inbox, workspace
+        )
+    for message in out.get("messages", []):
+        message["content"] = _close_cross_hop_mint_gap(
+            message.get("content"), mapping, session, inbox, workspace
+        )
+
     _blindfold_tools_messages(out.get("tools"), mapping, session, inbox)
 
     return out, session
+
+
+def _close_cross_hop_mint_gap(
+    hop_value: Any,
+    mapping: SurrogateMapping,
+    session: ExchangeSession,
+    inbox: ReviewInbox | None,
+    workspace: str,
+) -> Any:
+    """Issue #386 (ADR-0051): a referent minted mid-pass by a *later* hop of this
+    same request is invisible to an *earlier* hop's own pass -- ``blindfold_payload``/
+    ``blindfold_chat_completions_payload`` process hops strictly in order (system,
+    then each message, ``tools`` last) and never revisit one once processed. A bare
+    referent that only accumulates enough disambiguating context to be L3-confirmed
+    in a later hop (the live shape: a disambiguation-cluster tool result anchoring a
+    bare surname already mentioned, unconfirmably, earlier in the same request) was
+    therefore frozen into the payload before its own mint existed -- invisible to
+    ``leak_gate``'s pre-egress check for that one hop, which fails closed on the
+    fully-assembled payload with no state that ever changes on a byte-identical
+    retry (ADR-0050/0051's own deadlock shape, just triggered within one request
+    instead of across two).
+
+    Called once, after every hop has had its turn to mint (so ``inbox.list()`` is
+    complete for this request), over every hop already processed -- deterministic
+    only (``l3_detector=None``: never mints a second referent, never re-runs L3).
+    Idempotent for a hop that was already fully covered (the provisional-pair
+    pattern finds nothing left to match); closes the gap for one that was not.
+    ``hop_ctx=None``: this is a repair pass over hops already recorded in
+    ``session.hops``, not a new hop of its own.
+    """
+    if isinstance(hop_value, str):
+        return _blindfold_text(hop_value, mapping, session, None, inbox, workspace=workspace)
+    if isinstance(hop_value, list):
+        return [
+            _blindfold_block(block, mapping, session, None, inbox, workspace=workspace)
+            for block in hop_value
+        ]
+    return hop_value
 
 
 def blindfold_chat_completions_payload(
@@ -360,6 +407,11 @@ def blindfold_chat_completions_payload(
         )
         session.hops.append(
             _finish_hop(ctx, _hop_kind_for_message(message), len(session.hops))
+        )
+
+    for message in out.get("messages", []):
+        message["content"] = _close_cross_hop_mint_gap(
+            message.get("content"), mapping, session, inbox, workspace
         )
 
     _blindfold_tools_chat_completions(out.get("tools"), mapping, session, inbox)
@@ -1463,8 +1515,23 @@ def _blindfold_text(
     # #292's self-poisoning guard from depending on L3 happening to re-confirm
     # the same value in this hop too (the run-6-shaped deadlock this closes for
     # message text, not just tool descriptions).
+    #
+    # Issue #386: this pass must honor the identical self-poisoning guard L3's own
+    # novel-candidate minting already has further down (#68/#292, against the
+    # post-splice ``result``) -- an occurrence inside an already-injected
+    # surrogate's own literal text (e.g. ``text`` quoting an earlier hop's, or an
+    # earlier exchange's, already-blinded history verbatim) must never be treated
+    # as a fresh provisional-pair match either, or applying this pass a second
+    # time over already-blinded text (the cross-hop closing sweep below) could
+    # rewrite a live surrogate's own substring in place -- corrupting it, not
+    # protecting anything.
+    injected_ranges = (
+        _injected_surrogate_ranges(text, mapping, session, inbox)
+        if inbox is not None
+        else []
+    )
     pp_spans = _collect_provisional_pair_spans(
-        text, inbox, session, hop_ctx, exclude=l2_ranges
+        text, inbox, session, hop_ctx, exclude=l2_ranges + injected_ranges
     )
     pp_ranges = [(span.start, span.end) for span in pp_spans]
 
