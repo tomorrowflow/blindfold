@@ -434,6 +434,79 @@ function setStateLabel(id: string, state: SandcastleState): void {
   }
 }
 
+// Drop every `running-*` label from one issue, leaving any terminal label alone.
+// Used when a cycle ends without reaching a terminal state, so the issue stops
+// advertising an operator that no longer exists.
+function clearRunningLabels(id: string): void {
+  if (!REPO) return;
+  const args = ["issue", "edit", id, "--repo", REPO];
+  for (const [state] of SANDCASTLE_LABELS) {
+    if (state.startsWith("running-")) args.push("--remove-label", `sandcastle:${state}`);
+  }
+  try {
+    execFileSync("gh", args, { stdio: "ignore" });
+  } catch {
+    /* label swap is non-critical */
+  }
+}
+
+// Reconcile stale in-flight state labels left behind by a run that died mid-cycle.
+//
+// A `sandcastle:running-*` label is a claim that an orchestrator is operating this
+// issue RIGHT NOW. Only one loop runs against a repo at a time — reapOrphanedWorktrees()
+// below already assumes that, since it reaps shared worktrees at startup — so in a
+// fresh process the claim is false by construction: every `running-*` label still set
+// belongs to a run that was interrupted or crashed before it could advance the label
+// to a terminal state (merged or blocked).
+//
+// Left alone, that lie costs the issue permanently. The planner reads the label —
+// together with the gate-clean comments sitting under it — as "mid-pipeline, one step
+// from merge, not idle" and declines to re-plan it. No later run picks it up, and no
+// blocked comment ever explains the silence, so the issue is wedged with no operator
+// and no give-up path. That is exactly how #395 and #396 wedged on 2026-09-16 with
+// every gate green: implementer, reviewer and the hosted postgres-verify run had all
+// attested clean, the run ended before the merge phase, and the next two planners both
+// refused to touch them — one of them saying so in as many words.
+//
+// Clearing the label hands the issue back to the planner as ordinary work. Branch,
+// commits and worktree are untouched: `hasWork` counts commits from a prior run, so the
+// next cycle continues from them rather than starting the slice over.
+function clearStaleRunningLabels(): void {
+  if (!REPO) return;
+  for (const [state] of SANDCASTLE_LABELS) {
+    if (!state.startsWith("running-")) continue;
+    const label = `sandcastle:${state}`;
+    let ids: string[] = [];
+    try {
+      const out = execFileSync(
+        "gh",
+        ["issue", "list", "--repo", REPO, "--state", "open", "--label", label,
+         "--limit", "100", "--json", "number", "-q", "[.[].number] | join(\" \")"],
+        { encoding: "utf8" },
+      ).trim();
+      ids = out ? out.split(/\s+/) : [];
+    } catch (err) {
+      console.warn(`  (couldn't list issues labeled ${label}, continuing: ${err})`);
+      continue;
+    }
+    for (const id of ids) {
+      clearRunningLabels(id);
+      console.log(
+        `  🩹 stale-state sweep: cleared ${label} from #${id} (left by an interrupted run) — re-eligible for planning`,
+      );
+      postOnce(
+        id,
+        `sandcastle:stale-state-reset:${state}`,
+        `🩹 **Stale state cleared.** This issue still carried \`${label}\` when a new sandcastle run ` +
+          `started, which means the run that set it ended before reaching a terminal state (merged or ` +
+          `blocked) — no orchestrator was operating it.\n\n` +
+          `The label is removed so the planner can pick this issue up again. The branch and its commits ` +
+          `are untouched; the next cycle continues from them rather than starting the slice over.`,
+      );
+    }
+  }
+}
+
 // Close an issue from the HOST, where `gh` is authenticated. Issue-closing was
 // historically delegated to the merge agent inside the sandbox, but the
 // sandbox PAT lacks `issues:write`, so every `gh issue close` there failed with
@@ -1410,6 +1483,12 @@ ensureSandcastleLabels();
 // work has already landed so the human doesn't keep seeing spent worktrees.
 reapOrphanedWorktrees();
 
+// Same reconciliation, on the issue tracker instead of the filesystem: a run that
+// died mid-cycle left its issues wearing a `running-*` label no live process backs.
+// Must run BEFORE the first planner, which would otherwise read those labels as
+// "someone else owns this" and plan around them forever (see the function's note).
+clearStaleRunningLabels();
+
 for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   console.log(`\n=== Iteration ${iteration}/${MAX_ITERATIONS} ===\n`);
 
@@ -1943,7 +2022,19 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           platformVerifyComplete,
         };
       } finally {
-        await sandbox.close();
+        // Teardown must never invalidate a verdict. This sits in a `finally`, so
+        // anything thrown here REPLACES the pipeline's already-computed result
+        // with a rejection — and a rejected pipeline is both excluded from the
+        // merge gate and skipped by the blocked-comment loop below, so a branch
+        // that had passed every gate would disappear with nothing on the issue
+        // to say why. Cleanup is best-effort; the startup sweeps are the backstop.
+        try {
+          await sandbox.close();
+        } catch (err) {
+          console.warn(
+            `  (sandbox teardown for ${issue.branch} failed, continuing: ${err})`,
+          );
+        }
       }
     }),
   );
@@ -1955,6 +2046,20 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   for (const { outcome, issue } of evaluated) {
     if (outcome.status === "rejected") {
       console.error(`  ✗ ${issue.id} (${issue.branch}) crashed: ${outcome.reason}`);
+      // A crash is the one outcome that reaches no verdict: the blocked-comment
+      // loop below only walks FULFILLED outcomes, so without this the issue keeps
+      // the `running-*` label it wore when the pipeline threw and goes silent —
+      // the same wedge the startup sweep exists to undo, except a whole run early.
+      // Hand it back now, and record the reason where a human will find it.
+      clearRunningLabels(issue.id);
+      postOnce(
+        issue.id,
+        "sandcastle:pipeline-crashed",
+        `💥 **Pipeline crashed** on \`${issue.branch}\` — this cycle threw before it could reach a ` +
+          `merge verdict:\n\n\`\`\`\n${String(outcome.reason).slice(0, 800)}\n\`\`\`\n\n` +
+          `No gate was blocked and nothing merged. The commits stay on the branch and the issue is ` +
+          `re-eligible for the next cycle.`,
+      );
     }
   }
 
