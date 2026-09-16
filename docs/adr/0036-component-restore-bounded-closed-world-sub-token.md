@@ -231,6 +231,64 @@ that knows the fallback's actual current shape. The guard's rationale is
 unchanged (a fallback label carries no entity meaning and must be skipped
 whole, not decomposed), only the pattern it recognizes did.
 
+## Update (issue #395): boundary-word alignment for an unequal word count
+
+Live verify (the #372 Claude Desktop spike, run 2) found the #304 update's blanket
+exclusion of every length-mismatched pair too coarse: a user asked a reasoning
+question naming three people and three departments, all six minted, all six
+referred to afterward by a bare surrogate component — and the whole answer came
+back written in invented names. `session.injected` held the right pairs; `_restore_text`
+ran; every one of the six pairs simply had a real value whose word count didn't
+match its (fixed-shape, pool-drawn) surrogate's — a middle name, a compound
+department name — so #304's rule contributed zero component keys for any of them.
+An unequal word count is the *common* case for a real-world name or department
+against a pool of fixed-shape surrogates, not the edge case #304's own
+single-word-real worked example suggested.
+
+**Decision:** an unaligned pair now contributes boundary-only component keys —
+surrogate's first word → real's first word, surrogate's last word → real's last
+word — provided the real value itself has **two or more words**. The middle (any
+position that is neither first nor last) still has no correspondence and
+contributes no key, exactly as a fully unaligned pair contributed none before this
+update. A real value with only one word is excluded entirely, unchanged from
+#304: first and last would collapse onto that single word, reintroducing the
+exact whole-value-donation corruption #304 fixed under a new name (an ordinary
+surrogate word becoming a restore key for an unrelated one-word real value —
+still guarded by the existing regression test, `test_analytics_is_not_a_restore_key_for_vault`).
+
+Why the boundary specifically, and not the whole real value (the fallback #304
+already rejected) or every surrogate word against a truncated/padded real list: a
+person's given name is always first and family name always last regardless of a
+middle name in between; the named organisation pools (`_ORG_POOL`, `_TERM_POOL`)
+are consistently `[[prefix] [distinctive word]]`, so the boundary is where their
+convention's actual variation runs out too, wherever the real value's own word
+count lands. Every other position is genuinely arbitrary once the counts diverge
+— #304's own finding — so this update narrows the *unaligned* rule to exactly the
+positions that keep that meaning, rather than reopening it wholesale.
+
+The existing guards (distinctiveness, ambiguity-across-the-exchange's own pairs,
+alphabetic-content, the fallback-surrogate exclusion) apply identically to a
+boundary key as to a positionally-aligned one — `_component_restore_map` builds
+one `candidates` mapping regardless of which rule contributed a given
+`(surrogate_word, real_word)` correspondence, so ambiguity and distinctiveness are
+resolved over the union, not per-rule.
+
+Restore stays closed-world and single-scan: boundary keys are ordinary entries in
+the same `restore_map` `_restore_text` already merges and applies in one pass
+(the #304 update above) — no second matching strategy, no re-scan of substituted
+output. The post-restore resolution gate is unaffected: it has only ever checked
+*full* injected surrogates (never a component, aligned or boundary), so widening
+which components resolve can only shrink the leftover-synthetic-token surface,
+never change what the gate fail-closes on.
+
+Regression tests: `tests/test_component_restore.py` (boundary alignment for a
+person and for an organisation pair, the shared ambiguity rule applied to a
+boundary key, a closed-world foreign-exchange-pair check, and the full #395 live
+shape end to end through `blindfold_payload`/`leak_gate`/`restore_response`/
+`resolution_gate`); `tests/test_leak_and_resolution_gates.py` (the resolution gate
+still accepts a leftover single-real-word component and still raises on a
+genuinely unresolved full surrogate from an unaligned pair).
+
 ## Alternatives considered
 
 - **Component → full real value only** (`Erika`→`Sarah Bergmann`) — simpler, no
