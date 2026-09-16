@@ -453,3 +453,65 @@ the exchange's complete `inbox` (this is why #299/#300 never needed this fix for
 - Does not touch `#386` (this ADR's own follow-up issue): a *permanent* instance of a value
   reaching the gate's set without ever entering the blinder's, a different mechanism from the
   transient ordering gap closed here.
+
+## Amendment (issue #394): the invariant also binds sub-spans of a CONFIRMED entity
+
+`#386` closed a *timing* gap for a bare referent shared across hops in one request. It did not
+touch a distinct mechanism, filed as a new issue rather than reopening the merged one: a
+**confirmed** multi-word entity's own bare-word component is neither blindable nor checkable,
+even though `#306` had already taught the exact same positional-alignment rule to the
+**provisional** (review-inbox) side.
+
+The mechanism: `app.confirm_review_item` promotes a provisional item into `mapping` with
+`mapping.seed(item.real, item.provisional_surrogate)` — the whole canonical value only — then
+`inbox.remove`s the row. `#306`'s own component pairs
+(`engine._provisional_component_map`/`_provisional_pair_map`) live entirely on the inbox row;
+confirming drops them on the floor along with it. `detect_l2` (`mapping.entities()`) never
+learns the aligned bare-word substitution, so a referent's own surname recurring later in the
+same payload, or in any later request, is invisible to the blinder — measured directly (a live
+repro against the code as it stood before this fix): a confirmed two-part name's bare surname
+reached the outbound payload in the clear, and `leak_gate`'s `mapping.real_values()` loop —
+whole-value matching only — did not catch it either. Blinder coverage and gate coverage
+silently **agreed** on missing the same sub-span: a leak-audit clause A violation on its own,
+and the same "checks a surface the blinder cannot reach" shape as the `#303`/`#328` amendments
+above the instant any *other* mechanism (a second, differently-scoped mint; a curator-added
+coreference variation) puts the bare component into the gate's checked set without the blinder
+being able to reach it — reproducing `#386`'s reported deadlock shape, permanently, since a
+confirmed entity's registration never changes between retries.
+
+**Decision: widen the blinder to widen the gate, in the same lockstep `#306` already used for
+provisional referents.** `engine._confirmed_component_map`/`_confirmed_pair_map` mirror
+`_provisional_component_map`/`_provisional_pair_map` exactly — positional alignment only
+(equal word counts between a confirmed entity's canonical and its surrogate), the same
+stopword/non-alphabetic/opaque-fallback-surrogate guards, and the same "ambiguous across
+entities contributes nothing" rule — computed once from `mapping.entities()` and consulted by
+both `engine._collect_confirmed_component_spans` (a new deterministic pass at L2 precedence,
+alongside `#306`'s own provisional-pair pass) and `leak_gate` (an added loop over the identical
+derivation). One shared function, not two call sites kept in sync by hand — the same discipline
+`#299`/`#300`/`#306` already established for this ADR's invariant.
+
+**Rejected alternatives**, named per this issue's own acceptance criterion:
+- **Narrow the gate** to stop checking a confirmed entity's bare component. Rejected outright,
+  same grounds as `#295`'s reversal of ADR-0050's original Option 3 and this ADR's own rejection
+  of `#298` option 3: it is fail-open on exactly the class this project exists to protect, and it
+  would not even close the leak this issue measures (the component would keep reaching the
+  provider in the clear; only the alarm would go quiet).
+- **Refuse the mint at candidacy time** (never register a confirmed entity's component as
+  blindable). Not applicable in the shape this issue found — there is no mint to refuse; the
+  component is already a live, known real value the moment its owning entity is confirmed. A
+  refusal-shaped fix here would mean *never* protecting the component at all, strictly worse
+  than widening.
+
+**Consequences:**
+- Closes the confirmed-entity half of the sub-span asymmetry this ADR's invariant names, mirroring
+  `#306`'s closure of the provisional half — the two entity-lifecycle states (provisional,
+  confirmed) now share one component-blinding discipline instead of one having it and the other
+  losing it on confirm.
+- No narrowing: every value `leak_gate` already checked keeps being checked; the fix only adds a
+  bare-component surface to both sides together.
+- A confirmed entity whose canonical/surrogate word counts don't align (e.g. a 2-word real with a
+  1-word or opaque-fallback surrogate) contributes no component pairs, unchanged from `#306`'s own
+  scoping — the whole-value pair (L2's ordinary match) still protects it.
+- Restore is unaffected: a bare component's surrogate word is `session.record`ed as a direct
+  `(surrogate -> real)` pair the moment it's injected, so the existing first-pass restore lookup
+  (`session.injected`) already resolves it — `_component_restore_map` (ADR-0036) is untouched.

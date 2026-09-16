@@ -24,7 +24,7 @@ from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any, NoReturn
 
-from .detection import detect_l2, detect_pii
+from .detection import Entity, detect_l2, detect_pii
 from .l3 import _capitalized_token_matches
 from .l3 import _SENTENCE_STOPWORDS as _COMPONENT_STOPWORDS
 from .l3 import (
@@ -1384,6 +1384,119 @@ def _collect_l2_spans(text: str, mapping: SurrogateMapping) -> list[ReplacementS
     ]
 
 
+def _confirmed_component_map(entities: Iterable[Entity]) -> dict[str, str]:
+    """Mirror :func:`_provisional_component_map` onto CONFIRMED entities (issue #394).
+
+    #306 taught the *provisional* (review-inbox) side that a real/surrogate pair
+    with equal word counts decomposes into positionally-aligned word components --
+    a later bare occurrence of just one real word is as blindable as the
+    referent's full name. Nothing taught the same rule to a CONFIRMED entity
+    (``mapping.entities()``): once a provisional item is confirmed
+    (``app.confirm_review_item``), only the whole canonical value is registered --
+    #306's own component pairs are dropped along with the inbox row that carried
+    them, and ``detect_l2`` (the confirmed side's own deterministic pass) never
+    touches a bare component again on any later hop or request.
+
+    Guards mirrored from :func:`_provisional_component_map`/:func:`_component_restore_map`
+    exactly: unequal word counts contribute nothing, a component with no
+    alphabetic character contributes nothing, ``_COMPONENT_STOPWORDS`` contributes
+    nothing, an opaque fallback surrogate is skipped whole (:func:`_is_fallback_surrogate`),
+    and a real word ambiguous across entities -- aligning to more than one distinct
+    surrogate word -- contributes nothing.
+
+    A single-word entity contributes no components either (mirroring
+    :func:`_component_restore_map`'s own ``len(surrogate_words) < 2`` guard):
+    unlike #306's provisional side, where the component loop writes into the same
+    dict key ``mapping.real_values()``'s whole-value entry already claims, a
+    confirmed single-word real/surrogate pair *is* its own "component" -- without
+    this guard it would duplicate, not extend, the ordinary L2 whole-value check
+    both here and in ``leak_gate``.
+    """
+    candidates: dict[str, set[str]] = {}
+    for entity in entities:
+        if _is_fallback_surrogate(entity.surrogate):
+            continue
+        real_words = entity.canonical.split()
+        surrogate_words = entity.surrogate.split()
+        if len(real_words) < 2 or len(real_words) != len(surrogate_words):
+            continue
+        for real_word, surrogate_word in zip(real_words, surrogate_words):
+            if real_word in _COMPONENT_STOPWORDS:
+                continue
+            if not any(char.isalpha() for char in real_word):
+                continue
+            if not any(char.isalpha() for char in surrogate_word):
+                continue
+            candidates.setdefault(real_word, set()).add(surrogate_word)
+    return {word: next(iter(targets)) for word, targets in candidates.items() if len(targets) == 1}
+
+
+def _confirmed_pair_map(
+    entity: Entity, component_map: dict[str, str]
+) -> dict[str, tuple[str, str]]:
+    """The blinding-side component substitution map for one confirmed entity
+    (issue #394, mirroring :func:`_provisional_pair_map`).
+
+    Unlike the provisional side, a confirmed entity's whole-value surfaces
+    (canonical + variations) are already ``detect_l2``'s own job via
+    ``mapping.entities()`` -- this map carries ONLY the entity's own real words
+    that survived into ``component_map``, each mapped to
+    ``(aligned_surrogate_word, that_same_real_word)``.
+    """
+    pairs: dict[str, tuple[str, str]] = {}
+    for word in entity.canonical.split():
+        target = component_map.get(word)
+        if target is not None:
+            pairs[word] = (target, word)
+    return pairs
+
+
+def _collect_confirmed_component_spans(
+    text: str,
+    mapping: SurrogateMapping,
+    session: ExchangeSession,
+    hop_ctx: "_HopContext | None",
+    exclude: Sequence[tuple[int, int]] = (),
+) -> list[ReplacementSpan]:
+    """Collect issue #394's confirmed-entity bare-word-component replacement spans
+    against frozen ``text`` -- the entity-graph mirror of
+    :func:`_collect_provisional_pair_spans` (#306). Deterministic only: no L3, no
+    inbox involvement, reads ``mapping.entities()`` alone.
+
+    ``exclude`` holds ranges an earlier-precedence stage (L2's own whole-value
+    match) already claimed in this same pass, matching
+    :func:`_collect_provisional_pair_spans`'s own precedence discipline -- a
+    confirmed entity's full canonical span always wins over its own bare
+    component at the same position.
+    """
+    entities = mapping.entities()
+    component_map = _confirmed_component_map(entities)
+    if not component_map:
+        return []
+    claimed = list(exclude)
+    spans: list[ReplacementSpan] = []
+    for entity in entities:
+        pairs = _confirmed_pair_map(entity, component_map)
+        for value in sorted(pairs, key=len, reverse=True):
+            target, recorded_real = pairs[value]
+            occurrences = [
+                (match.start(), match.end())
+                for match in _real_value_pattern(value).finditer(text)
+                if not _overlaps_any(match.start(), match.end(), claimed)
+            ]
+            if not occurrences:
+                continue
+            claimed.extend(occurrences)
+            session.record(target, recorded_real)
+            if hop_ctx is not None:
+                hop_ctx.surrogates.append(target)
+            for start, end in occurrences:
+                spans.append(
+                    ReplacementSpan(start, end, target, recorded_real, "confirmed_component")
+                )
+    return spans
+
+
 def _collect_provisional_pair_spans(
     text: str,
     inbox: ReviewInbox | None,
@@ -1580,6 +1693,18 @@ def _blindfold_text(
             hop_ctx.surrogates.append(span.surrogate)
     l2_ranges = [(span.start, span.end) for span in l2_spans]
 
+    # Issue #394: a CONFIRMED entity's own bare-word component (e.g. "Doe" once
+    # "Jane Doe" -> "Alex Brenner" is in the entity graph) -- the confirmed-side
+    # mirror of #306's provisional-pair component pass, run at L2 precedence
+    # (excludes only L2's own claimed ranges) so a confirmed component always
+    # wins over a provisional one for the same literal text below.
+    confirmed_component_spans = _collect_confirmed_component_spans(
+        text, mapping, session, hop_ctx, exclude=l2_ranges
+    )
+    confirmed_component_ranges = [
+        (span.start, span.end) for span in confirmed_component_spans
+    ]
+
     # ADR-0051 stage 2 (issue #300): every already-minted provisional pair
     # (#299's own deterministic tool-description substitution) applies to this
     # hop too -- the entity graph (L2, above) always wins by construction, since
@@ -1605,16 +1730,22 @@ def _blindfold_text(
         else []
     )
     pp_spans = _collect_provisional_pair_spans(
-        text, inbox, session, hop_ctx, exclude=l2_ranges + injected_ranges
+        text,
+        inbox,
+        session,
+        hop_ctx,
+        exclude=l2_ranges + confirmed_component_ranges + injected_ranges,
     )
     pp_ranges = [(span.start, span.end) for span in pp_spans]
 
     # L1 deterministic PII (ADR-0003): regex over the full text, reserved-
-    # namespace surrogates (ADR-0005). Excludes L2 + the provisional-pair pass's
-    # ranges so any entity-graph/provisional match has already won; PII spans
-    # cover what L1 alone is meant to catch.
+    # namespace surrogates (ADR-0005). Excludes L2 + the confirmed-component pass +
+    # the provisional-pair pass's ranges so any entity-graph/provisional match has
+    # already won; PII spans cover what L1 alone is meant to catch.
     l1_started_at = time.monotonic()
-    l1_spans = _collect_l1_spans(text, mapping, exclude=l2_ranges + pp_ranges)
+    l1_spans = _collect_l1_spans(
+        text, mapping, exclude=l2_ranges + confirmed_component_ranges + pp_ranges
+    )
     if hop_ctx is not None:
         hop_ctx.l1_duration_ms += (time.monotonic() - l1_started_at) * 1000
     seen_l1_values: set[str] = set()
@@ -1632,7 +1763,9 @@ def _blindfold_text(
             hop_ctx.l1_counts[kind] = hop_ctx.l1_counts.get(kind, 0) + 1
             hop_ctx.surrogates.append(span.surrogate)
 
-    result = _apply_spans(text, l2_spans + pp_spans + l1_spans)
+    result = _apply_spans(
+        text, l2_spans + confirmed_component_spans + pp_spans + l1_spans
+    )
     # L3 candidate-span adjudication (ADR-0003 / ADR-0010): novel capitalized tokens
     # the deterministic passes couldn't resolve. Confirmed candidates get a
     # **provisional** surrogate minted by the inbox (NOT the main mapping — keeping
@@ -3002,12 +3135,23 @@ def leak_gate(
     # only ever needs its keys (the surfaces the blinder rewrites); the blinder is
     # the only side that also needs the map's values.
     component_map = _provisional_component_map(items)
+    # Issue #394: the same discipline for CONFIRMED entities --
+    # ``_confirmed_pair_map`` is the identical derivation
+    # :func:`_collect_confirmed_component_spans` uses, so a confirmed entity's
+    # bare-word component is in the gate's checked set exactly when it is a
+    # surface the blinder can (and does) rewrite.
+    entities = mapping.entities()
+    confirmed_component_map = _confirmed_component_map(entities)
 
     gate_view, forbidden_text = _gate_excluded_view(blinded_outbound)
     outbound_text = _collect_text(gate_view)
     for real in mapping.real_values():
         if _real_value_pattern(real).search(outbound_text):
             _raise_leak(scrub_entity_reference(real, mapping))
+    for entity in entities:
+        for variation in _confirmed_pair_map(entity, confirmed_component_map):
+            if _real_value_pattern(variation).search(outbound_text):
+                _raise_leak(scrub_entity_reference(entity.canonical, mapping))
     for item in items:
         # Issue #296: a provisional referent's variation surface (currently #289's
         # legal-form-suffix strip) is a distinct literal string from ``item.real``
@@ -3028,6 +3172,14 @@ def leak_gate(
         if _real_value_pattern(real).search(forbidden_text):
             collisions.append(
                 _declared_collision_reason(scrub_entity_reference(real, mapping))
+            )
+    for entity in entities:
+        if any(
+            _real_value_pattern(variation).search(forbidden_text)
+            for variation in _confirmed_pair_map(entity, confirmed_component_map)
+        ):
+            collisions.append(
+                _declared_collision_reason(scrub_entity_reference(entity.canonical, mapping))
             )
     for item in items:
         if any(
