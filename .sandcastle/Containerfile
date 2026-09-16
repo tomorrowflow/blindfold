@@ -72,9 +72,13 @@ ENV DOTNET_CLI_TELEMETRY_OPTOUT=1 \
     DOTNET_NOLOGO=1 \
     DOTNET_SKIP_FIRST_TIME_EXPERIENCE=1
 
-# Build-args for UID/GID alignment: sandcastle docker build-image
-# defaults these to the host user's UID/GID so image-built files
-# and bind-mounted files share an owner without runtime chown.
+# UID/GID of the in-image `agent` user. Under Podman these stay at the 1000/1000
+# default: `sandcastle podman build-image` passes no UID build-args, and the
+# provider instead aligns ownership at RUN time with
+# `--userns=keep-id:uid=1000,gid=1000`, which maps the host user onto this UID so
+# image-built files and bind-mounted files share an owner without runtime chown.
+# (They remain overridable via `podman build --build-arg` for a rootful setup that
+# needs a different in-image UID.)
 ARG AGENT_UID=1000
 ARG AGENT_GID=1000
 
@@ -132,5 +136,5 @@ WORKDIR /home/agent
 
 # In worktree sandbox mode, Sandcastle bind-mounts the git worktree at /home/agent/workspace
 # and overrides the working directory to /home/agent/workspace at container start.
-# Structure your Dockerfile so that /home/agent/workspace can serve as the project root.
+# Structure this Containerfile so that /home/agent/workspace can serve as the project root.
 ENTRYPOINT ["sleep", "infinity"]

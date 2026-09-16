@@ -23,7 +23,7 @@
 //   "scripts": { "sandcastle": "npx tsx main.mts" }
 
 import * as sandcastle from "@ai-hero/sandcastle";
-import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
+import { podman } from "@ai-hero/sandcastle/sandboxes/podman";
 import { z } from "zod";
 import { execSync, execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, writeFileSync } from "node:fs";
@@ -115,7 +115,7 @@ const TRUSTED_MAINTAINERS = ["tomorrowflow"];
 // Blindfold is a Python/uv project, so `uv sync` (not npm install) installs the
 // dependency groups declared in pyproject.toml into the worktree's .venv.
 //
-// The hook runs INSIDE the Docker sandbox, which doesn't share the host's
+// The hook runs INSIDE the Podman sandbox, which doesn't share the host's
 // ~/.cache/uv, so every run is a cold sync that re-downloads the full dependency
 // tree (the Playwright wheel alone is ~40 MB). A cold sync is merely slow — the
 // real hazard is a *stalled* one: uv can hang on a mid-stream read from PyPI's
@@ -126,7 +126,7 @@ const TRUSTED_MAINTAINERS = ["tomorrowflow"];
 //
 // So we don't run bare `uv sync`. Each attempt is capped by a hard in-container
 // `timeout` and retried, so a hung connection fails fast and a fresh attempt
-// almost always gets past it. UV_HTTP_TIMEOUT (set in the Dockerfile) is the
+// almost always gets past it. UV_HTTP_TIMEOUT (set in the Containerfile) is the
 // first line of defence at uv's own socket layer; the shell `timeout` is the
 // guarantee. The outer timeoutMs stays as a generous backstop. (`timeout` is
 // coreutils, present in the node:22-bookworm base; the string is run via `sh -c`.)
@@ -151,7 +151,7 @@ const UV_SYNC =
 // Strictly best-effort. A missing CLI, a build failure, or a timeout must never
 // block a slice: agents just fall back to grep, which is what they did before
 // this hook existed. Hence the `command -v` guard (older images predate the
-// Dockerfile's graphify layer), the hard in-container `timeout` — same discipline
+// Containerfile's graphify layer), the hard in-container `timeout` — same discipline
 // as UV_SYNC above, since onSandboxReady is synchronous — and the terminal
 // `exit 0` that swallows every failure path.
 const GRAPHIFY_BUILD =
@@ -1438,7 +1438,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     // project or runs a test (maxIterations: 1, no write tools). GRAPHIFY_BUILD is
     // dropped with it for the same reason: a code graph it does not consult, built
     // into the host's own tree.
-    sandbox: docker(),
+    sandbox: podman(),
     name: "planner",
     // One iteration is enough: the planner just needs to read and reason,
     // not write code. (Structured output requires maxIterations: 1.)
@@ -1556,7 +1556,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
 
       const sandbox = await sandcastle.createSandbox({
         branch: issue.branch,
-        sandbox: docker(),
+        sandbox: podman(),
         hooks,
         copyToWorktree,
       });
@@ -2093,7 +2093,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   ensureSupacodeWorktreeSurface(MERGE_STAGING_BRANCH);
   const mergeSandbox = await sandcastle.createSandbox({
     branch: MERGE_STAGING_BRANCH,
-    sandbox: docker(),
+    sandbox: podman(),
     hooks,
     copyToWorktree,
   });
