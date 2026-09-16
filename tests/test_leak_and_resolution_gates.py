@@ -333,6 +333,33 @@ def test_resolution_gate_does_not_fail_close_on_a_leftover_component():
     resolution_gate(restored, session)
 
 
+def test_resolution_gate_does_not_fail_close_on_a_leftover_unaligned_component():
+    # issue #395: widening the component pass to cover boundary-aligned unequal
+    # word counts must not widen the resolution gate's own scope. A pair whose
+    # real value has only one word still contributes no component key (its
+    # first/last positions collapse onto the same word -- #304's corruption
+    # risk), so its bare surrogate component is left as a synthetic token and
+    # must not fail-close, exactly like the always-generic/ambiguous case above.
+    session = ExchangeSession()
+    session.record("Moosburg Analytics", "Vault")
+    restored = {"content": [{"type": "text", "text": "Please review the Moosburg notes."}]}
+
+    # Should not raise.
+    resolution_gate(restored, session)
+
+
+def test_resolution_gate_still_raises_when_an_unaligned_pairs_full_surrogate_is_left_unresolved():
+    # issue #395: the #395 widening only adds component keys -- it must not
+    # weaken the gate's existing job of catching a genuinely unresolved FULL
+    # injected surrogate for an unaligned pair.
+    session = ExchangeSession()
+    session.record("Carla Distel", "real-word-1 real-word-2 real-word-3")
+    unrestored = {"content": [{"type": "text", "text": "Carla Distel called."}]}
+
+    with pytest.raises(UnresolvedSurrogateError):
+        resolution_gate(unrestored, session)
+
+
 def test_resolution_gate_logs_a_clear_warning_naming_the_unresolved_surrogate(caplog):
     """The gate also surfaces a clear, identifying warning on the resolution failure mode."""
     mapping = _mapping()

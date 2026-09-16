@@ -5,12 +5,17 @@ the wrapped ASGI callable a Diagnostic session actually runs.
 """
 
 import json
+import threading
 
 import httpx
 import pytest
+import uvicorn
 
-from blindfold.app import app, get_upstream_client, get_workspace_policies
+from conftest import _free_port, _wait_for_port
+
+from blindfold.app import app, get_l3_detector, get_upstream_client, get_workspace_policies
 from blindfold.config import Settings
+from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
 from blindfold.policy import DEFAULT_WORKSPACE, WorkspacePolicies
 from blindfold.serve import DevModeRequiredError
 from blindfold.upstream import UpstreamClient
@@ -22,6 +27,11 @@ from blindfold_devtools.diagnostic_entry import (
 from blindfold_devtools.override_targets import OverrideDriftError
 from blindfold_devtools.settings import DevtoolsSettings
 from blindfold_devtools.shared_store_refusal import SharedStoreRefusalError
+
+
+class _UnavailableAdjudicator:
+    def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
+        raise ConnectionError("ollama unreachable")
 
 
 class _StubTransitClient:
@@ -83,6 +93,94 @@ async def test_returns_a_working_capturing_app_when_unconfigured_for_a_shared_st
 
     assert response.status_code == 200
     assert len(list((tmp_path / "captures").glob("*.jsonl"))) == 1
+
+
+def test_run_diagnostic_server_makes_the_actual_bind_port_visible_to_get_settings(tmp_path):
+    # Issue #396 (residual of #388): a Diagnostic session started on a non-default
+    # port must report *that* port everywhere get_settings() is later consulted --
+    # not BLINDFOLD_PORT/DEFAULT_PORT, which is silent on what the runner was
+    # actually told to bind. The default-port case can't distinguish the two
+    # sources, so this pins a non-default one -- mirrors
+    # test_serve_entrypoint.py's own run_server pin for the same issue.
+    from blindfold.config import get_settings
+
+    devtools_settings = DevtoolsSettings(exchange_capture_dir=str(tmp_path / "captures"))
+    observed = {}
+
+    def runner(app, **kwargs):
+        observed["settings"] = get_settings()
+
+    try:
+        run_diagnostic_server(
+            host="127.0.0.1",
+            port=25464,
+            devtools_settings=devtools_settings,
+            runner=runner,
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert observed["settings"].host == "127.0.0.1"
+    assert observed["settings"].port == 25464
+
+
+def test_run_diagnostic_server_end_to_end_block_names_the_actual_bound_port_and_stays_scrubbed(
+    tmp_path,
+):
+    # Issue #396 acceptance: a block raised by a Diagnostic session bound to a
+    # non-default port must produce a 503 whose management_url names that port
+    # (not a dead default-port instance) -- the live-socket counterpart to
+    # test_serve_entrypoint.py's own run_server end-to-end pin for #388, exercised
+    # here through the devtools entry point #388 never reached. Leak-audit: the
+    # block message must stay scrubbed even with a real entity ("Quentin") planted
+    # in the exchange -- unchanged shared _blocked_response funnel, asserted
+    # directly rather than assumed.
+    settings = Settings(database_url="")
+    devtools_settings = DevtoolsSettings(exchange_capture_dir=str(tmp_path / "captures"))
+    port = _free_port()
+    server_holder = {}
+
+    def runner(app_target, *, host, port):
+        config = uvicorn.Config(app_target, host=host, port=port, log_level="error")
+        server = uvicorn.Server(config)
+        server.install_signal_handlers = lambda: None
+        server_holder["server"] = server
+        server.run()
+
+    app.dependency_overrides[get_l3_detector] = lambda: L3Detector(_UnavailableAdjudicator())
+    server_thread = threading.Thread(
+        target=run_diagnostic_server,
+        kwargs={
+            "host": "127.0.0.1",
+            "port": port,
+            "settings": settings,
+            "devtools_settings": devtools_settings,
+            "runner": runner,
+        },
+        daemon=True,
+    )
+    try:
+        server_thread.start()
+        _wait_for_port(port)
+
+        status_resp = httpx.get(f"http://127.0.0.1:{port}/v1/status")
+        assert status_resp.json()["config"]["port"] == port
+
+        block_resp = httpx.post(
+            f"http://127.0.0.1:{port}/v1/messages",
+            json={
+                "model": "m",
+                "messages": [{"role": "user", "content": "Please brief Quentin."}],
+            },
+        )
+        assert block_resp.status_code == 503
+        error = block_resp.json()["error"]
+        assert error["management_url"] == f"http://127.0.0.1:{port}/ui/status"
+        assert "Quentin" not in json.dumps(error)
+    finally:
+        server_holder["server"].should_exit = True
+        server_thread.join(timeout=10)
+        app.dependency_overrides.pop(get_l3_detector, None)
 
 
 def test_run_diagnostic_server_binds_the_same_loopback_default_as_blindfold_serve(tmp_path):

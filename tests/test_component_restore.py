@@ -20,7 +20,14 @@ from blindfold.app import (
     get_review_inbox,
     get_upstream_client,
 )
-from blindfold.engine import ExchangeSession, restore_response, restore_tool_call_json
+from blindfold.engine import (
+    ExchangeSession,
+    blindfold_payload,
+    leak_gate,
+    resolution_gate,
+    restore_response,
+    restore_tool_call_json,
+)
 from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
 from blindfold.review import ReviewInbox
 from blindfold.surrogates import SurrogateMapping
@@ -48,18 +55,40 @@ def test_bare_first_name_component_restores_by_positional_alignment():
     assert _restore("Hallo Carla!", session) == "Hallo Sarah!"
 
 
-def test_component_with_unequal_word_counts_is_not_registered_as_a_restore_key():
-    # issue #304 (ADR-0036 amendment): when the surrogate and real value have
-    # different word counts, positional alignment is meaningless -- there is no
-    # correspondence between a component's position and any single real word, so
-    # the pair contributes NO component keys at all. The prior behavior (falling
-    # back to the *whole* real value) is exactly the defect #304 reports: it lets
-    # an ordinary word like "Analytics" become a restore key for an unrelated real
-    # value. The bare abbreviated component is left untouched (a synthetic-name
-    # quality cost, never a leak) rather than risk a wrong whole-value donation.
-    session = _session_with({"Carla Distel": "real-word-1 real-word-2 real-word-3"})
+def test_component_restore_never_invents_a_value_from_a_foreign_exchanges_pair_table():
+    # issue #395 leak-audit clause: restore is closed-world -- a component may
+    # only resolve to a pair recorded in *this* ``ExchangeSession``, never a
+    # same-named surrogate's pair from a different exchange. Two independent
+    # sessions coincidentally mint the same surrogate string for two different
+    # real people; restoring under session A must produce A's real value and
+    # must never surface B's, proving the lookup is scoped to A's own table.
+    session_a = _session_with({"Carla Distel": "Sarah Bergmann"})
+    _session_with({"Carla Distel": "Petra Klein"})  # session B, a foreign exchange
 
-    assert _restore("Hallo Carla!", session) == "Hallo Carla!"
+    restored = _restore("Hallo Carla!", session_a)
+
+    assert restored == "Hallo Sarah!"
+    assert "Petra" not in restored
+
+
+def test_component_with_unequal_word_counts_restores_by_boundary_alignment():
+    # issue #395 (ADR-0036 amendment): a surrogate and its real value having
+    # different word counts (a middle name, a compound department name) is the
+    # common case, not the exception -- #304's original response (donate NO
+    # component keys at all for any length mismatch) left every one of those
+    # pairs' components unrestored, which is the defect #395 reports live: a
+    # whole answer written in surrogate fragments. The first and last surrogate
+    # word are still positionally meaningful even when the counts differ --
+    # given name is always first, family name is always last -- so the boundary
+    # words align (first-to-first, last-to-last) while the middle (no
+    # correspondence at all) contributes no key.
+    session = _session_with(
+        {"Carla Distel": "real-word-1 real-word-2 real-word-3"}
+    )
+
+    assert _restore("Hallo Carla, grüße an Distel.", session) == (
+        "Hallo real-word-1, grüße an real-word-3."
+    )
 
 
 def test_org_component_restores_by_positional_alignment():
@@ -69,6 +98,19 @@ def test_org_component_restores_by_positional_alignment():
     session = _session_with({"Baumgart Handel": "Nordwind Logistik"})
 
     assert _restore("per Baumgart bestellt", session) == "per Nordwind bestellt"
+
+
+def test_org_component_with_unequal_word_counts_restores_by_boundary_alignment():
+    # issue #395: the organisation-side sibling of the person boundary-alignment
+    # test above -- a compound real department name ("Product Engineering
+    # Division") is a common shape a fixed 2-word org surrogate pool never
+    # matches exactly. The surrogate's first word still restores to the real
+    # value's first word.
+    session = _session_with(
+        {"Baumgart Handel": "Product Engineering Division"}
+    )
+
+    assert _restore("per Baumgart bestellt", session) == "per Product bestellt"
 
 
 def test_generic_legal_form_component_is_not_registered_as_a_restore_key():
@@ -91,6 +133,22 @@ def test_component_shared_by_two_surrogates_is_left_untouched():
     # neither registers it as a restore key. The bare token is left as-is.
     session = _session_with(
         {"Carla Distel": "Sarah Bergmann", "Carla Weber": "Petra Klein"}
+    )
+
+    text = "Carla called earlier."
+    assert _restore(text, session) == text
+
+
+def test_boundary_component_shared_by_two_unaligned_surrogates_is_left_untouched():
+    # issue #395: the ambiguity rule (ADR-0036 acceptance criterion 5) applies
+    # identically to a boundary-alignment key -- two unaligned pairs sharing the
+    # surrogate's first word but resolving to different real given names must
+    # leave that component unrestored rather than guess between them.
+    session = _session_with(
+        {
+            "Carla Distel": "real-word-1 real-word-2 real-word-3",
+            "Carla Weber": "other-word-1 other-word-2 other-word-3",
+        }
     )
 
     text = "Carla called earlier."
@@ -290,3 +348,62 @@ async def test_abbreviated_multi_word_surrogate_round_trips_through_the_request_
     restored_text = body["content"][0]["text"]
     assert restored_text == "Hallo Sarah!"
     assert surrogate_first_word not in restored_text
+
+
+def test_issue_395_live_shape_multi_part_person_and_org_restore_by_component():
+    # issue #395's own live shape: a payload mints a multi-part person and a
+    # multi-part organisation entity, both with a real value whose word count
+    # differs from its surrogate's (a middle name; a compound department name)
+    # -- the exact case #304 left entirely unrestored. The stubbed provider
+    # response refers to each only by a bare surrogate component, as observed
+    # live. Full leak-audit shape: stub upstream egress, client-visible restore,
+    # and the post-restore resolution gate, all in one round trip.
+    mapping = SurrogateMapping.from_pairs(
+        [
+            ("Sarah Elizabeth Bergmann", "Carla Distel"),
+            ("Product Engineering Division", "Baumgart Handel"),
+        ]
+    )
+    payload = {
+        "model": "m",
+        "messages": [
+            {
+                "role": "user",
+                "content": (
+                    "Sarah Elizabeth Bergmann and Product Engineering Division "
+                    "are on this week's agenda."
+                ),
+            }
+        ],
+    }
+    blinded, session = blindfold_payload(payload, mapping)
+
+    # Clause A: the outbound payload carries only surrogates -- leak_gate passes.
+    leak_gate(blinded, mapping)
+    outbound_text = json.dumps(blinded)
+    assert "Sarah" not in outbound_text
+    assert "Bergmann" not in outbound_text
+    assert "Product" not in outbound_text
+    assert "Division" not in outbound_text
+
+    # The stubbed provider replies using only each surrogate's first component,
+    # exactly the live abbreviation shape #395 reports.
+    provider_response = {
+        "content": [
+            {
+                "type": "text",
+                "text": "Carla and Baumgart both confirmed attendance.",
+            }
+        ]
+    }
+    restored = restore_response(provider_response, session)
+    restored_text = restored["content"][0]["text"]
+
+    # Clause B/C: the client reads real values, not invented surrogate fragments.
+    assert restored_text == "Sarah and Product both confirmed attendance."
+    assert "Carla" not in restored_text
+    assert "Baumgart" not in restored_text
+
+    # A leftover component is a synthetic token, never a leak or a miss -- the
+    # resolution gate must accept this fully-restored response.
+    resolution_gate(restored, session)

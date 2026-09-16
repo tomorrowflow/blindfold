@@ -2775,12 +2775,27 @@ def _component_restore_map(injected: dict[str, str]) -> dict[str, str]:
     surrogates) — ADR-0036.
 
     issue #304 amendment: a component key requires **positional alignment** --
-    unequal word counts between the surrogate and the real value carry no
-    correspondence between a component's position and any single real word, so an
-    unaligned pair contributes NO component keys at all (never a whole-value
-    fallback). The prior whole-value fallback let an ordinary word donated by one
-    pair (e.g. "Analytics" from a 2-word surrogate mapped to a 1-word real) become
-    a restore key that matched an unrelated real value elsewhere in the response.
+    a surrogate word only becomes a key when its position corresponds to a real
+    word. Equal word counts align every position. The prior whole-value fallback
+    (any surrogate word maps to the *whole* real value on a mismatch) let an
+    ordinary word donated by one pair (e.g. "Analytics" from a 2-word surrogate
+    mapped to a 1-word real) become a restore key that matched an unrelated real
+    value elsewhere in the response.
+
+    issue #395 amendment: an unequal word count is the common case (a middle
+    name, a compound department name), not the exception -- #304's blanket
+    exclusion of every unaligned pair left the whole class unrestored, which is
+    the defect #395 reports live (an answer written entirely in surrogate
+    fragments). The **first and last** surrogate word stay positionally
+    meaningful even when the counts differ -- a person's given name is always
+    first and family name always last, and the same holds for the pool's
+    [prefix, distinctive-word] organisation shape -- so long as the real value
+    also has at least two words: with only one, first and last collapse onto
+    the same word and reintroduce #304's whole-value donation under a new name.
+    Only the boundary positions align this way; a middle surrogate word (index
+    other than first/last) still has no real-word correspondence and
+    contributes no key, same as a fully unaligned pair did before this
+    amendment.
 
     issue #329 (reconciled with ADR-0052/#330's opaque single-token fallback):
     a fallback ``BFX{N:04d}`` label contributes no component keys either,
@@ -2800,9 +2815,18 @@ def _component_restore_map(injected: dict[str, str]) -> dict[str, str]:
         if len(surrogate_words) < 2:
             continue
         real_words = real.split()
-        if len(surrogate_words) != len(real_words):
+        if len(surrogate_words) == len(real_words):
+            alignment = list(zip(surrogate_words, real_words))
+        elif len(real_words) >= 2:
+            # issue #395: boundary-only alignment for an unaligned pair -- see
+            # the docstring above for why only first/last carry correspondence.
+            alignment = [
+                (surrogate_words[0], real_words[0]),
+                (surrogate_words[-1], real_words[-1]),
+            ]
+        else:
             continue
-        for index, word in enumerate(surrogate_words):
+        for word, real_word in alignment:
             if word in _COMPONENT_STOPWORDS:
                 continue
             if not any(char.isalpha() for char in word):
@@ -2812,7 +2836,7 @@ def _component_restore_map(injected: dict[str, str]) -> dict[str, str]:
                 # ordinary digit in a response gets rewritten to a real value
                 # (issue #286).
                 continue
-            candidates.setdefault(word, set()).add(real_words[index])
+            candidates.setdefault(word, set()).add(real_word)
     return {word: next(iter(targets)) for word, targets in candidates.items() if len(targets) == 1}
 
 
