@@ -399,3 +399,57 @@ streaming terminal check via a public accessor (`non_hop_block_type_fields`) con
 SSE stream is still structured JSON, before `_stream_restored` flattens it into the text blob
 `resolution_gate` scans. One dict (`_BLOCK_TYPE_NON_HOP_KEYS`) remains the sole source of truth
 across blinder, restore, both gates, the streaming check, and the suppression-evidence collectors.
+
+## Amendment (issue #387): the invariant also has a within-exchange ordering gap
+
+The prior amendments closed the asymmetry across *requests* (a value minted in an earlier
+request reaching a later one, #299/#300) and across *fields*/*block types* (#303, #323). None of
+them named the gap this issue closed: `blindfold_payload`/`blindfold_chat_completions_payload`
+walk a single exchange's hops strictly in order (system, then each message, ADR-0002), mutating
+the shared `inbox` as L3 confirms novel candidates hop by hop. A hop earlier in that walk has
+already finished — including its own, correctly negative, L3 adjudication of the same literal
+token in its own context — by the time a *later* hop's L3 pass confirms the referent. The
+referent lands in `inbox` (the leak gate's checked set, #287) one hop too late for the earlier
+hop's own pass to have seen it: the same set-equality invariant this ADR states, violated for the
+span of a single exchange rather than across two.
+
+Observed live, twice: three sibling terms minted in one L3 pass, two substituted and one left
+literal in a hop this exchange had already finished blinding. `leak_gate` then blocked — a 503
+that self-heals on retry only because the *next* exchange's every hop starts with the referent
+already in `inbox` (stage 2, above) — an availability cost identical in shape to run 6/run 7,
+just transient instead of permanent (the sibling issue, #386, is the permanent variant and a
+different mechanism; this ADR's invariant does not close that one).
+
+**Decision:** after a whole exchange's hop walk finishes, and only when that walk actually grew
+`inbox` (an exchange with no mid-walk mint pays nothing extra), re-apply the provisional-pair pass
+once more against every hop's own already-blinded output — the same traversal
+(`_blindfold_system`/`_blindfold_content`/`_blindfold_block`, same exclusion sets) every hop
+already uses, entered via a `provisional_catchup` mode that skips L1/L2/L3 outright and runs only
+the deterministic provisional-pair match, now against the exchange's complete `inbox` rather than
+the state as of each hop's own turn.
+
+This second pass scans text that already contains surrogates — this hop's own, and every other
+hop's — unlike the first pass, which always scans frozen pre-splice text where no surrogate can
+yet be present. That reintroduces exactly the self-poisoning hazard L3's own candidate selection
+already guards against (ADR-0022, issue #68): a provisional referent's real value can coincide
+with a whole word inside an unrelated, already-injected surrogate (real "Erika" inside a seed
+surrogate "Erika Mustermann" minted for a different referent — issue #292's accepted residual).
+The catch-up pass excludes `_injected_surrogate_ranges` for exactly this reason, so it only ever
+catches a literal, still-unblinded occurrence — never one that merely sits inside someone else's
+surrogate — leaving that residual exactly as fail-closed as before, not silently corrupted.
+
+Tool descriptions need no equivalent catch-up: `_blindfold_tools_messages`/
+`_blindfold_tools_chat_completions` already run last, strictly after every hop, so they always see
+the exchange's complete `inbox` (this is why #299/#300 never needed this fix for that surface).
+
+**Consequences:**
+- Closes the transient-503 class this issue reports without narrowing `leak_gate` — no value the
+  gate checks today stops being checked; the fix only widens where the blinder can still reach.
+- Determinism (CONTEXT.md, "Detection is reproducible") is preserved: the catch-up pass is itself
+  deterministic and a pure function of the exchange's final `inbox` state, so the same hop under
+  the same conditions still produces the same outcome.
+- Adds one more traversal of the payload per exchange, but only when this exchange's own walk
+  minted something new — the common case (no mid-walk mint) pays nothing.
+- Does not touch `#386` (this ADR's own follow-up issue): a *permanent* instance of a value
+  reaching the gate's set without ever entering the blinder's, a different mechanism from the
+  transient ordering gap closed here.

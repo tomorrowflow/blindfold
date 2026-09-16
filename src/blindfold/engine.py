@@ -278,6 +278,7 @@ def blindfold_payload(
     out = copy.deepcopy(payload)
     l3_provider = l3_detector.provider_name if l3_detector is not None else None
     inbox = _replay_inbox(l3_detector, inbox)
+    items_before_exchange = len(inbox.list()) if inbox is not None else 0
     if declared_tool_vocabulary is not None:
         declared_tool_vocabulary.record(workspace, declared_tools)
         declared_tools = declared_tool_vocabulary.for_workspace(workspace)
@@ -302,6 +303,9 @@ def blindfold_payload(
         session.hops.append(
             _finish_hop(ctx, _hop_kind_for_message(message), len(session.hops))
         )
+
+    if inbox is not None and len(inbox.list()) > items_before_exchange:
+        _reapply_provisional_pairs_across_hops(out, mapping, session, inbox, workspace)
 
     _blindfold_tools_messages(out.get("tools"), mapping, session, inbox)
 
@@ -347,6 +351,7 @@ def blindfold_chat_completions_payload(
     out = copy.deepcopy(payload)
     l3_provider = l3_detector.provider_name if l3_detector is not None else None
     inbox = _replay_inbox(l3_detector, inbox)
+    items_before_exchange = len(inbox.list()) if inbox is not None else 0
     if declared_tool_vocabulary is not None:
         declared_tool_vocabulary.record(workspace, declared_tools)
         declared_tools = declared_tool_vocabulary.for_workspace(workspace)
@@ -362,9 +367,61 @@ def blindfold_chat_completions_payload(
             _finish_hop(ctx, _hop_kind_for_message(message), len(session.hops))
         )
 
+    if inbox is not None and len(inbox.list()) > items_before_exchange:
+        _reapply_provisional_pairs_across_hops(out, mapping, session, inbox, workspace)
+
     _blindfold_tools_chat_completions(out.get("tools"), mapping, session, inbox)
 
     return out, session
+
+
+def _reapply_provisional_pairs_across_hops(
+    out: dict[str, Any],
+    mapping: SurrogateMapping,
+    session: ExchangeSession,
+    inbox: ReviewInbox,
+    workspace: str,
+) -> None:
+    """Catch-up pass for issue #387 (mid-exchange mint reaches an earlier hop).
+
+    ``blindfold_payload``/``blindfold_chat_completions_payload`` walk hops strictly
+    in order (system, then each message, ADR-0002), mutating the shared ``inbox`` as
+    L3 confirms novel candidates hop by hop. ADR-0051 stage 2 already makes every
+    hop consult ``inbox`` for already-minted provisional pairs *as of that hop's own
+    turn* -- but a hop earlier in the walk has already finished (including its own,
+    correctly negative, L3 adjudication of the same literal token in its own
+    context) by the time a *later* hop's L3 pass confirms the referent. The
+    referent lands in ``inbox`` -- the leak gate's checked set, ADR-0051/#287 -- one
+    hop too late for the earlier hop's own pass to have seen it: exactly the
+    asymmetry this issue is about, except within one exchange rather than across
+    two requests.
+
+    Called only when this exchange's own hop walk actually grew ``inbox`` (the
+    caller's guard), so an exchange with no mid-walk mint pays nothing extra.
+    Re-invokes the same :func:`_blindfold_system`/:func:`_blindfold_content`
+    traversal every hop already used -- same exclusion sets, same block-type
+    dispatch (ADR-0051's "one traversal rule shared") -- with
+    ``provisional_catchup=True``, which makes every string leaf's
+    :func:`_blindfold_text` call skip straight to
+    :func:`_reapply_provisional_pairs_catchup` instead of re-running L1/L2/L3:
+    deterministic, no new mint, no second L3 call, and safe against
+    re-matching inside an already-injected surrogate meant for a different
+    referent (issue #292's residual). Tool descriptions need no equivalent
+    catch-up: they are already blindfolded last, via
+    :func:`_blindfold_tools_messages`/:func:`_blindfold_tools_chat_completions`,
+    strictly after every hop below.
+    """
+    system = out.get("system")
+    if system is not None:
+        out["system"] = _blindfold_system(
+            system, mapping, session, None, inbox, workspace=workspace,
+            provisional_catchup=True,
+        )
+    for message in out.get("messages", []):
+        message["content"] = _blindfold_content(
+            message.get("content"), mapping, session, None, inbox,
+            workspace=workspace, provisional_catchup=True,
+        )
 
 
 def extract_declared_tools_messages(payload: dict[str, Any]) -> frozenset[str]:
@@ -892,19 +949,20 @@ def _blindfold_system(
     phone_candidates_enabled: bool = True,
     system_confined_tokens: frozenset[str] = frozenset(),
     case_inconsistency: "CaseInconsistencySuppression | None" = None,
+    provisional_catchup: bool = False,
 ) -> Any:
     if isinstance(system, str):
         return _blindfold_text(
             system, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
-            case_inconsistency,
+            case_inconsistency, provisional_catchup=provisional_catchup,
         )
     if isinstance(system, list):
         return [
             _blindfold_block(
                 block, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
                 workspace, phone_candidates_enabled, system_confined_tokens,
-                case_inconsistency,
+                case_inconsistency, provisional_catchup=provisional_catchup,
             )
             for block in system
         ]
@@ -923,19 +981,20 @@ def _blindfold_content(
     phone_candidates_enabled: bool = True,
     system_confined_tokens: frozenset[str] = frozenset(),
     case_inconsistency: "CaseInconsistencySuppression | None" = None,
+    provisional_catchup: bool = False,
 ) -> Any:
     if isinstance(content, str):
         return _blindfold_text(
             content, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
-            case_inconsistency,
+            case_inconsistency, provisional_catchup=provisional_catchup,
         )
     if isinstance(content, list):
         return [
             _blindfold_block(
                 block, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
                 workspace, phone_candidates_enabled, system_confined_tokens,
-                case_inconsistency,
+                case_inconsistency, provisional_catchup=provisional_catchup,
             )
             for block in content
         ]
@@ -1018,6 +1077,7 @@ def _blindfold_block(
     phone_candidates_enabled: bool = True,
     system_confined_tokens: frozenset[str] = frozenset(),
     case_inconsistency: "CaseInconsistencySuppression | None" = None,
+    provisional_catchup: bool = False,
 ) -> Any:
     """Rewrite one content block in place -- deny-by-default over its string leaves.
 
@@ -1049,7 +1109,7 @@ def _blindfold_block(
         block["text"] = _blindfold_text(
             block["text"], mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
-            case_inconsistency,
+            case_inconsistency, provisional_catchup=provisional_catchup,
         )
         return block
     if block_type in _TOOL_RESULT_BLOCK_TYPES:
@@ -1057,6 +1117,7 @@ def _blindfold_block(
             block.get("content"), mapping, session, l3_detector, inbox,
             declared_tools, hop_ctx, workspace, phone_candidates_enabled,
             system_confined_tokens, case_inconsistency,
+            provisional_catchup=provisional_catchup,
         )
         return block
     if block_type in _TOOL_CALL_BLOCK_TYPES:
@@ -1068,6 +1129,7 @@ def _blindfold_block(
             block.get("input"), mapping, session, l3_detector, inbox,
             declared_tools, hop_ctx, workspace, phone_candidates_enabled,
             system_confined_tokens, case_inconsistency,
+            provisional_catchup=provisional_catchup,
         )
         return block
     non_hop_keys = _non_hop_keys_for_block_type(block_type)
@@ -1077,7 +1139,7 @@ def _blindfold_block(
         block[key] = _blindfold_block_value(
             value, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
-            case_inconsistency,
+            case_inconsistency, provisional_catchup=provisional_catchup,
         )
     return block
 
@@ -1094,6 +1156,7 @@ def _blindfold_block_value(
     phone_candidates_enabled: bool = True,
     system_confined_tokens: frozenset[str] = frozenset(),
     case_inconsistency: "CaseInconsistencySuppression | None" = None,
+    provisional_catchup: bool = False,
 ) -> Any:
     """Recursively rewrite every string leaf of a content-block subtree (issue #323).
 
@@ -1110,7 +1173,7 @@ def _blindfold_block_value(
         return _blindfold_text(
             value, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
-            case_inconsistency,
+            case_inconsistency, provisional_catchup=provisional_catchup,
         )
     if isinstance(value, dict):
         return {
@@ -1120,7 +1183,7 @@ def _blindfold_block_value(
                 else _blindfold_block_value(
                     v, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
                     workspace, phone_candidates_enabled, system_confined_tokens,
-                    case_inconsistency,
+                    case_inconsistency, provisional_catchup=provisional_catchup,
                 )
             )
             for k, v in value.items()
@@ -1130,7 +1193,7 @@ def _blindfold_block_value(
             _blindfold_block_value(
                 item, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
                 workspace, phone_candidates_enabled, system_confined_tokens,
-                case_inconsistency,
+                case_inconsistency, provisional_catchup=provisional_catchup,
             )
             for item in value
         ]
@@ -1149,20 +1212,21 @@ def _blindfold_json_value(
     phone_candidates_enabled: bool = True,
     system_confined_tokens: frozenset[str] = frozenset(),
     case_inconsistency: "CaseInconsistencySuppression | None" = None,
+    provisional_catchup: bool = False,
 ) -> Any:
     """Recursively rewrite every string leaf in a JSON-shaped value via L1+L2."""
     if isinstance(value, str):
         return _blindfold_text(
             value, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
-            case_inconsistency,
+            case_inconsistency, provisional_catchup=provisional_catchup,
         )
     if isinstance(value, dict):
         return {
             k: _blindfold_json_value(
                 v, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
                 workspace, phone_candidates_enabled, system_confined_tokens,
-                case_inconsistency,
+                case_inconsistency, provisional_catchup=provisional_catchup,
             )
             for k, v in value.items()
         }
@@ -1171,7 +1235,7 @@ def _blindfold_json_value(
             _blindfold_json_value(
                 item, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
                 workspace, phone_candidates_enabled, system_confined_tokens,
-                case_inconsistency,
+                case_inconsistency, provisional_catchup=provisional_catchup,
             )
             for item in value
         ]
@@ -1395,6 +1459,7 @@ def _blindfold_text(
     phone_candidates_enabled: bool = True,
     system_confined_tokens: frozenset[str] = frozenset(),
     case_inconsistency: "CaseInconsistencySuppression | None" = None,
+    provisional_catchup: bool = False,
 ) -> str:
     """Rewrite ``text`` by replacing every L2-detected entity span with its surrogate.
 
@@ -1430,7 +1495,18 @@ def _blindfold_text(
     reaches :meth:`L3Detector.detect` unchanged, for every hop — see
     :func:`blindfold_payload`. ``None`` (this function's own default)
     reproduces candidate selection with the condition off.
+
+    ``provisional_catchup`` (issue #387): when ``True``, every other
+    parameter above except ``mapping``/``session``/``inbox``/``hop_ctx`` is
+    ignored and this call does only one thing --
+    :func:`_reapply_provisional_pairs_catchup`'s guarded, deterministic-only
+    re-application of ADR-0051's provisional-pair pass against text an
+    earlier hop of *this same exchange* already finished blinding. See
+    :func:`_reapply_provisional_pairs_across_hops` for why a second pass is
+    needed at all.
     """
+    if provisional_catchup:
+        return _reapply_provisional_pairs_catchup(text, mapping, session, inbox, hop_ctx)
     # Issue #325: stages 1 (L2), 1.5 (the provisional-pair pass, ADR-0051) and 2
     # (L1) each *collect* replacement spans against ``text`` -- the untouched,
     # frozen hop text -- instead of mutating a shared accumulator mid-detection.
@@ -2058,6 +2134,40 @@ def _injected_surrogate_ranges(
             ranges.append((idx, idx + len(value)))
             start = idx + 1
     return ranges
+
+
+def _reapply_provisional_pairs_catchup(
+    text: str,
+    mapping: SurrogateMapping,
+    session: ExchangeSession,
+    inbox: ReviewInbox | None,
+    hop_ctx: "_HopContext | None",
+) -> str:
+    """The leaf action behind ``_blindfold_text(..., provisional_catchup=True)``
+    (issue #387): re-apply ADR-0051's provisional-pair substitution to ``text``
+    -- an earlier hop's own already-blinded output, not frozen pre-blind text --
+    now that this exchange's later hop(s) have minted more of ``inbox``.
+
+    Unlike the pass inside :func:`_blindfold_text` proper (which always scans
+    frozen, pre-splice text, so an already-live surrogate's literal form
+    structurally cannot be present yet), this catch-up runs against text that
+    already contains surrogates -- this hop's own, and every other hop's. A
+    provisional referent's real value can coincide with a whole word inside an
+    unrelated, already-injected surrogate (e.g. real "Erika" inside a seed
+    surrogate "Erika Mustermann" minted for a different referent, issue #292's
+    residual) -- rewriting that occurrence would silently corrupt the other
+    surrogate. Excluding :func:`_injected_surrogate_ranges` mirrors the
+    identical self-poisoning guard (ADR-0022, issue #68) L3's own candidate
+    selection already applies, so this pass only ever catches a *literal,
+    un-blinded* occurrence -- never one that merely sits inside someone else's
+    surrogate -- leaving that accepted residual exactly as fail-closed as
+    before.
+    """
+    if inbox is None:
+        return text
+    exclude = _injected_surrogate_ranges(text, mapping, session, inbox)
+    spans = _collect_provisional_pair_spans(text, inbox, session, hop_ctx, exclude=exclude)
+    return _apply_spans(text, spans)
 
 
 def _restore_block(block: Any, session: ExchangeSession) -> Any:
