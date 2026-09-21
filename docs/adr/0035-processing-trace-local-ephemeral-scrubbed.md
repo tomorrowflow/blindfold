@@ -153,6 +153,23 @@ finally answer "where did the 72 seconds go" at a glance — `formatMs` now
 renders `>=1000ms` as seconds, since exchanges with L3 minting over many
 candidate spans run into the tens of seconds.
 
+### 15. Narrowed by ADR-0059 (Payload inspection)
+
+Decision 4's scrub clause — "never a real value, raw hop content, candidate-span text,
+or a payload diff" — no longer holds absolutely. ADR-0059 adds **Payload inspection**, an
+armed, bounded, in-memory retention of the payload leaves the blindfold pass rewrote, in
+their **blindfolded** form, rendered as this trace's next grain level.
+
+The narrowing is only to "raw hop content", and only under that ADR's arming: off by
+default, `admin` to enable (an audit event), last 5 exchanges, 30-minute auto-disarm,
+never persisted, nothing retained while **Unprotected mode** is active. "Never a real
+value" and "never a payload diff" stand unchanged — no real text is retained, and the real
+side is resolved at serve time through the audited **Re-identify** path that decision 13
+already wired.
+
+This text is left as written rather than rewritten: decision 4 meant what it said, and
+ADR-0059 records when and why that stopped being true.
+
 ## Consequences
 
 - The trace is an *operational* surface, not a compliance one — it complements,

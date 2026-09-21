@@ -521,6 +521,26 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   vocabulary, separate schema, and it exists only where the Processing trace's scrubbing
   refusal does not apply because no shipped code is involved. _Avoid_: payload diff, dump,
   trace (that is the Processing trace).
+- **Payload inspection** (ADR-0059) — the shipped, **armed** capability that lets an
+  operator see what the provider actually received: the payload leaves the blindfold pass
+  rewrote, retained in **blindfolded** form with mint-time span offsets, rendered as the
+  **Processing trace**'s next grain level with an audited exchange-level **Reveal** switch.
+  Off by default; `admin` enables it (an **audit event**), it holds the last few exchanges,
+  auto-disarms on a timer and on restart, is never persisted, and retains **nothing** while
+  **Unprotected mode** is active. Its claim is *transformation*, not verification — it
+  demonstrates what a payload became and does not prove the absence of a leak, because a
+  missed entity was never rewritten and so renders identically on both sides of the switch.
+  Distinct from the **Exchange capture** (plaintext, source-only, on disk, both sides of the
+  round trip) and from the **Processing trace** itself (scrubbed, always on). _Avoid_: **dev
+  mode**, **debug mode**, payload diff (no real text is retained, so there is no diff),
+  preview (it is strictly after the fact).
+- **Retained payload** (ADR-0059) — what **Payload inspection** holds while armed: per
+  exchange, every string leaf the blindfold pass rewrote, keyed by its path in the payload,
+  in blindfolded form only. Wider than hop text — it reaches tool-result bodies, tool-call
+  inputs and tool descriptions, where substitutions actually concentrate — and narrower than
+  the outbound body, since untouched leaves are not retained. A **blocked** exchange's
+  retained payload is kept and marked *never sent*. _Avoid_: retained prompt (it is not only
+  the prompt), payload copy, buffer.
 
 ## Key invariants
 
