@@ -57,5 +57,7 @@ Vocabulary follows [`../../CONTEXT.md`](../../CONTEXT.md).
 | [0056](0056-test-connection-canary-and-failure-taxonomy.md) | Test connection — reserved-shape canary, honesty split, typed failure taxonomy | Accepted |
 | [0057](0057-claude-desktop-gateway-mode-is-a-redirectable-client.md) | Claude Desktop in 3P Gateway mode is a redirectable client — in scope, no interception, no new proxy | Accepted |
 | [0058](0058-sandcastle-agent-sandbox-runs-on-podman.md) | The Sandcastle agent sandbox runs on Podman, not Docker | Accepted |
+| [0059](0059-payload-inspection-armed-retention-of-rewritten-leaves.md) | Payload inspection — armed, bounded retention of rewritten leaves | Accepted |
+| [0060](0060-executed-arguments-world-acting-requests-carry-reserved-surrogates.md) | A world-acting request carries only reserved-namespace surrogates, and they are never restored | Accepted |
 
 New ADRs: copy [`0000-template.md`](0000-template.md), take the next number.
