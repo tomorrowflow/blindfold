@@ -234,6 +234,38 @@ def test_applied_provisional_surrogate_is_restored_and_resolution_gate_stays_cle
     resolution_gate(restored, session)
 
 
+def test_a_provisional_reals_component_inside_an_already_injected_l2_surrogate_is_left_alone():
+    # Issue #405's self-poisoning guard (ADR-0022/#68/#292 precedent, mirroring
+    # _reapply_provisional_pairs_catchup's own exclusion): the entity-graph pass
+    # (L2) already spliced "Bar" -> "Foo Baz" into the description by the time
+    # the provisional-pair pass runs over it. A live provisional referent whose
+    # own real value ("Baz") happens to occur, literally, inside that
+    # already-injected surrogate must never be treated as a fresh match -- doing
+    # so would corrupt "Foo Baz" (the literal text session.record paired with
+    # "Bar") into something no restore key maps back to "Bar" at all.
+    mapping = SurrogateMapping.from_pairs([("Bar", "Foo Baz")])
+    inbox = ReviewInbox()
+    inbox.upsert("Baz", context="...Baz signed off...", entity_type="organization")
+    item = inbox.list()[0]
+    payload = {
+        "model": "claude-3-5-sonnet",
+        "messages": [{"role": "user", "content": "checking in now."}],
+        "tools": [
+            {
+                "name": "lookup",
+                "description": "Bar reports to finance.",
+                "input_schema": {"type": "object", "properties": {}},
+            }
+        ],
+    }
+
+    blinded, _session = blindfold_payload(payload, mapping, None, inbox)
+
+    description = blinded["tools"][0]["description"]
+    assert description == "Foo Baz reports to finance."
+    assert item.provisional_surrogate not in description
+
+
 def test_the_substitution_set_is_derived_from_the_same_shared_function_leak_gate_uses(
     monkeypatch,
 ):

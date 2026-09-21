@@ -953,7 +953,7 @@ def _blindfold_tool_descriptions(
         if isinstance(container.get("description"), str):
             description = _blindfold_text(container["description"], mapping, session)
             container["description"] = _apply_provisional_pairs(
-                description, inbox, session
+                description, mapping, inbox, session
             )
         _blindfold_schema_prose(container.get("input_schema"), mapping, session, inbox)
         _blindfold_schema_prose(container.get("parameters"), mapping, session, inbox)
@@ -979,7 +979,7 @@ def _blindfold_schema_prose(
         for key, value in schema.items():
             if key == "description" and isinstance(value, str):
                 rewritten = _blindfold_text(value, mapping, session)
-                schema[key] = _apply_provisional_pairs(rewritten, inbox, session)
+                schema[key] = _apply_provisional_pairs(rewritten, mapping, inbox, session)
             else:
                 _blindfold_schema_prose(value, mapping, session, inbox)
     elif isinstance(schema, list):
@@ -1508,12 +1508,14 @@ def _collect_provisional_pair_spans(
     (issue #299/#300, extended to real-word components by #306) -- the
     :func:`_blindfold_text` message-hop pipeline's replacement for calling
     :func:`_apply_provisional_pairs` inline, which mutated a local accumulator
-    once per ``(item, value)`` via ``.subn()``. ``_apply_provisional_pairs``
-    itself is unchanged and still used as-is by the ADR-0051 stage 1 tool-
-    description/schema-prose pass (:func:`_blindfold_tool_descriptions` /
-    :func:`_blindfold_schema_prose`), which sits outside this issue's scope --
-    #325 restructures ``_blindfold_text``'s own pipeline only. Deterministic
-    only: reads ``inbox.list()``, never runs L3, never calls ``inbox.upsert``.
+    once per ``(item, value)`` via ``.subn()``. Issue #405: :func:`_apply_provisional_pairs`
+    itself (the ADR-0051 stage 1 tool-description/schema-prose pass, called from
+    :func:`_blindfold_tool_descriptions` / :func:`_blindfold_schema_prose`) is now
+    this function's second caller, collecting against its own frozen input and
+    splicing once via :func:`_apply_spans` instead of its former standalone
+    ``.subn()`` loop -- the last rewrite path #325 left outside that single
+    splice point. Deterministic only: reads ``inbox.list()``, never runs L3,
+    never calls ``inbox.upsert``.
 
     ``exclude`` holds ranges an earlier-precedence stage (L2) already claimed in
     this same pass -- a match overlapping one is skipped exactly as it would
@@ -2666,6 +2668,7 @@ def augmented_known_values(
 
 def _apply_provisional_pairs(
     text: str,
+    mapping: SurrogateMapping,
     inbox: ReviewInbox | None,
     session: ExchangeSession,
     hop_ctx: "_HopContext | None" = None,
@@ -2700,31 +2703,25 @@ def _apply_provisional_pairs(
     inbox, so this pass reapplies its already-minted provisional pairs like any real
     exchange. ``None`` is left alone rather than erroring, matching
     :func:`leak_gate`'s own ``inbox is None`` handling.
+
+    Issue #405: collects :class:`ReplacementSpan`\\s against frozen ``text`` via
+    :func:`_collect_provisional_pair_spans` and splices once through
+    :func:`_apply_spans`, rather than mutating a cumulative result with one
+    ``re.subn`` call per key -- the last rewrite path issue #325 left outside that
+    single splice point. ``text`` here is already the output of an earlier,
+    deterministic-only :func:`_blindfold_text` pass (L1+L2, ADR-0023 §3's tool-
+    description/schema-prose scope) -- exactly :func:`_reapply_provisional_pairs_catchup`'s
+    situation, not :func:`_blindfold_text`'s own frozen pre-splice text -- so it
+    carries the identical self-poisoning guard (ADR-0022, #68/#292): a provisional
+    referent's real value occurring inside an already-injected surrogate's own
+    literal text (via :func:`_injected_surrogate_ranges`) is never treated as a
+    fresh match, or this pass could corrupt that surrogate's literal in place.
     """
     if inbox is None:
         return text
-    items = inbox.list()
-    component_map = _provisional_component_map(items)
-    result = text
-    for item in items:
-        pairs = _provisional_pair_map(item, component_map)
-        # Longest value first (mirrors :func:`_apply_restore_pass`'s own discipline):
-        # a variation surface can contain one value that is a strict prefix of
-        # another (e.g. a legal-form-stripped bare org name, #289/#296 --
-        # ``"Kestrel"`` inside ``"Kestrel LLC"``), each independently a valid
-        # word-boundary match. Substituting the shorter one first would consume
-        # only its own span and strand the remainder (``" LLC"``) glued onto the
-        # surrogate -- the same corruption class #179's containment backstop
-        # guards against at mint time, here avoided by ordering instead.
-        for value in sorted(pairs, key=len, reverse=True):
-            target, recorded_real = pairs[value]
-            rewritten, count = _real_value_pattern(value).subn(target, result)
-            if count:
-                result = rewritten
-                session.record(target, recorded_real)
-                if hop_ctx is not None:
-                    hop_ctx.surrogates.append(target)
-    return result
+    exclude = _injected_surrogate_ranges(text, mapping, session, inbox)
+    spans = _collect_provisional_pair_spans(text, inbox, session, hop_ctx, exclude=exclude)
+    return _apply_spans(text, spans)
 
 
 def _apply_restore_pass(text: str, restore_map: dict[str, str]) -> str:
