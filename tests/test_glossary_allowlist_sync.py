@@ -8,11 +8,13 @@ own tool results. ``Surrogate`` is a measured false positive in #74 runs 10 and
 11.
 
 ``extract_glossary_terms`` mechanically enumerates CONTEXT.md's Glossary section
-(the 57 top-level ``- **Term** -- ...`` headings, ADR-0023 curation input for this
-slice). Every one of those 57 terms must appear either in the seeded allowlist
-(``load_seeded_allowlist_tokens``) or in ``GLOSSARY_EXCLUSIONS`` with a recorded
-reason -- so a new glossary term added later can't silently drift out of sync
-with the allowlist the way the whole domain-term category did until now.
+(the 59 top-level ``- **Term** -- ...`` headings, ADR-0023 curation input for this
+slice; ADR-0059 §4 added "Payload inspection" and "Retained payload" to the
+Glossary, moving the count from 57 to 59). Every one of those 59 terms must
+appear either in the seeded allowlist (``load_seeded_allowlist_tokens``) or in
+``GLOSSARY_EXCLUSIONS`` with a recorded reason -- so a new glossary term added
+later can't silently drift out of sync with the allowlist the way the whole
+domain-term category did until now.
 """
 
 from __future__ import annotations
@@ -24,10 +26,10 @@ from blindfold.allowlist_seed import (
 )
 
 
-def test_extract_glossary_terms_finds_exactly_the_57_glossary_headings():
+def test_extract_glossary_terms_finds_exactly_the_59_glossary_headings():
     terms = extract_glossary_terms()
 
-    assert len(terms) == 57
+    assert len(terms) == 59
     assert "Surrogate" in terms
     assert "Blindfold" in terms
     # Nested Detection-layers sub-bullets (L1/L2/L3) are indented, not top-level
