@@ -142,6 +142,10 @@ class AuditRecord:
                                         (issue #279).
       - ``policy-phone-candidates-enabled``  — an admin reverted that opt-out
                                         (issue #279).
+      - ``payload-inspection-armed``  — an admin armed Payload inspection
+                                        (ADR-0059 §4, issue #398).
+      - ``payload-inspection-arm-refused`` — a caller without the ``admin`` role
+                                        attempted to arm it.
 
     ``ts`` is the record's own recorded-at timestamp (ISO-8601, UTC) — the full audit
     log view (issue #102) sorts and filters on it; mirrors ``BlockRecord.ts``
