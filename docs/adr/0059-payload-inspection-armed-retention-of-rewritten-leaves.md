@@ -69,8 +69,15 @@ artifact, gated with a positive control. Nothing here weakens that gate, and
 ### 2. What is retained is the rewritten leaf, not the hop, and not the body
 
 Retention stores, per exchange, **every string leaf the blindfold pass actually rewrote**,
-keyed by its path in the payload, in the **blindfolded** form only — plus the span offsets
-recorded at mint time (§3). Leaves the pass left untouched are not retained.
+in the **blindfolded** form only — plus the span offsets recorded at mint time (§3). Leaves
+the pass left untouched are not retained.
+
+A leaf is identified by a **stable walk-order id plus a display label** derived from where
+it was rewritten (hop kind, and the block or field type — a tool-call input, a tool
+description, a user text block, a tool-result body). A verbatim JSON path was considered and
+rejected: the nine rewrite sites mutate in place and carry no path, threading one through
+all of them is a large mechanical change, and what the view needs is *description* — that a
+substitution happened in a tool-call input rather than a user turn — not addressability.
 
 This is narrower than "the outbound body" and *wider* than "hop text": it reaches
 `tool_result` bodies, `tool_use` inputs and tool `description`s, which is where the
@@ -98,6 +105,14 @@ blindfolded text** plus the surrogate written there. It records **no real value*
 real side is resolved at serve time through the existing audited **Re-identify** path, and
 the offsets alone are not a real value. The record is built only while Payload inspection
 is armed (§4); when disarmed the engine's behaviour is byte-identical to today.
+
+**Recorded spans may overlap.** `_apply_spans` is deliberately permissive for L3's splice
+(`assert_no_overlap=False`): two different novel-entity mints can legitimately claim the same
+substring today — a coalesced multi-word mint and a bare-component coverage sweep both claim
+the component (issue #292). That is a pre-existing property of L3's mint/coverage-sweep
+interaction, not something this ADR introduces or fixes. The record therefore represents
+overlapping and nested spans faithfully rather than dropping or merging them, and §7's
+rendering must handle them — a renderer that assumes disjoint spans loses one silently.
 
 This is a request-path change, and ADR-0047's "the request path gains no branch, flag or
 observer seam **for diagnostics**" is not violated — but the spirit of it is engaged, so:
