@@ -44,4 +44,6 @@ export {
   PlugZap,
   Copy,
   ExternalLink,
+  // Settings -> Payload inspection (issue #402, ADR-0059 §4)
+  Eye,
 } from "lucide-react";

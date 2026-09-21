@@ -7,6 +7,8 @@ import { ToastProvider } from "./ToastContext";
 import { ToastOutlet } from "./ToastOutlet";
 import { PreferencesProvider } from "./PreferencesContext";
 import { ReviewInboxProvider } from "./ReviewInboxContext";
+import { PayloadInspectionProvider } from "./PayloadInspectionContext";
+import { PayloadInspectionBanner } from "./PayloadInspectionBanner";
 import { useSetupRedirect } from "./useSetupRedirect";
 
 export function Shell() {
@@ -18,14 +20,17 @@ export function Shell() {
       <WorkspaceProvider>
         <PreferencesProvider>
           <ReviewInboxProvider>
-            <div className="bf-shell">
-              <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((v) => !v)} />
-              <TopBar />
-              <main className="bf-main">
-                <Outlet />
-              </main>
-            </div>
-            <ToastOutlet />
+            <PayloadInspectionProvider>
+              <div className="bf-shell">
+                <Sidebar collapsed={collapsed} onToggle={() => setCollapsed((v) => !v)} />
+                <TopBar />
+                <main className="bf-main">
+                  <PayloadInspectionBanner />
+                  <Outlet />
+                </main>
+              </div>
+              <ToastOutlet />
+            </PayloadInspectionProvider>
           </ReviewInboxProvider>
         </PreferencesProvider>
       </WorkspaceProvider>

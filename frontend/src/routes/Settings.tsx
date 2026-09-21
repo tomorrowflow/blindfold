@@ -8,6 +8,7 @@ import { SettingsDetection } from "../components/SettingsDetection";
 import { SettingsImport } from "../components/SettingsImport";
 import { SettingsPolicy } from "../components/SettingsPolicy";
 import { SettingsUnprotectedMode } from "../components/SettingsUnprotectedMode";
+import { SettingsPayloadInspection } from "../components/SettingsPayloadInspection";
 
 const DENSITY_OPTIONS: { value: Density; label: string }[] = [
   { value: "compact", label: "Compact" },
@@ -51,6 +52,7 @@ export function Settings() {
       </section>
       <SettingsPolicy />
       <SettingsUnprotectedMode />
+      <SettingsPayloadInspection />
       <SettingsDetection />
       <SettingsImport />
       <p className="bf-settings-field-hint" data-testid="settings-no-export-note">
