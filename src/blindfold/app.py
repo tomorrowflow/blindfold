@@ -203,6 +203,7 @@ from .status import (
     RecentFailureHealth,
     compute_state,
 )
+from .payload_inspection import PayloadInspection
 from .store import VendoredSeedRepository, vendored_seed_repository
 from .surrogates import MintPoolExhaustedError, SurrogateMapping
 from .test_connection import is_loopback_base_url, run_test_connection
@@ -364,6 +365,16 @@ _declared_tool_vocabulary = DeclaredToolVocabulary()
 # surviving a proxy restart is explicitly not required). Tests substitute their own
 # via dependency_overrides[get_unprotected_mode].
 _unprotected_mode = UnprotectedMode()
+
+# Process-wide Payload inspection state (ADR-0059 §4, issue #398): armed flag +
+# fixed 30-minute expiry timer. Deliberately a singleton scoped to this proxy
+# process only -- never persisted to the shared store, never per-workspace --
+# same reasoning as `_unprotected_mode` above: the auto-disarm survives a
+# menu-bar-app crash, and disarm-on-restart falls out of the singleton being
+# reconstructed with a fresh process. This slice retains nothing yet -- arming
+# is the precondition, not the retention. Tests substitute their own via
+# dependency_overrides[get_payload_inspection].
+_payload_inspection = PayloadInspection()
 
 # Process-wide rolling window of fail-closed/leak-gate blocks (issue #92), fed by the
 # single `_blocked_response` funnel (#91) so `/v1/status`'s `blocks.recent` carries the
@@ -632,6 +643,10 @@ def get_audit_log() -> AuditLog:
 
 def get_unprotected_mode() -> UnprotectedMode:
     return _unprotected_mode
+
+
+def get_payload_inspection() -> PayloadInspection:
+    return _payload_inspection
 
 
 def get_block_history() -> BlockHistory:
@@ -3340,6 +3355,81 @@ async def retry_gliner_detection(
         hub_client=hub_client,
         classifier_factory=classifier_factory,
     )
+
+
+@app.post("/v1/management/payload-inspection")
+async def arm_payload_inspection(
+    workspace: str,
+    request: Request,
+    rbac: RbacRegistry = Depends(get_rbac),
+    payload_inspection: PayloadInspection = Depends(get_payload_inspection),
+    audit_log: AuditLog = Depends(get_audit_log),
+) -> dict:
+    """Arm Payload inspection (ADR-0059 §4, issue #398): retaining nothing yet --
+    this is the arm/disarm precondition only.
+
+    Requires the ``admin`` role, checked against ``workspace`` -- install-global
+    like the GLiNER detection endpoints (ADR-0034 §5), not a scope on the
+    (proxy-level, process-global) armed state itself. Deciding the machine may
+    retain payload text is the ``admin`` right, distinct from ``re-identifier``
+    (ADR-0059 §4). A refused attempt is itself an audit event: arming weakens the
+    default retention posture, the same fail-closed-instinct-on-the-control-
+    surface reasoning Unprotected mode's capability gate uses (ADR-0038), applied
+    here directly to the ``admin`` gate since this capability has no separate
+    two-step toggle.
+    """
+    identity = _caller_identity(request)
+    if not rbac.has_role(identity, workspace, "admin"):
+        audit_log.append(
+            AuditRecord(
+                workspace=workspace,
+                event="payload-inspection-arm-refused",
+                reason="caller lacks the admin role",
+                identity=identity,
+            )
+        )
+        raise HTTPException(status_code=403, detail="insufficient rights")
+    payload_inspection.arm()
+    audit_log.append(
+        AuditRecord(
+            workspace=workspace,
+            event="payload-inspection-armed",
+            reason="admin armed Payload inspection",
+            identity=identity,
+        )
+    )
+    return payload_inspection.status().to_dict()
+
+
+@app.delete("/v1/management/payload-inspection")
+async def disarm_payload_inspection(
+    workspace: str,
+    request: Request,
+    rbac: RbacRegistry = Depends(get_rbac),
+    payload_inspection: PayloadInspection = Depends(get_payload_inspection),
+) -> dict:
+    """Disarm Payload inspection (ADR-0059 §4, issue #398). Requires ``admin``,
+    same gate as arming."""
+    _require_role(request, workspace, "admin", rbac)
+    payload_inspection.disarm()
+    return payload_inspection.status().to_dict()
+
+
+@app.get("/v1/management/payload-inspection")
+async def get_payload_inspection_status(
+    workspace: str,
+    request: Request,
+    rbac: RbacRegistry = Depends(get_rbac),
+    payload_inspection: PayloadInspection = Depends(get_payload_inspection),
+) -> dict:
+    """Read Payload inspection's armed state and remaining time (ADR-0059 §4) --
+    "the armed state is readable by an authorized caller" (issue #398). Requires
+    ``admin``, matching the write gate: the supervisor deliberately does not
+    reflect this state (no alarm-icon reuse, ADR-0059 §4), so only the
+    admin-facing Settings surface needs to read it.
+    """
+    _require_role(request, workspace, "admin", rbac)
+    return payload_inspection.status().to_dict()
 
 
 def _apply_merge_side_effects(
