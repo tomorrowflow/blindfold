@@ -137,3 +137,11 @@ class RewrittenLeafStore:
 
     def for_workspace(self, workspace: str) -> list[RetainedExchange]:
         return [entry for entry in self._entries if entry.workspace == workspace]
+
+    def clear(self) -> None:
+        """Release every retained exchange, across every workspace (issue #420):
+        Payload inspection's disarm -- explicit or the 30-minute auto-disarm --
+        must actually end retention, not just flip the armed flag. Process-
+        global like :class:`~blindfold.payload_inspection.PayloadInspection`
+        itself, so one `clear()` covers every workspace together."""
+        self._entries.clear()

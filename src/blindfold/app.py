@@ -372,15 +372,6 @@ _declared_tool_vocabulary = DeclaredToolVocabulary()
 _unprotected_mode = UnprotectedMode()
 
 # Process-wide Payload inspection state (ADR-0059 §4, issue #398): armed flag +
-# fixed 30-minute expiry timer. Deliberately a singleton scoped to this proxy
-# process only -- never persisted to the shared store, never per-workspace --
-# same reasoning as `_unprotected_mode` above: the auto-disarm survives a
-# menu-bar-app crash, and disarm-on-restart falls out of the singleton being
-# reconstructed with a fresh process. This slice retains nothing yet -- arming
-# is the precondition, not the retention. Tests substitute their own via
-# dependency_overrides[get_payload_inspection].
-_payload_inspection = PayloadInspection()
-
 # Process-wide retained-leaf store (ADR-0059 §2-§4, issue #399): the last 5
 # exchanges' rewritten leaves, only ever populated while `_payload_inspection`
 # is armed (checked once per exchange, in `_exchange`, below). A SEPARATE
@@ -388,8 +379,21 @@ _payload_inspection = PayloadInspection()
 # separate store, not as extra fields on the [Processing] trace record") --
 # same never-persisted, evaporates-on-restart shape as every other process-
 # global store on this page. Tests substitute their own via
-# dependency_overrides[get_rewritten_leaf_store].
+# dependency_overrides[get_rewritten_leaf_store]. Constructed first so
+# `_payload_inspection`, below, can wire its release hook to it.
 _rewritten_leaf_store = RewrittenLeafStore()
+
+# fixed 30-minute expiry timer. Deliberately a singleton scoped to this proxy
+# process only -- never persisted to the shared store, never per-workspace --
+# same reasoning as `_unprotected_mode` above: the auto-disarm survives a
+# menu-bar-app crash, and disarm-on-restart falls out of the singleton being
+# reconstructed with a fresh process. `on_disarm` releases `_rewritten_leaf_store`
+# on both the explicit and the 30-minute auto-disarm path (issue #420) -- wired
+# here, the app-level seam that already holds both, rather than giving
+# `PayloadInspection` a direct reference to the store (ADR-0059 §3: kept
+# separate). Tests substitute their own via
+# dependency_overrides[get_payload_inspection].
+_payload_inspection = PayloadInspection(on_disarm=_rewritten_leaf_store.clear)
 
 # Process-wide rolling window of fail-closed/leak-gate blocks (issue #92), fed by the
 # single `_blocked_response` funnel (#91) so `/v1/status`'s `blocks.recent` carries the

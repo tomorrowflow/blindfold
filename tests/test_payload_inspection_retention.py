@@ -90,6 +90,21 @@ def test_retain_carries_the_caller_supplied_exchange_id():
     assert exchange.exchange_id == "ex-123"
 
 
+def test_clear_releases_every_retained_exchange_across_workspaces():
+    # Issue #420: disarm must release the retained leaves, so the store needs
+    # a release operation at all -- there was none before this. Process-
+    # global like `PayloadInspection` itself (not per-workspace), so a single
+    # `clear()` releases every workspace's retained exchanges together.
+    store = RewrittenLeafStore()
+    store.retain(workspace="ws-a", leaves=[], blocked=False)
+    store.retain(workspace="ws-b", leaves=[], blocked=False)
+
+    store.clear()
+
+    assert store.for_workspace("ws-a") == []
+    assert store.for_workspace("ws-b") == []
+
+
 def test_the_store_retains_only_the_last_5_exchanges_per_workspace():
     # ADR-0059 §4: "last 5 exchanges, in memory only" -- oldest evicted.
     store = RewrittenLeafStore()
@@ -391,6 +406,140 @@ async def test_read_endpoint_reports_armed_state_to_a_viewer_without_admin():
     body = resp.json()
     assert body["armed"] is True
     assert body["armed_at"] == "2026-09-22T10:00:00+00:00"
+
+
+@pytest.mark.anyio
+async def test_disarm_endpoint_releases_retained_leaves():
+    # Issue #420, the acceptance criterion's own bar: an object-level test
+    # (calling `store.clear()` directly) would have passed while this bug
+    # shipped, since nothing wired disarm to the store at all. Disarm is
+    # driven through the real DELETE endpoint here, and the release is
+    # observed through the real GET leaves endpoint, not the store object.
+    from blindfold.rewritten_leaves import RewrittenLeaf
+
+    rbac = RbacRegistry()
+    rbac.grant("alice", "ws-a", "admin")
+    rbac.grant("alice", "ws-a", "viewer")
+    store = RewrittenLeafStore()
+    inspection = PayloadInspection(on_disarm=store.clear)
+    inspection.arm()
+    store.retain(
+        workspace="ws-a",
+        leaves=[RewrittenLeaf(leaf_id="leaf-0", label="user: text block", text="hi")],
+        blocked=False,
+    )
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_payload_inspection] = lambda: inspection
+    app.dependency_overrides[get_rewritten_leaf_store] = lambda: store
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://proxy.test"
+        ) as client:
+            disarm_resp = await client.delete(
+                "/v1/management/payload-inspection?workspace=ws-a",
+                headers={"x-blindfold-identity": "alice"},
+            )
+            leaves_resp = await client.get(
+                "/v1/management/payload-inspection/leaves?workspace=ws-a",
+                headers={"x-blindfold-identity": "alice"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert disarm_resp.status_code == 200
+    assert disarm_resp.json()["armed"] is False
+    assert leaves_resp.status_code == 200
+    assert leaves_resp.json()["exchanges"] == []
+
+
+@pytest.mark.anyio
+async def test_auto_disarm_via_fake_clock_releases_retained_leaves_observed_through_leaves_endpoint():
+    # Issue #420's more serious half: the 30-minute auto-disarm never went
+    # through an explicit `disarm()` call from any caller before this fix --
+    # it fires lazily, inside `is_armed()`/`status()`, the next time anything
+    # asks. Here that "anything" is the GET leaves endpoint itself, driven
+    # past the deadline on a fake clock rather than a real sleep.
+    from blindfold.rewritten_leaves import RewrittenLeaf
+
+    rbac = RbacRegistry()
+    rbac.grant("alice", "ws-a", "viewer")
+    store = RewrittenLeafStore()
+    ticks = [0.0]
+    inspection = PayloadInspection(clock=lambda: ticks[0], on_disarm=store.clear)
+    inspection.arm()
+    store.retain(
+        workspace="ws-a",
+        leaves=[RewrittenLeaf(leaf_id="leaf-0", label="user: text block", text="hi")],
+        blocked=False,
+    )
+
+    ticks[0] = 30 * 60  # deadline reached
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_payload_inspection] = lambda: inspection
+    app.dependency_overrides[get_rewritten_leaf_store] = lambda: store
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://proxy.test"
+        ) as client:
+            resp = await client.get(
+                "/v1/management/payload-inspection/leaves?workspace=ws-a",
+                headers={"x-blindfold-identity": "alice"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["armed"] is False
+    assert body["exchanges"] == []
+
+
+@pytest.mark.anyio
+async def test_rearming_after_disarm_starts_from_empty():
+    # Issue #420 acceptance criterion: re-arming after a disarm must not
+    # resurrect anything retained before the disarm.
+    from blindfold.rewritten_leaves import RewrittenLeaf
+
+    rbac = RbacRegistry()
+    rbac.grant("alice", "ws-a", "admin")
+    rbac.grant("alice", "ws-a", "viewer")
+    store = RewrittenLeafStore()
+    inspection = PayloadInspection(on_disarm=store.clear)
+    inspection.arm()
+    store.retain(
+        workspace="ws-a",
+        leaves=[RewrittenLeaf(leaf_id="leaf-0", label="user: text block", text="hi")],
+        blocked=False,
+    )
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_payload_inspection] = lambda: inspection
+    app.dependency_overrides[get_rewritten_leaf_store] = lambda: store
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://proxy.test"
+        ) as client:
+            await client.delete(
+                "/v1/management/payload-inspection?workspace=ws-a",
+                headers={"x-blindfold-identity": "alice"},
+            )
+            await client.post(
+                "/v1/management/payload-inspection?workspace=ws-a",
+                headers={"x-blindfold-identity": "alice"},
+            )
+            leaves_resp = await client.get(
+                "/v1/management/payload-inspection/leaves?workspace=ws-a",
+                headers={"x-blindfold-identity": "alice"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert leaves_resp.status_code == 200
+    body = leaves_resp.json()
+    assert body["armed"] is True
+    assert body["exchanges"] == []
 
 
 @pytest.mark.anyio
