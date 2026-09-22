@@ -104,7 +104,7 @@ from datetime import datetime
 
 import httpx
 from cryptography.exceptions import InvalidTag
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 
@@ -3705,6 +3705,7 @@ async def merge_entities(
 async def reidentify_surrogate(
     surrogate: str,
     request: Request,
+    also: list[str] = Query(default=[]),
     rbac: RbacRegistry = Depends(get_rbac),
     store: ReIdentificationStore = Depends(get_reidentify_store),
     transit: TransitClient | None = Depends(get_transit_client),
@@ -3718,43 +3719,59 @@ async def reidentify_surrogate(
 
     Every call is audited, attempt or not (SEC-8): a success writes ``re-identified``; a
     denied caller writes ``re-identify-denied``; a failed lookup/decrypt writes
-    ``re-identify-failed``. Every audit record carries the surrogate and outcome, never
-    the plaintext real value — CONTEXT invariant.
+    ``re-identify-failed``. Every audit record carries the surrogate(s) and outcome,
+    never the plaintext real value — CONTEXT invariant.
 
-    Returns 403 when the caller lacks the role; 404 when the surrogate is not found in
+    ``also`` (issue #401, ADR-0059 §5) resolves additional surrogates through this
+    SAME handler in one call, deduplicated against ``surrogate`` — the seam the
+    Processing trace's exchange-level bulk Reveal switch uses so flipping it writes
+    **exactly one** audit event no matter how many surrogates the exchange carries,
+    rather than the entity list/graph editor/per-hop chip's one-event-per-surrogate
+    call repeated N times. The batch is fail-closed: if any requested surrogate is
+    unresolvable, none of it is returned and the whole call audits as one failure —
+    a partial reveal would show some real values without the reader knowing the
+    batch was incomplete.
+
+    Returns 403 when the caller lacks the role; 404 when any surrogate is not found in
     the requested workspace; 503 when Transit is not configured.
     """
     workspace = _workspace_slug(request)
     identity = _caller_identity(request)
+    surrogates = [surrogate] + [s for s in also if s and s != surrogate]
+    reason_surrogates = ",".join(surrogates)
+
     if not rbac.has_role(identity, workspace, "re-identifier"):
         audit_log.append(
             AuditRecord(
                 workspace=workspace,
                 event="re-identify-denied",
-                reason=f"surrogate={surrogate}",
+                reason=f"surrogate={reason_surrogates}",
                 identity=identity,
             )
         )
         raise HTTPException(status_code=403, detail="insufficient rights")
 
-    ciphertext = await store.surrogate_to_ciphertext(surrogate, workspace)
-    if ciphertext is None:
-        audit_log.append(
-            AuditRecord(
-                workspace=workspace,
-                event="re-identify-failed",
-                reason=f"surrogate={surrogate}, outcome=not-found",
-                identity=identity,
+    ciphertexts: dict[str, str] = {}
+    for one in surrogates:
+        ciphertext = await store.surrogate_to_ciphertext(one, workspace)
+        if ciphertext is None:
+            audit_log.append(
+                AuditRecord(
+                    workspace=workspace,
+                    event="re-identify-failed",
+                    reason=f"surrogate={reason_surrogates}, outcome=not-found",
+                    identity=identity,
+                )
             )
-        )
-        raise HTTPException(status_code=404, detail="surrogate not found in this workspace")
+            raise HTTPException(status_code=404, detail="surrogate not found in this workspace")
+        ciphertexts[one] = ciphertext
 
     if transit is None:
         audit_log.append(
             AuditRecord(
                 workspace=workspace,
                 event="re-identify-failed",
-                reason=f"surrogate={surrogate}, outcome=transit-unconfigured",
+                reason=f"surrogate={reason_surrogates}, outcome=transit-unconfigured",
                 identity=identity,
             )
         )
@@ -3763,14 +3780,16 @@ async def reidentify_surrogate(
             detail="Transit client not configured; set BLINDFOLD_OPENBAO_ADDR and BLINDFOLD_OPENBAO_TOKEN",
         )
 
+    results: dict[str, str] = {}
     try:
-        real = transit.decrypt(ciphertext)
+        for one, ciphertext in ciphertexts.items():
+            results[one] = transit.decrypt(ciphertext)
     except Exception:
         audit_log.append(
             AuditRecord(
                 workspace=workspace,
                 event="re-identify-failed",
-                reason=f"surrogate={surrogate}, outcome=decrypt-error",
+                reason=f"surrogate={reason_surrogates}, outcome=decrypt-error",
                 identity=identity,
             )
         )
@@ -3780,11 +3799,16 @@ async def reidentify_surrogate(
         AuditRecord(
             workspace=workspace,
             event="re-identified",
-            reason=f"surrogate={surrogate}",
+            reason=f"surrogate={reason_surrogates}",
             identity=identity,
         )
     )
-    return {"surrogate": surrogate, "real": real, "workspace": workspace}
+    return {
+        "surrogate": surrogate,
+        "real": results[surrogate],
+        "results": results,
+        "workspace": workspace,
+    }
 
 
 # ---------------------------------------------------------------------------
