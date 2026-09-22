@@ -17,7 +17,41 @@ from __future__ import annotations
 
 from blindfold import engine
 from blindfold.engine import blindfold_chat_completions_payload, blindfold_payload
+from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
+from blindfold.review import ReviewInbox
 from blindfold.surrogates import SurrogateMapping
+
+
+class _TypedStubAdjudicator:
+    """Mirrors tests/test_l3_surrogate_coalescing.py's own stub: confirms
+    exactly the candidate texts present in ``types``, carrying each one's
+    entity_type; dismisses everything else."""
+
+    def __init__(self, types: dict[str, str | None]) -> None:
+        self._types = types
+
+    def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
+        if candidate.text not in self._types:
+            return L3Adjudication(is_entity=False)
+        return L3Adjudication(is_entity=True, entity_type=self._types[candidate.text])
+
+
+class _ConfirmOnlyWhenRegistering:
+    """Mirrors tests/test_mid_exchange_mint_reaches_earlier_hop.py's own stub
+    (issue #387): confirms "Kestrel" as an organization only when its own
+    hop's context mentions "register", so hop 1 (no such context) is
+    correctly dismissed on its own merits while hop 2 confirms and mints --
+    landing the referent in the review inbox one hop too late for hop 1's
+    OWN pass to have seen it. The #387 catch-up pass then re-applies the
+    provisional pair to hop 1's ALREADY-blindfolded leaf.
+    """
+
+    def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
+        if candidate.text != "Kestrel":
+            return L3Adjudication(is_entity=False)
+        if "register" in candidate.context:
+            return L3Adjudication(is_entity=True, entity_type="organization")
+        return L3Adjudication(is_entity=False)
 
 
 def test_apply_spans_reports_a_single_splice_at_its_own_output_offset():
@@ -292,6 +326,187 @@ def test_chat_completions_payload_retains_a_rewritten_leaf_when_armed():
     assert len(leaves) == 1
     assert "Berta Vogel" in leaves[0].text
     assert leaves[0].label.startswith("user")
+
+
+def test_a_referent_minted_in_a_later_hop_leaves_the_earlier_hops_leaf_offsets_correct():
+    # Acceptance criterion: "a test that mints a referent in a later hop and
+    # asserts the earlier hop's recorded offsets still index its own
+    # rewritten surrogates" -- the #387 catch-up pass rewrites hop 1's leaf
+    # AFTER that hop has already finished and its own accumulator already
+    # exists; this pins that the accumulator survives the catch-up splice
+    # with correct offsets, not just correct text.
+    mapping = SurrogateMapping()
+    inbox = ReviewInbox()
+    detector = L3Detector(_ConfirmOnlyWhenRegistering())
+    payload = {
+        "model": "m",
+        "messages": [
+            {"role": "user", "content": "They said Kestrel emailed again about the invoice."},
+            {"role": "user", "content": "Our vendor said please register Kestrel now."},
+        ],
+    }
+
+    blinded, session = blindfold_payload(
+        payload, mapping, detector, inbox, retain_rewritten_leaves=True
+    )
+
+    item = inbox.list()[0]
+    assert item.real == "Kestrel"
+    surrogate = item.provisional_surrogate
+
+    first_hop_text = blinded["messages"][0]["content"]
+    second_hop_text = blinded["messages"][1]["content"]
+    assert surrogate in first_hop_text
+    assert surrogate in second_hop_text
+
+    leaves = session.rewritten_leaves()
+    assert len(leaves) == 2
+    first_leaf, second_leaf = leaves
+
+    # Each retained leaf's own text must match what actually landed in the
+    # payload for that hop...
+    assert first_leaf.text == first_hop_text
+    assert second_leaf.text == second_hop_text
+
+    # ...and its recorded span must index the surrogate correctly INSIDE
+    # that leaf's own text -- including hop 1's, whose only substitution came
+    # from the catch-up pass, entirely after its own main-walk visit.
+    (first_span,) = first_leaf.spans
+    assert first_leaf.text[first_span.start : first_span.end] == surrogate
+    (second_span,) = second_leaf.spans
+    assert second_leaf.text[second_span.start : second_span.end] == surrogate
+
+
+def test_overlapping_l3_mint_and_coverage_sweep_spans_are_both_recorded_not_merged_or_dropped():
+    # Acceptance criterion / engine.py's own `_apply_spans` docstring: "a
+    # coalesced 'Alex Brenner' mint and a separate bare-'Alex' mint's #295
+    # coverage sweep both claim the same 'Alex' substring" (issue #292) --
+    # the live repro named in this module's own docstring. `_apply_spans` is
+    # deliberately called with `assert_no_overlap=False` for L3's splice, so
+    # this is not a hypothetical: two DIFFERENT referents ("Alex Brenner"
+    # and a separately-occurring bare "Alex") both confirm, and the second
+    # referent's #295 coverage sweep re-matches "Alex" nested inside the
+    # first referent's own already-confirmed span.
+    mapping = SurrogateMapping()
+    inbox = ReviewInbox()
+    detector = L3Detector(_TypedStubAdjudicator({"Alex": "person", "Brenner": "person"}))
+    payload = {
+        "model": "m",
+        "messages": [
+            {
+                "role": "user",
+                "content": "Alex Brenner sent the report. Later, Alex called back.",
+            },
+        ],
+    }
+
+    blinded, session = blindfold_payload(
+        payload, mapping, detector, inbox, retain_rewritten_leaves=True
+    )
+
+    # Confirm the overlap actually happened (not a hypothetical): two
+    # DIFFERENT review items, one of whose surrogate now sits inside the
+    # other's own confirmed span in the blinded text.
+    assert len(inbox.list()) == 2
+    coalesced = next(item for item in inbox.list() if item.real == "Alex Brenner")
+    bare = next(item for item in inbox.list() if item.real == "Alex")
+    text = blinded["messages"][0]["content"]
+    # The bare referent's own surrogate does survive intact (its span is the
+    # LAST one spliced, so nothing overwrites it afterward) -- the coalesced
+    # referent's surrogate does NOT necessarily survive as a literal
+    # substring (its territory is partially overwritten by the later,
+    # overlapping splice), which is exactly the "not a bug to fix here"
+    # quirk this test documents rather than papers over.
+    assert bare.provisional_surrogate in text
+
+    leaves = session.rewritten_leaves()
+    assert len(leaves) == 1
+    spans = leaves[0].spans
+
+    # Both the coalesced mint's span and the bare mint's coverage-sweep span
+    # must be present -- neither dropped, nor collapsed into one record.
+    recorded_surrogates = [span.surrogate for span in spans]
+    assert recorded_surrogates.count(coalesced.provisional_surrogate) == 1
+    assert recorded_surrogates.count(bare.provisional_surrogate) == 2
+    assert len(spans) == 3
+
+    # The bare mint's SECOND (non-overlapping) occurrence -- "Later, Alex
+    # called back." -- is disjoint from the overlap entirely, so its offset
+    # must precisely index its own surrogate in the leaf's own final text.
+    non_overlapping = [
+        span
+        for span in spans
+        if span.surrogate == bare.provisional_surrogate
+        and leaves[0].text[span.start : span.end] == bare.provisional_surrogate
+    ]
+    assert len(non_overlapping) >= 1
+
+    # Every recorded offset is a well-formed, in-bounds position -- faithful
+    # representation of an overlap never means a nonsensical (e.g. negative)
+    # offset, even though the two overlapping spans' own slices cannot both
+    # independently reconstruct their surrogate text from a single shared
+    # region of the final text (the splice itself has no well-defined
+    # disjoint answer for that -- ADR-0059 §3's own "not a bug to fix here").
+    for span in spans:
+        assert 0 <= span.start <= span.end <= len(leaves[0].text)
+
+
+def test_detection_reproducibility_armed_and_disarmed_produce_identical_verdicts():
+    # ADR-0059 §3: "the flag is read once per exchange, it gates a record
+    # rather than a behaviour, and no detection, minting, gating or restore
+    # outcome may depend on it." Deterministic-only (L1/L2, no L3/adjudicator
+    # wired) per the acceptance criterion, so this measures rather than
+    # flakes on L3 sampling.
+    payload = {
+        "model": "m",
+        "system": "You are assisting Anna Schmidt today.",
+        "messages": [
+            {"role": "user", "content": "Please email anna.schmidt@example.com."},
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "t1",
+                        "name": "lookup",
+                        "input": {"query": "Anna Schmidt"},
+                    }
+                ],
+            },
+        ],
+        "tools": [
+            {
+                "name": "lookup",
+                "description": "Looks up Anna Schmidt's account.",
+                "input_schema": {"type": "object", "properties": {}},
+            }
+        ],
+    }
+
+    disarmed_blinded, disarmed_session = blindfold_payload(
+        payload, SurrogateMapping.from_pairs([("Anna Schmidt", "Berta Vogel")])
+    )
+    armed_blinded, armed_session = blindfold_payload(
+        payload,
+        SurrogateMapping.from_pairs([("Anna Schmidt", "Berta Vogel")]),
+        retain_rewritten_leaves=True,
+    )
+
+    def _verdict_shape(hop_dict: dict) -> dict:
+        # Everything except wall-clock timings, which are inherently
+        # non-deterministic and not a "verdict" -- ADR-0059 §3's own
+        # reproducibility claim is about detection/minting/gating/restore
+        # outcomes, not timing noise.
+        return {k: v for k, v in hop_dict.items() if not k.endswith("_duration_ms")}
+
+    assert disarmed_blinded == armed_blinded
+    assert disarmed_session.injected == armed_session.injected
+    assert [_verdict_shape(hop.to_dict()) for hop in disarmed_session.hops] == [
+        _verdict_shape(hop.to_dict()) for hop in armed_session.hops
+    ]
+    # And, of course, retention itself only happens when armed.
+    assert disarmed_session.rewritten_leaves() == ()
+    assert armed_session.rewritten_leaves() != ()
 
 
 def test_untouched_leaves_are_not_retained():

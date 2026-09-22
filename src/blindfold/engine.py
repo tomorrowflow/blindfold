@@ -1668,12 +1668,27 @@ class _LeafAccumulator:
         delta = 0
         remapped: list[_RewrittenSpanRecord] = []
         for start, end, surrogate, layer, is_new in combined:
-            out_start = start + delta
+            # ``max(0, ...)`` (issue #399, ADR-0059 §3): a no-op for every
+            # DISJOINT span (the guaranteed shape whenever the splice that
+            # produced ``delta`` ran with ``assert_no_overlap=True``, since a
+            # later span's own start can never sit inside an earlier span's
+            # shrinkage) -- only reachable for L3's own permissive splice
+            # (issue #292's overlapping/nested mint shape), where two spans
+            # sharing (or straddling) a start position can otherwise drive
+            # the cumulative delta negative. ADR-0059 §3 requires overlap be
+            # represented "faithfully... neither dropped nor merged", not
+            # that its offset arithmetic be exact -- the splice ITSELF
+            # already has no well-defined per-span output for a genuinely
+            # overlapping pair (one span's surrogate can land partially
+            # inside another's), so this only guarantees every recorded
+            # offset stays a valid, in-bounds position rather than a
+            # nonsensical negative one.
+            out_start = max(0, start + delta)
             if is_new:
                 out_end = out_start + len(surrogate)
                 delta += len(surrogate) - (end - start)
             else:
-                out_end = end + delta
+                out_end = max(out_start, end + delta)
             remapped.append(_RewrittenSpanRecord(out_start, out_end, surrogate, layer))
         self.spans = remapped
         self.text = result_text
