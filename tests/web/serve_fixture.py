@@ -213,6 +213,14 @@ PERSON_SURROGATE = "Clara Hoffmann"
 REAL_ORG = "Initech GmbH"
 ORG_SURROGATE = "Pinnacle Corp"
 CIPHERTEXT = "vault:v1:enc:martin-bach"
+# Issue #401: ORG_SURROGATE had no reidentify_store/Transit entry at all before
+# this -- nothing exercised revealing it until the exchange-level bulk Reveal
+# switch auto-gathers every `confirmed` surrogate a retained exchange carries
+# (including this one, seeded into `processing_trace_mapping` via the vendored
+# seed below). Without this, the fixture's own "passed, retained" exchange
+# would fail closed on every flip (ADR-0059 §5's own fail-closed-on-partial-
+# batch behaviour), never revealing even PERSON_SURROGATE alongside it.
+CIPHERTEXT_ORG = "vault:v1:enc:initech-gmbh"
 
 # A second, same-kind person sharing REAL_PERSON's real name — the design brief's own
 # "planted duplicate" (entity-list-view-design-brief.md §4): drives the entity-list
@@ -269,6 +277,7 @@ def _stub_transit() -> TransitClient:
     """
     plaintext_by_ciphertext = {
         CIPHERTEXT: REAL_PERSON,
+        CIPHERTEXT_ORG: REAL_ORG,
         CIPHERTEXT_PERSON2: REAL_PERSON,
         CIPHERTEXT_ORG2: REAL_ORG2,
         CIPHERTEXT_PERSON3: REAL_PERSON3,
@@ -464,7 +473,7 @@ def _build_empty_app():
     return app
 
 
-def _build_payload_inspection_retained_fixture(*, armed: bool):
+def _build_payload_inspection_retained_fixture(*, armed: bool, pending_surrogate: str):
     """Issue #400: seeds the state the Processing trace's retained-payload
     expansion needs -- an armed, retained "passed" exchange (spans, including
     a deliberately overlapping pair -- ADR-0059 §3), an armed, retained
@@ -479,6 +488,16 @@ def _build_payload_inspection_retained_fixture(*, armed: bool):
     this only ever backs its own two fixture ports (payload_inspection_retained
     / payload_inspection_disarmed), never the primary instance every other spec
     file shares, so it can't perturb their assertions.
+
+    Issue #401's own verification bar ("a real exchange containing all three
+    lifecycles") needs the "passed, retained" exchange itself to carry a
+    `confirmed`, a `pending`, and a `rejected` surrogate side by side --
+    `pending_surrogate` is the caller's own already-seeded review-inbox
+    candidate (`review_item_one.provisional_surrogate`, "pending" against the
+    SAME `review_inbox`/`processing_trace_mapping` this fixture's `get_mapping`/
+    `get_review_inbox` overrides already share with the base fixture), and
+    "Igor Talvik" mirrors the base fixture's own "rejected" precedent
+    (recognized by neither store).
     """
     armed_at = "2020-01-01T00:00:10+00:00"
     ts_sequence = iter(
@@ -521,6 +540,17 @@ def _build_payload_inspection_retained_fixture(*, armed: bool):
     pinnacle_short_start = leaf2_text.index("Pinnacle Corp")
     pinnacle_long_start = leaf2_text.index("Pinnacle Corp Holdings")
 
+    # Issue #401: a third leaf carrying the exchange's `pending` and `rejected`
+    # surrogates side by side with leaf1's `confirmed` ones above -- the
+    # Reveal switch's own verification bar ("a real exchange containing all
+    # three lifecycles") in ONE exchange, not three separate ones.
+    leaf3_text = (
+        f"Also cc: {pending_surrogate}, still awaiting triage, and Igor Talvik, "
+        "who asked not to be included in this thread."
+    )
+    pending_start = leaf3_text.index(pending_surrogate)
+    rejected_start = leaf3_text.index("Igor Talvik")
+
     trace.record(
         workspace=WORKSPACE, endpoint="messages", streamed=False,
         outcome="passed", detected=2, duration_ms=118.0, exchange_id=passed_id,
@@ -556,7 +586,7 @@ def _build_payload_inspection_retained_fixture(*, armed: bool):
                 "l3_suppressed": 0,
                 "l3_provider": "ollama",
                 "l3_duration_ms": 30.0,
-                "surrogates": ["Clara Hoffmann", "Pinnacle Corp"],
+                "surrogates": ["Clara Hoffmann", "Pinnacle Corp", pending_surrogate, "Igor Talvik"],
             },
         ],
         l3_provider="ollama",
@@ -608,6 +638,21 @@ def _build_payload_inspection_retained_fixture(*, armed: bool):
                         RewrittenSpan(
                             pinnacle_long_start, pinnacle_long_start + len("Pinnacle Corp Holdings"),
                             "Pinnacle Corp Holdings", "l3",
+                        ),
+                    ),
+                ),
+                RewrittenLeaf(
+                    leaf_id="leaf-2",
+                    label="user: text block",
+                    text=leaf3_text,
+                    spans=(
+                        RewrittenSpan(
+                            pending_start, pending_start + len(pending_surrogate),
+                            pending_surrogate, "l3",
+                        ),
+                        RewrittenSpan(
+                            rejected_start, rejected_start + len("Igor Talvik"),
+                            "Igor Talvik", "l3",
                         ),
                     ),
                 ),
@@ -701,6 +746,12 @@ def build_app():
     # workspace (unlike bob, who holds no role anywhere) but Reveal/real-name search
     # must show the locked state.
     rbac.grant("dave", WORKSPACE, "curator")
+    # "erin" is deliberately NOT granted here: access-shell.spec.ts's "add identity"
+    # test (against this same shared fixture) asserts erin starts with zero access
+    # rows and grants her first role live. The issue #401 persona of the same name
+    # (viewer only, no re-identifier) is granted below, scoped to the two dedicated
+    # payload-inspection fixture ports only -- see the PAYLOAD_INSPECTION_RETAINED/
+    # PAYLOAD_INSPECTION_DISARMED_ONLY block.
 
     # Seeded real-space crossings/refusals for the full-page audit log view
     # (issue #102) — one of each kind (reveal/lookup/block), plus a second actor
@@ -746,6 +797,7 @@ def build_app():
     reidentify_store = InMemoryReIdentificationStore(
         {
             (PERSON_SURROGATE, WORKSPACE): CIPHERTEXT,
+            (ORG_SURROGATE, WORKSPACE): CIPHERTEXT_ORG,
             (PERSON2_SURROGATE, WORKSPACE): CIPHERTEXT_PERSON2,
             (ORG2_SURROGATE, WORKSPACE): CIPHERTEXT_ORG2,
             (PERSON3_SURROGATE, WORKSPACE): CIPHERTEXT_PERSON3,
@@ -869,12 +921,37 @@ def build_app():
     app.dependency_overrides[get_upstream_client] = _stub_upstream
 
     if PAYLOAD_INSPECTION_RETAINED or PAYLOAD_INSPECTION_DISARMED_ONLY:
+        # erin holds ONLY viewer on "acme" -- can see the Processing trace (and this
+        # exchange's retained payload) but not Reveal it. Distinct from dave (curator,
+        # no viewer at all -- refused the retained-leaves endpoint outright) and from
+        # every other persona above (all either hold re-identifier or no role at
+        # all): the exchange-level bulk Reveal switch (issue #401, ADR-0059 §5) needs
+        # an identity that reaches the switch itself -- visible, not hidden -- and is
+        # denied only at the point of attempting it. Granted only on these two
+        # dedicated fixture ports, never on the shared/default one, so it can't
+        # perturb access-shell.spec.ts's own use of "erin" as a fresh, role-less
+        # identity against the shared fixture.
+        rbac.grant("erin", WORKSPACE, "viewer")
         payload_inspection, rewritten_leaf_store, retained_trace = (
-            _build_payload_inspection_retained_fixture(armed=PAYLOAD_INSPECTION_RETAINED)
+            _build_payload_inspection_retained_fixture(
+                armed=PAYLOAD_INSPECTION_RETAINED,
+                pending_surrogate=review_item_one.provisional_surrogate,
+            )
         )
         app.dependency_overrides[get_payload_inspection] = lambda: payload_inspection
         app.dependency_overrides[get_rewritten_leaf_store] = lambda: rewritten_leaf_store
         app.dependency_overrides[get_processing_trace] = lambda: retained_trace
+        # Issue #401: this fixture's own "passed, retained" exchange needs
+        # PERSON_SURROGATE/ORG_SURROGATE to classify `confirmed` (the bulk
+        # Reveal switch's own verification bar). A fresh mapping scoped to
+        # ONLY these two ports -- never mutating the shared
+        # `processing_trace_mapping` the primary port's own hop-chip specs
+        # (processing-trace.spec.ts) depend on, which never seeds these two
+        # tokens at all today.
+        retained_mapping = SurrogateMapping.from_pairs(vendored_seed_repository().seeded_pairs())
+        retained_mapping.seed(REAL_PERSON, PERSON_SURROGATE)
+        retained_mapping.seed(REAL_ORG, ORG_SURROGATE)
+        app.dependency_overrides[get_mapping] = lambda: retained_mapping
 
     if FORCE_DEPENDENCIES_HEALTHY:
         # See _build_empty_app()'s identical override for why upstream gets its

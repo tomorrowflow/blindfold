@@ -381,7 +381,138 @@ async def test_reidentify_writes_audit_event_when_decrypt_raises():
 
 
 # ---------------------------------------------------------------------------
-# 8. get_transit_client auto-initializes from settings when token is configured
+# 8. Bulk resolution via `also` -- the exchange-level Reveal switch's seam
+# (ADR-0059 §5, issue #401). Same route, same handler, same audit-event
+# vocabulary: `also` just lets one call resolve several surrogates so the
+# switch can write exactly one audit event no matter how many surrogates the
+# exchange carries, rather than one event per surrogate.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_reidentify_bulk_resolves_every_surrogate_in_one_call():
+    primary = "Clara Hoffmann"
+    other = "Northwind Logistics"
+    ciphertexts = {primary: "vault:v1:enc:martin-bach", other: "vault:v1:enc:acme-corp"}
+    plaintexts = {"vault:v1:enc:martin-bach": "Martin Bach", "vault:v1:enc:acme-corp": "Acme Corp"}
+
+    rbac = RbacRegistry()
+    rbac.grant("alice", "default", "re-identifier")
+
+    store = _store_with(
+        {
+            (primary, "default"): ciphertexts[primary],
+            (other, "default"): ciphertexts[other],
+        }
+    )
+    transit = _stub_transit(plaintexts)
+    audit_log = AuditLog()
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_reidentify_store] = lambda: store
+    app.dependency_overrides[get_transit_client] = lambda: transit
+    app.dependency_overrides[get_audit_log] = lambda: audit_log
+    try:
+        async with _make_client() as client:
+            resp = await client.get(
+                f"/v1/management/surrogate/{primary}/real",
+                params={"also": [other]},
+                headers={
+                    "x-blindfold-identity": "alice",
+                    "x-blindfold-workspace": "default",
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["results"] == {primary: "Martin Bach", other: "Acme Corp"}
+
+    # Exactly one audit event for the whole batch (ADR-0059 §5) -- not one per
+    # surrogate, which is what the per-chip single-surrogate call already does.
+    assert len(audit_log.records) == 1
+    record = audit_log.records[0]
+    assert record.event == "re-identified"
+    assert primary in record.reason
+    assert other in record.reason
+    # CONTEXT invariant: real values never in the audit record.
+    assert "Martin Bach" not in record.reason
+    assert "Acme Corp" not in record.reason
+
+
+@pytest.mark.anyio
+async def test_reidentify_bulk_denied_without_role_writes_exactly_one_denied_event():
+    primary = "Clara Hoffmann"
+    other = "Northwind Logistics"
+
+    rbac = RbacRegistry()
+    rbac.grant("alice", "default", "viewer")  # not re-identifier
+
+    store = _store_with({(primary, "default"): "x", (other, "default"): "y"})
+    transit = _stub_transit({})
+    audit_log = AuditLog()
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_reidentify_store] = lambda: store
+    app.dependency_overrides[get_transit_client] = lambda: transit
+    app.dependency_overrides[get_audit_log] = lambda: audit_log
+    try:
+        async with _make_client() as client:
+            resp = await client.get(
+                f"/v1/management/surrogate/{primary}/real",
+                params={"also": [other]},
+                headers={
+                    "x-blindfold-identity": "alice",
+                    "x-blindfold-workspace": "default",
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 403
+    assert len(audit_log.records) == 1
+    assert audit_log.records[0].event == "re-identify-denied"
+
+
+@pytest.mark.anyio
+async def test_reidentify_bulk_fails_closed_when_one_surrogate_is_unresolvable():
+    primary = "Clara Hoffmann"
+    unknown = "Ghost Referent"
+
+    rbac = RbacRegistry()
+    rbac.grant("alice", "default", "re-identifier")
+
+    store = _store_with({(primary, "default"): "vault:v1:enc:martin-bach"})
+    transit = _stub_transit({"vault:v1:enc:martin-bach": "Martin Bach"})
+    audit_log = AuditLog()
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_reidentify_store] = lambda: store
+    app.dependency_overrides[get_transit_client] = lambda: transit
+    app.dependency_overrides[get_audit_log] = lambda: audit_log
+    try:
+        async with _make_client() as client:
+            resp = await client.get(
+                f"/v1/management/surrogate/{primary}/real",
+                params={"also": [unknown]},
+                headers={
+                    "x-blindfold-identity": "alice",
+                    "x-blindfold-workspace": "default",
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    # Fail-closed on the whole batch -- a partial reveal would show some real
+    # values without the reader knowing the batch was incomplete.
+    assert resp.status_code == 404
+    assert len(audit_log.records) == 1
+    assert audit_log.records[0].event == "re-identify-failed"
+
+
+# ---------------------------------------------------------------------------
+# 9. get_transit_client auto-initializes from settings when token is configured
 # ---------------------------------------------------------------------------
 
 

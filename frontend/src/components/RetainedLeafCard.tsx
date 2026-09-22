@@ -9,9 +9,12 @@
 // Spans MAY overlap (ADR-0059 §3: two different mints can legitimately claim
 // the same substring). This renders their UNION as one highlighted run rather
 // than nesting or dropping either -- the underlying record still keeps both
-// spans faithfully (RewrittenLeaf.spans), this is a rendering simplification,
-// not a data loss: nothing here need distinguish which of two overlapping
-// mints produced a given character to satisfy "spans are visually marked".
+// spans faithfully (RewrittenLeaf.spans). Where exactly one span covers a run,
+// the run is attributed to that span's own surrogate (`surrogate` below) so
+// the exchange-level Reveal switch (issue #401, ADR-0059 §5) can substitute
+// its real value; where more than one span covers the same characters,
+// `surrogate` is `null` -- which real value belongs to which character is
+// genuinely ambiguous there, so that run is never resolved, only marked.
 
 import { useState } from "react";
 import type { RewrittenLeaf } from "../lib/rewrittenLeavesApi";
@@ -21,7 +24,7 @@ import type { RewrittenLeaf } from "../lib/rewrittenLeavesApi";
 const CONTEXT_CHARS = 40;
 
 type Segment =
-  | { kind: "span"; text: string }
+  | { kind: "span"; text: string; surrogate: string | null }
   | { kind: "text"; text: string }
   | { kind: "elided"; text: string; hiddenChars: number };
 
@@ -33,11 +36,19 @@ export function buildLeafSegments(leaf: RewrittenLeaf): Segment[] {
   }
 
   const highlighted = new Uint8Array(len);
-  for (const span of leaf.spans) {
+  // -1 = uncovered, -2 = covered by more than one span (ambiguous), else the
+  // index into leaf.spans of the single span covering that character.
+  const singleSpan = new Int32Array(len).fill(-1);
+  const coverCount = new Uint8Array(len);
+  leaf.spans.forEach((span, spanIndex) => {
     const start = Math.max(0, Math.min(len, span.start));
     const end = Math.max(start, Math.min(len, span.end));
-    for (let i = start; i < end; i++) highlighted[i] = 1;
-  }
+    for (let i = start; i < end; i++) {
+      highlighted[i] = 1;
+      coverCount[i] += 1;
+      singleSpan[i] = coverCount[i] === 1 ? spanIndex : -2;
+    }
+  });
 
   const visible = new Uint8Array(len);
   for (let i = 0; i < len; i++) {
@@ -59,14 +70,37 @@ export function buildLeafSegments(leaf: RewrittenLeaf): Segment[] {
     }
     const isSpan = highlighted[i] === 1;
     let j = i;
-    while (j < len && visible[j] === 1 && (highlighted[j] === 1) === isSpan) j++;
-    segments.push({ kind: isSpan ? "span" : "text", text: text.slice(i, j) });
+    if (isSpan) {
+      const spanKey = singleSpan[i];
+      while (j < len && visible[j] === 1 && highlighted[j] === 1 && singleSpan[j] === spanKey) j++;
+      segments.push({
+        kind: "span",
+        text: text.slice(i, j),
+        surrogate: spanKey >= 0 ? leaf.spans[spanKey].surrogate : null,
+      });
+    } else {
+      while (j < len && visible[j] === 1 && highlighted[j] === 0) j++;
+      segments.push({ kind: "text", text: text.slice(i, j) });
+    }
     i = j;
   }
   return segments;
 }
 
-export function RetainedLeafCard({ leaf }: { leaf: RewrittenLeaf }) {
+export function RetainedLeafCard({
+  leaf,
+  revealed,
+}: {
+  leaf: RewrittenLeaf;
+  /**
+   * Real values for this exchange's confirmed surrogates, keyed by surrogate
+   * token -- `null` while the exchange-level Reveal switch (issue #401) is
+   * off, its default. A span whose own surrogate isn't a key here (pending,
+   * rejected, or an ambiguous overlap) always renders its blindfolded form,
+   * regardless of switch position.
+   */
+  revealed: Record<string, string> | null;
+}) {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const segments = buildLeafSegments(leaf);
 
@@ -90,6 +124,19 @@ export function RetainedLeafCard({ leaf }: { leaf: RewrittenLeaf }) {
       <div className="bf-retained-leaf-text" data-testid="retained-leaf-text">
         {segments.map((segment, index) => {
           if (segment.kind === "span") {
+            const real = segment.surrogate ? revealed?.[segment.surrogate] : undefined;
+            if (real !== undefined) {
+              return (
+                <mark
+                  className="bf-retained-leaf-span bf-retained-leaf-span--revealed"
+                  key={index}
+                  data-testid="retained-leaf-span-revealed"
+                  title={`surrogate: ${segment.text}`}
+                >
+                  {real}
+                </mark>
+              );
+            }
             return (
               <mark className="bf-retained-leaf-span" key={index} data-testid="retained-leaf-span">
                 {segment.text}

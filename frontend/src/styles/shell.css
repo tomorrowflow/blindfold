@@ -848,12 +848,57 @@ body {
   border-top: 1px dashed var(--bf-border);
 }
 
+.bf-retained-payload-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
 .bf-retained-payload-heading {
-  margin: 0 0 6px;
+  margin: 0;
   font-size: 0.75rem;
   text-transform: uppercase;
   letter-spacing: 0.03em;
   color: #6b7589;
+}
+
+.bf-retained-payload-claim {
+  margin: 0 0 8px;
+  font-size: 0.75rem;
+  color: #6b7589;
+}
+
+/* Exchange-level bulk Reveal switch (issue #401, ADR-0059 §5). Reuses the
+   .bf-policy-toggle idiom (Settings' own arm/disarm switch), never the ochre
+   Reveal badge -- that one's per-surrogate, this one is exchange-wide. */
+.bf-retained-payload-reveal {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bf-retained-payload-reveal-label {
+  font-size: 0.75rem;
+  color: #6b7589;
+}
+
+/* Deliberately NOT :disabled -- the switch stays clickable without
+   re-identifier so an attempt still reaches the server and gets audited
+   (SEC-8). This is a visual-only "locked" cue. */
+.bf-policy-toggle--locked-style {
+  opacity: 0.5;
+}
+
+.bf-retained-payload-reveal-denied {
+  font-size: 0.75rem;
+  color: var(--bf-red);
+}
+
+.bf-retained-leaf-span--revealed {
+  background: var(--bf-ochre-bg);
+  border-bottom: 2px solid var(--bf-ochre);
 }
 
 /* ADR-0059 §4: the "never sent" mark is deliberately unmissable -- reuses the
