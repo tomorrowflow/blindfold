@@ -16,7 +16,7 @@ sibling files for the request-path leak-audit coverage this issue requires.
 from __future__ import annotations
 
 from blindfold import engine
-from blindfold.engine import blindfold_payload
+from blindfold.engine import blindfold_chat_completions_payload, blindfold_payload
 from blindfold.surrogates import SurrogateMapping
 
 
@@ -196,6 +196,102 @@ def test_blindfold_payload_retains_nothing_when_not_armed():
     _blinded, session = blindfold_payload(payload, mapping)
 
     assert session.rewritten_leaves() == ()
+
+
+def test_a_tool_result_body_leaf_is_labeled_distinctly_from_a_plain_text_block():
+    mapping = SurrogateMapping.from_pairs([("Anna Schmidt", "Berta Vogel")])
+    payload = {
+        "model": "m",
+        "messages": [
+            {"role": "user", "content": "Hi there."},
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t1",
+                        "content": "Lookup found Anna Schmidt in the CRM.",
+                    }
+                ],
+            },
+        ],
+    }
+
+    _blinded, session = blindfold_payload(payload, mapping, retain_rewritten_leaves=True)
+
+    leaves = session.rewritten_leaves()
+    assert len(leaves) == 1
+    assert "tool-result body" in leaves[0].label
+    assert "Berta Vogel" in leaves[0].text
+
+
+def test_a_tool_call_inputs_leaf_is_labeled_as_such():
+    mapping = SurrogateMapping.from_pairs([("Anna Schmidt", "Berta Vogel")])
+    payload = {
+        "model": "m",
+        "messages": [
+            {
+                "role": "assistant",
+                "content": [
+                    {
+                        "type": "tool_use",
+                        "id": "t1",
+                        "name": "lookup",
+                        "input": {"query": "Anna Schmidt"},
+                    }
+                ],
+            },
+        ],
+    }
+
+    _blinded, session = blindfold_payload(payload, mapping, retain_rewritten_leaves=True)
+
+    leaves = session.rewritten_leaves()
+    assert len(leaves) == 1
+    assert "tool-call input" in leaves[0].label
+    assert "Berta Vogel" in leaves[0].text
+
+
+def test_a_tool_descriptions_leaf_is_retained_and_labeled():
+    mapping = SurrogateMapping.from_pairs([("Anna Schmidt", "Berta Vogel")])
+    payload = {
+        "model": "m",
+        "messages": [{"role": "user", "content": "Hi."}],
+        "tools": [
+            {
+                "name": "lookup",
+                "description": "Looks up Anna Schmidt's account.",
+                "input_schema": {"type": "object", "properties": {}},
+            }
+        ],
+    }
+
+    _blinded, session = blindfold_payload(payload, mapping, retain_rewritten_leaves=True)
+
+    leaves = session.rewritten_leaves()
+    assert len(leaves) == 1
+    assert "tool description" in leaves[0].label
+    assert "Berta Vogel" in leaves[0].text
+
+
+def test_chat_completions_payload_retains_a_rewritten_leaf_when_armed():
+    mapping = SurrogateMapping.from_pairs([("Anna Schmidt", "Berta Vogel")])
+    payload = {
+        "model": "m",
+        "messages": [
+            {"role": "system", "content": "Be nice."},
+            {"role": "user", "content": "Please help Anna Schmidt today."},
+        ],
+    }
+
+    _blinded, session = blindfold_chat_completions_payload(
+        payload, mapping, retain_rewritten_leaves=True
+    )
+
+    leaves = session.rewritten_leaves()
+    assert len(leaves) == 1
+    assert "Berta Vogel" in leaves[0].text
+    assert leaves[0].label.startswith("user")
 
 
 def test_untouched_leaves_are_not_retained():

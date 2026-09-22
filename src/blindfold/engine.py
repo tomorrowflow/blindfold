@@ -527,6 +527,7 @@ def blindfold_chat_completions_payload(
     system_confined_tokens: frozenset[str] = frozenset(),
     case_inconsistency: "CaseInconsistencySuppression | None" = None,
     world_acting: bool = False,
+    retain_rewritten_leaves: bool = False,
 ) -> tuple[dict[str, Any], ExchangeSession]:
     """Return a blindfolded copy of an OpenAI Chat Completions ``payload`` plus the session.
 
@@ -554,7 +555,7 @@ def blindfold_chat_completions_payload(
     ``world_acting`` (ADR-0060 §2-§3, issue #410) — see
     :func:`is_world_acting_request_chat_completions` and :func:`blindfold_payload`.
     """
-    session = ExchangeSession()
+    session = ExchangeSession(retain_rewritten_leaves=retain_rewritten_leaves)
     out = copy.deepcopy(payload)
     l3_provider = l3_detector.provider_name if l3_detector is not None else None
     inbox = _replay_inbox(l3_detector, inbox)
@@ -564,7 +565,7 @@ def blindfold_chat_completions_payload(
         declared_tools = declared_tool_vocabulary.for_workspace(workspace)
 
     for message in out.get("messages", []):
-        ctx = _HopContext(l3_provider=l3_provider)
+        ctx = _HopContext(l3_provider=l3_provider, hop_kind=_hop_kind_for_message(message))
         message["content"] = _blindfold_content(
             message.get("content"), mapping, session, l3_detector, inbox,
             declared_tools, ctx, workspace, phone_candidates_enabled,
@@ -574,12 +575,15 @@ def blindfold_chat_completions_payload(
             _finish_hop(ctx, _hop_kind_for_message(message), len(session.hops))
         )
 
+    # Issue #399: see the identical comment in `blindfold_payload`.
+    session.reset_leaf_walk()
     for message in out.get("messages", []):
         message["content"] = _close_cross_hop_mint_gap(
             message.get("content"), mapping, session, inbox, workspace,
             world_acting=world_acting,
         )
     if world_acting or (inbox is not None and len(inbox.list()) > items_before_exchange):
+        session.reset_leaf_walk()
         _reapply_provisional_pairs_across_hops(
             out, mapping, session, inbox, workspace, world_acting=world_acting
         )
@@ -1183,7 +1187,9 @@ def _blindfold_tool_descriptions(
         if not isinstance(container, dict):
             continue
         if isinstance(container.get("description"), str):
-            description = _blindfold_text(container["description"], mapping, session)
+            description = _blindfold_text(
+                container["description"], mapping, session, leaf_kind="tool description",
+            )
             container["description"] = _apply_provisional_pairs(
                 description, mapping, inbox, session
             )
@@ -1210,7 +1216,9 @@ def _blindfold_schema_prose(
     if isinstance(schema, dict):
         for key, value in schema.items():
             if key == "description" and isinstance(value, str):
-                rewritten = _blindfold_text(value, mapping, session)
+                rewritten = _blindfold_text(
+                    value, mapping, session, leaf_kind="tool schema description",
+                )
                 schema[key] = _apply_provisional_pairs(rewritten, mapping, inbox, session)
             else:
                 _blindfold_schema_prose(value, mapping, session, inbox)
@@ -1266,12 +1274,23 @@ def _blindfold_content(
     case_inconsistency: "CaseInconsistencySuppression | None" = None,
     provisional_catchup: bool = False,
     world_acting: bool = False,
+    leaf_kind: str = "text",
 ) -> Any:
+    """``leaf_kind`` (issue #399): the retained-leaf display label to use when
+    ``content`` is itself a bare string leaf -- "text" for a message's own
+    top-level content, or the caller's own override (e.g. "tool-result body")
+    when this call is `_blindfold_block`'s recursion into a tool_result's
+    ``content`` field. A ``content`` that's a block LIST instead defers to
+    each block's own :func:`_blindfold_block` dispatch, which derives its
+    OWN leaf_kind per block type -- never propagated further down, matching
+    ADR-0059 §2's flat, non-nested label shape.
+    """
     if isinstance(content, str):
         return _blindfold_text(
             content, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
             case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
+            leaf_kind=leaf_kind,
         )
     if isinstance(content, list):
         return [
@@ -1407,6 +1426,7 @@ def _blindfold_block(
             block["text"], mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
             case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
+            leaf_kind="text block",
         )
         return block
     if block_type in _TOOL_RESULT_BLOCK_TYPES:
@@ -1415,6 +1435,7 @@ def _blindfold_block(
             declared_tools, hop_ctx, workspace, phone_candidates_enabled,
             system_confined_tokens, case_inconsistency,
             provisional_catchup=provisional_catchup, world_acting=world_acting,
+            leaf_kind="tool-result body",
         )
         return block
     if block_type in _TOOL_CALL_BLOCK_TYPES:
@@ -1427,6 +1448,7 @@ def _blindfold_block(
             declared_tools, hop_ctx, workspace, phone_candidates_enabled,
             system_confined_tokens, case_inconsistency,
             provisional_catchup=provisional_catchup, world_acting=world_acting,
+            leaf_kind="tool-call input",
         )
         return block
     non_hop_keys = _non_hop_keys_for_block_type(block_type)
@@ -1437,6 +1459,7 @@ def _blindfold_block(
             value, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
             case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
+            leaf_kind=f"{block_type} block" if isinstance(block_type, str) else "block",
         )
     return block
 
@@ -1455,6 +1478,7 @@ def _blindfold_block_value(
     case_inconsistency: "CaseInconsistencySuppression | None" = None,
     provisional_catchup: bool = False,
     world_acting: bool = False,
+    leaf_kind: str = "text",
 ) -> Any:
     """Recursively rewrite every string leaf of a content-block subtree (issue #323).
 
@@ -1466,12 +1490,18 @@ def _blindfold_block_value(
     :func:`_blindfold_block` itself excludes at the top level -- everything else
     is a candidate string leaf, adjudicated through L3 exactly like ordinary
     prose (``l3_detector`` reaches every recursive call unchanged).
+
+    ``leaf_kind`` (issue #399): the caller's own block-type-derived label,
+    carried unchanged through every recursive call -- every string leaf found
+    anywhere in this subtree shares one flat label (e.g. ``"document
+    block"``), matching ADR-0059 §2's flat, non-nested label shape.
     """
     if isinstance(value, str):
         return _blindfold_text(
             value, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
             case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
+            leaf_kind=leaf_kind,
         )
     if isinstance(value, dict):
         return {
@@ -1482,6 +1512,7 @@ def _blindfold_block_value(
                     v, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
                     workspace, phone_candidates_enabled, system_confined_tokens,
                     case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
+                    leaf_kind=leaf_kind,
                 )
             )
             for k, v in value.items()
@@ -1492,6 +1523,7 @@ def _blindfold_block_value(
                 item, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
                 workspace, phone_candidates_enabled, system_confined_tokens,
                 case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
+                leaf_kind=leaf_kind,
             )
             for item in value
         ]
@@ -1512,13 +1544,21 @@ def _blindfold_json_value(
     case_inconsistency: "CaseInconsistencySuppression | None" = None,
     provisional_catchup: bool = False,
     world_acting: bool = False,
+    leaf_kind: str = "text",
 ) -> Any:
-    """Recursively rewrite every string leaf in a JSON-shaped value via L1+L2."""
+    """Recursively rewrite every string leaf in a JSON-shaped value via L1+L2.
+
+    ``leaf_kind`` (issue #399): carried unchanged through every recursive
+    call, same flat-label discipline as :func:`_blindfold_block_value` --
+    every string leaf anywhere in a tool call's ``input`` shares one label
+    (``"tool-call input"``), not a per-field JSON path.
+    """
     if isinstance(value, str):
         return _blindfold_text(
             value, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
             case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
+            leaf_kind=leaf_kind,
         )
     if isinstance(value, dict):
         return {
@@ -1526,6 +1566,7 @@ def _blindfold_json_value(
                 v, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
                 workspace, phone_candidates_enabled, system_confined_tokens,
                 case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
+                leaf_kind=leaf_kind,
             )
             for k, v in value.items()
         }
@@ -1535,6 +1576,7 @@ def _blindfold_json_value(
                 item, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
                 workspace, phone_candidates_enabled, system_confined_tokens,
                 case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
+                leaf_kind=leaf_kind,
             )
             for item in value
         ]
@@ -3287,12 +3329,20 @@ def _apply_provisional_pairs(
     referent's real value occurring inside an already-injected surrogate's own
     literal text (via :func:`_injected_surrogate_ranges`) is never treated as a
     fresh match, or this pass could corrupt that surrogate's literal in place.
+
+    Issue #399: both call sites (:func:`_blindfold_tool_descriptions`,
+    :func:`_blindfold_schema_prose`) invoke this immediately after their own
+    ``_blindfold_text`` call on the SAME ``text`` -- so this splice continues
+    THAT call's leaf accumulator via :meth:`ExchangeSession._current_leaf`
+    (a peek, not a new positional visit) rather than beginning a new leaf of
+    its own, which would otherwise split one tool description's two-phase
+    rewrite across two spurious retained leaves.
     """
     if inbox is None:
         return text
     exclude = _injected_surrogate_ranges(text, mapping, session, inbox)
     spans = _collect_provisional_pair_spans(text, inbox, session, hop_ctx, exclude=exclude)
-    return _apply_spans(text, spans)
+    return _apply_spans(text, spans, leaf=session._current_leaf())
 
 
 def _apply_restore_pass(text: str, restore_map: dict[str, str]) -> str:
