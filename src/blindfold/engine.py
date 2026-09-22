@@ -2332,14 +2332,16 @@ def _blindfold_text(
     # message text, not just tool descriptions).
     #
     # Issue #386: this pass must honor the identical self-poisoning guard L3's own
-    # novel-candidate minting already has further down (#68/#292, against the
-    # post-splice ``result``) -- an occurrence inside an already-injected
-    # surrogate's own literal text (e.g. ``text`` quoting an earlier hop's, or an
-    # earlier exchange's, already-blinded history verbatim) must never be treated
-    # as a fresh provisional-pair match either, or applying this pass a second
-    # time over already-blinded text (the cross-hop closing sweep below) could
-    # rewrite a live surrogate's own substring in place -- corrupting it, not
-    # protecting anything.
+    # novel-candidate minting already has further down (#68/#292, ADR-0051's #406
+    # amendment) -- an occurrence inside a range THIS SAME leaf's own prior splice
+    # already wrote (``injected_ranges``, from ``leaf.spans``, which accumulates
+    # across every pass/hop for this leaf) must never be treated as a fresh
+    # provisional-pair match either, or applying this pass a second time over
+    # this leaf's already-spliced text (the cross-hop closing sweep below) could
+    # rewrite its own already-injected surrogate in place -- corrupting it, not
+    # protecting anything. A live surrogate the CLIENT typed here (issue #415:
+    # quoted history verbatim) is not in ``leaf.spans`` and is now evaluated
+    # rather than skipped -- more protection, not less.
     pp_spans = _collect_provisional_pair_spans(
         text,
         inbox,
