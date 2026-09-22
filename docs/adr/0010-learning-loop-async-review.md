@@ -94,7 +94,7 @@ standing alone:
 
 ### Not decided here
 
-The **scope** defect this amendment documents — a learned reject applies to every workspace while
+Tracked as issue `#423`. The **scope** defect this amendment documents — a learned reject applies to every workspace while
 confirm applies to one — is left open deliberately. Closing it means splitting the seeded half
 (deliberately global, and since `#353` carrying this repository's own glossary) from the learned
 half, ruling on existing global entries, and deciding whether one workspace's reject should be

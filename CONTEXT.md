@@ -269,8 +269,8 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   sync with a dedicated test). Both carry identical semantics, and both are
   **process-global**: unlike **confirm**, which is workspace-scoped, a learned
   entry from one workspace's reject suppresses that value's novelty discovery in
-  every workspace (ADR-0010 amendment, issue #417 — recorded there as a known
-  asymmetry, not yet resolved). a registered **Term** always wins over an
+  every workspace (ADR-0010 amendment, issue #417; unresolved, tracked as issue
+  #423). a registered **Term** always wins over an
   allowlist entry — the allowlist suppresses novelty discovery, never
   protection. A phrase entry is matched against the hop text span-wise, case-
   and whitespace-normalized (issue #294) — it never implicitly suppresses one
