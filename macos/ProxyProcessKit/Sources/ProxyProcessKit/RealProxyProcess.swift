@@ -153,6 +153,9 @@ public final class FailedProxyLaunch: ProxyProcess, @unchecked Sendable {
     public let hasExited = true
     public let exitCode: Int32 = -1
     public let terminationSignal: Int32? = nil
+    /// Never a real pid -- nothing was actually spawned, so there is nothing for the
+    /// orphan sweep (issue #414) to ever usefully record or terminate.
+    public let processIdentifier: Int32 = -1
 
     public init(message: String) {
         self.standardErrorText = message
