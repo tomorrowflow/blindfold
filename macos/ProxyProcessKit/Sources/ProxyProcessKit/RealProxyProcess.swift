@@ -190,7 +190,19 @@ public struct RealProxyProcessLauncher: ProxyProcessLaunching {
         let stderrWriteFD = stderrPipe.fileHandleForWriting.fileDescriptor
         let stderrReadFD = stderrPipe.fileHandleForReading.fileDescriptor
 
+        // Glibc and Darwin do not agree on what these two spawn types ARE, so neither
+        // spelling compiles on both: glibc declares `posix_spawn_file_actions_t` and
+        // `posix_spawnattr_t` as structs (value-initialized with `= T()`), while Darwin
+        // declares them as opaque pointers, which Swift imports as an Optional pointer
+        // that `= T()` cannot construct. This divergence is invisible to the Linux
+        // sandbox, which is the only place `swift build` runs before the hosted gate --
+        // an in-sandbox green build is NOT evidence that this file compiles on the
+        // platform it exists for. Both branches are load-bearing; do not collapse them.
+        #if canImport(Darwin)
+        var fileActions: posix_spawn_file_actions_t?
+        #else
         var fileActions = posix_spawn_file_actions_t()
+        #endif
         posix_spawn_file_actions_init(&fileActions)
         defer { posix_spawn_file_actions_destroy(&fileActions) }
         posix_spawn_file_actions_addopen(&fileActions, 1, "/dev/null", O_WRONLY, 0)
@@ -202,7 +214,12 @@ public struct RealProxyProcessLauncher: ProxyProcessLaunching {
         // (`POSIX_SPAWN_SETPGROUP` + a target pgroup of 0, meaning "use the child's own
         // pid") atomically as part of the spawn syscall -- the only race-free point at
         // which this can be done, per `RealProxyProcess`'s doc comment.
+        // Same Glibc-struct vs. Darwin-opaque-pointer divergence as `fileActions` above.
+        #if canImport(Darwin)
+        var attributes: posix_spawnattr_t?
+        #else
         var attributes = posix_spawnattr_t()
+        #endif
         posix_spawnattr_init(&attributes)
         defer { posix_spawnattr_destroy(&attributes) }
         posix_spawnattr_setflags(

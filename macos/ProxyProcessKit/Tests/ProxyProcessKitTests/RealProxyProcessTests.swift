@@ -90,7 +90,16 @@ import BlindfoldCore
 /// the port afterwards"), done directly at the socket layer rather than shelling out to a
 /// second tool, and cleaned up immediately so it never itself leaves anything listening.
 private func canBindLoopback(port: UInt16) -> Bool {
+    // Glibc types `SOCK_STREAM` as a `__socket_type` enum case (hence `.rawValue`);
+    // Darwin types it as a bare `Int32`, which has no `.rawValue` at all. Note that
+    // platform-verify.yml builds only the LIBRARY targets on macOS, never the test
+    // targets, so a Darwin-uncompilable test file here is caught by no gate in the
+    // system -- this one reached the branch exactly that way.
+    #if canImport(Darwin)
+    let fd = socket(AF_INET, SOCK_STREAM, 0)
+    #else
     let fd = socket(AF_INET, Int32(SOCK_STREAM.rawValue), 0)
+    #endif
     guard fd >= 0 else { return false }
     defer { close(fd) }
 
