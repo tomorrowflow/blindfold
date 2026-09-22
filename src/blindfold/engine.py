@@ -253,21 +253,34 @@ class ExchangeSession:
 
     def _begin_leaf(self, label: str) -> "_LeafAccumulator | None":
         """Start (or, on a later pass, continue) the next leaf in this walk's
-        own visit order (issue #399). Returns ``None`` when retention is off.
+        own visit order (issue #399, promoted to always-on by issue #415,
+        ADR-0051's #406 amendment).
 
         Position, not content, is the identity: the Nth call since the last
         :meth:`reset_leaf_walk` always refers to the Nth leaf this walk
         visits -- true across passes only because every pass reuses the
         exact same traversal functions over the exact same (structurally
         unchanged -- only leaf VALUES mutate, never the JSON shape) payload.
+        This positional identity is a contract two callers now rely on: the
+        blinder's own self-poisoning guard (:func:`_injected_surrogate_ranges`)
+        reads a leaf's ``spans`` at the SAME position the splice that produced
+        them ran at. It is NOT established that the leak gate's own traversal
+        (:func:`walk_string_leaves`) visits leaves in this same order --
+        joining a gate match back to a recorded range by this id is #416's
+        work, not this one's.
+
+        Always returns an accumulator (issue #415) -- the offsets record is a
+        request-path invariant, not a diagnostic gated on retention. Whether
+        the accumulator's ``text`` field is ever populated is a separate
+        question, governed entirely by :meth:`_LeafAccumulator.apply_splice`.
         """
-        if not self._retain_leaves:
-            return None
         index = self._leaf_cursor
         self._leaf_cursor += 1
         if index < len(self._leaf_slots):
             return self._leaf_slots[index]
-        accumulator = _LeafAccumulator(leaf_id=f"leaf-{index}", label=label)
+        accumulator = _LeafAccumulator(
+            leaf_id=f"leaf-{index}", label=label, retain_text=self._retain_leaves
+        )
         self._leaf_slots.append(accumulator)
         return accumulator
 
@@ -277,9 +290,11 @@ class ExchangeSession:
         following the first (:func:`_apply_provisional_pairs`'s tool-
         description/schema-prose follow-up to its own :func:`_blindfold_text`
         call) continue that leaf's accumulator without independently
-        re-deriving its identity.
+        re-deriving its identity. Only ``None`` before this walk's first
+        :meth:`_begin_leaf` call -- issue #415 promoted the accumulator
+        itself to always-on, so this no longer depends on retention.
         """
-        if not self._retain_leaves or self._leaf_cursor == 0:
+        if self._leaf_cursor == 0:
             return None
         return self._leaf_slots[self._leaf_cursor - 1]
 
@@ -290,7 +305,16 @@ class ExchangeSession:
         never had a span spliced into it (``_apply_spans`` always runs, even
         when nothing matched) is excluded, matching "leaves the pass left
         untouched are not retained" exactly.
+
+        Armed-gated (issue #415): the accumulators themselves exist
+        regardless of ``retain_rewritten_leaves`` (spans are now a
+        request-path invariant), but ADR-0059's diagnostic surface -- this
+        method, the bounded store, its endpoint, the Unprotected-mode check
+        -- keeps its own current behaviour exactly, including retaining
+        nothing at all while disarmed.
         """
+        if not self._retain_leaves:
+            return ()
         return tuple(
             RewrittenLeaf(
                 leaf_id=accumulator.leaf_id,
@@ -1656,6 +1680,13 @@ class _LeafAccumulator:
     label: str
     text: str = ""
     spans: list[_RewrittenSpanRecord] = field(default_factory=list)
+    # Issue #415: the offsets half of this record (``spans``) is now always
+    # on, but the text half is ADR-0059's own diagnostic retention, gated on
+    # Payload inspection being armed -- carried per-accumulator (set once, at
+    # creation, from the session's own retention flag) rather than threaded
+    # through every ``apply_splice`` call, so the always-on offsets path
+    # never has to know it exists.
+    retain_text: bool = True
 
     def apply_splice(self, spliced: Sequence[ReplacementSpan], result_text: str) -> None:
         combined: list[tuple[int, int, str, str, bool]] = [
@@ -1691,7 +1722,8 @@ class _LeafAccumulator:
                 out_end = max(out_start, end + delta)
             remapped.append(_RewrittenSpanRecord(out_start, out_end, surrogate, layer))
         self.spans = remapped
-        self.text = result_text
+        if self.retain_text:
+            self.text = result_text
 
 
 def _apply_spans(
@@ -2203,17 +2235,18 @@ def _blindfold_text(
         return _reapply_provisional_pairs_catchup(
             text, mapping, session, inbox, hop_ctx, world_acting=world_acting, leaf=leaf,
         )
-    # Issue #394/#410: ``text`` is the untouched, pre-blind hop text on the
-    # main walk, but it is ALREADY-BLINDED output on the cross-hop closing
-    # sweep (#386's ``_close_cross_hop_mint_gap``, which re-enters this exact
-    # branch, not the ``provisional_catchup`` one). Computed before the
-    # containment pass too (not just confirmed-component/provisional-pair
-    # below), so a containment candidate's real value/variation can never
-    # match literally inside an already-injected surrogate's own text (the
-    # same #68/#292 self-poisoning class) -- e.g. a contained referent's bare
-    # first name coinciding with a word inside an unrelated, already-spliced
-    # surrogate.
-    injected_ranges = _injected_surrogate_ranges(text, mapping, session, inbox)
+    # Issue #394/#410/#415: ``leaf`` carries whatever this leaf's OWN prior
+    # splices (if any) already recorded -- empty on this leaf's first visit,
+    # non-empty on the cross-hop closing sweep's re-entry (#386's
+    # ``_close_cross_hop_mint_gap``, which re-enters this exact branch, not
+    # the ``provisional_catchup`` one), where ``text`` is that same leaf's
+    # already-spliced output. Computed before the containment pass too (not
+    # just confirmed-component/provisional-pair below), so a containment
+    # candidate's real value/variation can never match literally inside a
+    # range the blinder itself already wrote (ADR-0051's #406 amendment) --
+    # e.g. a contained referent's bare first name coinciding with a word
+    # inside an unrelated surrogate this leaf already spliced.
+    injected_ranges = _injected_surrogate_ranges(leaf)
     # ADR-0060 §3 (issue #410): computed before every other pass below so its
     # ranges can be excluded from all of them -- see
     # :func:`_collect_containment_spans` for why this is the highest-
@@ -2256,24 +2289,19 @@ def _blindfold_text(
     # Issue #394 (reviewer-found regression, this same issue's cycle 1): the
     # confirmed-component pass below re-runs over already-blinded text on the
     # cross-hop closing sweep (#386's _close_cross_hop_mint_gap) exactly like the
-    # provisional-pair pass does, so it needs the identical #68/#292 self-poisoning
-    # guard -- an occurrence inside an already-injected surrogate's own literal
-    # text must never be treated as a fresh confirmed-component match, or the
-    # closing sweep could rewrite a live surrogate's own substring in place (e.g.
-    # entity B's real component "Brenner" matching literally inside entity A's
-    # already-injected surrogate "Alex Brenner"). Computed unconditionally --
-    # not gated on ``inbox is not None`` -- because the confirmed-component pass
-    # itself runs regardless of ``inbox`` (reads ``mapping.entities()`` alone),
-    # so the guard must exist on the no-inbox call path too.
+    # provisional-pair pass does, so it needs the identical guard -- a range the
+    # blinder already wrote must never be treated as a fresh confirmed-component
+    # match, or the closing sweep could rewrite its own already-spliced text in
+    # place. Computed unconditionally -- not gated on ``inbox is not None`` --
+    # because the confirmed-component pass itself runs regardless of ``inbox``
+    # (reads ``mapping.entities()`` alone), so the guard must exist on the
+    # no-inbox call path too.
     #
-    # Recomputed here rather than reusing the pre-containment set above
-    # (issue #410): this hop's own containment pass just ``session.record``ed
-    # a fresh token, so re-scanning ``text`` now also protects the
-    # confirmed-component/provisional-pair passes below from matching inside
-    # THAT token's own literal text on a future re-entry (the cross-hop
-    # closing sweep re-processes already-spliced text, containment token
-    # included).
-    injected_ranges = _injected_surrogate_ranges(text, mapping, session, inbox)
+    # Issue #415: no longer recomputed here -- ``injected_ranges`` above already
+    # reads ``leaf.spans``, and nothing between there and here splices anything
+    # into THIS leaf (``_collect_containment_spans`` only calls
+    # ``session.record``, never ``_apply_spans``), so a second read would return
+    # the identical ranges.
 
     # Issue #394: a CONFIRMED entity's own bare-word component (e.g. "Doe" once
     # "Jane Doe" -> "Alex Brenner" is in the entity graph) -- the confirmed-side
@@ -2387,16 +2415,15 @@ def _blindfold_text(
                 0, count_capitalized_tokens(result) - len(adjudications)
             )
             hop_ctx.l3_duration_ms += (time.monotonic() - l3_started_at) * 1000
-        # A surrogate injected earlier in this same pass (L2 dict match, L1 PII, or
-        # by a prior hop already recorded in ``session``) must never be treated as a
-        # fresh novel candidate — mirrors the L1 PII guard just above
-        # (``mapping.is_known_surrogate``), generalized across every surrogate
-        # namespace (ADR-0022, issue #68). Without this, L3 re-blindfolds the
-        # surrogate L2/L1 just injected, and restore only un-nests the L3 layer,
-        # leaving the original surrogate stranded and unresolved.
-        injected_surrogate_ranges = _injected_surrogate_ranges(
-            result, mapping, session, inbox
-        )
+        # A range this leaf's own containment/L2/confirmed-component/provisional-
+        # pair/L1 splice above just wrote must never be treated as a fresh novel
+        # candidate (ADR-0022 issue #68's purpose, served since issue #415 by the
+        # exact splice-derived record rather than a value search -- ``leaf``'s
+        # ``apply_splice`` already folded that splice's spans in, since ``result``
+        # is its own output). Without this, L3 re-blindfolds the surrogate L2/L1
+        # just injected, and restore only un-nests the L3 layer, leaving the
+        # original surrogate stranded and unresolved.
+        injected_surrogate_ranges = _injected_surrogate_ranges(leaf)
         # Candidate offsets are already resolved against ``result`` -- L3 detection
         # (above) ran on this exact string, and nothing rewrites ``result`` between
         # that call and here.
@@ -2883,75 +2910,29 @@ def _resolve_group_suppression_trace(
     return None
 
 
-def _live_surrogate_values(
-    text: str,
-    mapping: SurrogateMapping,
-    session: ExchangeSession,
-    inbox: ReviewInbox | None,
-) -> set[str]:
-    """Every surrogate value that actually occurs at least once in ``text``.
+def _injected_surrogate_ranges(leaf: "_LeafAccumulator | None") -> list[tuple[int, int]]:
+    """Character ranges a candidate must fall entirely inside to be refused as a
+    fresh novel candidate — i.e. a range the blinder itself already spliced into
+    this leaf (ADR-0051's #406 amendment, issue #415).
 
-    Spans every surrogate namespace an already-injected surrogate can come from
-    (ADR-0022, issue #68): surrogates this ``mapping`` has already issued (seed +
-    PII-minted), surrogates already recorded in ``session`` for this exchange, and
-    provisional surrogates the review inbox has actually minted (this and prior
-    exchanges — the inbox is process-global).
+    Reads ``leaf``'s own splice-derived offsets record
+    (:class:`_LeafAccumulator`, ADR-0059 §3) rather than searching the text for
+    surrogate values, as issue #415's predecessor did. A search cannot tell "we
+    spliced this here" from "the client typed a string that happens to equal a
+    live surrogate" — a real value inside client-typed text is a genuine miss
+    that must still be blinded, and a search-based exclusion would mask it
+    (see ``docs/adr/0051-...md``'s #406 amendment). The record is exact: every
+    range in ``leaf.spans`` is, by construction, characters :func:`_apply_spans`
+    itself wrote, so excluding them can never suppress a genuinely novel real
+    value -- only ever the blinder's own already-injected surrogate.
 
-    ``inbox=None`` (issue #394) contributes no provisional surrogates -- the
-    confirmed-component pass needs this guard available even on the no-inbox
-    call path (:func:`_blindfold_text` when ``inbox is None``), where there is no
-    provisional vocabulary to begin with.
-
-    Filtered down to values literally present in ``text`` rather than the full
-    process-global vocabulary: a "Bernhard Vogt" seed surrogate for an unrelated
-    referent, never mentioned anywhere in *this* text, must never suppress a
-    genuinely novel real value that merely shares a word with it (issue #68's
-    own hardening). The same occurs-in-text discipline (rather than word-level
-    set membership) backs the mint-time pool-vs-corpus guard
-    (:func:`store._mint.pool_entry_collides_with_corpus`) and the repair path
-    (:meth:`review.ReviewInbox.purge_surrogate_collisions`); this helper is
-    consumed only by :func:`_injected_surrogate_ranges`.
+    ``leaf`` is ``None`` only when the caller has no leaf context at all (never
+    true for a real exchange -- see :meth:`ExchangeSession._begin_leaf`); ranges
+    are empty in that case, matching "no leaf, nothing yet spliced here".
     """
-    values: set[str] = set(mapping.known_surrogates())
-    values.update(session.injected)
-    if inbox is not None:
-        values.update(item.provisional_surrogate for item in inbox.list())
-    return {value for value in values if value and value in text}
-
-
-def _injected_surrogate_ranges(
-    result: str,
-    mapping: SurrogateMapping,
-    session: ExchangeSession,
-    inbox: ReviewInbox | None,
-) -> list[tuple[int, int]]:
-    """Character ranges in ``result`` a candidate must fall entirely inside to be
-    refused as a fresh novel candidate — i.e. where an already-injected surrogate
-    literally occurs *in this exchange's text*.
-
-    Keyed on where those surrogate values actually appear in ``result``, not on a
-    global decomposition into individual words: ``select_candidate_spans`` flags
-    single capitalized tokens, but an injected surrogate is usually multi-word
-    (e.g. ``"Bernhard Vogt"``), and word-level set membership would also match an
-    unrelated real value that merely shares a word with *some* surrogate this
-    (process-global) mapping has ever minted for a different referent — e.g. a
-    genuinely novel "Petra Vogt" colliding with the unrelated seed surrogate
-    "Bernhard Vogt". That would silently skip blindfolding the real surname,
-    exactly the privacy bug this project treats as unacceptable. Requiring the
-    candidate's own hit position to fall inside an actual occurrence of the full
-    surrogate value in ``result`` keeps the multi-word/single-token match without
-    that global word-collision risk.
-    """
-    ranges: list[tuple[int, int]] = []
-    for value in _live_surrogate_values(result, mapping, session, inbox):
-        start = 0
-        while True:
-            idx = result.find(value, start)
-            if idx == -1:
-                break
-            ranges.append((idx, idx + len(value)))
-            start = idx + 1
-    return ranges
+    if leaf is None:
+        return []
+    return [(record.start, record.end) for record in leaf.spans]
 
 
 def _reapply_provisional_pairs_catchup(
@@ -2977,11 +2958,11 @@ def _reapply_provisional_pairs_catchup(
     surrogate "Erika Mustermann" minted for a different referent, issue #292's
     residual) -- rewriting that occurrence would silently corrupt the other
     surrogate. Excluding :func:`_injected_surrogate_ranges` mirrors the
-    identical self-poisoning guard (ADR-0022, issue #68) L3's own candidate
-    selection already applies, so this pass only ever catches a *literal,
-    un-blinded* occurrence -- never one that merely sits inside someone else's
-    surrogate -- leaving that accepted residual exactly as fail-closed as
-    before.
+    identical guard (ADR-0022 issue #68 / ADR-0051's #406 amendment) L3's own
+    candidate selection already applies, so this pass only ever catches a
+    *literal, un-blinded* occurrence -- never a range this SAME leaf's own
+    prior splice already wrote -- leaving that accepted residual exactly as
+    fail-closed as before.
 
     ``world_acting`` (ADR-0060 §3, issue #410): also re-runs the containment
     sweep (:func:`_collect_containment_spans`) over this already-blinded text
@@ -2989,11 +2970,11 @@ def _reapply_provisional_pairs_catchup(
     ``ExchangeSession.contain`` guard in :func:`_blindfold_text`) must still
     be caught here, on an EARLIER hop's own already-finished pass, the same
     cross-hop discipline this whole catch-up mechanism exists for. Guarded by
-    the identical self-poisoning exclusion as the provisional-pair pass below
-    (this text already contains surrogates, unlike :func:`_blindfold_text`'s
-    own main-walk call) -- computed once, up front, and reused for both.
+    the identical exclusion as the provisional-pair pass below (this text
+    already contains surrogates, unlike :func:`_blindfold_text`'s own
+    main-walk call) -- computed once, up front, and reused for both.
     """
-    pre_containment_exclude = _injected_surrogate_ranges(text, mapping, session, inbox)
+    pre_containment_exclude = _injected_surrogate_ranges(leaf)
     containment_spans = (
         _collect_containment_spans(
             text, mapping, inbox, session, hop_ctx, exclude=pre_containment_exclude
@@ -3009,11 +2990,11 @@ def _reapply_provisional_pairs_catchup(
         # there is nothing new to splice here -- `_apply_spans` with an empty
         # span list is a no-op splice, but still updates `leaf.text`.
         return _apply_spans(text, containment_spans, leaf=leaf)
-    # Recomputed (issue #410) rather than reusing ``pre_containment_exclude``:
-    # the containment pass above may have just ``session.record``ed a fresh
-    # token, so re-scanning also protects the provisional-pair pass below
-    # from matching inside THAT token's own literal text.
-    exclude = _injected_surrogate_ranges(text, mapping, session, inbox) + containment_ranges
+    # Issue #415: not recomputed -- ``pre_containment_exclude`` already reads
+    # ``leaf.spans``, and ``_collect_containment_spans`` above never splices
+    # anything into this leaf (only ``session.record``), so a second read
+    # would be identical.
+    exclude = pre_containment_exclude + containment_ranges
     spans = _collect_provisional_pair_spans(
         text, inbox, session, hop_ctx, exclude=exclude, world_acting=world_acting
     )
@@ -3340,10 +3321,11 @@ def _apply_provisional_pairs(
     deterministic-only :func:`_blindfold_text` pass (L1+L2, ADR-0023 §3's tool-
     description/schema-prose scope) -- exactly :func:`_reapply_provisional_pairs_catchup`'s
     situation, not :func:`_blindfold_text`'s own frozen pre-splice text -- so it
-    carries the identical self-poisoning guard (ADR-0022, #68/#292): a provisional
-    referent's real value occurring inside an already-injected surrogate's own
-    literal text (via :func:`_injected_surrogate_ranges`) is never treated as a
-    fresh match, or this pass could corrupt that surrogate's literal in place.
+    carries the identical guard (ADR-0022 #68/#292, ADR-0051's #406 amendment): a
+    provisional referent's real value occurring inside a range THIS SAME leaf's
+    own prior splice already wrote (:func:`_injected_surrogate_ranges`, reading
+    :meth:`ExchangeSession._current_leaf`) is never treated as a fresh match, or
+    this pass could corrupt that surrogate's literal in place.
 
     Issue #399: both call sites (:func:`_blindfold_tool_descriptions`,
     :func:`_blindfold_schema_prose`) invoke this immediately after their own
@@ -3355,7 +3337,7 @@ def _apply_provisional_pairs(
     """
     if inbox is None:
         return text
-    exclude = _injected_surrogate_ranges(text, mapping, session, inbox)
+    exclude = _injected_surrogate_ranges(session._current_leaf())
     spans = _collect_provisional_pair_spans(text, inbox, session, hop_ctx, exclude=exclude)
     return _apply_spans(text, spans, leaf=session._current_leaf())
 

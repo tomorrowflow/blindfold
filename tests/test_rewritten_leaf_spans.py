@@ -2,6 +2,14 @@
 records every string leaf it rewrote -- in blindfolded form, with per-span
 offsets into that blindfolded text and the surrogate written at each.
 
+Issue #415 (ADR-0051's #406 amendment) promotes the offsets half of this
+record to always-on: `ExchangeSession`'s per-leaf accumulator now exists
+regardless of `retain_rewritten_leaves`, because the self-poisoning guard
+(`_injected_surrogate_ranges`) reads it directly instead of searching text for
+surrogate values. Only the retained blindfolded *text* -- and, with it,
+`rewritten_leaves()`, the bounded store, its endpoint and the Unprotected-mode
+check -- stays armed-gated exactly as ADR-0059 specifies.
+
 This module builds bottom-up: unit tests against `_apply_spans`'s new
 output-offset reporting (the "hard part" the issue names -- offsets recorded
 in an early phase must be remapped through every later splice on the same
@@ -138,11 +146,27 @@ def test_apply_spans_remaps_an_earlier_recorded_offset_when_a_later_splice_lands
     assert len(recorded) == 2
 
 
-def test_session_does_not_track_leaves_when_not_armed():
+def test_session_tracks_leaf_spans_but_not_text_when_not_armed():
+    # Issue #415 (ADR-0051's #406 amendment): the span record is now a
+    # request-path invariant the self-poisoning guard depends on, so it is
+    # built regardless of Payload inspection's own armed flag -- only the
+    # ADR-0059 *text* retention (and, with it, `rewritten_leaves()`) stays
+    # armed-gated.
     session = engine.ExchangeSession()
 
-    assert session._begin_leaf("text") is None
-    assert session._current_leaf() is None
+    leaf = session._begin_leaf("text")
+
+    assert leaf is not None
+    assert session._current_leaf() is leaf
+    result = engine._apply_spans(
+        "Anna was here",
+        [engine.ReplacementSpan(0, 4, "Berta", "Anna", "l2")],
+        leaf=leaf,
+    )
+
+    assert result == "Berta was here"
+    assert [(s.start, s.end, s.surrogate) for s in leaf.spans] == [(0, 5, "Berta")]
+    assert leaf.text == ""
     assert session.rewritten_leaves() == ()
 
 
@@ -507,6 +531,49 @@ def test_detection_reproducibility_armed_and_disarmed_produce_identical_verdicts
     # And, of course, retention itself only happens when armed.
     assert disarmed_session.rewritten_leaves() == ()
     assert armed_session.rewritten_leaves() != ()
+
+
+def test_client_typed_text_resembling_a_live_surrogate_is_blinded_not_skipped():
+    # Issue #415 (ADR-0051's #406 amendment): the one intended behaviour
+    # change from promoting the span record to always-on and reading it
+    # instead of searching for surrogate values. entity-a's surrogate is a
+    # live, known surrogate (minted for a referent this exchange never
+    # mentions) whose second word happens to equal entity-b's own bare-word
+    # component. The old search-based guard treated the client's own literal
+    # occurrence of entity-a's surrogate text as "already injected" and
+    # skipped blinding entity-b's real word sitting inside it -- a real value
+    # reaching the stub upstream unblinded. The new splice-derived record has
+    # nothing recorded at that position (the blinder never wrote there in
+    # THIS leaf), so entity-b's component is now correctly detected and
+    # blinded.
+    #
+    # Leak-audit clause A: the real value that used to leak now never reaches
+    # `blinded` at all -- asserted directly below, not just "no exception".
+    mapping = SurrogateMapping.from_pairs(
+        [
+            ("entity-a-real", "surrogate-word-one surrogate-word-two"),
+            (
+                "entity-b-word-one surrogate-word-two",
+                "entity-b-surrogate-one entity-b-surrogate-two",
+            ),
+        ]
+    )
+    payload = {
+        "model": "m",
+        "messages": [
+            {
+                "role": "user",
+                "content": "Note: surrogate-word-one surrogate-word-two was mentioned.",
+            }
+        ],
+    }
+
+    blinded, session = blindfold_payload(payload, mapping)
+
+    text = blinded["messages"][0]["content"]
+    assert "surrogate-word-two" not in text
+    assert "entity-b-surrogate-two" in text
+    assert session.injected["entity-b-surrogate-two"] == "surrogate-word-two"
 
 
 def test_untouched_leaves_are_not_retained():

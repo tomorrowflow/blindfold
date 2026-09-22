@@ -705,9 +705,9 @@ class ReviewInbox:
         :meth:`remove` for each hit so a persisted row is deleted too.
 
         Scoped to surrogates occurring in the item's own ``context`` -- the
-        same occurs-in-text scope the mint-time guard uses
-        (``engine._live_surrogate_values``) -- rather than the full
-        process-global surrogate vocabulary, so a genuinely novel item that
+        same occurs-in-text discipline the mint-time guard uses -- rather
+        than the full process-global surrogate vocabulary, so a genuinely
+        novel item that
         merely shares a word with an unrelated surrogate never mentioned in
         its own context survives the sweep (issue #68's "Vogt" precedent).
         Checked against every *other* item's provisional surrogate too (not

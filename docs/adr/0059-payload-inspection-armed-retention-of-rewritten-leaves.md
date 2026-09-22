@@ -213,6 +213,28 @@ every date range but "today" is empty by construction. Time-ranged selection bel
 Diagnostic session's on-disk captures, where `blindfold_devtools captures` already lists by
 time. If a future bound makes retention span days, this is the decision to revisit.
 
+### 9. Narrowed by issue #415 (ADR-0051's #406 amendment): the span half of §3 is always-on
+
+§3's last sentence — "The record is built only while Payload inspection is armed (§4); when
+disarmed the engine's behaviour is byte-identical to today" — no longer holds for the
+**offsets** half of the record. ADR-0051's #406 amendment found a second consumer for the
+same splice-derived accumulator §3 introduced: the blinder's own self-poisoning guard
+(`_injected_surrogate_ranges`, ADR-0022 issue #68), which used to locate its own prior output
+by *searching* the text for surrogate values — unable to tell "we spliced this here" from "the
+client typed a string that happens to equal a live surrogate". A privacy control cannot run on
+a record that exists only while an unrelated operator toggle happens to be on, so issue #415
+split the record in two: `ExchangeSession`'s per-leaf **span offsets** (`_LeafAccumulator.spans`)
+are recorded on every exchange, armed or not; the **text** field, `rewritten_leaves()`, the
+bounded store, its endpoint, and the Unprotected-mode check all keep exactly the behaviour §3-§4
+describe, gated on arming precisely as written.
+
+This text is left as written rather than rewritten: §3 meant what it said, and this is the
+decision that narrowed it. The **one** externally visible consequence: a real value in
+client-typed text that merely resembles a live surrogate is now blinded rather than silently
+skipped, regardless of whether Payload inspection is armed — more protection, not less. See
+ADR-0051's #406 amendment for the full mechanism and the leaf-identity contract this promotion
+depends on.
+
 ## Consequences
 
 - The operator can finally see what the provider received, in a release build, without any
