@@ -1,6 +1,6 @@
 /// A spawned proxy child (issue #212, ADR-0041 ported to Swift) — the process boundary
-/// `ProxySupervisor` drives, stubbed in tests, backed by `Process` in the real menu-bar
-/// app.
+/// `ProxySupervisor` drives, stubbed in tests, backed by a `posix_spawn`ed child
+/// (`RealProxyProcess`, issue #414) in the real menu-bar app.
 public protocol ProxyProcess: Sendable {
     var hasExited: Bool { get }
     var exitCode: Int32 { get }
@@ -31,7 +31,8 @@ public protocol ProxyProcess: Sendable {
 }
 
 /// Spawns the frozen proxy child — stubbed in tests (leak-audit's seam-stub pattern),
-/// backed by a real `Process` in the menu-bar app.
+/// backed by a real `posix_spawn`ed child (`RealProxyProcessLauncher`, issue #414) in the
+/// menu-bar app.
 public protocol ProxyProcessLaunching: Sendable {
     func launch(exePath: String, args: [String], environment: [String: String]) -> any ProxyProcess
 }
