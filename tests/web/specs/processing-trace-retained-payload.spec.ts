@@ -178,6 +178,173 @@ retainedTest.describe("Processing trace — retained payload (armed)", () => {
   });
 });
 
+// Replacements-first table: a secondary view of the same retained payload
+// (issue #403, ADR-0059 §7). A view toggle within the existing expansion
+// switches between the elided diff (#400) and a table with one row per
+// substitution -- same retained data, same audited Reveal switch (#401), no
+// new route. Defaults to the diff view, matching #400's own default and
+// giving existing specs above an unchanged default render to assert against.
+retainedTest.describe("Processing trace — replacements-first table view", () => {
+  retainedTest(
+    "a view toggle switches between the elided diff and the table, defaulting to diff",
+    async ({ alicePage }) => {
+      await alicePage.goto("/ui/processing-trace");
+      const rows = alicePage.getByTestId("processing-trace-row");
+      await rows.nth(2).click();
+      const section = alicePage.getByTestId("retained-payload-section").nth(0);
+
+      const toggle = section.getByTestId("retained-payload-view-toggle");
+      await expect(toggle).toBeVisible();
+      const diffButton = section.getByTestId("retained-payload-view-diff-button");
+      const tableButton = section.getByTestId("retained-payload-view-table-button");
+      await expect(diffButton).toHaveAttribute("aria-selected", "true");
+      await expect(tableButton).toHaveAttribute("aria-selected", "false");
+
+      // Default view is the existing elided diff -- unchanged from #400/#401.
+      await expect(section.getByTestId("retained-leaf-card")).toHaveCount(3);
+      await expect(section.getByTestId("retained-payload-table")).toHaveCount(0);
+    }
+  );
+
+  retainedTest(
+    "the table shows one row per substitution, across more than one leaf kind, overlapping spans included",
+    async ({ alicePage }) => {
+      await alicePage.goto("/ui/processing-trace");
+      const rows = alicePage.getByTestId("processing-trace-row");
+      await rows.nth(2).click();
+      const section = alicePage.getByTestId("retained-payload-section").nth(0);
+
+      await section.getByTestId("retained-payload-view-table-button").click();
+      await expect(section.getByTestId("retained-leaf-card")).toHaveCount(0);
+
+      const table = section.getByTestId("retained-payload-table");
+      await expect(table).toBeVisible();
+      const headers = table.locator("th");
+      await expect(headers).toHaveText(["Value", "Surrogate", "Lifecycle", "Context", "Leaf"]);
+
+      // 2 spans on leaf-0 (user: text block) + 2 overlapping spans on leaf-1
+      // (tool_result: tool-result body) + 2 spans (pending, rejected) on
+      // leaf-2 (user: text block) = 6 rows total. Overlap (ADR-0059 §3) must
+      // produce two distinct rows here, unlike the diff view's unioned run --
+      // the table has no "ambiguous run" problem since each span is its own row.
+      const dataRows = table.getByTestId("retained-payload-table-row");
+      await expect(dataRows).toHaveCount(6);
+
+      // Row order follows walk order: leaf-0's own spans first, by start
+      // offset, then leaf-1's, then leaf-2's -- scannable top to bottom
+      // without expanding anything.
+      await expect(dataRows.nth(0).getByTestId("retained-payload-table-value")).toHaveText(
+        "Clara Hoffmann"
+      );
+      await expect(dataRows.nth(0).getByTestId("retained-payload-table-surrogate")).toHaveText(
+        "Clara Hoffmann"
+      );
+      await expect(dataRows.nth(0).getByTestId("retained-payload-table-lifecycle")).toHaveText(
+        "confirmed"
+      );
+      await expect(dataRows.nth(0).getByTestId("retained-payload-table-leaf")).toHaveText(
+        "user: text block"
+      );
+      await expect(dataRows.nth(1).getByTestId("retained-payload-table-value")).toHaveText(
+        "Pinnacle Corp"
+      );
+
+      await expect(dataRows.nth(2).getByTestId("retained-payload-table-value")).toHaveText(
+        "Pinnacle Corp"
+      );
+      await expect(dataRows.nth(2).getByTestId("retained-payload-table-leaf")).toHaveText(
+        "tool_result: tool-result body"
+      );
+      await expect(dataRows.nth(3).getByTestId("retained-payload-table-value")).toHaveText(
+        "Pinnacle Corp Holdings"
+      );
+      await expect(dataRows.nth(3).getByTestId("retained-payload-table-leaf")).toHaveText(
+        "tool_result: tool-result body"
+      );
+
+      await expect(dataRows.nth(4).getByTestId("retained-payload-table-lifecycle")).toHaveText(
+        "pending"
+      );
+      await expect(dataRows.nth(5).getByTestId("retained-payload-table-lifecycle")).toHaveText(
+        "rejected"
+      );
+
+      // Blindfolded: the table shows surrogates and context only, never a real value.
+      const bodyText = await section.innerText();
+      expect(bodyText).not.toContain(REAL_PERSON);
+      expect(bodyText).not.toContain(REAL_ORG);
+    }
+  );
+
+  retainedTest(
+    "flipping the shared Reveal switch resolves confirmed rows' Value column; pending/rejected stay unresolved",
+    async ({ alicePage }) => {
+      const before = await auditEventsFor(RETAINED_BASE_URL, "re-identified", "alice");
+      await alicePage.goto("/ui/processing-trace");
+      const rows = alicePage.getByTestId("processing-trace-row");
+      await rows.nth(2).click();
+      const section = alicePage.getByTestId("retained-payload-section").nth(0);
+      await section.getByTestId("retained-payload-view-table-button").click();
+
+      const dataRows = section.getByTestId("retained-payload-table-row");
+      await section.getByTestId("retained-payload-reveal-switch").click();
+      await expect(dataRows.nth(0).getByTestId("retained-payload-table-value")).toHaveText(
+        REAL_PERSON
+      );
+      await expect(dataRows.nth(1).getByTestId("retained-payload-table-value")).toHaveText(
+        REAL_ORG
+      );
+      // Surrogate column is unaffected by the switch -- it always names what
+      // was minted, whatever the Value column currently reads.
+      await expect(dataRows.nth(0).getByTestId("retained-payload-table-surrogate")).toHaveText(
+        "Clara Hoffmann"
+      );
+      // pending (row 4) and rejected (row 5) never resolve, regardless of
+      // switch position -- still their own surrogate token, never a real value.
+      await expect(dataRows.nth(4).getByTestId("retained-payload-table-value")).not.toHaveText(
+        REAL_PERSON
+      );
+      await expect(dataRows.nth(5).getByTestId("retained-payload-table-value")).not.toHaveText(
+        REAL_PERSON
+      );
+
+      // No new audit path -- this is the same bulk-resolve call #401 already
+      // audits once per flip, not a second one for the table view.
+      const after = await auditEventsFor(RETAINED_BASE_URL, "re-identified", "alice");
+      expect(after.length).toBe(before.length + 1);
+    }
+  );
+
+  retainedTest(
+    "without re-identifier the table's Value column never resolves, and the toggle resets on collapse",
+    async ({ erinPage }) => {
+      await erinPage.goto("/ui/processing-trace");
+      const rows = erinPage.getByTestId("processing-trace-row");
+      await rows.nth(2).click();
+      let section = erinPage.getByTestId("retained-payload-section").nth(0);
+      await section.getByTestId("retained-payload-view-table-button").click();
+      await section.getByTestId("retained-payload-reveal-switch").click();
+      await expect(section.getByTestId("retained-payload-reveal-denied")).toBeVisible();
+
+      const bodyText = await section.innerText();
+      expect(bodyText).not.toContain(REAL_PERSON);
+      expect(bodyText).not.toContain(REAL_ORG);
+
+      // Collapse and re-expand: both the Reveal switch (issue #401) and the
+      // view toggle (issue #403) are component-local state, so re-expanding
+      // reads as a fresh default -- blindfolded, diff view.
+      await rows.nth(2).click();
+      await rows.nth(2).click();
+      section = erinPage.getByTestId("retained-payload-section").nth(0);
+      await expect(section.getByTestId("retained-payload-view-diff-button")).toHaveAttribute(
+        "aria-selected",
+        "true"
+      );
+      await expect(section.getByTestId("retained-payload-table")).toHaveCount(0);
+    }
+  );
+});
+
 disarmedTest.describe("Processing trace — retained payload (disarmed)", () => {
   disarmedTest(
     "every row reads as disarmed and links to where it's armed",

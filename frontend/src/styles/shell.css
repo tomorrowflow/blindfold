@@ -918,6 +918,10 @@ body {
   font-weight: 600;
 }
 
+.bf-retained-payload-table {
+  margin-top: 4px;
+}
+
 .bf-retained-leaf-card {
   background: #fafbfc;
   border: 1px solid var(--bf-border);

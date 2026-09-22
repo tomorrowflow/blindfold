@@ -11,6 +11,7 @@ import { Link } from "react-router-dom";
 import { Lock, CheckCircle2, AlertTriangle, CloudOff, ChevronDown } from "../components/icons";
 import { RevealButton } from "../components/RevealButton";
 import { RetainedLeafCard } from "../components/RetainedLeafCard";
+import { RetainedPayloadTable } from "../components/RetainedPayloadTable";
 import { useWorkspace } from "../components/WorkspaceContext";
 import { revealSurrogatesBulk } from "../lib/entityListApi";
 import {
@@ -297,22 +298,34 @@ function RetainedPayloadSection({
   canReveal: boolean;
 }) {
   const [revealed, setRevealed] = useState<Record<string, string> | null>(null);
+  // Issue #403: which secondary view of the same retained payload is showing
+  // -- component-local, so it resets to the default (diff) on every collapse/
+  // re-expand, same as `revealed` above never persisting across reload.
+  const [view, setView] = useState<"diff" | "table">("diff");
 
   const retained = leaves && row.exchange_id ? leaves.exchangesById.get(row.exchange_id) : undefined;
+
+  // This exchange's own hop-surrogate lifecycle classification (already
+  // fetched for the hop chips above), keyed by token -- shared by the
+  // confirmed-tokens list below (issue #401) and the replacements table
+  // (issue #403), so the two views can never disagree about a span's
+  // lifecycle.
+  const lifecycleByToken = useMemo(() => {
+    const map = new Map<string, ProcessingTraceSurrogate["lifecycle"]>();
+    for (const hop of row.hops) {
+      for (const surrogate of hop.surrogates) {
+        map.set(surrogate.token, surrogate.lifecycle);
+      }
+    }
+    return map;
+  }, [row.hops]);
 
   // Confirmed surrogate tokens actually appearing in this exchange's retained
   // leaves (issue #401): the Reveal switch only ever resolves `confirmed`
   // surrogates (ADR-0035 decision 13) -- `pending`/`rejected` stay visibly
-  // unresolved regardless of switch position, per the row's own hop-surrogate
-  // lifecycle classification (already fetched for the hop chips above).
+  // unresolved regardless of switch position.
   const confirmedSurrogates = useMemo(() => {
     if (!retained) return [];
-    const lifecycleByToken = new Map<string, ProcessingTraceSurrogate["lifecycle"]>();
-    for (const hop of row.hops) {
-      for (const surrogate of hop.surrogates) {
-        lifecycleByToken.set(surrogate.token, surrogate.lifecycle);
-      }
-    }
     const tokens = new Set<string>();
     for (const leaf of retained.leaves) {
       for (const span of leaf.spans) {
@@ -320,7 +333,7 @@ function RetainedPayloadSection({
       }
     }
     return Array.from(tokens);
-  }, [retained, row.hops]);
+  }, [retained, lifecycleByToken]);
 
   if (!leaves) return null;
 
@@ -329,13 +342,42 @@ function RetainedPayloadSection({
       <div className="bf-retained-payload-header">
         <h3 className="bf-retained-payload-heading">Retained payload</h3>
         {retained && (
-          <RevealSwitch
-            workspace={workspace}
-            confirmedSurrogates={confirmedSurrogates}
-            canReveal={canReveal}
-            revealed={revealed}
-            onRevealed={setRevealed}
-          />
+          <>
+            <div
+              className="bf-search-mode-toggle"
+              role="tablist"
+              aria-label="Elided diff or replacements table"
+              data-testid="retained-payload-view-toggle"
+            >
+              <button
+                type="button"
+                role="tab"
+                aria-selected={view === "diff"}
+                className={`bf-search-mode-option${view === "diff" ? " bf-search-mode-option--active" : ""}`}
+                onClick={() => setView("diff")}
+                data-testid="retained-payload-view-diff-button"
+              >
+                Diff
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={view === "table"}
+                className={`bf-search-mode-option${view === "table" ? " bf-search-mode-option--active" : ""}`}
+                onClick={() => setView("table")}
+                data-testid="retained-payload-view-table-button"
+              >
+                Table
+              </button>
+            </div>
+            <RevealSwitch
+              workspace={workspace}
+              confirmedSurrogates={confirmedSurrogates}
+              canReveal={canReveal}
+              revealed={revealed}
+              onRevealed={setRevealed}
+            />
+          </>
         )}
       </div>
       {retained ? (
@@ -362,10 +404,16 @@ function RetainedPayloadSection({
           )}
           {retained.leaves.length === 0 ? (
             <p className="bf-empty">Blindfold rewrote nothing in this exchange.</p>
-          ) : (
+          ) : view === "diff" ? (
             retained.leaves.map((leaf) => (
               <RetainedLeafCard key={leaf.leaf_id} leaf={leaf} revealed={revealed} />
             ))
+          ) : (
+            <RetainedPayloadTable
+              leaves={retained.leaves}
+              lifecycleByToken={lifecycleByToken}
+              revealed={revealed}
+            />
           )}
         </>
       ) : !leaves.armed ? (
