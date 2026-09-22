@@ -890,26 +890,48 @@ def hydrate_review_inbox_from_store(
     """
     if store is None or mapping_cipher is None:
         return
-    inbox.attach_store(store, mapping_cipher)
+    try:
+        inbox.attach_store(store, mapping_cipher)
+    except (TransitError, InvalidTag) as exc:
+        raise _mapping_decrypt_refusal("review inbox") from exc
     if mapping is not None:
         inbox.purge_surrogate_collisions(mapping)
 
 
 class MappingHydrationError(RuntimeError):
     """Raised when the configured mapping cipher cannot decrypt a persisted
-    re-identify-store entry during startup hydration (ADR-0045 §7, issue #364).
+    real value during startup hydration (ADR-0045 §7, issue #364; generalized
+    from the re-identify store alone to the review inbox too by issue #422 --
+    one cipher protects both durable real-value surfaces, so one cipher failure
+    reads the same regardless of which surface's hydration hit it first).
 
-    The key-loss/misconfigured-Transit path for the mapping-hydration seam
-    specifically: distinct from ``serve.py``'s own ``UndecryptableStoreError``,
-    which samples the ``persons`` table and never touches ``reidentify_mappings``.
-    Fail-closed by construction -- ``hydrate_mapping_from_reidentify_store`` runs
-    at ``blindfold.app`` import time (module scope, mirroring every other
-    ``hydrate_*_from_store`` call below), so this propagates straight out of
-    ``import blindfold.app`` itself, refusing to start rather than serving a
-    mapping the durable store disagrees with silently. The message never carries
-    the ciphertext, the plaintext, or the underlying cipher error's own text (which
-    may echo response bodies) -- only that hydration failed and where to look.
+    The key-loss/misconfigured-Transit path for the two module-scope hydration
+    seams that decrypt at startup: distinct from ``serve.py``'s own
+    ``UndecryptableStoreError``, which samples the ``persons`` table and never
+    touches ``reidentify_mappings`` or the review inbox. Fail-closed by
+    construction -- both ``hydrate_mapping_from_reidentify_store`` and
+    ``hydrate_review_inbox_from_store`` run at ``blindfold.app`` import time
+    (module scope), so this propagates straight out of ``import blindfold.app``
+    itself, refusing to start rather than serving state the durable store
+    disagrees with silently. The message never carries the ciphertext, the
+    plaintext, or the underlying cipher error's own text (which may echo
+    response bodies) -- only that hydration failed, which surface, and where to
+    look.
     """
+
+
+def _mapping_decrypt_refusal(surface: str) -> MappingHydrationError:
+    """Build the ADR-0045 §7 refusal for ``surface`` ("re-identify store" or
+    "review inbox") -- the one message shape both hydration seams raise, issue
+    #422's fix for the review inbox's own decrypt call having no equivalent
+    handling to the one the re-identify store's hydration already had.
+    """
+    return MappingHydrationError(
+        f"refusing to start: the {surface} holds a persisted value the "
+        "configured mapping cipher cannot decrypt. The Store key or Transit "
+        "token may be wrong, revoked, or rewrapped -- reconfigure the mapping "
+        f"cipher, or clear the {surface} and re-run Setup (ADR-0045 §7)."
+    )
 
 
 def hydrate_mapping_from_reidentify_store(
@@ -956,13 +978,7 @@ def hydrate_mapping_from_reidentify_store(
         try:
             real_value = mapping_cipher.decrypt(ciphertext)
         except (TransitError, InvalidTag) as exc:
-            raise MappingHydrationError(
-                "refusing to start: the re-identify store holds a persisted "
-                "mapping the configured mapping cipher cannot decrypt. The Store "
-                "key or Transit token may be wrong, revoked, or rewrapped -- "
-                "reconfigure the mapping cipher, or clear the re-identify store "
-                "and re-run Setup (ADR-0045 §7)."
-            ) from exc
+            raise _mapping_decrypt_refusal("re-identify store") from exc
         mapping.seed(real_value, surrogate)
 
 
@@ -1111,6 +1127,17 @@ hydrate_allowlist_from_store(_allowlist, get_allowlist_store())
 # ADR-0045 §2/§4, issue #231 -- Transit or the Local key cipher, not Transit
 # specifically) -- a no-op unless BOTH are configured (acceptance criterion 6,
 # #149 graceful degradation).
+#
+# Ordering decision (issue #422): this runs BEFORE hydrate_mapping_from_reidentify_store
+# below, and one mapping cipher protects both stores' ciphertext, so a key-loss/
+# rotated-Transit-key condition affecting both durable real-value surfaces hits
+# this call first. Rather than reorder so the re-identify store's own guard
+# "wins" the race, hydrate_review_inbox_from_store now raises the identical
+# MappingHydrationError (_mapping_decrypt_refusal) that hydrate_mapping_from_
+# reidentify_store already raised -- so whichever hydration call happens to run
+# first, the operator gets the same actionable refusal either way, and the
+# order below is free to stay in its existing, unrelated sequence (review inbox
+# before mapping, matching every other hydrate_*_from_store call's position).
 hydrate_review_inbox_from_store(
     _review_inbox, get_review_inbox_store(), get_mapping_cipher(), _mapping
 )

@@ -460,3 +460,75 @@ def test_hydrate_review_inbox_from_store_defaults_mapping_to_none_and_skips_repa
     hydrate_review_inbox_from_store(inbox, store, transit)
 
     assert len(inbox.list()) == 1
+
+
+def test_hydrate_review_inbox_from_store_raises_named_error_when_transit_cannot_decrypt():
+    """issue #422 case 2: the guard `hydrate_mapping_from_reidentify_store` already
+    has for this exact condition (ADR-0045 §7, issue #364) -- a `TransitError`
+    escaping cipher.decrypt() -- was missing from the adjacent review-inbox
+    hydration path, which decrypted the identical persisted ciphertext with no
+    handling at all and let the raw TransitError crash `import blindfold.app`.
+    Reuses `MappingHydrationError` rather than inventing a second vocabulary for
+    the same cipher failure.
+    """
+    from blindfold.app import MappingHydrationError, hydrate_review_inbox_from_store
+    from blindfold.transit import TransitClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # Always answers with an encrypt-shaped body, never a decrypt-shaped one
+        # -- mirrors test_store_persistence_confirm_restart_restore.py's identical
+        # repro for hydrate_mapping_from_reidentify_store.
+        return httpx.Response(200, json={"data": {"ciphertext": "vault:v1:stub"}})
+
+    transit = TransitClient(
+        addr="http://openbao.test",
+        token="dev-root-token",
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+    store = _RecordingReviewInboxStore()
+    store.upsert_row(
+        "1", "vault:v1:some-ciphertext", "blind:X", "vault:v1:ctx", 0, "Surrogate", None, "default"
+    )
+    inbox = ReviewInbox()
+
+    with pytest.raises(MappingHydrationError) as excinfo:
+        hydrate_review_inbox_from_store(inbox, store, transit)
+
+    message = str(excinfo.value)
+    assert "some-ciphertext" not in message
+
+
+def test_hydrate_review_inbox_from_store_raises_named_error_when_the_local_cipher_key_is_wrong():
+    """issue #422 case 2, the Local key cipher's decrypt failure mode (wrong
+    Store key or corrupted ciphertext raises `cryptography.exceptions.InvalidTag`,
+    not `TransitError`) -- covers the real wrong-key condition end to end
+    (acceptance criterion 6), not just the Transit-shaped stub above.
+    """
+    import base64
+    import os
+
+    from blindfold.app import MappingHydrationError, hydrate_review_inbox_from_store
+    from blindfold.mapping_cipher import LocalKeyCipher
+
+    writer_key = base64.b64encode(os.urandom(32)).decode()
+    writer_cipher = LocalKeyCipher(writer_key)
+    store = _RecordingReviewInboxStore()
+    store.upsert_row(
+        "1",
+        writer_cipher.encrypt("Helga Krause"),
+        writer_cipher.blind_index("Helga Krause"),
+        writer_cipher.encrypt("Please brief Helga Krause tomorrow."),
+        0,
+        "Surrogate-001",
+        None,
+        "default",
+    )
+    inbox = ReviewInbox()
+    reader_cipher = LocalKeyCipher(base64.b64encode(os.urandom(32)).decode())
+
+    with pytest.raises(MappingHydrationError) as excinfo:
+        hydrate_review_inbox_from_store(inbox, store, reader_cipher)
+
+    message = str(excinfo.value)
+    assert "Helga Krause" not in message
+    assert writer_key not in message

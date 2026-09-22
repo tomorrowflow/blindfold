@@ -17,10 +17,12 @@ import contextlib
 import ipaddress
 import logging
 import os
+import sqlite3
 from collections.abc import Iterator
 from typing import Callable
 from urllib.parse import urlparse
 
+import psycopg.errors
 import uvicorn
 
 from cryptography.exceptions import InvalidTag
@@ -131,6 +133,24 @@ class UndecryptableStoreError(RuntimeError):
     from a same-scheme value that is genuinely wrong-keyed or corrupted. Never
     carries the ciphertext, key or token -- only the Store location and which
     scheme (if known) wrote it.
+    """
+
+
+class AbsentSchemaError(RuntimeError):
+    """Raised when the configured database is reachable but has no schema applied
+    yet (ADR-0045 §6/§7, issue #422) -- the ordinary first-run condition for
+    anyone pointing ``BLINDFOLD_DATABASE_URL`` at a brand-new database.
+
+    Distinct from :class:`UndecryptableStoreError`: an absent ``persons`` table
+    ("the database is empty, run the migrations") and an unreadable ciphertext
+    value in a table that exists ("the database holds data I cannot decrypt")
+    are different conditions with different remedies, so they get different
+    named refusals rather than one collapsing `psycopg.errors.UndefinedTable`
+    traceback. Postgres-only: SQLite's own missing-table condition needs no
+    operator action (the very next startup guard constructs the real store,
+    which applies ``migrations_sqlite.sql`` idempotently as part of that
+    construction) and is a no-op here instead, mirroring the existing
+    empty-persons-table no-op.
     """
 
 
@@ -294,10 +314,16 @@ def refuse_if_undecryptable_store(
     A no-op with no persistent store configured (nothing durable to be
     undecryptable), no mapping cipher configured (persons stay ephemeral regardless
     of what's on disk, issue #229), an empty persons table (nothing to sample yet),
-    or an ``entity_graph`` override supplied (the same test/embedding seam
+    an absent persons table on SQLite (issue #422 -- self-heals via the next
+    startup guard's store construction, no operator action needed), or an
+    ``entity_graph`` override supplied (the same test/embedding seam
     :func:`run_server` already honors elsewhere -- an explicit in-memory graph
-    stands in for the real store, so there is nothing on disk to peek at). Samples
-    exactly one persisted ciphertext -- never a bulk read, per ADR-0045 §6's
+    stands in for the real store, so there is nothing on disk to peek at). An
+    absent persons table on Postgres is a distinct, named refusal
+    (:class:`AbsentSchemaError`, issue #422) naming the migration remedy, rather
+    than an unhandled ``psycopg.errors.UndefinedTable`` -- Postgres has no
+    self-healing construction path the way SQLite does, so it stays a refusal.
+    Samples exactly one persisted ciphertext -- never a bulk read, per ADR-0045 §6's
     rejection of any bulk real-value read path -- and checks it two ways: first by
     its ``bf:v1:``/``vault:v1:`` scheme-version prefix (ADR-0045 §3), which
     identifies a store written by the *other* cipher without needing to decrypt
@@ -316,12 +342,32 @@ def refuse_if_undecryptable_store(
     if cipher_choice == MAPPING_CIPHER_NONE:
         return
 
-    from .store.dialect import connect
+    from .store.dialect import connect, is_sqlite
 
-    with connect(settings.database_url) as conn:
-        row = conn.execute(
-            "SELECT canonical_name_ciphertext FROM persons LIMIT 1"
-        ).fetchone()
+    location = describe_store_location(settings.database_url)
+    try:
+        with connect(settings.database_url) as conn:
+            row = conn.execute(
+                "SELECT canonical_name_ciphertext FROM persons LIMIT 1"
+            ).fetchone()
+    except psycopg.errors.UndefinedTable:
+        raise AbsentSchemaError(
+            f"refusing to start: the database at {location} has no schema "
+            "applied yet -- this is the first-run state for a brand-new "
+            "database. Apply the schema first (`psql -f "
+            "src/blindfold/store/migrations.sql` against your configured "
+            "BLINDFOLD_DATABASE_URL), then start blindfold serve again "
+            "(ADR-0045 §6)."
+        ) from None
+    except sqlite3.OperationalError as exc:
+        if is_sqlite(settings.database_url) and "no such table" in str(exc):
+            # SQLite self-heals: the very next startup guard
+            # (refuse_if_populated_plaintext_store) constructs the real store,
+            # which applies migrations_sqlite.sql idempotently as part of that
+            # construction -- nothing for an operator to do, so this is a no-op
+            # exactly like the empty-persons-table case below.
+            return
+        raise
     if row is None:
         return
     ciphertext = row[0]
@@ -332,7 +378,6 @@ def refuse_if_undecryptable_store(
         assert cipher_choice == MAPPING_CIPHER_TRANSIT
         this_scheme, other_scheme_name = TRANSIT_CIPHERTEXT_PREFIX, "the Local key cipher"
 
-    location = describe_store_location(settings.database_url)
     if not ciphertext.startswith(this_scheme):
         raise UndecryptableStoreError(
             f"refusing to start: the store at {location} cannot be decrypted with "
@@ -540,7 +585,8 @@ def run_server(
     opt-in via ``host``. Runs the ADR-0031 legacy-env-var guard, the ADR-0047 §13
     legacy-``BLINDFOLD_DEV_MODE``-env-var guard, the SEC-2 root-token guard, the
     ADR-0045 §4 ambiguous-mapping-cipher guard, the ADR-0045 §3 malformed-Store-key
-    guard, the ADR-0045 §6 undecryptable-store guard, the ADR-0045 §6
+    guard, the ADR-0045 §6 undecryptable-store guard (which also distinguishes an
+    absent schema from undecryptable data, issue #422), the ADR-0045 §6
     populated-plaintext-store guard (issue #238 -- the upgrade path every
     pre-#229/#230 install hits), the ADR-0022 local-only-L3 guard (Ollama's ``:cloud``
     tag), the ADR-0031 §3 local-only-L3 guard (oMLX's loopback-only base url), and the

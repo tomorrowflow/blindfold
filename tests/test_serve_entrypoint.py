@@ -13,6 +13,7 @@ import sys
 import threading
 
 import httpx
+import psycopg.errors
 import pytest
 import uvicorn
 
@@ -571,6 +572,62 @@ def test_refuse_if_undecryptable_store_is_a_noop_with_an_empty_persons_table(tmp
     settings = Settings(store_key=_make_store_key_b64(), database_url=dsn)
 
     refuse_if_undecryptable_store(settings)  # must not raise -- nothing to sample yet
+
+
+def test_refuse_if_undecryptable_store_is_a_noop_with_no_schema_yet_on_sqlite(tmp_path):
+    """issue #422 case 1: a brand-new SQLite Store directory has no `persons`
+    table at all yet (nothing has constructed the store to apply migrations.sql
+    first) -- distinct from the empty-persons-table case above, where the table
+    exists with zero rows. Must not raise `sqlite3.OperationalError` -- SQLite's
+    schema is applied automatically, with no operator action needed, by the very
+    next startup guard's store construction (`refuse_if_populated_plaintext_store`),
+    so there's nothing actionable to refuse here.
+    """
+    from blindfold.serve import refuse_if_undecryptable_store
+
+    dsn = f"sqlite:///{tmp_path / 'store.sqlite3'}"
+    settings = Settings(store_key=_make_store_key_b64(), database_url=dsn)
+
+    refuse_if_undecryptable_store(settings)  # must not raise -- no schema applied yet
+
+
+def test_refuse_if_undecryptable_store_blocks_absent_schema_on_postgres_with_a_named_refusal(
+    monkeypatch,
+):
+    """issue #422 case 1: a freshly-created Postgres with no schema applied yet
+    raises `psycopg.errors.UndefinedTable` from the raw `SELECT ... FROM persons`
+    -- must surface as a named, actionable refusal (distinguishable from
+    `UndecryptableStoreError`, which is about data the guard *can* read but
+    cannot decrypt) naming the migration remedy, not the raw driver exception.
+    Unlike SQLite, Postgres has no automatic self-healing construction path
+    reachable from here, so this stays a hard refusal.
+    """
+    import blindfold.store.dialect as dialect_module
+    from blindfold.serve import AbsentSchemaError, UndecryptableStoreError, refuse_if_undecryptable_store
+
+    class _FakeConn:
+        def execute(self, *_args, **_kwargs):
+            raise psycopg.errors.UndefinedTable('relation "persons" does not exist')
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_exc):
+            return False
+
+    monkeypatch.setattr(dialect_module, "connect", lambda _url: _FakeConn())
+
+    dsn = "postgresql://user:pass@localhost/blindfold"
+    settings = Settings(store_key=_make_store_key_b64(), database_url=dsn)
+
+    with pytest.raises(AbsentSchemaError) as exc_info:
+        refuse_if_undecryptable_store(settings)
+    assert not issubclass(AbsentSchemaError, UndecryptableStoreError)
+    message = str(exc_info.value)
+    assert "migrations.sql" in message
+    # SEC-3: never echo the DSN back -- it may carry a password (ADR-0045 §3's
+    # describe_store_location contract, config.py).
+    assert "user:pass" not in message
 
 
 def test_refuse_if_undecryptable_store_is_a_noop_with_no_persistent_store_configured():
