@@ -360,6 +360,8 @@ Diagnostic session
 Exchange capture
 Payload inspection
 Retained payload
+Executed argument
+World-acting tool
 #
 # #74 run 13 harness-label false positive (issue #361, ADR-0023 "Update (#74
 # run 13)", Decision A). "Repository visibility" is the driving harness's own

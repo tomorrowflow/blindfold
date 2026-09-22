@@ -541,6 +541,20 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   the outbound body, since untouched leaves are not retained. A **blocked** exchange's
   retained payload is kept and marked *never sent*. _Avoid_: retained prompt (it is not only
   the prompt), payload copy, buffer.
+- **Executed argument** (ADR-0060) — a value in an outbound payload that is *acted upon*
+  outside the model rather than merely read by it: a search query, a fetched URL, a shell
+  command, a file path, a message recipient. The distinction that decides Blindfold's
+  behaviour is not what a tool does but **which side of the blindfold its executor sits on**:
+  a client-executed tool receives *restored* values and acts on the user's own data at the
+  user's own intent; a provider-executed tool receives *surrogates* and acts on them as
+  though they were real.
+- **World-acting tool** (ADR-0060) — a tool that has at least one **executed argument**. A
+  **world-acting request** is an outbound request that declares a world-acting tool whose
+  executor sits on the far side of the blindfold, identified structurally per ADR-0060 §2 —
+  any declared tool lacking an `input_schema`, or `mcp_servers` present — rather than from a
+  maintained list of tool semantics. In a world-acting request, every surrogate drawn from a
+  plausible named pool is instead drawn from the **reserved namespace**, and a
+  reserved-namespace surrogate is never restored.
 
 ## Key invariants
 
