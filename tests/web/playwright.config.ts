@@ -41,6 +41,12 @@ const ACCESS_EMPTY_PORT = 8956;
 // no real OpenBao daemon is ever contacted.
 const PERSISTENT_UNENCRYPTED_PORT = 8957;
 const PERSISTENT_ENCRYPTED_PORT = 8958;
+// Ninth and tenth fixture instances (issue #400): Processing trace's retained-
+// payload expansion (ADR-0059 §7) needs its own armed-with-retained-leaves and
+// disarmed fixture state -- see serve_fixture.py's
+// `_build_payload_inspection_retained_fixture`.
+const PAYLOAD_INSPECTION_RETAINED_PORT = 8959;
+const PAYLOAD_INSPECTION_DISARMED_PORT = 8960;
 
 export default defineConfig({
   testDir: "./specs",
@@ -137,6 +143,28 @@ export default defineConfig({
         BLINDFOLD_FIXTURE_STATE: "empty",
         BLINDFOLD_FIXTURE_PERSISTENT_STORE: "1",
         BLINDFOLD_OPENBAO_TOKEN: "fixture-transit-token",
+      },
+    },
+    {
+      command: "uv run python serve_fixture.py",
+      cwd: __dirname,
+      url: `http://127.0.0.1:${PAYLOAD_INSPECTION_RETAINED_PORT}/ui/processing-trace`,
+      reuseExistingServer: false,
+      timeout: 20_000,
+      env: {
+        BLINDFOLD_FIXTURE_PORT: String(PAYLOAD_INSPECTION_RETAINED_PORT),
+        BLINDFOLD_FIXTURE_STATE: "payload_inspection_retained",
+      },
+    },
+    {
+      command: "uv run python serve_fixture.py",
+      cwd: __dirname,
+      url: `http://127.0.0.1:${PAYLOAD_INSPECTION_DISARMED_PORT}/ui/processing-trace`,
+      reuseExistingServer: false,
+      timeout: 20_000,
+      env: {
+        BLINDFOLD_FIXTURE_PORT: String(PAYLOAD_INSPECTION_DISARMED_PORT),
+        BLINDFOLD_FIXTURE_STATE: "payload_inspection_disarmed",
       },
     },
   ],

@@ -157,11 +157,13 @@ from blindfold.app import (
     get_gliner_provisioning_tracker,
     get_l3_health_probe,
     get_mapping,
+    get_payload_inspection,
     get_processing_trace,
     get_rbac,
     get_reidentify_store,
     get_relationship_store,
     get_review_inbox,
+    get_rewritten_leaf_store,
     get_store_health_probe,
     get_transit_client,
     get_transit_health_probe,
@@ -170,12 +172,14 @@ from blindfold.app import (
 )
 from blindfold.entity_graph import EntityGraph
 from blindfold.gliner_status import GlinerProvisioningTracker
+from blindfold.payload_inspection import PayloadInspection
 from blindfold.policy import AuditLog, AuditRecord
 from blindfold.processing_trace import ProcessingTraceBuffer
 from blindfold.rbac import RbacRegistry
 from blindfold.reidentify import InMemoryReIdentificationStore
 from blindfold.relationships import RelationshipStore
 from blindfold.review import Allowlist, ReviewInbox
+from blindfold.rewritten_leaves import RewrittenLeaf, RewrittenLeafStore, RewrittenSpan
 from blindfold.status import DependencyHealth, RecentFailureHealth
 from blindfold.store import vendored_seed_repository
 from blindfold.surrogates import SurrogateMapping
@@ -195,6 +199,13 @@ FORCE_DEPENDENCIES_HEALTHY = FIXTURE_STATE != "degraded"
 # and the create-first-workspace/creator-becomes-admin flow exercise real state,
 # not a stub.
 IS_EMPTY = FIXTURE_STATE == "empty"
+# Ninth and tenth fixture instances (issue #400): Processing trace's retained-
+# payload expansion needs its own armed-with-retained-leaves and disarmed
+# fixture state, distinct from the primary instance's 3 seeded rows (issue
+# #151, seeded before `exchange_id` existed) -- see
+# _build_payload_inspection_retained_fixture below.
+PAYLOAD_INSPECTION_RETAINED = FIXTURE_STATE == "payload_inspection_retained"
+PAYLOAD_INSPECTION_DISARMED_ONLY = FIXTURE_STATE == "payload_inspection_disarmed"
 
 WORKSPACE = "acme"
 REAL_PERSON = "Martin Bach"
@@ -453,6 +464,146 @@ def _build_empty_app():
     return app
 
 
+def _build_payload_inspection_retained_fixture(*, armed: bool):
+    """Issue #400: seeds the state the Processing trace's retained-payload
+    expansion needs -- an armed, retained "passed" exchange (spans, including
+    a deliberately overlapping pair -- ADR-0059 §3), an armed, retained
+    "blocked" exchange (the "never sent" mark), one exchange that predates
+    arming, and one that's armed but simply never retained (fixture-level
+    stand-in for "evicted from the 5-exchange ring buffer" -- indistinguishable
+    from the view's own perspective, see ProcessingTrace.tsx's
+    RetainedPayloadSection).
+
+    A dedicated `ProcessingTraceBuffer`/`RewrittenLeafStore`/`PayloadInspection`
+    triple, replacing (not joining) the standard 3-row seed built above --
+    this only ever backs its own two fixture ports (payload_inspection_retained
+    / payload_inspection_disarmed), never the primary instance every other spec
+    file shares, so it can't perturb their assertions.
+    """
+    armed_at = "2020-01-01T00:00:10+00:00"
+    ts_sequence = iter(
+        [
+            "2020-01-01T00:00:00+00:00",  # predates arming
+            "2020-01-01T00:00:20+00:00",  # passed, retained
+            "2020-01-01T00:00:21+00:00",  # blocked, retained ("never sent")
+            "2020-01-01T00:00:22+00:00",  # armed, but never retained ("evicted")
+        ]
+    )
+    trace = ProcessingTraceBuffer(now_iso=lambda: next(ts_sequence))
+    payload_inspection = PayloadInspection(now_iso=lambda: armed_at)
+    if armed:
+        payload_inspection.arm()
+    store = RewrittenLeafStore()
+
+    predates_id = "retained-fixture-predates-arming"
+    passed_id = "retained-fixture-passed"
+    blocked_id = "retained-fixture-blocked"
+    evicted_id = "retained-fixture-evicted"
+
+    trace.record(
+        workspace=WORKSPACE, endpoint="messages", streamed=False,
+        outcome="passed", detected=0, duration_ms=5.0, exchange_id=predates_id,
+    )
+
+    leaf1_text = (
+        "Meeting notes: attendee list includes Clara Hoffmann from operations, "
+        "discussing the Q3 roadmap timeline and budget allocations for the "
+        "upcoming fiscal year review with stakeholders across engineering, "
+        "product, and finance departments before the deadline arrives next "
+        "week for final sign-off from Pinnacle Corp leadership."
+    )
+    clara_start = leaf1_text.index("Clara Hoffmann")
+    pinnacle_start = leaf1_text.index("Pinnacle Corp")
+    # Deliberately overlapping spans (ADR-0059 §3): a bare "Pinnacle Corp" mint
+    # and a longer coalesced "Pinnacle Corp Holdings" mint both claim the same
+    # leading substring -- the record keeps both, the renderer unions them.
+    leaf2_text = "Company: Pinnacle Corp Holdings, confirmed by Devin Novak."
+    pinnacle_short_start = leaf2_text.index("Pinnacle Corp")
+    pinnacle_long_start = leaf2_text.index("Pinnacle Corp Holdings")
+
+    trace.record(
+        workspace=WORKSPACE, endpoint="messages", streamed=False,
+        outcome="passed", detected=2, duration_ms=118.0, exchange_id=passed_id,
+    )
+    trace.record(
+        workspace=WORKSPACE, endpoint="messages", streamed=False,
+        outcome="blocked", detected=0, duration_ms=9.0, exchange_id=blocked_id,
+        reason="leak_gate: a mapped entity matched the outbound payload",
+    )
+    blocked_leaf_text = "Contact Clara Hoffmann to confirm the transfer of Pinnacle Corp assets."
+    blocked_span_start = blocked_leaf_text.index("Clara Hoffmann")
+
+    if armed:
+        # Gated on `armed`, not recorded unconditionally: the disarmed
+        # fixture instance must show EVERY row as "disarmed" (issue #400's own
+        # bar for a clean empty-state read), not a mix of disarmed and
+        # already-retained rows a real disarm would actually leave behind
+        # (disarming never clears what the ring buffer already holds).
+        store.retain(
+            workspace=WORKSPACE,
+            blocked=False,
+            exchange_id=passed_id,
+            leaves=[
+                RewrittenLeaf(
+                    leaf_id="leaf-0",
+                    label="user: text block",
+                    text=leaf1_text,
+                    spans=(
+                        RewrittenSpan(
+                            clara_start, clara_start + len("Clara Hoffmann"),
+                            "Clara Hoffmann", "l2",
+                        ),
+                        RewrittenSpan(
+                            pinnacle_start, pinnacle_start + len("Pinnacle Corp"),
+                            "Pinnacle Corp", "l3",
+                        ),
+                    ),
+                ),
+                RewrittenLeaf(
+                    leaf_id="leaf-1",
+                    label="tool_result: tool-result body",
+                    text=leaf2_text,
+                    spans=(
+                        RewrittenSpan(
+                            pinnacle_short_start, pinnacle_short_start + len("Pinnacle Corp"),
+                            "Pinnacle Corp", "l3",
+                        ),
+                        RewrittenSpan(
+                            pinnacle_long_start, pinnacle_long_start + len("Pinnacle Corp Holdings"),
+                            "Pinnacle Corp Holdings", "l3",
+                        ),
+                    ),
+                ),
+            ],
+        )
+        store.retain(
+            workspace=WORKSPACE,
+            blocked=True,
+            exchange_id=blocked_id,
+            leaves=[
+                RewrittenLeaf(
+                    leaf_id="leaf-0",
+                    label="user: text block",
+                    text=blocked_leaf_text,
+                    spans=(
+                        RewrittenSpan(
+                            blocked_span_start, blocked_span_start + len("Clara Hoffmann"),
+                            "Clara Hoffmann", "l2",
+                        ),
+                    ),
+                ),
+            ],
+        )
+
+    trace.record(
+        workspace=WORKSPACE, endpoint="messages", streamed=False,
+        outcome="passed", detected=0, duration_ms=5.0, exchange_id=evicted_id,
+    )
+    # evicted_id is deliberately never retained.
+
+    return payload_inspection, store, trace
+
+
 def build_app():
     if IS_EMPTY:
         return _build_empty_app()
@@ -679,6 +830,14 @@ def build_app():
     app.dependency_overrides[get_processing_trace] = lambda: processing_trace
     app.dependency_overrides[get_mapping] = lambda: processing_trace_mapping
     app.dependency_overrides[get_upstream_client] = _stub_upstream
+
+    if PAYLOAD_INSPECTION_RETAINED or PAYLOAD_INSPECTION_DISARMED_ONLY:
+        payload_inspection, rewritten_leaf_store, retained_trace = (
+            _build_payload_inspection_retained_fixture(armed=PAYLOAD_INSPECTION_RETAINED)
+        )
+        app.dependency_overrides[get_payload_inspection] = lambda: payload_inspection
+        app.dependency_overrides[get_rewritten_leaf_store] = lambda: rewritten_leaf_store
+        app.dependency_overrides[get_processing_trace] = lambda: retained_trace
 
     if FORCE_DEPENDENCIES_HEALTHY:
         # See _build_empty_app()'s identical override for why upstream gets its

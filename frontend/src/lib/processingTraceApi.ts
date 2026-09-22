@@ -48,6 +48,11 @@ export type ProcessingTraceRecord = {
   l3_provider: string | null;
   l3_duration_ms: number | null;
   upstream_duration_ms: number | null;
+  // Issue #400: correlates this row with Payload inspection's own retained-
+  // leaves entry for the same exchange (rewrittenLeavesApi.ts) -- `null` for
+  // any record a pre-#400 code path could still produce (never true for a
+  // real request today, kept optional-shaped defensively).
+  exchange_id: string | null;
 };
 
 export type ProcessingTraceFetchResult =

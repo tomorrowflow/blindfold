@@ -10,6 +10,7 @@ import { Fragment, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Lock, CheckCircle2, AlertTriangle, CloudOff, ChevronDown } from "../components/icons";
 import { RevealButton } from "../components/RevealButton";
+import { RetainedLeafCard } from "../components/RetainedLeafCard";
 import { useWorkspace } from "../components/WorkspaceContext";
 import {
   fetchProcessingTrace,
@@ -17,6 +18,7 @@ import {
   type ProcessingTraceRecord,
   type ProcessingTraceSurrogate,
 } from "../lib/processingTraceApi";
+import { fetchRewrittenLeaves, type RetainedExchange } from "../lib/rewrittenLeavesApi";
 
 const POLL_INTERVAL_MS = 2000;
 const FRESHNESS_TICK_MS = 1000;
@@ -170,6 +172,78 @@ function HopCard({
   );
 }
 
+// Payload inspection's own retained-leaves snapshot for the active workspace,
+// reshaped once per poll (issue #400) so each row's lookup below is O(1)
+// rather than a linear scan of `exchanges` per row per render.
+type RetainedLeavesSnapshot = {
+  armed: boolean;
+  armedAt: string | null;
+  exchangesById: Map<string, RetainedExchange>;
+};
+
+// The Processing trace's fourth grain level (ADR-0059 §7, issue #400): expanding
+// a row also renders whatever Payload inspection retained for THIS exchange,
+// reached by the row's own `exchange_id` -- never a new route, page or nav
+// entry, just the next thing revealed by the expansion that already exists
+// (ADR-0035 decisions 5/12/13).
+//
+// Three empty states must stay distinguishable (issue #400's own bar: with a
+// 5-exchange bound and a 200-row trace, "evicted" will be the overwhelming
+// majority and conflating it with "disarmed" makes the feature look broken):
+// disarmed (names the reason, links to Settings), predates-arming (this
+// exchange happened before the current arm window), and evicted (aged out of
+// the 5-exchange ring buffer).
+function RetainedPayloadSection({
+  row,
+  leaves,
+}: {
+  row: ProcessingTraceRecord;
+  leaves: RetainedLeavesSnapshot | null;
+}) {
+  if (!leaves) return null;
+
+  const retained = row.exchange_id ? leaves.exchangesById.get(row.exchange_id) : undefined;
+
+  return (
+    <div className="bf-retained-payload" data-testid="retained-payload-section">
+      <h3 className="bf-retained-payload-heading">Retained payload</h3>
+      {retained ? (
+        <>
+          {retained.blocked && (
+            <div className="bf-retained-payload-never-sent" data-testid="retained-payload-never-sent">
+              <AlertTriangle size={14} />
+              Never sent — this blindfolded payload was blocked before it reached the
+              provider.
+            </div>
+          )}
+          {retained.leaves.length === 0 ? (
+            <p className="bf-empty">Blindfold rewrote nothing in this exchange.</p>
+          ) : (
+            retained.leaves.map((leaf) => <RetainedLeafCard key={leaf.leaf_id} leaf={leaf} />)
+          )}
+        </>
+      ) : !leaves.armed ? (
+        <p className="bf-empty" data-testid="retained-payload-disarmed">
+          Payload inspection is disarmed, so no payload is retained for any exchange.{" "}
+          <Link to="/settings" data-testid="retained-payload-arm-link">
+            Arm it in Settings →
+          </Link>
+        </p>
+      ) : leaves.armedAt && new Date(row.ts).getTime() < new Date(leaves.armedAt).getTime() ? (
+        <p className="bf-empty" data-testid="retained-payload-predates-arming">
+          This exchange happened before Payload inspection was armed, so nothing was
+          retained for it.
+        </p>
+      ) : (
+        <p className="bf-empty" data-testid="retained-payload-evicted">
+          This exchange's retained payload has aged out of the 5-exchange retention
+          window.
+        </p>
+      )}
+    </div>
+  );
+}
+
 export function ProcessingTrace() {
   const { activeWorkspace } = useWorkspace();
   const workspace = activeWorkspace?.slug ?? null;
@@ -178,6 +252,7 @@ export function ProcessingTrace() {
   const canReveal = activeWorkspace?.roles.includes("re-identifier") ?? false;
 
   const [records, setRecords] = useState<ProcessingTraceRecord[]>([]);
+  const [leavesSnapshot, setLeavesSnapshot] = useState<RetainedLeavesSnapshot | null>(null);
   const [locked, setLocked] = useState(false);
   const [loading, setLoading] = useState(true);
   const [live, setLive] = useState(true);
@@ -207,8 +282,11 @@ export function ProcessingTrace() {
     if (!workspace || !live) return;
     let cancelled = false;
     function poll() {
-      fetchProcessingTrace(workspace!)
-        .then((result) => {
+      // Issue #400: Payload inspection's own retained-leaves snapshot is
+      // fetched alongside the trace itself, on the same poll tick -- one
+      // extra viewer-gated GET, no second poll loop.
+      Promise.all([fetchProcessingTrace(workspace!), fetchRewrittenLeaves(workspace!)])
+        .then(([result, leavesResult]) => {
           if (cancelled) return;
           setPollOk(true);
           setLastPolledAt(Date.now());
@@ -218,6 +296,19 @@ export function ProcessingTrace() {
           } else {
             setLocked(false);
             setRecords(result.records);
+          }
+          if (leavesResult.locked) {
+            setLeavesSnapshot(null);
+          } else {
+            setLeavesSnapshot({
+              armed: leavesResult.armed,
+              armedAt: leavesResult.armedAt,
+              exchangesById: new Map(
+                leavesResult.exchanges
+                  .filter((exchange) => exchange.exchange_id)
+                  .map((exchange) => [exchange.exchange_id as string, exchange])
+              ),
+            });
           }
         })
         .catch(() => {
@@ -405,6 +496,7 @@ export function ProcessingTrace() {
                             {hopCount === 0 && (
                               <p className="bf-empty">No hop detail for this exchange.</p>
                             )}
+                            <RetainedPayloadSection row={row} leaves={leavesSnapshot} />
                           </div>
                         </td>
                       </tr>

@@ -838,6 +838,96 @@ body {
   white-space: nowrap;
 }
 
+/* Retained payload: the Processing trace's fourth grain level (ADR-0059 §7,
+   issue #400) -- an elided diff of whatever Payload inspection retained for
+   one expanded row's own exchange. */
+
+.bf-retained-payload {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--bf-border);
+}
+
+.bf-retained-payload-heading {
+  margin: 0 0 6px;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: #6b7589;
+}
+
+/* ADR-0059 §4: the "never sent" mark is deliberately unmissable -- reuses the
+   same red the Blocked outcome pill already uses, never a neutral tone that
+   could read as "retained normally". */
+.bf-retained-payload-never-sent {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: #fff5f5;
+  color: var(--bf-red);
+  border: 1px solid var(--bf-red);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.bf-retained-leaf-card {
+  background: #fafbfc;
+  border: 1px solid var(--bf-border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin-bottom: 8px;
+}
+
+.bf-retained-leaf-card:last-child {
+  margin-bottom: 0;
+}
+
+.bf-retained-leaf-label {
+  margin-bottom: 6px;
+  font-size: 0.75rem;
+  font-family: var(--bf-font-mono);
+  color: #6b7589;
+}
+
+.bf-retained-leaf-text {
+  font-family: var(--bf-font-mono);
+  font-size: 0.8125rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* A rewritten span's highlight -- deliberately not --bf-ochre (reserved for
+   audited Reveal) and not an entity-kind color (a span's kind is display-only
+   here, ADR-0059 §2). Overlapping spans (ADR-0059 §3) render as one merged
+   highlighted run, not nested marks. */
+.bf-retained-leaf-span {
+  background: #eef6ff;
+  border-bottom: 2px solid #7aa7d9;
+  color: inherit;
+  padding: 0 1px;
+}
+
+.bf-retained-leaf-elision {
+  display: inline;
+  background: var(--bf-border-soft);
+  border: none;
+  border-radius: 4px;
+  padding: 1px 6px;
+  margin: 0 2px;
+  font-family: var(--bf-font-mono);
+  font-size: 0.75rem;
+  color: #6b7589;
+  cursor: pointer;
+}
+
+.bf-retained-leaf-elision:hover {
+  background: var(--bf-border);
+}
+
 /* -----------------------------------------------------------------------
    Toast outlet (issue #95)
    ----------------------------------------------------------------------- */
