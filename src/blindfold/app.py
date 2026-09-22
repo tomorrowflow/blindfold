@@ -146,6 +146,7 @@ from .engine import (
     restore_chat_completion,
     restore_response,
     restore_tool_call_json,
+    tool_call_block_types,
 )
 from .gliner_provisioning import GlinerHubClient, HuggingFaceHubClient
 from .gliner_status import (
@@ -2621,7 +2622,7 @@ async def _process_sse_event(
 
     if event_name == "content_block_start" and isinstance(payload, dict):
         block = payload.get("content_block", {})
-        if isinstance(block, dict) and block.get("type") == "tool_use":
+        if isinstance(block, dict) and block.get("type") in tool_call_block_types():
             tool_use_buffers[payload.get("index", 0)] = []
         yield (event + "\n\n").encode("utf-8")
         return

@@ -331,6 +331,204 @@ async def test_streamed_tool_use_json_is_reassembled_then_restored():
 
 
 @pytest.mark.anyio
+async def test_streamed_server_tool_use_json_is_reassembled_then_restored():
+    """A streamed ``server_tool_use`` block's ``input_json_delta`` is restored too (issue #409).
+
+    ``server_tool_use`` is a provider-executed tool call (ADR-0060), not the client-
+    executed ``tool_use`` -- but it carries its structured args under ``input`` via
+    the very same ``input_json_delta`` streaming shape. Before this fix the streaming
+    path only ever opened a hold-back buffer for a block literally typed ``tool_use``,
+    so a ``server_tool_use`` block's deltas fell through to the raw pass-through
+    branch unrestored, and the terminal resolution_gate fail-closed the whole
+    exchange on the unrestored surrogate it found there.
+
+    The surrogate straddles the same chunk boundary as the sibling ``tool_use`` test,
+    proving both restore (clause B) and no-partial-fragment leak in one shot.
+    """
+    mapping = _seeded_mapping()
+    martin = "Martin Bach"
+    martin_surrogate = mapping.surrogate_for(martin)
+    assert martin_surrogate is not None and martin_surrogate != martin
+
+    head_len = len(martin_surrogate) // 2
+    head, tail = martin_surrogate[:head_len], martin_surrogate[head_len:]
+    chunks = [
+        _sse_event(
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "server_tool_use",
+                    "id": "srvtoolu_1",
+                    "name": "web_search",
+                    "input": {},
+                },
+            }
+        ),
+        _sse_event(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {
+                    "type": "input_json_delta",
+                    "partial_json": '{"query": "' + head,
+                },
+            }
+        ),
+        _sse_event(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {
+                    "type": "input_json_delta",
+                    "partial_json": tail + '"}',
+                },
+            }
+        ),
+        _sse_event({"type": "content_block_stop", "index": 0}),
+        _sse_event({"type": "message_stop"}),
+    ]
+
+    recorded: list[httpx.Request] = []
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_streaming_upstream(
+        chunks, recorded
+    )
+    app.dependency_overrides[get_workspace_policies] = _deterministic_only_policies
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            received: list[bytes] = []
+            async with client.stream(
+                "POST",
+                "/v1/messages",
+                json={
+                    "model": "claude-3-5-sonnet",
+                    "stream": True,
+                    "messages": [
+                        {"role": "user", "content": f"Email {martin} the report."}
+                    ],
+                },
+            ) as resp:
+                assert resp.status_code == 200
+                async for chunk in resp.aiter_bytes():
+                    received.append(chunk)
+    finally:
+        app.dependency_overrides.clear()
+
+    egressed = recorded[0].content.decode("utf-8")
+    # Clause A: only surrogate egressed.
+    assert martin not in egressed
+    assert martin_surrogate in egressed
+
+    full = b"".join(received).decode("utf-8")
+    # Clause B + D: real value restored, no surrogate (or half-surrogate) visible --
+    # this is the assertion that failed before the fix (resolution_gate blocked the
+    # exchange instead of the client ever seeing this SSE stream at all).
+    assert martin in full
+    assert martin_surrogate not in full
+    assert head not in full
+    assert tail not in full
+    reassembled = _reassemble_tool_use_input(full)
+    assert reassembled == {"query": martin}
+
+
+@pytest.mark.anyio
+async def test_streamed_mcp_tool_use_json_is_reassembled_then_restored():
+    """A streamed ``mcp_tool_use`` block's ``input_json_delta`` is restored too (issue #409).
+
+    ``mcp_tool_use`` is reachable through the MCP connector and is the issue's other
+    named example alongside ``server_tool_use``. Same hold-back-and-rejoin shape,
+    same ``tool_call_block_types()`` registration set as the sibling tests above.
+    """
+    mapping = _seeded_mapping()
+    martin = "Martin Bach"
+    martin_surrogate = mapping.surrogate_for(martin)
+    assert martin_surrogate is not None and martin_surrogate != martin
+
+    head_len = len(martin_surrogate) // 2
+    head, tail = martin_surrogate[:head_len], martin_surrogate[head_len:]
+    chunks = [
+        _sse_event(
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "mcp_tool_use",
+                    "id": "mcptu_1",
+                    "name": "search_contacts",
+                    "server_name": "crm",
+                    "input": {},
+                },
+            }
+        ),
+        _sse_event(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {
+                    "type": "input_json_delta",
+                    "partial_json": '{"query": "' + head,
+                },
+            }
+        ),
+        _sse_event(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {
+                    "type": "input_json_delta",
+                    "partial_json": tail + '"}',
+                },
+            }
+        ),
+        _sse_event({"type": "content_block_stop", "index": 0}),
+        _sse_event({"type": "message_stop"}),
+    ]
+
+    recorded: list[httpx.Request] = []
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_streaming_upstream(
+        chunks, recorded
+    )
+    app.dependency_overrides[get_workspace_policies] = _deterministic_only_policies
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            received: list[bytes] = []
+            async with client.stream(
+                "POST",
+                "/v1/messages",
+                json={
+                    "model": "claude-3-5-sonnet",
+                    "stream": True,
+                    "messages": [
+                        {"role": "user", "content": f"Email {martin} the report."}
+                    ],
+                },
+            ) as resp:
+                assert resp.status_code == 200
+                async for chunk in resp.aiter_bytes():
+                    received.append(chunk)
+    finally:
+        app.dependency_overrides.clear()
+
+    egressed = recorded[0].content.decode("utf-8")
+    assert martin not in egressed
+    assert martin_surrogate in egressed
+
+    full = b"".join(received).decode("utf-8")
+    assert martin in full
+    assert martin_surrogate not in full
+    assert head not in full
+    assert tail not in full
+    reassembled = _reassemble_tool_use_input(full)
+    assert reassembled == {"query": martin}
+
+
+@pytest.mark.anyio
 async def test_tool_use_input_round_trip_preserves_json_escape_sequences():
     """A code-context arg with JSON-escaped chars round-trips intact (ADR-0006).
 
