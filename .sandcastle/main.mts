@@ -28,7 +28,12 @@ import { z } from "zod";
 import { execSync, execFileSync } from "node:child_process";
 import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { awaitWorkflowConclusion, type WorkflowRun } from "./workflow-gate.mts";
+import {
+  awaitWorkflowConclusion,
+  captureGateFailureLog,
+  type GateResult,
+  type WorkflowRun,
+} from "./workflow-gate.mts";
 
 // The planner emits its plan as JSON inside <plan> tags; Output.object extracts
 // and validates it against this schema. We use Zod here, but any Standard
@@ -717,6 +722,55 @@ function priorHandoffContext(id: string): string {
     .join("\n\n---\n\n");
 }
 
+// ---------------------------------------------------------------------------
+// Hosted-gate failure detail (issue #419)
+//
+// A failing platform-verify/web-verify/postgres-verify run's own log is the
+// one thing that turns "gate withheld attestation" into something an
+// implementer can act on — #414's worked example was two Swift compile
+// errors that stayed invisible for three cycles because nothing anywhere
+// fetched them. `reportHostedGateOutcome` above captures a bounded,
+// error:-filtered slice via `captureGateFailureLog`; these two functions post
+// it and read it back, the same split as postHandoff/priorHandoffContext but
+// kept as its OWN marker family — this is host-captured CI log text, not an
+// agent's own account of its work, so it must not be described to a later
+// cycle as if it were.
+// ---------------------------------------------------------------------------
+
+const GATE_LOG_MARKER = "sandcastle:gate-log:";
+
+// Post one gate's captured failure detail for this cycle. Numbered per role,
+// same accumulation shape as postHandoff. A no-op when `detail` is empty
+// (capture degraded to "no detail available", or the run had no databaseId to
+// fetch by) — there is nothing worth adding to the issue in that case, and the
+// `why` string already says so.
+function postGateFailureLog(id: string, role: string, detail: string): void {
+  if (!REPO || !detail) return;
+  const n =
+    issueCommentBodies(id).filter((b) => b.includes(`${GATE_LOG_MARKER}${role}:`)).length + 1;
+  postOnce(
+    id,
+    `${GATE_LOG_MARKER}${role}:${n}`,
+    `🪵 **${role} — captured hosted-run failure detail (cycle ${n})**\n\n` +
+      `Host-captured from the failing run's own log via \`gh run view --log-failed\` ` +
+      `(bounded, \`error:\`-filtered where possible). Not agent-authored.\n\n` +
+      `\`\`\`\n${detail}\n\`\`\``,
+  );
+}
+
+// Prior cycles' captured hosted-gate failure detail, for the implementer's
+// prompt. Kept separate from priorHandoffContext (different marker, different
+// framing) precisely because it is host-captured raw CI output, not an
+// agent's own notes — see the section header above.
+function priorGateLogContext(id: string): string {
+  const notes = issueCommentBodies(id).filter((b) => b.includes(GATE_LOG_MARKER));
+  if (notes.length === 0) return "";
+  return notes
+    .map((b) => b.replace(/<!--[\s\S]*?-->/g, "").trim())
+    .filter(Boolean)
+    .join("\n\n---\n\n");
+}
+
 // How many commits `branch` is ahead of the target. This is the TRUE "is there
 // work?" signal — unlike the merge gate's current-run commit count, it counts
 // commits a prior run already left on the branch. Host-side; 0 on any error.
@@ -827,24 +881,43 @@ function resolveHeadSha(branch: string, trace: (line: string) => void): string |
 // Isolated to a one-line function so both hosted-workflow gates below share the
 // exact same shelling-out shape; workflow-gate.test.mts exercises
 // awaitWorkflowConclusion itself against a stubbed replacement for this, not
-// against a real `gh` call.
+// against a real `gh` call. `databaseId` (issue #419) is the numeric run id
+// `gh run view --log-failed` needs to fetch a failing run's own log — `url`
+// alone isn't a valid argument to that command.
 function ghListWorkflowRuns(workflow: string): WorkflowRun[] {
   const out = execFileSync(
     "gh",
-    ["run", "list", "--repo", REPO, "--workflow", workflow, "--json", "headSha,status,conclusion,url", "--limit", "20"],
+    [
+      "run", "list", "--repo", REPO, "--workflow", workflow,
+      "--json", "headSha,status,conclusion,url,databaseId", "--limit", "20",
+    ],
     { encoding: "utf8" },
   );
   return JSON.parse(out) as WorkflowRun[];
+}
+
+// The real `gh run view --log-failed` fetch a captured gate log resolves
+// against (issue #419) — isolated the same way ghListWorkflowRuns is, so
+// workflow-gate.test.mts exercises captureGateFailureLog's bounding/degrade
+// logic against a stubbed fetchLog, never a real `gh` call. No try/catch here:
+// captureGateFailureLog is what swallows the error, and swallowing twice would
+// hide which layer is actually doing the fail-open.
+function ghFetchRunLog(runId: number): string {
+  return execFileSync(
+    "gh",
+    ["run", "view", String(runId), "--repo", REPO, "--log-failed"],
+    { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
+  );
 }
 
 // Await platform-verify.yml's conclusion for `branch`'s current head SHA (ADR-0042).
 async function awaitPlatformVerify(
   branch: string,
   trace: (line: string) => void = () => {},
-): Promise<"success" | "failure"> {
-  if (!REPO) return "failure";
+): Promise<GateResult> {
+  if (!REPO) return { verdict: "failure", run: null };
   const headSha = resolveHeadSha(branch, trace);
-  if (!headSha) return "failure"; // can't resolve the SHA we just pushed → fail closed
+  if (!headSha) return { verdict: "failure", run: null }; // can't resolve the SHA we just pushed → fail closed
   return awaitWorkflowConclusion(PLATFORM_VERIFY_WORKFLOW, headSha, ghListWorkflowRuns, {
     timeoutMs: PLATFORM_VERIFY_TIMEOUT_MS,
     pollMs: PLATFORM_VERIFY_POLL_MS,
@@ -855,15 +928,16 @@ async function awaitPlatformVerify(
 // Await web-verify.yml's conclusion for `branch`'s current head SHA (issue #275).
 // Same fail-closed shape as awaitPlatformVerify, sharing awaitWorkflowConclusion:
 // a `gh` error, a timeout, or a run that never appears for this exact SHA all
-// resolve to "failure", never a silent pass — and a `success` recorded against a
-// stale SHA from an earlier push can never satisfy this poll either.
+// resolve to a non-success verdict, never a silent pass — and a `success`
+// recorded against a stale SHA from an earlier push can never satisfy this
+// poll either.
 async function awaitWebVerifyWorkflow(
   branch: string,
   trace: (line: string) => void = () => {},
-): Promise<"success" | "failure"> {
-  if (!REPO) return "failure";
+): Promise<GateResult> {
+  if (!REPO) return { verdict: "failure", run: null };
   const headSha = resolveHeadSha(branch, trace);
-  if (!headSha) return "failure";
+  if (!headSha) return { verdict: "failure", run: null };
   return awaitWorkflowConclusion(WEB_VERIFY_WORKFLOW, headSha, ghListWorkflowRuns, {
     timeoutMs: WEB_VERIFY_WORKFLOW_TIMEOUT_MS,
     pollMs: WEB_VERIFY_WORKFLOW_POLL_MS,
@@ -874,21 +948,59 @@ async function awaitWebVerifyWorkflow(
 // Await postgres-verify.yml's conclusion for `branch`'s current head SHA (issue
 // #218) — a third consumer of awaitWorkflowConclusion, parallel to
 // awaitWebVerifyWorkflow. Same fail-closed shape: a `gh` error, a timeout, or a
-// run that never appears for this exact SHA all resolve to "failure", never a
-// silent pass — and a `success` recorded against a stale SHA from an earlier
-// push can never satisfy this poll either.
+// run that never appears for this exact SHA all resolve to a non-success
+// verdict, never a silent pass — and a `success` recorded against a stale SHA
+// from an earlier push can never satisfy this poll either.
 async function awaitPostgresVerifyWorkflow(
   branch: string,
   trace: (line: string) => void = () => {},
-): Promise<"success" | "failure"> {
-  if (!REPO) return "failure";
+): Promise<GateResult> {
+  if (!REPO) return { verdict: "failure", run: null };
   const headSha = resolveHeadSha(branch, trace);
-  if (!headSha) return "failure";
+  if (!headSha) return { verdict: "failure", run: null };
   return awaitWorkflowConclusion(POSTGRES_VERIFY_WORKFLOW, headSha, ghListWorkflowRuns, {
     timeoutMs: POSTGRES_VERIFY_WORKFLOW_TIMEOUT_MS,
     pollMs: POSTGRES_VERIFY_WORKFLOW_POLL_MS,
     trace,
   });
+}
+
+// Issue #419: turn a hosted gate's outcome into (a) a SPECIFIC, routable "why"
+// string — distinguishing a push failure, a timeout, and an actual failing run,
+// where the current code collapsed all three into one generic sentence naming
+// all of them at once — and (b) for an actual failing run, a captured, bounded
+// slice of that run's own log, posted to the issue so the next cycle sees the
+// real cause. `gateLabel` is the human-facing gate name ("platform gate");
+// `role` is the machine-facing slug `postGateFailureLog` numbers comments
+// under (matches the `*Verify` naming already used for `whyKey` below).
+//
+// Fail-open throughout, per the issue's own "never let the side-channel throw
+// into the gate" instruction: log capture can only ever enrich the `why`
+// string, never change which branch of it fires.
+function reportHostedGateOutcome(
+  issueId: string,
+  role: string,
+  gateLabel: string,
+  pushOk: boolean,
+  result: GateResult,
+): string {
+  if (!pushOk) {
+    return `${gateLabel} withheld attestation (push of the branch to origin failed, so no hosted run could be triggered)`;
+  }
+  if (result.verdict === "timeout") {
+    return result.run
+      ? `${gateLabel} withheld attestation (timed out awaiting the hosted run, last seen ${result.run.status} — ${result.run.url})`
+      : `${gateLabel} withheld attestation (timed out — no hosted run ever appeared for this SHA)`;
+  }
+  // result.verdict === "failure": a completed run with a non-success conclusion.
+  const run = result.run;
+  if (run?.databaseId !== undefined) {
+    const detail = captureGateFailureLog(ghFetchRunLog, run.databaseId);
+    postGateFailureLog(issueId, role, detail);
+  }
+  return run
+    ? `${gateLabel} withheld attestation (hosted run FAILED — ${run.url})`
+    : `${gateLabel} withheld attestation (hosted run FAILED)`;
 }
 
 // A compact, agent-authored overview of what a branch actually produced, for the
@@ -1662,6 +1774,11 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       // agent-authored evidence, not maintainer instruction.
       const priorHandoffs = priorHandoffContext(issue.id);
 
+      // A prior cycle's captured hosted-gate failure detail (issue #419) — see
+      // priorGateLogContext's header comment for why this is a separate channel
+      // from priorHandoffs rather than folded into it.
+      const priorGateLogs = priorGateLogContext(issue.id);
+
       try {
         // Run the implementer. `completionSignal` is the matched promise string
         // (default `<promise>COMPLETE</promise>`) or undefined if it never fired
@@ -1680,6 +1797,8 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
               trustedComments || "(no comments from a trusted maintainer)",
             PRIOR_HANDOFFS:
               priorHandoffs || "(no notes from an earlier cycle — this is the first)",
+            PRIOR_GATE_LOGS:
+              priorGateLogs || "(no hosted-gate failure detail captured from an earlier cycle)",
           },
         });
 
@@ -1710,10 +1829,13 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
             webVerifyComplete: true, // N/A → clears the web gate trivially
             webVerifyWorkflowNeeded: false,
             webVerifyWorkflowComplete: true, // N/A → clears the web-verify-workflow gate trivially
+            webVerifyWorkflowWhy: "",
             postgresVerifyNeeded: false,
             postgresVerifyComplete: true, // N/A → clears the postgres-verify gate trivially
+            postgresVerifyWhy: "",
             platformVerifyNeeded: false,
             platformVerifyComplete: true, // N/A → clears the platform gate trivially
+            platformVerifyWhy: "",
           };
         }
 
@@ -1799,6 +1921,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         // branch the reviewer already blocked won't merge regardless.
         let postgresVerifyNeeded = false;
         let postgresVerifyComplete = true; // N/A defaults to clear
+        let postgresVerifyWhy = ""; // issue #419: the specific cause, set only on a non-success outcome
         if (reviewerComplete) {
           postgresVerifyNeeded = true;
           // Lifecycle → GitHub: handing off to the hosted postgres-verify gate.
@@ -1816,11 +1939,19 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           postgresVerifyTrace(`postgres-verify gate for ${issue.branch}`);
           openTracePane(issue.branch, "postgres-verify");
 
-          if (!pushBranchToOrigin(issue.branch, postgresVerifyTrace)) {
-            postgresVerifyComplete = false;
-          } else {
-            const conclusion = await awaitPostgresVerifyWorkflow(issue.branch, postgresVerifyTrace);
-            postgresVerifyComplete = conclusion === "success";
+          const postgresPushOk = pushBranchToOrigin(issue.branch, postgresVerifyTrace);
+          const postgresResult: GateResult = postgresPushOk
+            ? await awaitPostgresVerifyWorkflow(issue.branch, postgresVerifyTrace)
+            : { verdict: "failure", run: null };
+          postgresVerifyComplete = postgresResult.verdict === "success";
+          if (!postgresVerifyComplete) {
+            postgresVerifyWhy = reportHostedGateOutcome(
+              issue.id,
+              "postgres-verify",
+              "postgres-verify gate",
+              postgresPushOk,
+              postgresResult,
+            );
           }
 
           // Lifecycle → GitHub: the hosted run attested the full suite green,
@@ -1919,6 +2050,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         // won't merge regardless.
         let webVerifyWorkflowNeeded = false;
         let webVerifyWorkflowComplete = true; // N/A defaults to clear
+        let webVerifyWorkflowWhy = ""; // issue #419: the specific cause, set only on a non-success outcome
         if (reviewerComplete && postgresVerifyComplete && webVerifyComplete && branchTouchesSpa(issue.branch)) {
           webVerifyWorkflowNeeded = true;
           // Lifecycle → GitHub: handing off to the hosted web-verify gate.
@@ -1936,11 +2068,19 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           webVerifyWorkflowTrace(`web-verify gate for ${issue.branch}`);
           openTracePane(issue.branch, "web-verify-workflow");
 
-          if (!pushBranchToOrigin(issue.branch, webVerifyWorkflowTrace)) {
-            webVerifyWorkflowComplete = false;
-          } else {
-            const conclusion = await awaitWebVerifyWorkflow(issue.branch, webVerifyWorkflowTrace);
-            webVerifyWorkflowComplete = conclusion === "success";
+          const webVerifyWorkflowPushOk = pushBranchToOrigin(issue.branch, webVerifyWorkflowTrace);
+          const webVerifyWorkflowResult: GateResult = webVerifyWorkflowPushOk
+            ? await awaitWebVerifyWorkflow(issue.branch, webVerifyWorkflowTrace)
+            : { verdict: "failure", run: null };
+          webVerifyWorkflowComplete = webVerifyWorkflowResult.verdict === "success";
+          if (!webVerifyWorkflowComplete) {
+            webVerifyWorkflowWhy = reportHostedGateOutcome(
+              issue.id,
+              "web-verify-workflow",
+              "web-verify gate",
+              webVerifyWorkflowPushOk,
+              webVerifyWorkflowResult,
+            );
           }
 
           // Lifecycle → GitHub: the hosted run attested the full Playwright
@@ -1965,6 +2105,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         // merge regardless.
         let platformVerifyNeeded = false;
         let platformVerifyComplete = true; // N/A defaults to clear
+        let platformVerifyWhy = ""; // issue #419: the specific cause, set only on a non-success outcome
         if (reviewerComplete && postgresVerifyComplete && webVerifyComplete && webVerifyWorkflowComplete) {
           const { mac, win } = branchTouchesPlatform(issue.branch);
           if (mac || win) {
@@ -1986,11 +2127,19 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
             trace(`platform gate for ${issue.branch} — hosted jobs: ${jobs}`);
             openTracePane(issue.branch, "platform-verify");
 
-            if (!pushBranchToOrigin(issue.branch, trace)) {
-              platformVerifyComplete = false;
-            } else {
-              const conclusion = await awaitPlatformVerify(issue.branch, trace);
-              platformVerifyComplete = conclusion === "success";
+            const platformPushOk = pushBranchToOrigin(issue.branch, trace);
+            const platformResult: GateResult = platformPushOk
+              ? await awaitPlatformVerify(issue.branch, trace)
+              : { verdict: "failure", run: null };
+            platformVerifyComplete = platformResult.verdict === "success";
+            if (!platformVerifyComplete) {
+              platformVerifyWhy = reportHostedGateOutcome(
+                issue.id,
+                "platform-verify",
+                "platform gate",
+                platformPushOk,
+                platformResult,
+              );
             }
 
             // Lifecycle → GitHub: the hosted run attested the OS-specific build +
@@ -2014,12 +2163,15 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           reviewerComplete,
           postgresVerifyNeeded,
           postgresVerifyComplete,
+          postgresVerifyWhy,
           webVerifyNeeded,
           webVerifyComplete,
           webVerifyWorkflowNeeded,
           webVerifyWorkflowComplete,
+          webVerifyWorkflowWhy,
           platformVerifyNeeded,
           platformVerifyComplete,
+          platformVerifyWhy,
         };
       } finally {
         // Teardown must never invalidate a verdict. This sits in a `finally`, so
@@ -2105,18 +2257,23 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     const r = outcome.value;
     if (!r.hasWork) continue; // produced nothing — not a gate block
     if (mergeable(r)) continue;
+    // Issue #419: each hosted gate's own reportHostedGateOutcome() already named
+    // the SPECIFIC cause (push failure / timeout / a failing run, with that
+    // run's URL) at the moment it happened — prefer that over the old generic
+    // "FAIL, timeout, no run for this SHA, or push failure" sentence, which
+    // named all four possibilities and distinguished none of them.
     const why = !r.implementerComplete
       ? "implementer did not finish (no COMPLETE)"
       : !r.reviewerComplete
         ? "reviewer withheld attestation (leak-audit / correctness FAIL)"
         : !r.postgresVerifyComplete
-          ? "postgres-verify gate withheld attestation (hosted postgres-verify.yml FAIL, timeout, no run for this SHA, or push failure)"
+          ? r.postgresVerifyWhy || "postgres-verify gate withheld attestation"
           : !r.webVerifyComplete
             ? "browser gate withheld attestation (web behavior / SPA-privacy FAIL)"
             : !r.webVerifyWorkflowComplete
-              ? "web-verify gate withheld attestation (hosted web-verify.yml FAIL, timeout, no run for this SHA, or push failure)"
+              ? r.webVerifyWorkflowWhy || "web-verify gate withheld attestation"
               : !r.platformVerifyComplete
-                ? "platform gate withheld attestation (hosted macOS/Windows build+smoke FAIL, timeout, or push failure)"
+                ? r.platformVerifyWhy || "platform gate withheld attestation"
                 : "change was not reviewed";
     console.warn(
       `  ⊘ ${issue.id} (${issue.branch}) BLOCKED from merge: ${why} — commits kept on branch for the next cycle / a human`,

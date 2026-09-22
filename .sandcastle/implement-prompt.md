@@ -54,6 +54,21 @@ in your notes what would actually settle it — a measurement no cycle has taken
 this sandbox lacks, or a decision only a human can make. After a few blocked cycles the
 orchestrator hands the issue to a human, and your notes are what they will route from.
 
+## Hosted gate failures from an earlier cycle
+
+If a hosted gate (platform-verify / web-verify / postgres-verify) blocked this issue before,
+this is that failing run's own captured output — bounded and `error:`-filtered where possible,
+fetched by the host from the run's log, **not** an agent's account of anything:
+
+<hosted-gate-failures>
+{{PRIOR_GATE_LOGS}}
+</hosted-gate-failures>
+
+The Linux sandbox cannot reproduce a hosted macOS/Windows build or the Docker-gated Postgres
+suite — this block is often the ONLY way an OS-specific or Docker-only failure ever reaches an
+implementer at all. Read it before re-running anything you already know is green in-sandbox;
+re-running a suite that cannot see the failure will not explain it a second time either.
+
 # CONTEXT
 
 Here are the last 10 commits:

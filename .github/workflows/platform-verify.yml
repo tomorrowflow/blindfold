@@ -18,7 +18,7 @@
 # nothing-to-leak path unchanged. The Windows/Authenticode half stays open (#198).
 #
 # BlindfoldCore (Swift) and Blindfold.Core (C#) are cross-platform and already tested
-# in-sandbox on Linux (#190/#193/#194) — this workflow does NOT re-run swift test/dotnet
+# in-sandbox on Linux (#190/#193/#194) — this workflow does NOT RUN swift test/dotnet
 # test. It proves the OS-irreducible half: the macOS job `swift build`s the real
 # committed BlindfoldCore package (issue #208 — Package.swift previously declared no
 # `platforms:`, so it silently built at the 10.13 SwiftPM default where Swift concurrency
@@ -32,6 +32,23 @@
 # and asserts it reaches a non-error terminal state). The Windows job builds + smoke-launches
 # the real WinForms tray supervisor (issue #196, ADR-0041) and freezes the real
 # `blindfold-proxy.exe` (issue #195, ADR-0039/0041) it spawns as a child.
+#
+# Issue #419 decision: it DOES `swift build --build-tests` (compile, never execute) the
+# BlindfoldCore and ProxyProcessKit test targets on this macOS runner, despite the "no test
+# RUN" rule just above still holding -- those are two different questions. A plain
+# `swift build --package-path macos/BlindfoldMenuBar` only compiles the library targets its
+# own executable depends on; a package's *test* target is never pulled in by a downstream
+# package depending on it, only by that package's own `swift build --build-tests`/`swift
+# test`. So no step in this workflow, before #419, ever asked the macOS toolchain to so much
+# as PARSE BlindfoldCoreTests/ProxyProcessKitTests -- #414 shipped exactly the gap this
+# leaves: RealProxyProcessTests.swift used `Int32(SOCK_STREAM.rawValue)`, a Glibc-only call
+# (Darwin's SOCK_STREAM is already a bare Int32, no `.rawValue`) that `swift test` catches
+# every cycle on the in-sandbox Linux runner and stays silent everywhere else, because
+# nothing else ever compiles that file on Darwin. `--build-tests` is the cheapest fix that
+# closes it without breaking the "no test run" rule: it is a compile-only step (no
+# `--test-product`/`swift test` execution), so it costs a few seconds per package and adds
+# no new pass/fail surface for a test's own assertions -- only for whether the test file
+# compiles on this platform at all.
 # The workflow is fully declarative (plain shell steps, no LLM agent on the runner) —
 # see .sandcastle/mac-verify-prompt.md / win-verify-prompt.md for why, and for the
 # written build+smoke-launch contract each job below satisfies.
@@ -103,6 +120,22 @@ jobs:
         if: runner.os == 'macOS'
         shell: bash
         run: swift build --package-path macos/BlindfoldCore
+
+      # macOS: COMPILE (never execute) the BlindfoldCore and ProxyProcessKit test targets --
+      # see this file's header comment (issue #419) for why this is a distinct question from
+      # the deliberate "no test RUN on this runner" rule the workflow otherwise follows.
+      # `--build-tests` builds the test bundle without running it, so a macOS-only compile
+      # failure in a test file (#414's worked example) surfaces here instead of staying
+      # invisible until a maintainer happens to build on a real Mac.
+      - name: Build (do not run) BlindfoldCore tests (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: swift build --build-tests --package-path macos/BlindfoldCore
+
+      - name: Build (do not run) ProxyProcessKit tests (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: swift build --build-tests --package-path macos/ProxyProcessKit
 
       # macOS: build the real, committed BlindfoldMenuBar SwiftPM executable target (issue
       # #210, ADR-0039/0040) -- the MenuBarExtra shell bound to BlindfoldCore, unsigned
