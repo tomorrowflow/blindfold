@@ -695,10 +695,15 @@ because it is closed, enumerated and auditable by reading; a content-derived ran
 same standing only by being **exact**.
 
 So the record is produced where the splice happens. `_apply_spans` is, since `#325` and `#405`, the
-one place a span's surrogate is spliced in; it reports the applied spans at their **output**
-offsets, and the session accumulates them per leaf, keyed by a stable walk-order leaf id. Always
-on, offsets only — no text of any kind is retained, and this is independent of ADR-0059's
-armed **Payload inspection**, which consumes the same record rather than owning it.
+one place a span's surrogate is spliced in. **That record already exists**: `#399` (ADR-0059 §2/§3,
+merged the same day this amendment was written) has it report the applied spans at their **output**
+offsets into a per-leaf accumulator keyed by a stable walk-order leaf id, composing earlier offsets
+through every later splice. What it does not have is availability: ADR-0059 gates the whole
+accumulator on **Payload inspection** being armed, and a record that exists only while armed cannot
+serve a gate. This decision therefore **splits it**: the spans become always on and offsets only,
+while the retained blindfolded *text*, its bounded store, its endpoint and its Unprotected-mode
+check stay armed-gated exactly as ADR-0059 specifies. Nothing in ADR-0059 is reopened — its
+diagnostic half is unchanged; only its span half is promoted.
 
 **Both sides read that one record.** `_injected_surrogate_ranges` becomes splice-derived at all
 three blinder call sites too. Narrowing only the gate would re-open the identical deadlock one size
@@ -749,9 +754,12 @@ output from the client's input, which is precisely where a genuine leak would hi
   today and has no leaf identity; joining a match back to a recorded range requires the same
   walk-order leaf id the blinder uses. `walk_string_leaves` stays the single traversal primitive
   (ARCH-4).
-- **The record is a request-path invariant, not a diagnostic feature.** ADR-0059 §2's leaf-identity
-  scheme and §3's offset composition are owned here and consumed there; the retention feature
-  builds on a record that already runs on every request.
+- **The span record changes status: diagnostic feature to request-path invariant.** ADR-0059 built
+  it to serve an operator view; a privacy control now depends on it, so it runs on every exchange
+  whether or not anyone is looking. ADR-0059 §2's leaf-identity scheme becomes a contract two
+  callers rely on rather than one — including the open question of whether the gate's own
+  traversal order is guaranteed to match the blinder's visit order, since that identity is
+  positional.
 - **Two tests invert.** `test_kurt_colliding_with_an_earlier_minted_surrogate_still_fails_closed`
   and `test_standalone_component_of_an_earlier_minted_surrogate_still_fails_closed` become
   declared-collision assertions. Both build the containing surrogate through `SurrogateMapping`, so
