@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Darwin
 import BlindfoldCore
 import ProxyProcessKit
 
@@ -10,6 +11,16 @@ import ProxyProcessKit
 /// "Start at login" toggle (issue #216). Not `@main` itself: `main.swift` decides between
 /// this and the headless `--smoke-test`/`--smoke-launch-full` paths.
 struct BlindfoldMenuBarApp: App {
+    // Issue #414: `@NSApplicationDelegateAdaptor` rather than assigning
+    // `NSApplication.shared.delegate` by hand -- SwiftUI's `App` lifecycle already
+    // manages `NSApplication`'s delegate itself, and a direct assignment risks a later,
+    // silent overwrite by that machinery. This is the documented, SwiftUI-native seam for
+    // exactly this "an App-lifecycle app still needs one AppKit delegate callback" case.
+    // `BlindfoldAppDelegate` is constructed by AppKit itself (its own parameterless
+    // `init()`, required by the adaptor), so `supervisor` is handed to it as a settable
+    // property once this initializer has actually built one, not through its
+    // constructor.
+    @NSApplicationDelegateAdaptor(BlindfoldAppDelegate.self) private var appDelegate
     @StateObject private var model: StatusPollingModel
     @StateObject private var settingsModel: SupervisorSettingsViewModel
 
@@ -30,7 +41,9 @@ struct BlindfoldMenuBarApp: App {
             exePath: located.exePath,
             args: located.args,
             environmentProvider: childEnvironment,
-            logSink: supervisorLogSink
+            logSink: supervisorLogSink,
+            orphanPIDStore: orphanPIDStore,
+            orphanTerminating: orphanTerminating
         )
         let statusModel = StatusPollingModel(supervisor: supervisor)
         _model = StateObject(wrappedValue: statusModel)
@@ -40,7 +53,22 @@ struct BlindfoldMenuBarApp: App {
             supervisor: supervisor,
             currentAppState: { statusModel.appState }
         ))
+
+        // Issue #414 AC: the proxy child must not survive the supervisor for any
+        // termination path the supervisor can observe -- at minimum SIGTERM, SIGINT, and
+        // normal app termination that does not route through the Quit menu item (Dock
+        // Quit, logout -- `BlindfoldAppDelegate.applicationWillTerminate` below).
+        // `Self.appTerminationGuard` is a `static let` (not a local) so the strong
+        // reference survives this initializer returning -- a `DispatchSourceSignal` with
+        // nothing else retaining it would be torn down the moment this scope exits.
+        appDelegate.supervisor = supervisor
+        Self.appTerminationGuard.install(signals: [SIGTERM, SIGINT]) {
+            MenuActions.quit(supervisor: supervisor)
+            exit(0)
+        }
     }
+
+    private static let appTerminationGuard = TerminationSignalGuard()
 
     var body: some Scene {
         MenuBarExtra {
@@ -92,6 +120,28 @@ struct BlindfoldMenuBarApp: App {
         } else {
             button
         }
+    }
+}
+
+/// Issue #414 AC: "normal app termination that does not route through the Quit menu
+/// item" -- `applicationWillTerminate` fires for every termination `NSApplication` itself
+/// drives (Dock Quit, `NSApplication.terminate(_:)`, logout), independently of however
+/// the Quit menu row's own button handler got there. Calling `MenuActions.quit(supervisor:)`
+/// again here if the Quit button already called it is harmless --
+/// `ProxySupervisor.stop()`/`RealProxyProcess.kill()` are no-ops once the child has
+/// already exited. Holds no logic of its own beyond that one forwarding call (ADR-0040)
+/// -- the decision of what "quit" means stays `MenuActions.quit`'s, in `BlindfoldCore`.
+///
+/// `supervisor` is a settable `var`, not a constructor parameter: `@NSApplicationDelegateAdaptor`
+/// requires this type's own parameterless `init()` (inherited from `NSObject`) to
+/// construct it, so `BlindfoldMenuBarApp.init()` hands the supervisor over once it exists
+/// rather than through this class's own initializer.
+private final class BlindfoldAppDelegate: NSObject, NSApplicationDelegate {
+    var supervisor: ProxySupervising?
+
+    func applicationWillTerminate(_ notification: Notification) {
+        guard let supervisor else { return }
+        MenuActions.quit(supervisor: supervisor)
     }
 }
 
