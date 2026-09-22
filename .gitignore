@@ -10,6 +10,11 @@ venv/
 .ruff_cache/
 *.egg-info/
 .env
+# Any derivative of .env too -- a `.env.bak-HHMM` copy taken before editing is
+# NOT covered by the bare `.env` line above, and one was committed by a sweeping
+# `git add` before this pattern existed.
+.env.*
+*.env.bak*
 
 # Node (sandcastle harness deps — package.json/lock live under .sandcastle/, tracked there)
 node_modules/
