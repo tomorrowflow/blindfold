@@ -42,6 +42,7 @@ from .l3 import (
 # L3 uses for a single span.
 from .l3 import _context_window as _l3_context_window
 from .policy import DEFAULT_WORKSPACE
+from .rewritten_leaves import RewrittenLeaf, RewrittenSpan
 from .review import (
     ReviewInbox,
     _is_fallback_surrogate,
@@ -139,6 +140,12 @@ class _HopContext:
     l3_ran: bool = False
     surrogates: list[str] = field(default_factory=list)
     l3_verdicts: list[tuple[str | None, str | None]] = field(default_factory=list)
+    # Issue #399: known at construction (the caller already knows "system" or
+    # can compute `_hop_kind_for_message` before creating this ctx) -- carried
+    # here so `_blindfold_text` can build a retained leaf's display label
+    # without threading a separate hop_kind parameter down every call site
+    # that already receives `hop_ctx`.
+    hop_kind: str | None = None
 
 
 def _finish_hop(ctx: _HopContext, hop_kind: str, hop_index: int) -> HopDetail:
@@ -180,9 +187,18 @@ def _hop_kind_for_message(message: dict[str, Any]) -> str:
 class ExchangeSession:
     """Records the surrogates injected for a single exchange (for closed-world restore)."""
 
-    def __init__(self) -> None:
+    def __init__(self, retain_rewritten_leaves: bool = False) -> None:
         self.injected: dict[str, str] = {}  # surrogate -> real
         self.hops: list[HopDetail] = []  # scrubbed per-hop detail (ADR-0035, issue #153)
+        # ADR-0059 §3-§4 (issue #399): Payload inspection's armed-only span
+        # record. ``retain_rewritten_leaves`` is read once per exchange (the
+        # caller's own armed check, never re-consulted here) and gates a
+        # RECORD, never a behaviour -- when False (the default), every leaf
+        # method below is a no-op, so an exchange with retention off pays
+        # nothing and behaves byte-identically to before this issue.
+        self._retain_leaves = retain_rewritten_leaves
+        self._leaf_slots: list[_LeafAccumulator] = []
+        self._leaf_cursor = 0
         # ADR-0060 §3 (issue #410): real -> ADR-0060 §3 containment token, minted
         # by `contain` below. Request-scoped and non-durable by construction --
         # this dict lives only as long as this ExchangeSession does (one
@@ -219,6 +235,75 @@ class ExchangeSession:
         already established for an ordinary provisional pair.
         """
         return dict(self._contained)
+
+    def reset_leaf_walk(self) -> None:
+        """Rewind the leaf-visit cursor to the start of a fresh traversal pass
+        (issue #399): `blindfold_payload`/`blindfold_chat_completions_payload`
+        walk (system +) messages more than once -- the main hop walk, then
+        the #386 cross-hop closing sweep, then (when it runs) the #387
+        catch-up pass -- each a SEPARATE, but structurally IDENTICAL,
+        traversal of the same leaves in the same order. Calling this at the
+        start of every pass after the first lets :meth:`_begin_leaf` tell
+        "a leaf visited for the first time" (extend the slot list) apart from
+        "a leaf visited again, by a later pass" (reuse -- by position -- the
+        SAME slot the first pass created), without threading a JSON path or
+        any other identity through nine call sites.
+        """
+        self._leaf_cursor = 0
+
+    def _begin_leaf(self, label: str) -> "_LeafAccumulator | None":
+        """Start (or, on a later pass, continue) the next leaf in this walk's
+        own visit order (issue #399). Returns ``None`` when retention is off.
+
+        Position, not content, is the identity: the Nth call since the last
+        :meth:`reset_leaf_walk` always refers to the Nth leaf this walk
+        visits -- true across passes only because every pass reuses the
+        exact same traversal functions over the exact same (structurally
+        unchanged -- only leaf VALUES mutate, never the JSON shape) payload.
+        """
+        if not self._retain_leaves:
+            return None
+        index = self._leaf_cursor
+        self._leaf_cursor += 1
+        if index < len(self._leaf_slots):
+            return self._leaf_slots[index]
+        accumulator = _LeafAccumulator(leaf_id=f"leaf-{index}", label=label)
+        self._leaf_slots.append(accumulator)
+        return accumulator
+
+    def _current_leaf(self) -> "_LeafAccumulator | None":
+        """The leaf the most recent :meth:`_begin_leaf` call returned (issue
+        #399) -- lets a second splice pass on the SAME text immediately
+        following the first (:func:`_apply_provisional_pairs`'s tool-
+        description/schema-prose follow-up to its own :func:`_blindfold_text`
+        call) continue that leaf's accumulator without independently
+        re-deriving its identity.
+        """
+        if not self._retain_leaves or self._leaf_cursor == 0:
+            return None
+        return self._leaf_slots[self._leaf_cursor - 1]
+
+    def rewritten_leaves(self) -> tuple["RewrittenLeaf", ...]:
+        """This exchange's retained leaves (issue #399, ADR-0059 §2): every
+        leaf the blindfold pass actually rewrote, in blindfolded form, with
+        its recorded spans -- a leaf :meth:`_begin_leaf` visited but that
+        never had a span spliced into it (``_apply_spans`` always runs, even
+        when nothing matched) is excluded, matching "leaves the pass left
+        untouched are not retained" exactly.
+        """
+        return tuple(
+            RewrittenLeaf(
+                leaf_id=accumulator.leaf_id,
+                label=accumulator.label,
+                text=accumulator.text,
+                spans=tuple(
+                    RewrittenSpan(record.start, record.end, record.surrogate, record.layer)
+                    for record in accumulator.spans
+                ),
+            )
+            for accumulator in self._leaf_slots
+            if accumulator.spans
+        )
 
 
 def _replay_inbox(
@@ -258,6 +343,7 @@ def blindfold_payload(
     system_confined_tokens: frozenset[str] = frozenset(),
     case_inconsistency: "CaseInconsistencySuppression | None" = None,
     world_acting: bool = False,
+    retain_rewritten_leaves: bool = False,
 ) -> tuple[dict[str, Any], ExchangeSession]:
     """Return a blindfolded copy of an Anthropic Messages ``payload`` plus the session.
 
@@ -327,7 +413,7 @@ def blindfold_payload(
     additive and non-durable, never written to ``mapping``/``inbox``. ``False``
     (the default) reproduces today's behavior exactly.
     """
-    session = ExchangeSession()
+    session = ExchangeSession(retain_rewritten_leaves=retain_rewritten_leaves)
     out = copy.deepcopy(payload)
     l3_provider = l3_detector.provider_name if l3_detector is not None else None
     inbox = _replay_inbox(l3_detector, inbox)
@@ -338,7 +424,7 @@ def blindfold_payload(
 
     system = out.get("system")
     if system is not None:
-        ctx = _HopContext(l3_provider=l3_provider)
+        ctx = _HopContext(l3_provider=l3_provider, hop_kind="system")
         out["system"] = _blindfold_system(
             system, mapping, session, l3_detector, inbox, declared_tools, ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
@@ -347,7 +433,7 @@ def blindfold_payload(
         session.hops.append(_finish_hop(ctx, "system", len(session.hops)))
 
     for message in out.get("messages", []):
-        ctx = _HopContext(l3_provider=l3_provider)
+        ctx = _HopContext(l3_provider=l3_provider, hop_kind=_hop_kind_for_message(message))
         message["content"] = _blindfold_content(
             message.get("content"), mapping, session, l3_detector, inbox,
             declared_tools, ctx, workspace, phone_candidates_enabled,
@@ -357,6 +443,13 @@ def blindfold_payload(
             _finish_hop(ctx, _hop_kind_for_message(message), len(session.hops))
         )
 
+    # Issue #399: every pass below re-walks the SAME leaves the main hop walk
+    # above just visited (#386's cross-hop closing sweep, then -- guarded --
+    # #387's catch-up pass) -- `reset_leaf_walk` rewinds the cursor so each
+    # pass's Nth leaf visit continues the main walk's own Nth leaf's
+    # accumulator by position, instead of appending a spurious new one. See
+    # `ExchangeSession.reset_leaf_walk`.
+    session.reset_leaf_walk()
     if system is not None:
         out["system"] = _close_cross_hop_mint_gap(
             out["system"], mapping, session, inbox, workspace, world_acting=world_acting
@@ -367,6 +460,7 @@ def blindfold_payload(
             world_acting=world_acting,
         )
     if world_acting or (inbox is not None and len(inbox.list()) > items_before_exchange):
+        session.reset_leaf_walk()
         _reapply_provisional_pairs_across_hops(
             out, mapping, session, inbox, workspace, world_acting=world_acting
         )
@@ -1472,8 +1566,83 @@ class ReplacementSpan:
     layer: str
 
 
+@dataclass
+class _RewrittenSpanRecord:
+    """One :class:`ReplacementSpan` as recorded by a :class:`_LeafAccumulator`,
+    at its OUTPUT offset in that leaf's current (fully-spliced-so-far) text --
+    issue #399 (ADR-0059 §3). Distinct from :class:`ReplacementSpan`: this
+    carries no ``real`` value (the record is blindfolded-side only) and its
+    offsets are into the leaf's own evolving output text, not the frozen
+    input text a collector matched against.
+    """
+
+    start: int
+    end: int
+    surrogate: str
+    layer: str
+
+
+@dataclass
+class _LeafAccumulator:
+    """Per-leaf span accumulator (issue #399, ADR-0059 §3): "have `_apply_spans`
+    report the applied spans at their output offsets, and give the walk a
+    per-leaf accumulator it writes into. On each splice it appends the new
+    spans and shifts any previously recorded offsets for that leaf past the
+    splice point."
+
+    A leaf is rewritten across up to four separate :func:`_apply_spans` calls
+    (the combined L2/provisional-pair/L1 splice, L3's own second splice, the
+    cross-hop closing-sweep re-entries, and -- for a tool description --
+    :func:`_apply_provisional_pairs`), each against that leaf's own evolving
+    text. :meth:`apply_splice` is the one place that composes an EARLIER
+    call's recorded offsets through a LATER call's splice: a single
+    left-to-right cumulative-delta pass over the union of "already recorded"
+    spans (contribute no delta -- their own text isn't changing, only their
+    position) and "newly spliced" spans (each contributes
+    ``len(surrogate) - (end - start)`` to every span to its right), sorted by
+    start. This mirrors -- rather than duplicates -- the offset arithmetic
+    :func:`_apply_spans` itself already concentrates in one place (issue
+    #325); it does not re-derive it independently.
+
+    Recorded spans may overlap or nest (ADR-0059 §3: L3's own splice permits
+    it, issue #292) -- this accumulator represents whatever :func:`_apply_spans`
+    was given faithfully, never dropping, merging or reordering a span pair
+    that happens to overlap.
+    """
+
+    leaf_id: str
+    label: str
+    text: str = ""
+    spans: list[_RewrittenSpanRecord] = field(default_factory=list)
+
+    def apply_splice(self, spliced: Sequence[ReplacementSpan], result_text: str) -> None:
+        combined: list[tuple[int, int, str, str, bool]] = [
+            (span.start, span.end, span.surrogate, span.layer, True) for span in spliced
+        ] + [
+            (record.start, record.end, record.surrogate, record.layer, False)
+            for record in self.spans
+        ]
+        combined.sort(key=lambda item: item[0])
+        delta = 0
+        remapped: list[_RewrittenSpanRecord] = []
+        for start, end, surrogate, layer, is_new in combined:
+            out_start = start + delta
+            if is_new:
+                out_end = out_start + len(surrogate)
+                delta += len(surrogate) - (end - start)
+            else:
+                out_end = end + delta
+            remapped.append(_RewrittenSpanRecord(out_start, out_end, surrogate, layer))
+        self.spans = remapped
+        self.text = result_text
+
+
 def _apply_spans(
-    text: str, spans: Sequence[ReplacementSpan], *, assert_no_overlap: bool = True
+    text: str,
+    spans: Sequence[ReplacementSpan],
+    *,
+    assert_no_overlap: bool = True,
+    leaf: "_LeafAccumulator | None" = None,
 ) -> str:
     """Splice every collected :class:`ReplacementSpan` into ``text`` in one pass
     (issue #325's single conflict-resolution + splice phase).
@@ -1502,6 +1671,16 @@ def _apply_spans(
     #325 introduces or is scoped to fix (a behavior-preserving refactor, per
     the issue's own framing) -- so it keeps the pre-#325 tie-break (stable
     sort order) instead of failing closed on it.
+
+    ``leaf`` (issue #399, ADR-0059 §3): when armed, the caller's own
+    :class:`_LeafAccumulator` for the leaf this splice belongs to --
+    ``None`` (the default) reproduces today's behavior exactly, at zero
+    cost. When provided, every span just spliced is folded into it at its
+    OUTPUT offset via :meth:`_LeafAccumulator.apply_splice`, which also
+    remaps any span a PRIOR call already recorded for this same leaf past
+    this splice -- the composition :func:`_apply_spans` is the one place
+    concentrated enough to do correctly, so no caller does this arithmetic
+    itself.
     """
     ordered = sorted(spans, key=lambda span: span.start, reverse=True)
     if assert_no_overlap:
@@ -1513,6 +1692,8 @@ def _apply_spans(
     result = text
     for span in ordered:
         result = result[: span.start] + span.surrogate + result[span.end :]
+    if leaf is not None:
+        leaf.apply_splice(spans, result)
     return result
 
 
@@ -1868,6 +2049,23 @@ def _collect_l1_spans(
     return spans
 
 
+def _leaf_label(hop_ctx: "_HopContext | None", leaf_kind: str) -> str:
+    """Build a retained leaf's display label (issue #399, ADR-0059 §2): hop
+    kind plus the block/field kind the leaf was rewritten in, e.g.
+    ``"user: text block"`` or ``"tool_result: tool-result body"`` -- a
+    description, never a JSON path (ADR-0059 §2 explicitly rejects
+    path-level addressability). ``hop_ctx`` is ``None`` on a cross-hop
+    catch-up re-entry (:func:`_close_cross_hop_mint_gap`/
+    :func:`_reapply_provisional_pairs_across_hops`, "a repair pass over hops
+    already recorded, not a new hop of its own") -- harmless, since a label
+    is only ever consulted the first time a leaf slot is created, and that
+    first visit is always the main hop walk, which always has one.
+    """
+    if hop_ctx is None or hop_ctx.hop_kind is None:
+        return leaf_kind
+    return f"{hop_ctx.hop_kind}: {leaf_kind}"
+
+
 def _blindfold_text(
     text: str,
     mapping: SurrogateMapping,
@@ -1882,6 +2080,7 @@ def _blindfold_text(
     case_inconsistency: "CaseInconsistencySuppression | None" = None,
     provisional_catchup: bool = False,
     world_acting: bool = False,
+    leaf_kind: str = "text",
 ) -> str:
     """Rewrite ``text`` by replacing every L2-detected entity span with its surrogate.
 
@@ -1934,10 +2133,18 @@ def _blindfold_text(
     (:meth:`ExchangeSession.contain`) -- additive and non-durable, never
     written to ``mapping``/``inbox``. ``False`` (the default) reproduces
     today's behavior exactly.
+
+    ``leaf_kind`` (issue #399, ADR-0059 §2) names the kind of place this text
+    came from (a user text block, a tool-result body, a tool-call input, ...)
+    for Payload inspection's retained-leaf display label -- combined with
+    ``hop_ctx.hop_kind`` (when a hop context is threaded) via
+    :func:`_leaf_label`. Cosmetic only, never read for dispatch; unused
+    entirely when retention is off.
     """
+    leaf = session._begin_leaf(_leaf_label(hop_ctx, leaf_kind))
     if provisional_catchup:
         return _reapply_provisional_pairs_catchup(
-            text, mapping, session, inbox, hop_ctx, world_acting=world_acting
+            text, mapping, session, inbox, hop_ctx, world_acting=world_acting, leaf=leaf,
         )
     # Issue #394/#410: ``text`` is the untouched, pre-blind hop text on the
     # main walk, but it is ALREADY-BLINDED output on the cross-hop closing
@@ -2086,7 +2293,9 @@ def _blindfold_text(
             hop_ctx.surrogates.append(span.surrogate)
 
     result = _apply_spans(
-        text, containment_spans + l2_spans + confirmed_component_spans + pp_spans + l1_spans
+        text,
+        containment_spans + l2_spans + confirmed_component_spans + pp_spans + l1_spans,
+        leaf=leaf,
     )
     # L3 candidate-span adjudication (ADR-0003 / ADR-0010): novel capitalized tokens
     # the deterministic passes couldn't resolve. Confirmed candidates get a
@@ -2441,7 +2650,7 @@ def _blindfold_text(
             session.record(span.surrogate, span.real)
             if hop_ctx is not None:
                 hop_ctx.surrogates.append(span.surrogate)
-        result = _apply_spans(result, l3_spans, assert_no_overlap=False)
+        result = _apply_spans(result, l3_spans, assert_no_overlap=False, leaf=leaf)
     return result
 
 
@@ -2695,6 +2904,7 @@ def _reapply_provisional_pairs_catchup(
     inbox: ReviewInbox | None,
     hop_ctx: "_HopContext | None",
     world_acting: bool = False,
+    leaf: "_LeafAccumulator | None" = None,
 ) -> str:
     """The leaf action behind ``_blindfold_text(..., provisional_catchup=True)``
     (issue #387): re-apply ADR-0051's provisional-pair substitution to ``text``
@@ -2736,7 +2946,12 @@ def _reapply_provisional_pairs_catchup(
     )
     containment_ranges = [(span.start, span.end) for span in containment_spans]
     if inbox is None:
-        return _apply_spans(text, containment_spans) if containment_spans else text
+        # Issue #399: still routed through `_apply_spans` (rather than the
+        # short-circuit `return text` this branch used before) so `leaf`'s
+        # accumulator stays in sync with this leaf's current text even when
+        # there is nothing new to splice here -- `_apply_spans` with an empty
+        # span list is a no-op splice, but still updates `leaf.text`.
+        return _apply_spans(text, containment_spans, leaf=leaf)
     # Recomputed (issue #410) rather than reusing ``pre_containment_exclude``:
     # the containment pass above may have just ``session.record``ed a fresh
     # token, so re-scanning also protects the provisional-pair pass below
@@ -2745,7 +2960,7 @@ def _reapply_provisional_pairs_catchup(
     spans = _collect_provisional_pair_spans(
         text, inbox, session, hop_ctx, exclude=exclude, world_acting=world_acting
     )
-    return _apply_spans(text, containment_spans + spans)
+    return _apply_spans(text, containment_spans + spans, leaf=leaf)
 
 
 def _restore_block(block: Any, session: ExchangeSession) -> Any:
