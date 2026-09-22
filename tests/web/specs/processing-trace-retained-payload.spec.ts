@@ -343,6 +343,73 @@ retainedTest.describe("Processing trace — replacements-first table view", () =
       await expect(section.getByTestId("retained-payload-table")).toHaveCount(0);
     }
   );
+
+  // The two tests above already prove the table view carries no real value
+  // absent an authorized reveal, and that a flip resolves through the same
+  // audited call as the diff view. What neither exercises directly: that
+  // switching to Table and driving Reveal from there stays first-party (the
+  // #400 egress-hygiene spec below only ever clicks through the diff view's
+  // elisions), and that a denied attempt from the table view is audited as
+  // denied (the #401 denial-audit spec below only ever drives the diff view).
+  // Table view calls no endpoint of its own -- it renders `retained.leaves`
+  // already fetched for the diff view, through the same shared Reveal switch
+  // -- so these are expected to hold by construction, but "expected to hold"
+  // is exactly the kind of claim a browser-verify gate confirms rather than
+  // assumes.
+  retainedTest(
+    "egress hygiene holds in the table view too: switching to Table and revealing stays first-party",
+    async ({ alicePage }) => {
+      const requests: string[] = [];
+      alicePage.on("request", (req) => requests.push(req.url()));
+
+      await alicePage.goto("/ui/processing-trace");
+      const rows = alicePage.getByTestId("processing-trace-row");
+      await rows.nth(2).click();
+      const section = alicePage.getByTestId("retained-payload-section").nth(0);
+      await section.getByTestId("retained-payload-view-table-button").click();
+      await section.getByTestId("retained-payload-reveal-switch").click();
+      await expect(
+        section
+          .getByTestId("retained-payload-table-row")
+          .first()
+          .getByTestId("retained-payload-table-value")
+      ).toHaveText(REAL_PERSON);
+
+      const firstPartyOrigin = new URL(RETAINED_BASE_URL).host;
+      const thirdParty = requests.filter((url) => {
+        try {
+          return new URL(url).host !== firstPartyOrigin;
+        } catch {
+          return false;
+        }
+      });
+      expect(
+        thirdParty,
+        "expected zero third-party requests while driving the table view's reveal switch"
+      ).toEqual([]);
+    }
+  );
+
+  retainedTest(
+    "a denied reveal attempt in the table view is audited as denied, same as the diff view",
+    async ({ erinPage }) => {
+      const before = await auditEventsFor(RETAINED_BASE_URL, "re-identify-denied", "erin");
+      await erinPage.goto("/ui/processing-trace");
+      const rows = erinPage.getByTestId("processing-trace-row");
+      await rows.nth(2).click();
+      const section = erinPage.getByTestId("retained-payload-section").nth(0);
+      await section.getByTestId("retained-payload-view-table-button").click();
+      await section.getByTestId("retained-payload-reveal-switch").click();
+      await expect(section.getByTestId("retained-payload-reveal-denied")).toBeVisible();
+
+      const after = await auditEventsFor(RETAINED_BASE_URL, "re-identify-denied", "erin");
+      expect(after.length).toBe(before.length + 1);
+
+      const bodyText = await erinPage.locator("body").innerText();
+      expect(bodyText).not.toContain(REAL_PERSON);
+      expect(bodyText).not.toContain(REAL_ORG);
+    }
+  );
 });
 
 disarmedTest.describe("Processing trace — retained payload (disarmed)", () => {
