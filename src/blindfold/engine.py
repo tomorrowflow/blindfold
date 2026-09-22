@@ -193,9 +193,13 @@ class ExchangeSession:
         # ADR-0059 §3-§4 (issue #399): Payload inspection's armed-only span
         # record. ``retain_rewritten_leaves`` is read once per exchange (the
         # caller's own armed check, never re-consulted here) and gates a
-        # RECORD, never a behaviour -- when False (the default), every leaf
-        # method below is a no-op, so an exchange with retention off pays
-        # nothing and behaves byte-identically to before this issue.
+        # RECORD, never a behaviour. Since issue #415 promoted the span half
+        # of this record to always-on request-path invariant (ADR-0051's
+        # #406 amendment), this flag no longer makes every leaf method below
+        # a no-op -- the accumulators are always created and always record
+        # spans; only whether ``_LeafAccumulator.text`` is retained
+        # (:attr:`_LeafAccumulator.retain_text`, ADR-0059's own diagnostic
+        # surface) is gated on it.
         self._retain_leaves = retain_rewritten_leaves
         self._leaf_slots: list[_LeafAccumulator] = []
         self._leaf_cursor = 0
@@ -261,13 +265,19 @@ class ExchangeSession:
         visits -- true across passes only because every pass reuses the
         exact same traversal functions over the exact same (structurally
         unchanged -- only leaf VALUES mutate, never the JSON shape) payload.
-        This positional identity is a contract two callers now rely on: the
+        This positional identity is a contract three callers now rely on: the
         blinder's own self-poisoning guard (:func:`_injected_surrogate_ranges`)
         reads a leaf's ``spans`` at the SAME position the splice that produced
-        them ran at. It is NOT established that the leak gate's own traversal
-        (:func:`walk_string_leaves`) visits leaves in this same order --
-        joining a gate match back to a recorded range by this id is #416's
-        work, not this one's.
+        them ran at. :func:`walk_string_leaves` (the leak gate's own
+        EXHAUSTIVE traversal) does NOT visit leaves in this same order --
+        matching gate content by that walk to a recorded range by position
+        would be wrong (ADR-0051's #406 amendment, "Join by traversal, never
+        by index"). Instead (issue #416) :func:`leak_gate` re-derives this
+        SAME order directly, by re-walking only the blinder-visited regions
+        (:func:`_blank_blinder_system_leaves` and its siblings) with
+        :meth:`reset_leaf_walk` first -- so its Nth leaf reuses the Nth slot
+        below by construction, not by re-deriving a competing traversal order
+        for :func:`walk_string_leaves` to agree with.
 
         Always returns an accumulator (issue #415) -- the offsets record is a
         request-path invariant, not a diagnostic gated on retention. Whether
@@ -1794,6 +1804,18 @@ def _overlaps_any(start: int, end: int, ranges: Sequence[tuple[int, int]]) -> bo
     characters already replaced, not just a fully-contained hit.
     """
     return any(start < r_end and r_start < end for r_start, r_end in ranges)
+
+
+def _wholly_inside_any(start: int, end: int, ranges: Sequence[tuple[int, int]]) -> bool:
+    """True if ``[start, end)`` sits entirely inside one of ``ranges`` (issue #416,
+    ADR-0051's #406 amendment) -- the containment counterpart to :func:`_overlaps_any`.
+
+    Deliberately stricter than mere overlap: a match that only *straddles* a
+    range boundary (starts before it, or ends after it) is only PARTLY the
+    blinder's own output -- the rest is a genuine miss and must still raise.
+    Only a match the blinder's own splice produced in full is safe to excuse.
+    """
+    return any(r_start <= start and end <= r_end for r_start, r_end in ranges)
 
 
 # ADR-0060 §3 (issue #410): the entity kinds containment redirects to the
@@ -3774,10 +3796,256 @@ def _declared_collision_reason(ref: str) -> str:
     return f"declared collision: known real value confined to a field the blinder is forbidden to rewrite (ref: {ref})"
 
 
+def _range_declared_collision_reason(ref: str) -> str:
+    # Distinct in shape from BOTH `_raise_leak`'s leak reason and
+    # `_declared_collision_reason`'s FIELD-scoped wording above (ADR-0051's
+    # #406 amendment, issue #416) -- so the two declared-collision classes
+    # (a forbidden field, versus a range the blinder itself wrote) are
+    # countable apart, per this amendment's own revisit-threshold Consequence.
+    return f"declared collision: known real value confined to a range the blinder itself wrote (ref: {ref})"
+
+
+# Issue #416 (ADR-0051's #406 amendment): `leak_gate` needs to know, for each
+# match it finds in a blinder-visited leaf, whether that match sits wholly
+# inside a range the blinder itself spliced into that SAME leaf -- and to
+# tell such a leaf apart from every other string in the payload, which the
+# gate keeps checking exhaustively via `walk_string_leaves`/`_collect_text`
+# exactly as before this issue.
+#
+# The functions below are a SECOND, narrower traversal over `system`,
+# `messages[*].content` and `tools[].description` (+ nested schema
+# `description`), deliberately shaped to match `_blindfold_system`/
+# `_blindfold_content`/`_blindfold_block`/`_blindfold_block_value`/
+# `_blindfold_json_value`/`_blindfold_tool_descriptions`/
+# `_blindfold_schema_prose`'s own dispatch -- same branches, same order,
+# same per-block-type handling -- but read-only: no detection, no splicing,
+# just "blank this leaf's text and hand it to `visit`". They cannot simply
+# CALL those functions (which run full L1/L2/L3 detection and mutate
+# `session`/`inbox`/`mapping` as a side effect -- leak_gate runs pre-egress,
+# strictly after blinding has already finished, and must never re-detect or
+# re-mint anything), so the shape is mirrored rather than shared outright;
+# `tests/test_range_declared_collision.py::
+# test_leaf_pairing_holds_regardless_of_client_json_key_order` pins that the
+# mirror stays faithful by asserting the join holds against a real
+# `blindfold_payload` run whose client-supplied key order disagrees with the
+# blinder's own traversal order.
+#
+# Each leaf visited calls ``session._begin_leaf`` -- the SAME positional
+# mechanism `_blindfold_text` itself uses -- so, PROVIDED `session.
+# reset_leaf_walk()` runs first (see `_split_blinder_visited_leaves`), the
+# Nth leaf visited here is, by construction, the Nth leaf slot the original
+# blind pass created: "join by traversal", never by index or content
+# (ADR-0051's #406 amendment's own words). A leaf visited here that the
+# blind pass never created (a structural mismatch between the payload
+# handed to `leak_gate` and `session`) gets a FRESH, empty accumulator
+# (``spans == []``) instead of an existing one -- nothing can ever be
+# excused there, "an unpairable leaf blocks" for free, from
+# `ExchangeSession._begin_leaf`'s own positional semantics, not as a special
+# case this code has to detect and handle itself.
+def _blank_blinder_system_leaves(
+    system: Any,
+    session: ExchangeSession,
+    visit: Callable[["_LeafAccumulator", str], None],
+) -> Any:
+    if isinstance(system, str):
+        leaf = session._begin_leaf("system")
+        visit(leaf, system)
+        return ""
+    if isinstance(system, list):
+        return [_blank_blinder_block_leaves(block, session, visit) for block in system]
+    return system
+
+
+def _blank_blinder_content_leaves(
+    content: Any,
+    session: ExchangeSession,
+    visit: Callable[["_LeafAccumulator", str], None],
+    leaf_kind: str = "text",
+) -> Any:
+    if isinstance(content, str):
+        leaf = session._begin_leaf(leaf_kind)
+        visit(leaf, content)
+        return ""
+    if isinstance(content, list):
+        return [_blank_blinder_block_leaves(block, session, visit) for block in content]
+    return content
+
+
+def _blank_blinder_block_leaves(
+    block: Any,
+    session: ExchangeSession,
+    visit: Callable[["_LeafAccumulator", str], None],
+) -> Any:
+    if not isinstance(block, dict):
+        return block
+    block_type = block.get("type")
+    if block_type == "text" and isinstance(block.get("text"), str):
+        leaf = session._begin_leaf("text block")
+        visit(leaf, block["text"])
+        block["text"] = ""
+        return block
+    if block_type in _TOOL_RESULT_BLOCK_TYPES:
+        block["content"] = _blank_blinder_content_leaves(
+            block.get("content"), session, visit, leaf_kind="tool-result body"
+        )
+        return block
+    if block_type in _TOOL_CALL_BLOCK_TYPES:
+        block["input"] = _blank_blinder_json_value_leaves(
+            block.get("input"), session, visit, leaf_kind="tool-call input"
+        )
+        return block
+    non_hop_keys = _non_hop_keys_for_block_type(block_type)
+    for key, value in list(block.items()):
+        if key in non_hop_keys:
+            continue
+        block[key] = _blank_blinder_block_value_leaves(
+            value, session, visit,
+            leaf_kind=f"{block_type} block" if isinstance(block_type, str) else "block",
+        )
+    return block
+
+
+def _blank_blinder_block_value_leaves(
+    value: Any,
+    session: ExchangeSession,
+    visit: Callable[["_LeafAccumulator", str], None],
+    leaf_kind: str,
+) -> Any:
+    if isinstance(value, str):
+        leaf = session._begin_leaf(leaf_kind)
+        visit(leaf, value)
+        return ""
+    if isinstance(value, dict):
+        for key, sub_value in list(value.items()):
+            if key in _BLOCK_NON_HOP_KEYS:
+                continue
+            value[key] = _blank_blinder_block_value_leaves(sub_value, session, visit, leaf_kind)
+        return value
+    if isinstance(value, list):
+        return [
+            _blank_blinder_block_value_leaves(item, session, visit, leaf_kind)
+            for item in value
+        ]
+    return value
+
+
+def _blank_blinder_json_value_leaves(
+    value: Any,
+    session: ExchangeSession,
+    visit: Callable[["_LeafAccumulator", str], None],
+    leaf_kind: str,
+) -> Any:
+    if isinstance(value, str):
+        leaf = session._begin_leaf(leaf_kind)
+        visit(leaf, value)
+        return ""
+    if isinstance(value, dict):
+        for key, sub_value in list(value.items()):
+            value[key] = _blank_blinder_json_value_leaves(sub_value, session, visit, leaf_kind)
+        return value
+    if isinstance(value, list):
+        return [
+            _blank_blinder_json_value_leaves(item, session, visit, leaf_kind)
+            for item in value
+        ]
+    return value
+
+
+def _blank_blinder_tool_leaves(
+    tools: Any,
+    session: ExchangeSession,
+    visit: Callable[["_LeafAccumulator", str], None],
+) -> Any:
+    if not isinstance(tools, list):
+        return tools
+    for tool in tools:
+        if not isinstance(tool, dict):
+            continue
+        _blank_blinder_tool_container_leaves(tool, session, visit)
+        function = tool.get("function")
+        if isinstance(function, dict):
+            _blank_blinder_tool_container_leaves(function, session, visit)
+    return tools
+
+
+def _blank_blinder_tool_container_leaves(
+    container: dict[str, Any],
+    session: ExchangeSession,
+    visit: Callable[["_LeafAccumulator", str], None],
+) -> None:
+    if isinstance(container.get("description"), str):
+        leaf = session._begin_leaf("tool description")
+        visit(leaf, container["description"])
+        container["description"] = ""
+    if "input_schema" in container:
+        container["input_schema"] = _blank_blinder_schema_prose_leaves(
+            container.get("input_schema"), session, visit
+        )
+    if "parameters" in container:
+        container["parameters"] = _blank_blinder_schema_prose_leaves(
+            container.get("parameters"), session, visit
+        )
+
+
+def _blank_blinder_schema_prose_leaves(
+    schema: Any,
+    session: ExchangeSession,
+    visit: Callable[["_LeafAccumulator", str], None],
+) -> Any:
+    if isinstance(schema, dict):
+        for key, value in list(schema.items()):
+            if key == "description" and isinstance(value, str):
+                leaf = session._begin_leaf("tool schema description")
+                visit(leaf, value)
+                schema[key] = ""
+            else:
+                schema[key] = _blank_blinder_schema_prose_leaves(value, session, visit)
+        return schema
+    if isinstance(schema, list):
+        return [_blank_blinder_schema_prose_leaves(item, session, visit) for item in schema]
+    return schema
+
+
+def _split_blinder_visited_leaves(
+    gate_view: dict[str, Any], session: ExchangeSession
+) -> tuple[list[tuple["_LeafAccumulator", str]], dict[str, Any]]:
+    """Split ``gate_view`` into (a) the leaf/text pairs for every blinder-visited
+    region, joined position-for-position to the ``_LeafAccumulator`` the original
+    blind pass created for that same leaf, and (b) ``gate_view`` itself with those
+    leaves blanked -- the residual :func:`leak_gate` keeps checking exhaustively,
+    unchanged, for every other leaf (issue #416).
+
+    ``session.reset_leaf_walk()`` first, matching the exact discipline
+    :func:`_close_cross_hop_mint_gap`'s own re-walk already uses, so this walk's
+    Nth leaf reuses the blind pass's own Nth leaf slot.
+
+    Mutates and returns ``gate_view`` in place rather than copying it again --
+    safe, since :func:`_gate_excluded_view` already handed :func:`leak_gate` a
+    private deep copy no other caller can observe.
+    """
+    pairs: list[tuple[_LeafAccumulator, str]] = []
+
+    def visit(leaf: "_LeafAccumulator", text: str) -> None:
+        pairs.append((leaf, text))
+
+    session.reset_leaf_walk()
+    gate_view["system"] = _blank_blinder_system_leaves(gate_view.get("system"), session, visit)
+    messages = gate_view.get("messages")
+    if isinstance(messages, list):
+        for message in messages:
+            if isinstance(message, dict):
+                message["content"] = _blank_blinder_content_leaves(
+                    message.get("content"), session, visit
+                )
+    gate_view["tools"] = _blank_blinder_tool_leaves(gate_view.get("tools"), session, visit)
+    return pairs, gate_view
+
+
 def leak_gate(
     blinded_outbound: dict[str, Any],
     mapping: SurrogateMapping,
     inbox: ReviewInbox | None = None,
+    session: "ExchangeSession | None" = None,
 ) -> list[str]:
     """Pre-egress leak gate (SEC-5, ADR-0020): the prevention half of the egress split.
 
@@ -3820,6 +4088,21 @@ def leak_gate(
     (:func:`_declared_collision_reason`) so a human can tell the two apart. The
     exclusion is field-scoped, not value-scoped: the identical real value occurring
     anywhere else in the payload still raises normally.
+
+    ADR-0051 amendment (issue #406/#416): ``session`` -- when provided, the same
+    :class:`ExchangeSession` :func:`blindfold_payload` returned alongside
+    ``blinded_outbound`` -- extends this narrowing to a match confined to a
+    **range the blinder itself wrote** in that same leaf (a candidate real value
+    that lands wholly inside an already-injected surrogate's own literal text,
+    the `#292`/`#406` shape). Those characters are the blinder's own output, not
+    a value that escaped it, so a match there is a second, DISTINCT declared
+    collision (:func:`_range_declared_collision_reason`) rather than a leak.
+    ``session=None`` (the default) reproduces this function's pre-#416 behavior
+    exactly -- no range record, no range-scoped exclusion, every match outside the
+    field-scoped forbidden set raises. A leaf the walk cannot positively pair to a
+    recorded range (no ``session``, or a leaf the original blind pass never
+    visited) is treated as UNRECORDED: fail-closed, exactly as before this issue,
+    never silently excused.
     """
     def _raise_leak(ref: str) -> NoReturn:
         # SEC-3 (issue #40): one scrubbed-reason format for both the mapping and the
@@ -3845,14 +4128,41 @@ def leak_gate(
     confirmed_component_map = _confirmed_component_map(entities)
 
     gate_view, forbidden_text = _gate_excluded_view(blinded_outbound)
+    range_collisions: list[str] = []
+    if session is not None:
+        # Issue #416: pull every blinder-visited leaf (and its recorded
+        # ranges) out of ``gate_view`` before the exhaustive text check runs,
+        # so the SAME match is never evaluated twice by two different rules --
+        # it is either checked leaf-scoped (below) or exhaustively (here), never
+        # both.
+        leaf_pairs, gate_view = _split_blinder_visited_leaves(gate_view, session)
+    else:
+        leaf_pairs = []
     outbound_text = _collect_text(gate_view)
+
+    def _check_value_set(values: Sequence[str], ref: str) -> None:
+        any_range_collision = False
+        for value in values:
+            pattern = _real_value_pattern(value)
+            if pattern.search(outbound_text):
+                _raise_leak(ref)
+            for leaf, text in leaf_pairs:
+                ranges = _injected_surrogate_ranges(leaf)
+                for match in pattern.finditer(text):
+                    if _wholly_inside_any(match.start(), match.end(), ranges):
+                        any_range_collision = True
+                    else:
+                        _raise_leak(ref)
+        if any_range_collision:
+            range_collisions.append(_range_declared_collision_reason(ref))
+
     for real in mapping.real_values():
-        if _real_value_pattern(real).search(outbound_text):
-            _raise_leak(scrub_entity_reference(real, mapping))
+        _check_value_set([real], scrub_entity_reference(real, mapping))
     for entity in entities:
-        for variation in _confirmed_pair_map(entity, confirmed_component_map):
-            if _real_value_pattern(variation).search(outbound_text):
-                _raise_leak(scrub_entity_reference(entity.canonical, mapping))
+        _check_value_set(
+            list(_confirmed_pair_map(entity, confirmed_component_map)),
+            scrub_entity_reference(entity.canonical, mapping),
+        )
     for item in items:
         # Issue #296: a provisional referent's variation surface (currently #289's
         # legal-form-suffix strip) is a distinct literal string from ``item.real``
@@ -3862,13 +4172,12 @@ def leak_gate(
         # includes ``item.real``, but this is the fail-closed backstop: check
         # ``item.real`` explicitly rather than trust the (defaultable) ``variations``
         # field to carry it, so the real-value check can never silently go quiet.
-        for variation in _provisional_pair_map(item, component_map):
-            if _real_value_pattern(variation).search(outbound_text):
-                _raise_leak(
-                    f"review-inbox item {item.id} (surrogate: {item.provisional_surrogate})"
-                )
+        _check_value_set(
+            list(_provisional_pair_map(item, component_map)),
+            f"review-inbox item {item.id} (surrogate: {item.provisional_surrogate})",
+        )
 
-    collisions: list[str] = []
+    collisions: list[str] = list(range_collisions)
     for real in mapping.real_values():
         if _real_value_pattern(real).search(forbidden_text):
             collisions.append(

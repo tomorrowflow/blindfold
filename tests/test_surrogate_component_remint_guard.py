@@ -24,23 +24,45 @@ dismissal in ``engine._blindfold_text`` is removed outright, not narrowed
 further. Docs no longer use a literal pool entry as an example (see
 ``test_no_pool_entry_appears_as_a_literal_example_in_docs``).
 
-**The accepted residual**: a real value in a *later* exchange can still
-collide with a surrogate minted in an *earlier* one (or pre-seeded before this
-exchange) -- pool-vs-corpus disjointness only guards the corpus being
-processed *this* exchange. That tail stays fail-closed (blocked by
-``leak_gate``, unchanged and out of scope), never fail-open -- see
+**The accepted residual, reversed (issue #416, ADR-0051's #406 amendment)**: a
+real value in a *later* exchange can still collide with a surrogate minted in
+an *earlier* one (or pre-seeded before this exchange) -- pool-vs-corpus
+disjointness only guards the corpus being processed *this* exchange. Through
+#333, that tail stayed fail-closed (blocked by ``leak_gate``): a match landing
+wholly inside the earlier surrogate's own literal text raised ``LeakError``
+just like a genuine miss, on a byte-identical payload, forever, until a human
+intervened -- the exact "pass or block every request forever" shape ADR-0051's
+own #303 amendment names as not a privacy control.
 ``test_kurt_colliding_with_an_earlier_minted_surrogate_still_fails_closed``
-and ``test_standalone_component_of_an_earlier_minted_surrogate_still_fails_closed``,
-mirroring the reviewer's own cycle-2 findings.
+and ``test_standalone_component_of_an_earlier_minted_surrogate_still_fails_closed``
+(mirroring the reviewer's own cycle-2 findings) now assert the reversal: once
+``leak_gate`` is handed the session ``blindfold_payload`` returned (issue
+#416), the SAME match is recognised as confined to a range the blinder itself
+wrote -- those characters are the blinder's own output, not a real value that
+escaped it -- and is returned as a scrubbed, range-scoped declared collision
+instead of raising. Two reasons the earlier assessment no longer holds: (1)
+the only clearance lever for the old block, an operator reject, would have
+allowlisted the *colliding* referent to clear a fault in Blindfold's own
+minting, not the referent that was actually wrong; (2) since #405 the same
+collision shape reaches tool descriptions, which are byte-identical across
+every conversation a client declares that tool in, so the blast radius was
+every conversation carrying it, not one transcript. A match that only
+*straddles* the earlier surrogate's boundary, or sits outside it entirely,
+still raises -- unchanged, and pinned separately in
+``tests/test_range_declared_collision.py``.
 
 Leak-audit clauses exercised:
 - A: no candidate is ever left in plaintext by dismissal (removed); a real
   value colliding with corpus-disjoint-avoided surrogate space still mints
   and blindfolds normally; a real value colliding with an *earlier*-minted
-  surrogate still fails closed (blocked), never egresses.
+  surrogate is confined to the range the blinder itself wrote there (issue
+  #416) -- excused as a declared collision, never egressing as a value the
+  blinder missed.
 - F (fail-closed unchanged / restored): a genuinely novel real value that
   shares no span with surrogate-space still mints exactly as before; the
-  accepted residual blocks rather than leaks.
+  once-accepted residual is now a scrubbed declared collision rather than a
+  block, and a match that straddles or sits outside the blinder's own range
+  still fails closed exactly as before.
 N/A this slice: B/C/D/E/G -- no restore/store-schema/mapping-cipher changes;
 the repair path (``purge_surrogate_collisions``) is unchanged and has its own
 tests below.
@@ -321,13 +343,19 @@ def test_real_value_that_is_a_bare_character_fragment_of_an_unrelated_surrogate_
     assert not re.search(r"\bKurt\b", text)
 
 
-def test_standalone_component_of_an_earlier_minted_surrogate_still_fails_closed():
+def test_standalone_component_of_an_earlier_minted_surrogate_is_now_a_declared_collision():
     # Cycle 1's original repro, re-asserted against the new design: "Carla"
     # (now "Erika") standing alone, elsewhere in the same text as the
     # already-live surrogate "Erika Mustermann" *established before this
     # exchange* (pre-seeded, not this hop's own corpus -- pool-vs-corpus
     # disjointness only guards the corpus being processed this exchange).
-    # This is the accepted residual: fails closed (blocked), never leaked.
+    #
+    # Issue #416 (ADR-0051's #406 amendment) inverts the once-accepted
+    # residual: the newly-minted item's own occurrence of "Erika" is itself
+    # blinded to its own provisional surrogate, so the only remaining "Erika"
+    # in the outbound text is the one wholly inside "Erika Mustermann" -- a
+    # range the blinder itself wrote in this same leaf. That is a declared
+    # collision, not a leak: the request is served, not blocked.
     mapping = SurrogateMapping.from_pairs([("Referent Real", "Erika Mustermann")])
     inbox = ReviewInbox()
     detector = L3Detector(_ConfirmAnyNameShapedTokenAdjudicator())
@@ -347,18 +375,27 @@ def test_standalone_component_of_an_earlier_minted_surrogate_still_fails_closed(
     blindfolded, session = blindfold_payload(payload, mapping, detector, inbox)
     text = blindfolded["messages"][0]["content"]
 
-    with pytest.raises(LeakError):
-        leak_gate({"messages": [{"role": "user", "content": text}]}, mapping, inbox)
+    collisions = leak_gate(
+        {"messages": [{"role": "user", "content": text}]}, mapping, inbox, session
+    )
+    assert len(collisions) == 1
+    assert "range the blinder itself wrote" in collisions[0]
+    assert "Erika" not in collisions[0]
 
 
-def test_kurt_colliding_with_an_earlier_minted_surrogate_still_fails_closed():
+def test_kurt_colliding_with_an_earlier_minted_surrogate_is_now_a_declared_collision():
     # Cycle 2 reviewer's exact finding: a real seed surrogate "Kurt
     # Steinmetz" (live via L2 dict substitution of "Some Referent") and a
     # genuinely different real "Kurt" mentioned separately in the same hop.
-    # Cycle 2's now-removed dismissal path leaked "Kurt" into plaintext
-    # here (fail-open); with that path gone, this reverts to the pre-#292
-    # fail-closed default -- blocked, not leaked. leak_gate itself is
-    # untouched and out of scope for this issue.
+    # Cycle 2's now-removed dismissal path leaked "Kurt" into plaintext here
+    # (fail-open); removing that path reverted this to the pre-#292
+    # fail-closed default -- blocked, not leaked.
+    #
+    # Issue #416 (ADR-0051's #406 amendment) inverts that default in turn:
+    # "Kurt"'s own occurrence is blinded to its own provisional surrogate, so
+    # the only remaining "Kurt" in the outbound text is the one wholly inside
+    # "Kurt Steinmetz" -- a range the blinder itself wrote in this same leaf,
+    # for a different referent. Excused as a range-scoped declared collision.
     mapping = SurrogateMapping.from_pairs([("Some Referent", "Kurt Steinmetz")])
     inbox = ReviewInbox()
     detector = L3Detector(_ConfirmAnyNameShapedTokenAdjudicator())
@@ -378,13 +415,16 @@ def test_kurt_colliding_with_an_earlier_minted_surrogate_still_fails_closed():
     blindfolded, session = blindfold_payload(payload, mapping, detector, inbox)
     text = blindfolded["messages"][0]["content"]
 
-    with pytest.raises(LeakError) as exc_info:
-        leak_gate({"messages": [{"role": "user", "content": text}]}, mapping, inbox)
+    collisions = leak_gate(
+        {"messages": [{"role": "user", "content": text}]}, mapping, inbox, session
+    )
 
-    # SEC-3: the raised reason references the newly-minted item's own
+    # SEC-3: the collision reason references the newly-minted item's own
     # provisional surrogate (issue #287's existing scrubbing), never the
     # plaintext real value "Kurt" that triggered it.
-    assert "Kurt" not in str(exc_info.value)
+    assert len(collisions) == 1
+    assert "range the blinder itself wrote" in collisions[0]
+    assert "Kurt" not in collisions[0]
 
 
 def test_purge_surrogate_collisions_repairs_an_already_poisoned_persisted_inbox():

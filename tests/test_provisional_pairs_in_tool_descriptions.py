@@ -245,13 +245,20 @@ def test_a_provisional_reals_component_inside_an_already_injected_l2_surrogate_f
     # into something no restore key maps back to "Bar" at all.
     #
     # Issue #407 (reviewer finding on #405): leaving it alone at the blindfold
-    # step is only half the story. leak_gate has no matching exclusion (that
-    # asymmetry is #406's open decision, not resolved here), so it finds "Baz"
-    # whole-word inside "Foo Baz" and raises -- the real request path 503s on
-    # this exact, byte-identical payload every time. This test asserts that
-    # actual outcome, not just the intermediate blindfold text: restore_response
-    # is deliberately never reached in this test because leak_gate blocks the
-    # exchange before egress in production, so there is no response to restore.
+    # step is only half the story. Without a session record to consult,
+    # leak_gate has no matching exclusion, so it finds "Baz" whole-word inside
+    # "Foo Baz" and raises -- pinned below via the pre-#416 call shape (no
+    # ``session`` argument), which any caller that never threads its own
+    # ExchangeSession through still gets, unchanged.
+    #
+    # Issue #416 (ADR-0051's #406 amendment, resolving what #407 deferred):
+    # when the caller DOES thread the session blindfold_payload returned, the
+    # match falls wholly inside the range the blinder just spliced for "Bar",
+    # so it is excused as a range-scoped declared collision instead -- the
+    # request no longer deadlocks. See
+    # tests/test_range_declared_collision.py for the full acceptance-criteria
+    # coverage of this narrowing; this test only pins that the two call shapes
+    # (with/without session) now disagree on purpose.
     mapping = SurrogateMapping.from_pairs([("Bar", "Foo Baz")])
     inbox = ReviewInbox()
     inbox.upsert("Baz", context="...Baz signed off...", entity_type="organization")
@@ -268,18 +275,22 @@ def test_a_provisional_reals_component_inside_an_already_injected_l2_surrogate_f
         ],
     }
 
-    blinded, _session = blindfold_payload(payload, mapping, None, inbox)
+    blinded, session = blindfold_payload(payload, mapping, None, inbox)
 
     description = blinded["tools"][0]["description"]
     assert description == "Foo Baz reports to finance."
     assert item.provisional_surrogate not in description
 
-    # #406, not this issue, owns whether this deadlocks forever or is resolved
-    # some other way -- today it fails closed, and this pins that as the
-    # current, known-open end state rather than letting the earlier assertions
-    # above imply the scenario is handled cleanly end to end.
+    # No session threaded through: unchanged, still fails closed.
     with pytest.raises(LeakError):
         leak_gate(blinded, mapping, inbox)
+
+    # Session threaded through (issue #416): the same match is now a
+    # range-scoped declared collision, not a leak.
+    collisions = leak_gate(blinded, mapping, inbox, session)
+    assert len(collisions) == 1
+    assert "range the blinder itself wrote" in collisions[0]
+    assert "Baz" not in collisions[0]
 
 
 def test_the_substitution_set_is_derived_from_the_same_shared_function_leak_gate_uses(

@@ -1626,6 +1626,7 @@ def _leak_gate_or_block(
     audit_log: AuditLog,
     block_history: BlockHistory,
     inbox: ReviewInbox | None = None,
+    session: ExchangeSession | None = None,
 ) -> tuple[JSONResponse | None, list[str]]:
     """Run the pre-egress :func:`leak_gate`; return a block ``JSONResponse`` if it raised.
 
@@ -1648,9 +1649,16 @@ def _leak_gate_or_block(
     log here (the caller threads it into the exchange's processing-trace record).
     Always empty when ``block`` is not ``None`` — ``leak_gate`` raises before it
     ever computes a collision.
+
+    ``session`` (issue #416, ADR-0051's #406 amendment) is the same
+    :class:`ExchangeSession` :func:`blindfold` returned for this exchange, threaded
+    through so :func:`leak_gate` can excuse a match confined to a range the
+    blinder itself wrote as a second, range-scoped declared collision rather than
+    a leak. ``None`` on the Unprotected-mode path, which never calls this function
+    at all (the leak gate is bypassed there, not merely un-sessioned).
     """
     try:
-        declared_collisions = leak_gate(blinded, mapping, inbox)
+        declared_collisions = leak_gate(blinded, mapping, inbox, session)
     except LeakError as exc:
         # SEC-3 (issue #40): `exc`'s message is already the one scrubbed reason
         # string leak_gate logged — forward it as-is so the 503 body, the audit
@@ -2007,7 +2015,7 @@ async def _exchange(
         blinded, session = result
 
         block, declared_collisions = _leak_gate_or_block(
-            blinded, mapping, workspace, audit_log, block_history, inbox
+            blinded, mapping, workspace, audit_log, block_history, inbox, session
         )
         if retain_rewritten_leaves and rewritten_leaf_store is not None:
             # ADR-0059 §4: a blocked exchange is retained too, marked "never
