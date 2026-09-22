@@ -3052,6 +3052,16 @@ def _strip_block_type_non_hop_fields(node: Any, forbidden: list[str]) -> Any:
     return node
 
 
+# ADR-0060 (issue #408): the top-level payload regions `blindfold_payload`/
+# `blindfold_chat_completions_payload` ever read (engine.py's own `out.get(...)`
+# calls at the top of each). Anything outside this set is carried through by
+# `copy.deepcopy` and never visited -- `mcp_servers` among them. ADR-0051's rule
+# ("the field decides the direction of the fix") then requires `_gate_excluded_view`
+# to agree about any top-level field not in this set, derived from this one
+# constant rather than re-enumerated at the call site.
+_BLINDER_TRAVERSED_TOP_LEVEL_FIELDS = frozenset({"system", "messages", "tools"})
+
+
 def _gate_excluded_view(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
     """Split ``payload`` into :func:`leak_gate`'s checked view and the excluded text.
 
@@ -3068,6 +3078,19 @@ def _gate_excluded_view(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
     inside ciphertext the blinder was never going to touch is a declared collision,
     not a leak, symmetric with the blinder's own exclusion.
 
+    Issue #408 (ADR-0060): ``mcp_servers`` is a top-level field outside
+    :data:`_BLINDER_TRAVERSED_TOP_LEVEL_FIELDS` -- carried through by the initial
+    deepcopy and never visited by the blinder at all, not even partially. Per
+    ADR-0051's rule, the whole field is therefore excluded here too rather than
+    partially (``url`` must resolve to the live connector endpoint; ``name`` is a
+    dispatch key correlated with a paired ``tools[].mcp_server_name`` entry, the
+    same protocol-identifier class as ``tools[].name`` and ``mcp_tool_use.server_name``
+    (:data:`_TOOL_CALL_BLOCK_TYPES`'s own docstring) -- neither is prose the blinder
+    could safely rewrite alone). The same real value occurring anywhere else in the
+    payload -- message text, tool descriptions -- stays fully protected; only the
+    connector declaration's own literal is exempted, the same bound already accepted
+    for ``tools[].name``.
+
     Returns a deep-copied view with the forbidden fields removed (safe to feed to
     :func:`_collect_text` for the normal leak check) and the NUL-joined text those
     fields carried (checked separately by :func:`leak_gate`, for a
@@ -3075,6 +3098,10 @@ def _gate_excluded_view(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
     """
     view = copy.deepcopy(payload)
     forbidden: list[str] = []
+    if "mcp_servers" not in _BLINDER_TRAVERSED_TOP_LEVEL_FIELDS:
+        mcp_servers = view.pop("mcp_servers", None)
+        if mcp_servers is not None:
+            walk_string_leaves(mcp_servers, forbidden.append)
     # Scoped to messages/system -- the only containers the blinder's own block-type
     # walk ever reaches (_blindfold_content/_blindfold_system) -- rather than the
     # whole view, so this never touches tools[].input_schema, where a JSON-Schema
