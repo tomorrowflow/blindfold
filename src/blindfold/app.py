@@ -207,6 +207,7 @@ from .status import (
     compute_state,
 )
 from .payload_inspection import PayloadInspection
+from .rewritten_leaves import RewrittenLeafStore
 from .store import VendoredSeedRepository, vendored_seed_repository
 from .surrogates import MintPoolExhaustedError, SurrogateMapping
 from .test_connection import is_loopback_base_url, run_test_connection
@@ -378,6 +379,16 @@ _unprotected_mode = UnprotectedMode()
 # is the precondition, not the retention. Tests substitute their own via
 # dependency_overrides[get_payload_inspection].
 _payload_inspection = PayloadInspection()
+
+# Process-wide retained-leaf store (ADR-0059 §2-§4, issue #399): the last 5
+# exchanges' rewritten leaves, only ever populated while `_payload_inspection`
+# is armed (checked once per exchange, in `_exchange`, below). A SEPARATE
+# singleton from `_payload_inspection` itself (ADR-0059 §3: "keep this in a
+# separate store, not as extra fields on the [Processing] trace record") --
+# same never-persisted, evaporates-on-restart shape as every other process-
+# global store on this page. Tests substitute their own via
+# dependency_overrides[get_rewritten_leaf_store].
+_rewritten_leaf_store = RewrittenLeafStore()
 
 # Process-wide rolling window of fail-closed/leak-gate blocks (issue #92), fed by the
 # single `_blocked_response` funnel (#91) so `/v1/status`'s `blocks.recent` carries the
@@ -650,6 +661,10 @@ def get_unprotected_mode() -> UnprotectedMode:
 
 def get_payload_inspection() -> PayloadInspection:
     return _payload_inspection
+
+
+def get_rewritten_leaf_store() -> RewrittenLeafStore:
+    return _rewritten_leaf_store
 
 
 def get_block_history() -> BlockHistory:
@@ -1862,6 +1877,8 @@ async def _exchange(
     restore: Callable[[dict, ExchangeSession], dict] | None = None,
     streaming_supported: bool = False,
     reject_stream_request: bool = False,
+    payload_inspection: PayloadInspection | None = None,
+    rewritten_leaf_store: RewrittenLeafStore | None = None,
 ):
     """The one gate/trace sequence shared by ``/v1/messages``,
     ``/v1/messages/count_tokens`` and ``/v1/chat/completions`` (issue #324):
@@ -1900,6 +1917,21 @@ async def _exchange(
     threaded through to ``blindfold`` below, the same per-request-only
     discipline as ``declared_tools``/``system_confined_tokens``: never
     persisted, never state on ``l3_detector``.
+
+    ``payload_inspection``/``rewritten_leaf_store`` (ADR-0059 §2-§4, issue
+    #399): ``None`` (the default, ``count_tokens``'s own choice -- a
+    measurement is not a use) means retention never runs for this call, the
+    same "off costs nothing" shape ``ExchangeSession``'s own
+    ``retain_rewritten_leaves`` flag already has. When both are supplied
+    (``messages``/``chat_completions``), the armed flag is read exactly
+    once, in the protected branch below -- never in the ``unprotected_mode``
+    branch, which is how "nothing retained while Unprotected mode is
+    active" (ADR-0059 §4) falls out of the existing pipeline-skip rather
+    than a second check -- and reused for both the mint call's
+    ``retain_rewritten_leaves`` argument and the later decision to push
+    ``session.rewritten_leaves()`` into the store, so the two can never
+    disagree within one exchange even if the 30-minute auto-disarm fires
+    mid-request.
     """
     start = time.monotonic()
     payload = await request.json()
@@ -1927,6 +1959,13 @@ async def _exchange(
             evidence=extract_case_inconsistency_evidence(payload)
         )
         world_acting = extract_world_acting(payload)
+        # ADR-0059 §3: read once per exchange, reused below -- never
+        # re-checked after the mint call, so a 30-minute auto-disarm firing
+        # mid-request can't make the mint call's own record and the later
+        # store push disagree about whether this exchange was armed.
+        retain_rewritten_leaves = (
+            payload_inspection is not None and payload_inspection.is_armed()
+        )
         result = await _mint_or_block(
             lambda: blindfold(
                 payload, mapping, effective_l3_detector, mint_inbox(inbox), declared_tools,
@@ -1936,6 +1975,7 @@ async def _exchange(
                 system_confined_tokens=system_confined_tokens,
                 case_inconsistency=case_inconsistency,
                 world_acting=world_acting,
+                retain_rewritten_leaves=retain_rewritten_leaves,
             ),
             workspace,
             policy.deterministic_only,
@@ -1954,6 +1994,18 @@ async def _exchange(
         block, declared_collisions = _leak_gate_or_block(
             blinded, mapping, workspace, audit_log, block_history, inbox
         )
+        if retain_rewritten_leaves and rewritten_leaf_store is not None:
+            # ADR-0059 §4: a blocked exchange is retained too, marked "never
+            # sent" -- the blindfolded payload was fully constructed (the
+            # mint call above succeeded) and then discarded right here, the
+            # single most interesting exchange to look at. Retained BEFORE
+            # the early `return block` below, not after, so a leak-gate
+            # block is never silently unretained.
+            rewritten_leaf_store.retain(
+                workspace=workspace,
+                leaves=session.rewritten_leaves(),
+                blocked=block is not None,
+            )
         if block is not None:
             _record_trace(
                 trace, workspace, endpoint, streamed, OUTCOME_BLOCKED,
@@ -2042,6 +2094,8 @@ async def messages(
     upstream_health: RecentFailureHealth = Depends(get_upstream_health),
     trace: ProcessingTraceBuffer = Depends(get_processing_trace),
     unprotected_mode: UnprotectedMode = Depends(get_unprotected_mode),
+    payload_inspection: PayloadInspection = Depends(get_payload_inspection),
+    rewritten_leaf_store: RewrittenLeafStore = Depends(get_rewritten_leaf_store),
 ):
     return await _exchange(
         request,
@@ -2065,6 +2119,8 @@ async def messages(
         declared_tool_vocabulary=declared_tool_vocabulary,
         restore=restore_response,
         streaming_supported=True,
+        payload_inspection=payload_inspection,
+        rewritten_leaf_store=rewritten_leaf_store,
     )
 
 
@@ -2169,6 +2225,8 @@ async def chat_completions(
     upstream_health: RecentFailureHealth = Depends(get_upstream_health),
     trace: ProcessingTraceBuffer = Depends(get_processing_trace),
     unprotected_mode: UnprotectedMode = Depends(get_unprotected_mode),
+    payload_inspection: PayloadInspection = Depends(get_payload_inspection),
+    rewritten_leaf_store: RewrittenLeafStore = Depends(get_rewritten_leaf_store),
 ):
     return await _exchange(
         request,
@@ -2192,6 +2250,8 @@ async def chat_completions(
         declared_tool_vocabulary=declared_tool_vocabulary,
         restore=restore_chat_completion,
         reject_stream_request=True,
+        payload_inspection=payload_inspection,
+        rewritten_leaf_store=rewritten_leaf_store,
     )
 
 
@@ -3447,6 +3507,40 @@ async def get_payload_inspection_status(
     """
     _require_role(request, workspace, "admin", rbac)
     return payload_inspection.status().to_dict()
+
+
+@app.get("/v1/management/payload-inspection/leaves")
+async def list_rewritten_leaves(
+    workspace: str,
+    request: Request,
+    rbac: RbacRegistry = Depends(get_rbac),
+    rewritten_leaf_store: RewrittenLeafStore = Depends(get_rewritten_leaf_store),
+) -> dict:
+    """List this workspace's retained rewritten leaves (ADR-0059 §2-§4, issue
+    #399) -- "expose the retained leaves viewer-gated and workspace-scoped,
+    the same RBAC shape the [Processing] trace and audit log already use, so
+    this slice is verifiable without any UI."
+
+    Requires ``viewer`` on ``workspace``, matching
+    :func:`list_processing_trace`/:func:`list_audit_events` -- deliberately
+    NOT the ``admin`` gate arming/disarming/reading the armed state itself
+    uses (ADR-0059 §4): deciding the machine MAY retain payload text is the
+    ``admin`` right; reading what it already retained -- entity-free by
+    construction, the whole justification for this capability -- is the
+    ordinary ``viewer`` right every other scrubbed-record surface uses.
+
+    Every leaf here is already in blindfolded form only (ADR-0059 §2: no
+    real value is ever retained), so this endpoint widens no exposure beyond
+    what :func:`list_processing_trace`'s own hop/surrogate detail already
+    does -- it is a deeper grain of the same scrubbed-by-construction
+    surface, not a new access-control concept.
+    """
+    _require_role(request, workspace, "viewer", rbac)
+    return {
+        "exchanges": [
+            exchange.to_dict() for exchange in rewritten_leaf_store.for_workspace(workspace)
+        ]
+    }
 
 
 def _apply_merge_side_effects(
