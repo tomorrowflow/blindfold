@@ -43,7 +43,7 @@ from .l3 import (
 from .l3 import _context_window as _l3_context_window
 from .policy import DEFAULT_WORKSPACE
 from .review import ReviewInbox, _is_fallback_surrogate
-from .store._mint import _real_value_pattern
+from .store._mint import _real_value_pattern, is_reserved_provisional_surrogate_form
 from .surrogates import SurrogateMapping
 
 logger = logging.getLogger(__name__)
@@ -2859,9 +2859,20 @@ def _restore_text(text: str, session: ExchangeSession) -> str:
     :func:`_apply_restore_pass`, so the whole restore is a single scan of the
     original ``text``. Never two sequential scans, which is what let the second pass match
     inside the first pass's own just-inserted output.
+
+    ADR-0060 §4: a reserved-form surrogate (:func:`is_reserved_provisional_surrogate_form`,
+    ADR-0052's closed syntactic class) is never a first-pass restore key. Reversing it
+    would turn containment (ADR-0060 §3) into an invisible false negative -- the opaque
+    token surviving into the client-visible response is the disclosure, not a restore
+    miss. ``_component_restore_map`` already excludes a reserved/fallback surrogate's
+    own components (issue #329), so only the first pass needs the guard here.
     """
     restore_map = dict(_component_restore_map(session.injected))
-    restore_map.update(session.injected)
+    restore_map.update(
+        (surrogate, real)
+        for surrogate, real in session.injected.items()
+        if not is_reserved_provisional_surrogate_form(surrogate)
+    )
     return _apply_restore_pass(text, restore_map)
 
 
@@ -3300,11 +3311,19 @@ def resolution_gate(restored_response: dict[str, Any], session: ExchangeSession)
     uses pre-egress -- it is provider ciphertext restore never touches, so a
     this-exchange surrogate coincidentally present inside it is not a restore
     miss and must not fail-close the response.
+
+    ADR-0060 §4/§5: a reserved-form surrogate (:func:`is_reserved_provisional_surrogate_form`)
+    is left client-visible by :func:`_restore_text` on purpose -- the opaque token
+    surviving is the disclosure, not a restore miss -- so it must not trip this gate.
+    Every other unresolved surrogate still fails closed exactly as before; the
+    exemption is the same closed syntactic class restore itself uses, never widened.
     """
     forbidden: list[str] = []
     checked_view = _strip_block_type_non_hop_fields(restored_response, forbidden)
     restored_text = _collect_text(checked_view)
     for surrogate in session.injected:
+        if is_reserved_provisional_surrogate_form(surrogate):
+            continue
         if _surrogate_pattern(surrogate).search(restored_text):
             message = f"injected surrogate left unresolved in response: {surrogate!r}"
             logger.warning("resolution_gate: %s", message)
