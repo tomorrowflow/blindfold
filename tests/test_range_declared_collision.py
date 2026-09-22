@@ -399,6 +399,67 @@ def test_an_unpairable_leaf_blocks_rather_than_being_excused():
         leak_gate(blinded, mapping, inbox, unrelated_session)
 
 
+def test_a_stripped_schema_structural_leaf_does_not_shift_a_later_genuine_miss_into_excusal():
+    # Reviewer-found hole (cycle 1 -> cycle 2): `_gate_excluded_view` strips
+    # `enum`/`type`/`required` subtrees wholesale (`_strip_schema_structural_
+    # tokens`) BEFORE the mirror walk runs, but the blinder's own
+    # `_blindfold_schema_prose` recurses INTO an `enum` value and blinds any
+    # `description` nested there -- a real leaf, a real `_begin_leaf` call, a
+    # real slot in `session._leaf_slots`. The mirror walk never re-visits that
+    # leaf (its dict key is gone from `gate_view` entirely), so it calls
+    # `_begin_leaf` one time FEWER than the original blind pass did. Every
+    # leaf paired AFTER that point reuses the wrong slot -- a LATER leaf's
+    # real (unrelated) text gets checked against an EARLIER leaf's recorded
+    # ranges. Positional pairing degrades silently instead of failing closed.
+    mapping = SurrogateMapping.from_pairs([("Org A", "Aurora Systems")])
+    payload = {
+        "model": "m",
+        "messages": [{"role": "user", "content": "nothing sensitive here."}],
+        "tools": [
+            {
+                "name": "t1",
+                "description": "A neutral tool description.",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "p": {
+                            "type": "string",
+                            # A JSON-Schema `enum` doesn't legally carry a
+                            # nested "description" object in practice, but
+                            # `_blindfold_schema_prose` recurses into ANY
+                            # value under a non-"description" key looking for
+                            # one, and `_strip_schema_structural_tokens`
+                            # drops the whole `enum` subtree regardless of
+                            # its shape -- this is the exact traversal
+                            # disagreement, independent of schema validity.
+                            "enum": [{"description": "Org A is on file."}],
+                        }
+                    },
+                },
+            },
+            {
+                "name": "t2",
+                # Seeded into `mapping` only AFTER `blindfold_payload` below
+                # has already run, so the blind pass never had a chance to
+                # rewrite it -- a genuine miss, byte-for-byte as typed.
+                "description": "Ridge Referent stays as typed.",
+            },
+        ],
+    }
+
+    blinded, session = blindfold_payload(payload, mapping, None, None)
+    assert (
+        blinded["tools"][0]["input_schema"]["properties"]["p"]["enum"][0]["description"]
+        == "Aurora Systems is on file."
+    )
+    assert blinded["tools"][1]["description"] == "Ridge Referent stays as typed."
+
+    mapping.seed("Ridge Referent", "Some Other Surrogate")
+
+    with pytest.raises(LeakError):
+        leak_gate(blinded, mapping, None, session)
+
+
 def test_collect_text_joins_leaves_with_nul_so_a_value_cannot_match_across_fields():
     # Regression guard (salvaged from #418, closed as a duplicate of this
     # issue): pins the exact separator so a future change to it fails loudly

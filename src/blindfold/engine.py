@@ -4019,26 +4019,55 @@ def _split_blinder_visited_leaves(
     :func:`_close_cross_hop_mint_gap`'s own re-walk already uses, so this walk's
     Nth leaf reuses the blind pass's own Nth leaf slot.
 
-    Mutates and returns ``gate_view`` in place rather than copying it again --
-    safe, since :func:`_gate_excluded_view` already handed :func:`leak_gate` a
-    private deep copy no other caller can observe.
+    Reviewer-found hole (cycle 1 -> cycle 2): the "Nth leaf reuses the Nth
+    slot" contract holds only when this walk visits EXACTLY the leaves the
+    original blind pass did, in the same order. ``_gate_excluded_view``'s own
+    ``_strip_schema_structural_tokens`` can remove a whole ``description``
+    leaf nested under ``type``/``required``/``enum`` from ``gate_view`` before
+    this function ever runs -- the blinder's ``_blindfold_schema_prose``
+    recurses into that subtree and blinds it (a real leaf, a real
+    ``_begin_leaf`` call), but this mirror walk, working from the stripped
+    view, never re-visits it and so never re-calls ``_begin_leaf`` for it.
+    Every leaf paired AFTER that point then silently reuses the WRONG slot --
+    a later leaf's real text checked against an earlier leaf's recorded
+    ranges, which can coincide by sheer character-offset accident and wrongly
+    excuse a genuine miss. The mismatch is only ever visible in the
+    AGGREGATE: this walk consuming a different number of leaves than the
+    blind pass did. So: capture the blind pass's own leaf count before
+    walking, and if this walk's leaf count disagrees, the whole pairing for
+    THIS ``gate_view`` is untrustworthy -- fall back to no exclusion at all
+    (empty ``pairs``, the ORIGINAL unblanked ``gate_view``), which is exactly
+    :func:`leak_gate`'s ``session=None`` behavior: every blinder-visited leaf
+    stays in the exhaustive check, unblanked. A trial walk runs against a
+    private working copy so a mismatch can be discarded without leaving
+    ``gate_view`` partially blanked.
+
+    Mutates and returns the working copy in place once the count is
+    confirmed to agree -- safe, since :func:`_gate_excluded_view` already
+    handed :func:`leak_gate` a private deep copy no other caller can observe.
     """
     pairs: list[tuple[_LeafAccumulator, str]] = []
 
     def visit(leaf: "_LeafAccumulator", text: str) -> None:
         pairs.append((leaf, text))
 
+    expected_leaf_count = len(session._leaf_slots)
+    working = copy.deepcopy(gate_view)
     session.reset_leaf_walk()
-    gate_view["system"] = _blank_blinder_system_leaves(gate_view.get("system"), session, visit)
-    messages = gate_view.get("messages")
+    working["system"] = _blank_blinder_system_leaves(working.get("system"), session, visit)
+    messages = working.get("messages")
     if isinstance(messages, list):
         for message in messages:
             if isinstance(message, dict):
                 message["content"] = _blank_blinder_content_leaves(
                     message.get("content"), session, visit
                 )
-    gate_view["tools"] = _blank_blinder_tool_leaves(gate_view.get("tools"), session, visit)
-    return pairs, gate_view
+    working["tools"] = _blank_blinder_tool_leaves(working.get("tools"), session, visit)
+
+    if len(pairs) != expected_leaf_count:
+        return [], gate_view
+
+    return pairs, working
 
 
 def leak_gate(
@@ -4103,6 +4132,19 @@ def leak_gate(
     recorded range (no ``session``, or a leaf the original blind pass never
     visited) is treated as UNRECORDED: fail-closed, exactly as before this issue,
     never silently excused.
+
+    Reviewer-found hole (cycle 1 -> cycle 2): a per-leaf "unpairable" check is not
+    enough on its own -- a leaf the gate's mirror walk (:func:`_split_blinder_visited_leaves`)
+    silently SKIPS (e.g. a schema ``description`` nested under a stripped
+    ``type``/``required``/``enum`` subtree, :func:`_strip_schema_structural_tokens`)
+    shifts every later leaf's pairing by one slot without ever raising an
+    "unpairable" signal itself; a later leaf can then be wrongly checked against an
+    earlier, unrelated leaf's recorded ranges. :func:`_split_blinder_visited_leaves`
+    therefore also asserts an AGGREGATE invariant: the mirror walk must consume
+    exactly as many leaves as the original blind pass did. On any mismatch the
+    entire pairing for this call is untrustworthy, so it is discarded wholesale --
+    every blinder-visited leaf falls back to the exhaustive, unblanked check, same
+    as ``session=None`` -- rather than trust a drifted position-for-position join.
     """
     def _raise_leak(ref: str) -> NoReturn:
         # SEC-3 (issue #40): one scrubbed-reason format for both the mapping and the
