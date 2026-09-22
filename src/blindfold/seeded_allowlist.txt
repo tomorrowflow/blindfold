@@ -373,3 +373,4 @@ World-acting tool
 # bare first word standalone. The sibling settings label visible in the same
 # rules text did NOT mint and is deliberately not seeded (evidence-first).
 Repository visibility
+Blinder-written range

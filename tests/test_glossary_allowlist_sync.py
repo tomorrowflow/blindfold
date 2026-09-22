@@ -8,10 +8,11 @@ own tool results. ``Surrogate`` is a measured false positive in #74 runs 10 and
 11.
 
 ``extract_glossary_terms`` mechanically enumerates CONTEXT.md's Glossary section
-(the 61 top-level ``- **Term** -- ...`` headings, ADR-0023 curation input for this
+(the 62 top-level ``- **Term** -- ...`` headings, ADR-0023 curation input for this
 slice; ADR-0059 §4 added "Payload inspection" and "Retained payload" to the
-Glossary, moving the count from 57 to 59, and ADR-0060 added "Executed argument"
-and "World-acting tool", moving the count from 59 to 61). Every one of those 61
+Glossary, moving the count from 57 to 59, ADR-0060 added "Executed argument"
+and "World-acting tool", moving the count from 59 to 61, and ADR-0051's #406
+amendment added "Blinder-written range", moving it from 61 to 62). Every one of those 62
 terms must appear either in the seeded allowlist (``load_seeded_allowlist_tokens``)
 or in ``GLOSSARY_EXCLUSIONS`` with a recorded reason -- so a new glossary term
 added later can't silently drift out of sync with the allowlist the way the whole
@@ -27,14 +28,15 @@ from blindfold.allowlist_seed import (
 )
 
 
-def test_extract_glossary_terms_finds_exactly_the_61_glossary_headings():
+def test_extract_glossary_terms_finds_exactly_the_62_glossary_headings():
     terms = extract_glossary_terms()
 
-    assert len(terms) == 61
+    assert len(terms) == 62
     assert "Surrogate" in terms
     assert "Blindfold" in terms
     assert "Executed argument" in terms
     assert "World-acting tool" in terms
+    assert "Blinder-written range" in terms
     # Nested Detection-layers sub-bullets (L1/L2/L3) are indented, not top-level
     # Glossary headings, so they must not be picked up.
     assert "L1" not in terms

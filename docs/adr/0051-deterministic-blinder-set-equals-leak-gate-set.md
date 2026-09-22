@@ -606,3 +606,171 @@ direction, per this ADR's own rule), not by an impossible-to-prove absence claim
 - If a future field is added to `_BLINDER_TRAVERSED_TOP_LEVEL_FIELDS` (the blinder widens to reach
   it), `_gate_excluded_view` stops excluding it automatically, restoring full gate coverage without
   a second code change — the coupling this ADR's own invariant requires.
+
+## Amendment (issue #406): the rule is about surfaces, not fields — a range the blinder wrote
+
+The `#303` amendment above stated the rule in terms of *fields*, because a field is what had
+failed. `#406` is the same defect on a surface that is not a field at all, and closing it
+generalises the rule rather than adding a fifth instance of it.
+
+### The mechanism
+
+The Decision above already names one of the blinder's own guards: "an occurrence inside an
+already-injected surrogate's own literal text is not re-detected (`#68`/`#292`, the self-poisoning
+guard)". Its last bullet says `leak_gate` does not change. Both halves of an asymmetry, in one
+document, unnoticed for six amendments.
+
+Where a two-word `surrogate-A` (`surrogate-word-1 surrogate-word-2`) is live in a payload and an
+unrelated referent's `real-value-B` equals `surrogate-word-2` as a whole word, the two sets
+disagree: the blinder deliberately declines to rewrite that occurrence — rewriting it would corrupt
+`surrogate-A`'s literal in place and hand the client a surrogate where a real value belongs — and
+the gate then finds `real-value-B` there and fail-closes. The input never changes, so the verdict
+never changes: a permanent block on a byte-identical payload, the `#292`/`#328` shape again.
+
+The guard is present in three passes — `_collect_confirmed_component_spans` (`#394`),
+`_reapply_provisional_pairs_catchup` (`#387`) and `_apply_provisional_pairs` (`#405`) — and
+`leak_gate` carries it in none. `#405` added the third; it did not create the class.
+
+### Reachability is established, frequency is not
+
+The mint-time collision guards (`store._mint.pool_entry_collides_with_corpus`,
+`review._next_provisional`, `collides_with_known_entity`) are **temporally one-directional**. They
+check a *candidate surrogate* against the real values known, or present in the corpus, **at mint
+time**. Nothing checks a *newly arriving real* against an already-issued surrogate — that check
+(`surrogate_space_match` at mint time) was removed outright by `#292` cycle 2 as fail-open, and
+`#333` closed only the within-exchange half by adding the inbox's provisional reals to mint-time
+`known_values`. Surrogates are long-lived (seed, plus a process-global and persistable inbox) and
+reals arrive continuously, so a real that arrives after a surrogate was issued is unguarded by
+construction.
+
+This is not a new discovery: `tests/test_surrogate_component_remint_guard.py` already calls it
+"the accepted residual" and pins it with two passing tests. `#394`'s own implementation comment
+states the confirmed-entity form of it in production terms. The reviewer's `from_pairs`
+reproduction is artificial only in convenience.
+
+**What this decision does not have is a single observed production occurrence.** The `#303`
+amendment was decided on measurement (run 7: 13 blocks, a dead run). This one is decided on
+reachability, and says so rather than implying evidence it lacks. The declared-collision record
+below is what will supply the frequency data afterwards.
+
+Two things changed since the residual was last assessed as acceptable:
+
+1. **The remedy is a leak.** `app.reject_review_item` does `allowlist.add(item.real)` and persists
+   it, so the only operator lever for a blocking row permanently converts a protected real value
+   into plaintext. In this collision class the block is not caused by the value being wrong — it is
+   caused by Blindfold's own surrogate — so the human is asked to allowlist a genuine referent to
+   clear a fault that is ours. The lever is attached to the wrong object. (The lever itself is out
+   of scope here; see Consequences.)
+2. **The blast radius moved.** Before `#405` the residual was reachable in conversation text, where
+   it blocks every later turn of the conversation carrying it. `#405` extended the guard to tool
+   descriptions, which are byte-identical across every conversation with that client — so the same
+   collision now blocks every conversation, not one transcript.
+
+### The rule, generalised
+
+> The leak gate checks exactly the surfaces the deterministic blinder can rewrite. When the two
+> disagree, **the surface decides the direction of the fix**: prose the blinder *could* rewrite is
+> added to the blinder; a surface the blinder is *structurally forbidden* to rewrite is removed
+> from the gate's checked set. A surface is a **field** the blinder may not enter (`#303`, `#323`,
+> `#408`) or a **range the blinder itself wrote** (this amendment).
+
+The `#303` justification carries over unchanged, and is the whole argument: the gate exists to
+catch a **blinder miss**, and a surface the blinder was never permitted to enter cannot contain
+one. Those characters are not a real value that escaped the blinder — they are the blinder's own
+output.
+
+**Decision: a gate match falling wholly inside a range the blinder wrote in that same leaf is a
+declared collision, not a leak.**
+
+### The range is splice-derived, never string-searched
+
+This is the condition the decision depends on, and the reason it is not a general weakening of the
+backstop.
+
+`_injected_surrogate_ranges` locates the blinder's own output by **searching the text for surrogate
+values**. That cannot tell "we spliced this here" from "the client typed a string that happens to
+equal a live surrogate" — and a real value inside client-typed text *is* a genuine miss that must
+block. An exclusion built on that search would mask it. `#303`'s forbidden set is safe to exempt
+because it is closed, enumerated and auditable by reading; a content-derived range set earns the
+same standing only by being **exact**.
+
+So the record is produced where the splice happens. `_apply_spans` is, since `#325` and `#405`, the
+one place a span's surrogate is spliced in; it reports the applied spans at their **output**
+offsets, and the session accumulates them per leaf, keyed by a stable walk-order leaf id. Always
+on, offsets only — no text of any kind is retained, and this is independent of ADR-0059's
+armed **Payload inspection**, which consumes the same record rather than owning it.
+
+**Both sides read that one record.** `_injected_surrogate_ranges` becomes splice-derived at all
+three blinder call sites too. Narrowing only the gate would re-open the identical deadlock one size
+smaller — on client-typed text that looks like a surrogate, where the blinder would still decline
+and the gate would still raise — and "a smaller deadlock" is the reasoning that produced `#292`,
+`#328` and this issue in turn. The guard's actual purpose (`#68`: L3 must not re-blindfold what
+L1/L2 just injected) is better served by the exact record, since everything it protects is by
+definition something the blinder spliced.
+
+The rule is stated over **any range the blinder wrote**, not over surrogate splices specifically,
+so ADR-0060 §3's containment tokens and ADR-0052's opaque fallbacks are covered without a carve-out
+— unreachable in practice, since neither carries natural-language words, but the implementation
+makes no per-pass distinction and neither should the rule.
+
+Two consequences of exactness, both deliberate:
+
+- A match that **straddles** a boundary — part inside the blinder's output, part in the surrounding
+  text — is a real miss and still raises. Wholly-inside is the existing convention.
+- A real value inside **client-typed** text that merely resembles a surrogate is now blinded rather
+  than skipped. That is more protection, not less, and it costs nothing: those characters are not
+  ours, so there is no surrogate to corrupt, and `session.record` keeps restore closed-world.
+
+### Rejected alternatives
+
+**Leave it fail-closed and document the recovery.** The documented recovery is the allowlist leak
+above. A control whose two reachable states are *pass* and *block every request forever* is not a
+privacy control — the `#303` amendment's own words, and this is the same control.
+
+**Prevent the collision at mint time.** Not implementable in the form proposed. No constraint on a
+finite surrogate pool can prevent an unbounded *future* real value from colliding with an
+already-issued surrogate; the pools are not the free variable. The proposal reduces to one of two
+much larger decisions, neither of which this issue needs: abandon plausible-name surrogates for
+ADR-0052's opaque namespace everywhere, or re-mint an already-issued surrogate when a colliding
+real arrives.
+
+**Re-mint the colliding surrogate.** Rejected on the Decision's own stated property — surrogates
+are stable, reused and never re-minted for a referent — and because a retired surrogate must stay
+restorable for every transcript that already carries it, an unbounded closed-world obligation.
+Recorded here so it stops being re-proposed, the way auto-dismissal had to be.
+
+**An unscoped exclusion in the gate, symmetric with today's blinder guard.** This is the tidy-looking
+answer and it is the wrong one: it would inherit the string search's inability to distinguish our
+output from the client's input, which is precisely where a genuine leak would hide.
+
+### Consequences of this amendment
+
+- **`leak_gate` becomes leaf-aware.** It flattens the payload through `_collect_text`'s NUL join
+  today and has no leaf identity; joining a match back to a recorded range requires the same
+  walk-order leaf id the blinder uses. `walk_string_leaves` stays the single traversal primitive
+  (ARCH-4).
+- **The record is a request-path invariant, not a diagnostic feature.** ADR-0059 §2's leaf-identity
+  scheme and §3's offset composition are owned here and consumed there; the retention feature
+  builds on a record that already runs on every request.
+- **Two tests invert.** `test_kurt_colliding_with_an_earlier_minted_surrogate_still_fails_closed`
+  and `test_standalone_component_of_an_earlier_minted_surrogate_still_fails_closed` become
+  declared-collision assertions. Both build the containing surrogate through `SurrogateMapping`, so
+  the blinder splices it and both fall inside the new exclusion. This is a knowing reversal of
+  `#292` cycle 2's and `#333`'s assessments, for the two reasons given above, and the file's
+  "accepted residual" paragraph is rewritten rather than deleted.
+- **Observability.** A range-scoped exclusion is recorded on the existing `declared-collision`
+  audit event with a **distinct reason shape** from the field-scoped one, so the two are countable
+  apart (WARNING + audit record + ADR-0047 trace, scrubbed, never the plaintext). Revisit
+  threshold, stated so it is checkable: if range-scoped collisions ever out-count field-scoped ones
+  in real traffic, the exactness of the record is re-examined before anything else.
+- **The restore side is untouched.** The excluded characters egress as part of the blinder's own
+  output and restore with it, so nothing is separately injected, nothing is left unresolved, and
+  `resolution_gate`'s closed-world properties are unchanged. A partial restore of the containing
+  surrogate is already blocked by ADR-0024's word-boundary match. The end-to-end test for this
+  decision runs through `leak_gate` **and** `restore_response`, not the blindfold output alone.
+- **Out of scope, filed separately:** the reject lever. The Decision above settled that an operator
+  reject is the only clearance for a blocking row, and a human-chosen fail-open is accepted; what
+  is new is that the lever allowlists a genuine referent to clear a fault in our own minting. This
+  amendment removes the need for it in *this* class only.
+- **Out of scope:** the *value*-scoped guards (`mapping.is_known_surrogate` on the L1 PII path).
+  This decision is about ranges.
