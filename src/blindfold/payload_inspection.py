@@ -61,10 +61,14 @@ class PayloadInspection:
     """
 
     def __init__(
-        self, clock=time.monotonic, now_iso: Callable[[], str] = _utc_now_iso
+        self,
+        clock=time.monotonic,
+        now_iso: Callable[[], str] = _utc_now_iso,
+        on_disarm: Callable[[], None] | None = None,
     ) -> None:
         self._clock = clock
         self._now_iso = now_iso
+        self._on_disarm = on_disarm
         self._armed = False
         self._expires_at: float | None = None
         self._armed_at: str | None = None
@@ -75,9 +79,16 @@ class PayloadInspection:
         self._armed_at = self._now_iso()
 
     def disarm(self) -> None:
+        """Disarm (issue #420: both this explicit call and the auto-disarm in
+        `_expire_if_due` below route through here) and, if a release hook was
+        injected, invoke it -- the retained leaves' actual release lives
+        outside this class (ADR-0059 §3: a separate store instance), so this
+        is the seam that keeps the announced bound from being cosmetic."""
         self._armed = False
         self._expires_at = None
         self._armed_at = None
+        if self._on_disarm is not None:
+            self._on_disarm()
 
     def is_armed(self) -> bool:
         self._expire_if_due()

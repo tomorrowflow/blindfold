@@ -100,6 +100,39 @@ def test_disarm_clears_armed_at():
     assert status.armed_at is None
 
 
+def test_disarm_invokes_the_injected_release_hook():
+    # Issue #420: disarm must release the retained leaves, but `PayloadInspection`
+    # deliberately holds no reference to `RewrittenLeafStore` (ADR-0059 §3 -- two
+    # separate instances). `on_disarm` is the seam: a generic callable, injected
+    # the same way `clock`/`now_iso` already are, wired to the store's own
+    # `clear()` at the app level (app.py) rather than baked in here.
+    released = []
+    inspection = PayloadInspection(on_disarm=lambda: released.append(True))
+    inspection.arm()
+
+    inspection.disarm()
+
+    assert released == [True]
+
+
+def test_auto_disarm_also_invokes_the_injected_release_hook_via_fake_clock():
+    # Issue #420's more serious half: the 30-minute auto-disarm calls the same
+    # `disarm()` internally (`_expire_if_due`), so it must release too -- pinned
+    # here with a fake clock rather than a real sleep.
+    ticks = [0.0]
+    released = []
+    inspection = PayloadInspection(
+        clock=lambda: ticks[0], on_disarm=lambda: released.append(True)
+    )
+    inspection.arm()
+    assert released == []
+
+    ticks[0] = 30 * 60  # deadline reached
+    assert inspection.is_armed() is False
+
+    assert released == [True]
+
+
 def test_a_fresh_instance_is_disarmed_mirroring_a_proxy_restart():
     # Nothing about this state is persisted (ADR-0059 §4: "disarms on proxy
     # restart") -- a fresh process makes a fresh PayloadInspection, which is
