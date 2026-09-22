@@ -1120,6 +1120,7 @@ def tool_call_block_types() -> frozenset[str]:
     """
     return _TOOL_CALL_BLOCK_TYPES
 
+
 # tool_result / mcp_tool_result both carry their payload under "content" (a
 # string or a nested content-block list); "is_error" is a boolean flag, never a
 # string leaf.
