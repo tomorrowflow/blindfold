@@ -524,6 +524,43 @@ def _build_payload_inspection_retained_fixture(*, armed: bool):
     trace.record(
         workspace=WORKSPACE, endpoint="messages", streamed=False,
         outcome="passed", detected=2, duration_ms=118.0, exchange_id=passed_id,
+        # A real multi-hop exchange (issue #400's own bar: "verified in a
+        # browser against a real multi-hop exchange, not only unit tests") --
+        # mirrors the primary fixture's own 2-hop "passed" row (system, user)
+        # so the retained-payload section renders alongside genuine hop cards
+        # and surrogate chips, not a hopless stub.
+        hops=[
+            {
+                "hop_index": 0,
+                "hop_kind": "system",
+                "l1_counts": {},
+                "l1_duration_ms": 0.1,
+                "l2_count": 0,
+                "l2_duration_ms": 0.1,
+                "l3_confirmed": 0,
+                "l3_dismissed": 0,
+                "l3_suppressed": 0,
+                "l3_provider": None,
+                "l3_duration_ms": None,
+                "surrogates": [],
+            },
+            {
+                "hop_index": 1,
+                "hop_kind": "user",
+                "l1_counts": {},
+                "l1_duration_ms": 0.2,
+                "l2_count": 1,
+                "l2_duration_ms": 0.3,
+                "l3_confirmed": 1,
+                "l3_dismissed": 0,
+                "l3_suppressed": 0,
+                "l3_provider": "ollama",
+                "l3_duration_ms": 30.0,
+                "surrogates": ["Clara Hoffmann", "Pinnacle Corp"],
+            },
+        ],
+        l3_provider="ollama",
+        l3_duration_ms=30.0,
     )
     trace.record(
         workspace=WORKSPACE, endpoint="messages", streamed=False,

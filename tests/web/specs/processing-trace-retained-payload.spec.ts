@@ -64,6 +64,13 @@ retainedTest.describe("Processing trace — retained payload (armed)", () => {
       const passedRow = rows.nth(2);
       await passedRow.click();
 
+      // A real multi-hop exchange (issue #400's own bar), not a hopless stub --
+      // the retained-payload section renders alongside genuine hop cards.
+      const hopCards = alicePage.getByTestId("processing-trace-hop-card");
+      await expect(hopCards).toHaveCount(2);
+      await expect(hopCards.nth(0)).toContainText("system");
+      await expect(hopCards.nth(1)).toContainText("user");
+
       const section = alicePage.getByTestId("retained-payload-section").nth(0);
       await expect(section).toContainText("Retained payload");
       const cards = section.getByTestId("retained-leaf-card");
