@@ -1,5 +1,5 @@
 import { test as base, expect, request as pwRequest } from "@playwright/test";
-import { REAL_PERSON, REAL_ORG, WORKSPACE } from "./fixtures";
+import { REAL_PERSON, REAL_ORG, WORKSPACE, auditEventsFor } from "./fixtures";
 
 // Processing trace's fourth grain level (ADR-0059 §7, issue #400): expanding a row
 // also renders whatever Payload inspection retained for THAT exchange -- an elided
@@ -18,11 +18,23 @@ const RETAINED_BASE_URL = "http://127.0.0.1:8959";
 const DISARMED_BASE_URL = "http://127.0.0.1:8960";
 
 function fixtureTest(baseURL: string) {
-  return base.extend<{ alicePage: import("@playwright/test").Page }>({
+  return base.extend<{
+    alicePage: import("@playwright/test").Page;
+    erinPage: import("@playwright/test").Page; // viewer only, no re-identifier (issue #401)
+  }>({
     alicePage: async ({ browser }, use) => {
       const context = await browser.newContext({
         baseURL,
         extraHTTPHeaders: { "x-blindfold-identity": "alice" },
+      });
+      const page = await context.newPage();
+      await use(page);
+      await context.close();
+    },
+    erinPage: async ({ browser }, use) => {
+      const context = await browser.newContext({
+        baseURL,
+        extraHTTPHeaders: { "x-blindfold-identity": "erin" },
       });
       const page = await context.newPage();
       await use(page);
@@ -75,7 +87,9 @@ retainedTest.describe("Processing trace — retained payload (armed)", () => {
       const section = alicePage.getByTestId("retained-payload-section").nth(0);
       await expect(section).toContainText("Retained payload");
       const cards = section.getByTestId("retained-leaf-card");
-      await expect(cards).toHaveCount(2);
+      // 3rd leaf (issue #401) carries this exchange's `pending`/`rejected`
+      // surrogates, alongside these first two leaves' `confirmed` ones.
+      await expect(cards).toHaveCount(3);
       await expect(cards.nth(0).getByTestId("retained-leaf-label")).toHaveText(
         "user: text block"
       );
@@ -318,6 +332,141 @@ retainedTest.describe("Processing trace — retained payload SPA-side privacy pr
         expect(body, `refused response still contained "${realValue}"`).not.toContain(realValue);
       }
       await api.dispose();
+    }
+  );
+});
+
+// Exchange-level bulk Reveal switch (issue #401, ADR-0059 §5): one switch per
+// exchange, defaulting to blindfolded, resolving `confirmed` surrogates only,
+// exactly one audit event per flip, `re-identifier`-gated but present (not
+// hidden) for a caller without the role, and reverting on collapse. All
+// against the "passed, retained" row (rows.nth(2)) -- the ONE exchange the
+// fixture gives all three reveal lifecycles side by side (leaf-0: confirmed
+// "Clara Hoffmann"/"Pinnacle Corp"; leaf-2: pending + rejected), issue #401's
+// own verification bar.
+retainedTest.describe("Processing trace — exchange-level bulk Reveal switch", () => {
+  retainedTest(
+    "defaults to blindfolded, flips every confirmed span in the exchange at once, and reverts on collapse",
+    async ({ alicePage }) => {
+      await alicePage.goto("/ui/processing-trace");
+      const rows = alicePage.getByTestId("processing-trace-row");
+      await rows.nth(2).click();
+      const section = alicePage.getByTestId("retained-payload-section").nth(0);
+      const cards = section.getByTestId("retained-leaf-card");
+
+      // Blindfolded by default: the confirmed spans still read as surrogates.
+      const revealSwitch = section.getByTestId("retained-payload-reveal-switch");
+      await expect(revealSwitch).toHaveAttribute("aria-checked", "false");
+      await expect(cards.nth(0)).toContainText("Clara Hoffmann");
+      await expect(cards.nth(0)).not.toContainText(REAL_PERSON);
+      await expect(cards.nth(0)).not.toContainText(REAL_ORG);
+      await expect(section.getByTestId("retained-leaf-span-revealed")).toHaveCount(0);
+
+      await revealSwitch.click();
+      await expect(revealSwitch).toHaveAttribute("aria-checked", "true");
+
+      // Every expanded leaf's confirmed span resolves at once, not just one.
+      await expect(cards.nth(0)).toContainText(REAL_PERSON);
+      await expect(cards.nth(0)).toContainText(REAL_ORG);
+      await expect(cards.nth(0)).not.toContainText("Clara Hoffmann");
+
+      // Pending and rejected stay visibly unresolved -- still their own
+      // surrogate token, never a real value, and never marked "revealed".
+      const pendingRejectedCard = cards.nth(2);
+      const revealedInThatCard = pendingRejectedCard.getByTestId("retained-leaf-span-revealed");
+      await expect(revealedInThatCard).toHaveCount(0);
+      await expect(pendingRejectedCard.getByTestId("retained-leaf-span")).toHaveCount(2);
+
+      // Collapse the row, then re-expand: the switch reverts (no persistence).
+      await rows.nth(2).click();
+      await rows.nth(2).click();
+      const reopenedSection = alicePage.getByTestId("retained-payload-section").nth(0);
+      await expect(reopenedSection.getByTestId("retained-payload-reveal-switch")).toHaveAttribute(
+        "aria-checked",
+        "false"
+      );
+      await expect(reopenedSection.getByTestId("retained-leaf-card").nth(0)).toContainText(
+        "Clara Hoffmann"
+      );
+      await expect(reopenedSection.getByTestId("retained-leaf-card").nth(0)).not.toContainText(
+        REAL_PERSON
+      );
+    }
+  );
+
+  retainedTest(
+    "flipping writes exactly one audit event, whatever the number of confirmed surrogates",
+    async ({ alicePage }) => {
+      const before = await auditEventsFor(RETAINED_BASE_URL, "re-identified", "alice");
+      await alicePage.goto("/ui/processing-trace");
+      const rows = alicePage.getByTestId("processing-trace-row");
+      await rows.nth(2).click();
+      const section = alicePage.getByTestId("retained-payload-section").nth(0);
+      // Two confirmed surrogates in this exchange (Clara Hoffmann, Pinnacle
+      // Corp) -- one flip must still be exactly one audit record, not two.
+      await section.getByTestId("retained-payload-reveal-switch").click();
+      await expect(section.getByTestId("retained-leaf-span-revealed").first()).toBeVisible();
+      const after = await auditEventsFor(RETAINED_BASE_URL, "re-identified", "alice");
+      expect(after.length).toBe(before.length + 1);
+    }
+  );
+
+  retainedTest(
+    "the leak gate's own verdict is shown, and the view states it does not detect leaks",
+    async ({ alicePage }) => {
+      await alicePage.goto("/ui/processing-trace");
+      const rows = alicePage.getByTestId("processing-trace-row");
+      await rows.nth(2).click();
+      const section = alicePage.getByTestId("retained-payload-section").nth(0);
+      await expect(section.getByTestId("retained-payload-leak-verdict")).toHaveText("passed");
+      await expect(section.getByTestId("retained-payload-claim")).toContainText("not a leak check");
+    }
+  );
+
+  retainedTest(
+    "without re-identifier the switch is visible but styled locked, and an attempt writes a denied audit event",
+    async ({ erinPage }) => {
+      const before = await auditEventsFor(RETAINED_BASE_URL, "re-identify-denied", "erin");
+      await erinPage.goto("/ui/processing-trace");
+      const rows = erinPage.getByTestId("processing-trace-row");
+      await rows.nth(2).click();
+      const section = erinPage.getByTestId("retained-payload-section").nth(0);
+      const revealSwitch = section.getByTestId("retained-payload-reveal-switch");
+
+      // Present, not hidden (SEC-8) -- and NOT the native `disabled` state,
+      // since a truly disabled control could never be attempted at all.
+      await expect(revealSwitch).toBeVisible();
+      await expect(revealSwitch).toBeEnabled();
+
+      await revealSwitch.click();
+      await expect(section.getByTestId("retained-payload-reveal-denied")).toBeVisible();
+      await expect(revealSwitch).toHaveAttribute("aria-checked", "false");
+
+      // The attempt is audited even though it never resolved anything.
+      const after = await auditEventsFor(RETAINED_BASE_URL, "re-identify-denied", "erin");
+      expect(after.length).toBe(before.length + 1);
+
+      // No real value anywhere on the page, whatever the attempt did server-side.
+      const bodyText = await erinPage.locator("body").innerText();
+      expect(bodyText).not.toContain(REAL_PERSON);
+      expect(bodyText).not.toContain(REAL_ORG);
+    }
+  );
+
+  retainedTest(
+    "resolving does not consult the review inbox",
+    async ({ alicePage }) => {
+      const requests: string[] = [];
+      alicePage.on("request", (req) => requests.push(req.url()));
+
+      await alicePage.goto("/ui/processing-trace");
+      const rows = alicePage.getByTestId("processing-trace-row");
+      await rows.nth(2).click();
+      const section = alicePage.getByTestId("retained-payload-section").nth(0);
+      await section.getByTestId("retained-payload-reveal-switch").click();
+      await expect(section.getByTestId("retained-leaf-span-revealed").first()).toBeVisible();
+
+      expect(requests.some((url) => url.includes("/review-inbox"))).toBe(false);
     }
   );
 });

@@ -149,6 +149,38 @@ export async function revealSurrogate(
   return { outcome: "ok", real: body.real };
 }
 
+export type BulkRevealOutcome =
+  | { outcome: "ok"; results: Record<string, string> }
+  | { outcome: "locked" }
+  | { outcome: "error"; detail: string };
+
+/**
+ * Resolve every surrogate in `surrogates` through the SAME endpoint
+ * `revealSurrogate` uses, in one call (ADR-0059 §5, issue #401) -- the
+ * exchange-level Reveal switch's seam. `surrogates` must be non-empty. Every
+ * attempt is audited server-side exactly once, whatever the list's length.
+ */
+export async function revealSurrogatesBulk(
+  workspace: string,
+  surrogates: string[]
+): Promise<BulkRevealOutcome> {
+  const [primary, ...rest] = surrogates;
+  const params = new URLSearchParams();
+  for (const extra of rest) params.append("also", extra);
+  const qs = params.toString();
+  const r = await fetch(
+    `/v1/management/surrogate/${encodeURIComponent(primary)}/real${qs ? `?${qs}` : ""}`,
+    { headers: { "x-blindfold-workspace": workspace } }
+  );
+  if (r.status === 403) return { outcome: "locked" };
+  if (!r.ok) {
+    const body = await r.json().catch(() => ({}));
+    return { outcome: "error", detail: body.detail || `HTTP ${r.status}` };
+  }
+  const body = await r.json();
+  return { outcome: "ok", results: body.results ?? {} };
+}
+
 export type MergeOutcome =
   | { outcome: "ok" }
   | { outcome: "error"; detail: string };
