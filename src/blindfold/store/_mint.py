@@ -242,6 +242,13 @@ POOL_FALLBACK_PREFIXES: dict[str, str] = {
     "org_unit": "BFO",
 }
 DEFAULT_POOL_FALLBACK_PREFIX = "BFK"  # any kind absent from _POOLS/POOL_FALLBACK_PREFIXES
+# ADR-0060 §3 (issue #410): a world-acting request's containment token -- a
+# SECOND, deliberate path into the reserved namespace (ADR-0052 decision 5),
+# minted request-scoped/non-durable by `engine.ExchangeSession.contain`, never
+# through a pool cursor. Its own prefix, disjoint from every path above, so a
+# containment token can never collide with a durable pool-exhaustion fallback
+# issued to a different referent.
+CONTAINMENT_FALLBACK_PREFIX = "BFW"
 
 # The single source of truth for the WHOLE reserved-namespace family's shape
 # (ADR-0052 decision 2, issue #335): every prefix any fallback path in the
@@ -253,6 +260,7 @@ DEFAULT_POOL_FALLBACK_PREFIX = "BFK"  # any kind absent from _POOLS/POOL_FALLBAC
 _ALL_RESERVED_PREFIXES: tuple[str, ...] = (
     REVIEW_FALLBACK_PREFIX,
     REPLACEMENT_FALLBACK_PREFIX,
+    CONTAINMENT_FALLBACK_PREFIX,
     *dict.fromkeys(POOL_FALLBACK_PREFIXES.values()),
     DEFAULT_POOL_FALLBACK_PREFIX,
 )
@@ -313,6 +321,19 @@ def _replacement_pool_entry(position: int) -> str:
     if position < len(_REPLACEMENT_POOL):
         return _REPLACEMENT_POOL[position]
     return f"{REPLACEMENT_FALLBACK_PREFIX}{position:04d}"
+
+
+def containment_surrogate(position: int) -> str:
+    """The ``position``-th ADR-0060 §3 containment token (issue #410).
+
+    No named pool backs this path at all -- unlike every fallback above, which
+    only reaches its numbered form past a plausible-name pool's length, a
+    containment token is reserved-form from position 0. It is minted by
+    ``engine.ExchangeSession.contain``, request-scoped and non-durable: no
+    caller persists ``position`` anywhere, so nothing here needs (or has) a
+    durable cursor to advance -- callers restart from 0 each request.
+    """
+    return f"{CONTAINMENT_FALLBACK_PREFIX}{position:04d}"
 
 
 def next_replacement_surrogate(

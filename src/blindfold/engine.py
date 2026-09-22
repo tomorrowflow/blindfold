@@ -42,8 +42,19 @@ from .l3 import (
 # L3 uses for a single span.
 from .l3 import _context_window as _l3_context_window
 from .policy import DEFAULT_WORKSPACE
-from .review import ReviewInbox, _is_fallback_surrogate
-from .store._mint import _real_value_pattern, is_reserved_provisional_surrogate_form
+from .review import (
+    ReviewInbox,
+    _is_fallback_surrogate,
+    _PROVISIONAL_ORG_POOL,
+    _PROVISIONAL_POOL,
+)
+from .store._mint import (
+    _ORG_POOL,
+    _PERSON_POOL,
+    _real_value_pattern,
+    containment_surrogate,
+    is_reserved_provisional_surrogate_form,
+)
 from .surrogates import SurrogateMapping
 
 logger = logging.getLogger(__name__)
@@ -172,9 +183,42 @@ class ExchangeSession:
     def __init__(self) -> None:
         self.injected: dict[str, str] = {}  # surrogate -> real
         self.hops: list[HopDetail] = []  # scrubbed per-hop detail (ADR-0035, issue #153)
+        # ADR-0060 §3 (issue #410): real -> ADR-0060 §3 containment token, minted
+        # by `contain` below. Request-scoped and non-durable by construction --
+        # this dict lives only as long as this ExchangeSession does (one
+        # exchange), is never written to `mapping`/`inbox`, and backs no pool
+        # cursor. Separate from `injected`: a containment token is recorded into
+        # `injected` too (via the caller's own `session.record`, same as every
+        # other surrogate) so hop/leak-gate bookkeeping sees it, but this dict is
+        # what makes repeat lookups for the SAME real, across every hop of this
+        # request, return the SAME token.
+        self._contained: dict[str, str] = {}
 
     def record(self, surrogate: str, real: str) -> None:
         self.injected[surrogate] = real
+
+    def contain(self, real: str) -> str:
+        """Mint-or-reuse this exchange's ADR-0060 §3 containment token for ``real``.
+
+        Never touches `SurrogateMapping`/`ReviewInbox` -- draws straight from the
+        reserved namespace (:func:`~blindfold.store._mint.containment_surrogate`),
+        positions starting fresh at 0 for every exchange (no durable cursor to
+        advance, matching ADR-0060 §3's "additive and non-durable").
+        """
+        token = self._contained.get(real)
+        if token is None:
+            token = containment_surrogate(len(self._contained))
+            self._contained[real] = token
+        return token
+
+    def contained_reals(self) -> dict[str, str]:
+        """This exchange's real -> containment-token registry so far (issue #410),
+        for the cross-hop containment sweep in :func:`_collect_containment_spans`:
+        a referent contained on one hop must be contained identically on every
+        other hop of the same request, the same cross-hop discipline #386/#387
+        already established for an ordinary provisional pair.
+        """
+        return dict(self._contained)
 
 
 def _replay_inbox(
@@ -213,6 +257,7 @@ def blindfold_payload(
     declared_tool_vocabulary: "DeclaredToolVocabulary | None" = None,
     system_confined_tokens: frozenset[str] = frozenset(),
     case_inconsistency: "CaseInconsistencySuppression | None" = None,
+    world_acting: bool = False,
 ) -> tuple[dict[str, Any], ExchangeSession]:
     """Return a blindfolded copy of an Anthropic Messages ``payload`` plus the session.
 
@@ -273,6 +318,14 @@ def blindfold_payload(
     The resulting ``session.hops`` (issue #153, ADR-0035) labels each hop's L3
     detail with ``l3_detector.provider_name`` when ``l3_detector`` ran for that hop
     — a display-only string, never used to select behavior here.
+
+    ``world_acting`` (ADR-0060 §2-§3, issue #410) -- see
+    :func:`is_world_acting_request_messages`. When ``True``, every hop below
+    (system, every message, the cross-hop closing sweeps) draws a person/org
+    surrogate from this exchange's reserved-namespace containment registry
+    (:meth:`ExchangeSession.contain`) instead of the plausible pool --
+    additive and non-durable, never written to ``mapping``/``inbox``. ``False``
+    (the default) reproduces today's behavior exactly.
     """
     session = ExchangeSession()
     out = copy.deepcopy(payload)
@@ -289,7 +342,7 @@ def blindfold_payload(
         out["system"] = _blindfold_system(
             system, mapping, session, l3_detector, inbox, declared_tools, ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
-            case_inconsistency,
+            case_inconsistency, world_acting=world_acting,
         )
         session.hops.append(_finish_hop(ctx, "system", len(session.hops)))
 
@@ -298,7 +351,7 @@ def blindfold_payload(
         message["content"] = _blindfold_content(
             message.get("content"), mapping, session, l3_detector, inbox,
             declared_tools, ctx, workspace, phone_candidates_enabled,
-            system_confined_tokens, case_inconsistency,
+            system_confined_tokens, case_inconsistency, world_acting=world_acting,
         )
         session.hops.append(
             _finish_hop(ctx, _hop_kind_for_message(message), len(session.hops))
@@ -306,14 +359,17 @@ def blindfold_payload(
 
     if system is not None:
         out["system"] = _close_cross_hop_mint_gap(
-            out["system"], mapping, session, inbox, workspace
+            out["system"], mapping, session, inbox, workspace, world_acting=world_acting
         )
     for message in out.get("messages", []):
         message["content"] = _close_cross_hop_mint_gap(
-            message.get("content"), mapping, session, inbox, workspace
+            message.get("content"), mapping, session, inbox, workspace,
+            world_acting=world_acting,
         )
-    if inbox is not None and len(inbox.list()) > items_before_exchange:
-        _reapply_provisional_pairs_across_hops(out, mapping, session, inbox, workspace)
+    if world_acting or (inbox is not None and len(inbox.list()) > items_before_exchange):
+        _reapply_provisional_pairs_across_hops(
+            out, mapping, session, inbox, workspace, world_acting=world_acting
+        )
 
     _blindfold_tools_messages(out.get("tools"), mapping, session, inbox)
 
@@ -326,6 +382,7 @@ def _close_cross_hop_mint_gap(
     session: ExchangeSession,
     inbox: ReviewInbox | None,
     workspace: str,
+    world_acting: bool = False,
 ) -> Any:
     """Issue #386 (ADR-0051): a referent minted mid-pass by a *later* hop of this
     same request is invisible to an *earlier* hop's own pass -- ``blindfold_payload``/
@@ -349,10 +406,16 @@ def _close_cross_hop_mint_gap(
     ``session.hops``, not a new hop of its own.
     """
     if isinstance(hop_value, str):
-        return _blindfold_text(hop_value, mapping, session, None, inbox, workspace=workspace)
+        return _blindfold_text(
+            hop_value, mapping, session, None, inbox, workspace=workspace,
+            world_acting=world_acting,
+        )
     if isinstance(hop_value, list):
         return [
-            _blindfold_block(block, mapping, session, None, inbox, workspace=workspace)
+            _blindfold_block(
+                block, mapping, session, None, inbox, workspace=workspace,
+                world_acting=world_acting,
+            )
             for block in hop_value
         ]
     return hop_value
@@ -369,6 +432,7 @@ def blindfold_chat_completions_payload(
     declared_tool_vocabulary: "DeclaredToolVocabulary | None" = None,
     system_confined_tokens: frozenset[str] = frozenset(),
     case_inconsistency: "CaseInconsistencySuppression | None" = None,
+    world_acting: bool = False,
 ) -> tuple[dict[str, Any], ExchangeSession]:
     """Return a blindfolded copy of an OpenAI Chat Completions ``payload`` plus the session.
 
@@ -392,6 +456,9 @@ def blindfold_chat_completions_payload(
     ``case_inconsistency`` (ADR-0023, "Update (issue #342)", issue #345) — see
     :func:`extract_case_inconsistency_evidence_chat_completions` and
     :func:`blindfold_payload`.
+
+    ``world_acting`` (ADR-0060 §2-§3, issue #410) — see
+    :func:`is_world_acting_request_chat_completions` and :func:`blindfold_payload`.
     """
     session = ExchangeSession()
     out = copy.deepcopy(payload)
@@ -407,7 +474,7 @@ def blindfold_chat_completions_payload(
         message["content"] = _blindfold_content(
             message.get("content"), mapping, session, l3_detector, inbox,
             declared_tools, ctx, workspace, phone_candidates_enabled,
-            system_confined_tokens, case_inconsistency,
+            system_confined_tokens, case_inconsistency, world_acting=world_acting,
         )
         session.hops.append(
             _finish_hop(ctx, _hop_kind_for_message(message), len(session.hops))
@@ -415,10 +482,13 @@ def blindfold_chat_completions_payload(
 
     for message in out.get("messages", []):
         message["content"] = _close_cross_hop_mint_gap(
-            message.get("content"), mapping, session, inbox, workspace
+            message.get("content"), mapping, session, inbox, workspace,
+            world_acting=world_acting,
         )
-    if inbox is not None and len(inbox.list()) > items_before_exchange:
-        _reapply_provisional_pairs_across_hops(out, mapping, session, inbox, workspace)
+    if world_acting or (inbox is not None and len(inbox.list()) > items_before_exchange):
+        _reapply_provisional_pairs_across_hops(
+            out, mapping, session, inbox, workspace, world_acting=world_acting
+        )
 
     _blindfold_tools_chat_completions(out.get("tools"), mapping, session, inbox)
 
@@ -429,8 +499,9 @@ def _reapply_provisional_pairs_across_hops(
     out: dict[str, Any],
     mapping: SurrogateMapping,
     session: ExchangeSession,
-    inbox: ReviewInbox,
+    inbox: ReviewInbox | None,
     workspace: str,
+    world_acting: bool = False,
 ) -> None:
     """Catch-up pass for issue #387 (mid-exchange mint reaches an earlier hop).
 
@@ -465,12 +536,12 @@ def _reapply_provisional_pairs_across_hops(
     if system is not None:
         out["system"] = _blindfold_system(
             system, mapping, session, None, inbox, workspace=workspace,
-            provisional_catchup=True,
+            provisional_catchup=True, world_acting=world_acting,
         )
     for message in out.get("messages", []):
         message["content"] = _blindfold_content(
             message.get("content"), mapping, session, None, inbox,
-            workspace=workspace, provisional_catchup=True,
+            workspace=workspace, provisional_catchup=True, world_acting=world_acting,
         )
 
 
@@ -851,6 +922,73 @@ def _extract_declared_tools(
     return frozenset(names)
 
 
+def _is_world_acting_request(
+    payload: dict[str, Any], has_input_schema: Callable[[dict[str, Any]], bool]
+) -> bool:
+    """ADR-0060 §2's structural test, shared by both payload shapes: a request
+    is world-acting if any declared tool lacks an input schema, or if
+    ``mcp_servers`` is present.
+
+    Reuses :func:`_extract_declared_tools`'s own defensive walk of ``tools``
+    (a missing/non-list ``tools`` or a non-dict entry contributes nothing) --
+    deliberately does NOT inspect a tool's ``name``/``type``: the versioned
+    type string never decides the executor (ADR-0060 §2), so no list of tool
+    names or types is introduced here, ever.
+    """
+    tools = payload.get("tools")
+    if isinstance(tools, list):
+        for tool in tools:
+            if isinstance(tool, dict) and not has_input_schema(tool):
+                return True
+    return "mcp_servers" in payload
+
+
+def is_world_acting_request_messages(payload: dict[str, Any]) -> bool:
+    """ADR-0060 §2 for an Anthropic Messages ``payload``: a declared tool lacking
+    ``input_schema``, or a present ``mcp_servers`` (Messages-shaped only --
+    Chat Completions has no equivalent field, see
+    :func:`is_world_acting_request_chat_completions`).
+    """
+    return _is_world_acting_request(payload, lambda tool: "input_schema" in tool)
+
+
+_PLAUSIBLE_NAMED_SURROGATES: frozenset[str] = (
+    frozenset(_PERSON_POOL)
+    | frozenset(_ORG_POOL)
+    | frozenset(_PROVISIONAL_POOL)
+    | frozenset(_PROVISIONAL_ORG_POOL)
+)
+
+
+def _is_plausible_named_surrogate(surrogate: str) -> bool:
+    """ADR-0060 §3: True if ``surrogate`` is drawn from a plausible PERSON or ORG
+    pool -- the cold-start pools (`store._mint._PERSON_POOL`/`_ORG_POOL`) and
+    the live provisional pools (`review._PROVISIONAL_POOL`/`_PROVISIONAL_ORG_POOL`).
+
+    A structural, closed-set membership test (issue #410's own containment
+    trigger), not an open list: these four tuples are the entirety of what
+    "a plausible person/org surrogate" can ever be in this codebase. A TERM
+    surrogate, a reserved-form token, or an L1 PII surrogate is never a
+    member -- Term is out of ADR-0060 §3's scope (it cannot summon a locatable
+    human), and the other two are already outside the plausible-pool family by
+    construction.
+    """
+    return surrogate in _PLAUSIBLE_NAMED_SURROGATES
+
+
+def is_world_acting_request_chat_completions(payload: dict[str, Any]) -> bool:
+    """ADR-0060 §2 for an OpenAI Chat Completions ``payload``: a declared tool
+    whose ``function.parameters`` is absent. No ``mcp_servers`` clause -- that
+    field doesn't exist in this shape.
+    """
+
+    def _has_schema(tool: dict[str, Any]) -> bool:
+        function = tool.get("function")
+        return isinstance(function, dict) and "parameters" in function
+
+    return _is_world_acting_request(payload, _has_schema)
+
+
 class DeclaredToolVocabulary:
     """Workspace-scoped, process-lifetime registry of every declared-tool name
     (and #297 component) a workspace's requests have EVER carried (issue #302).
@@ -1000,19 +1138,20 @@ def _blindfold_system(
     system_confined_tokens: frozenset[str] = frozenset(),
     case_inconsistency: "CaseInconsistencySuppression | None" = None,
     provisional_catchup: bool = False,
+    world_acting: bool = False,
 ) -> Any:
     if isinstance(system, str):
         return _blindfold_text(
             system, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
-            case_inconsistency, provisional_catchup=provisional_catchup,
+            case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
         )
     if isinstance(system, list):
         return [
             _blindfold_block(
                 block, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
                 workspace, phone_candidates_enabled, system_confined_tokens,
-                case_inconsistency, provisional_catchup=provisional_catchup,
+                case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
             )
             for block in system
         ]
@@ -1032,19 +1171,20 @@ def _blindfold_content(
     system_confined_tokens: frozenset[str] = frozenset(),
     case_inconsistency: "CaseInconsistencySuppression | None" = None,
     provisional_catchup: bool = False,
+    world_acting: bool = False,
 ) -> Any:
     if isinstance(content, str):
         return _blindfold_text(
             content, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
-            case_inconsistency, provisional_catchup=provisional_catchup,
+            case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
         )
     if isinstance(content, list):
         return [
             _blindfold_block(
                 block, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
                 workspace, phone_candidates_enabled, system_confined_tokens,
-                case_inconsistency, provisional_catchup=provisional_catchup,
+                case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
             )
             for block in content
         ]
@@ -1140,6 +1280,7 @@ def _blindfold_block(
     system_confined_tokens: frozenset[str] = frozenset(),
     case_inconsistency: "CaseInconsistencySuppression | None" = None,
     provisional_catchup: bool = False,
+    world_acting: bool = False,
 ) -> Any:
     """Rewrite one content block in place -- deny-by-default over its string leaves.
 
@@ -1171,7 +1312,7 @@ def _blindfold_block(
         block["text"] = _blindfold_text(
             block["text"], mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
-            case_inconsistency, provisional_catchup=provisional_catchup,
+            case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
         )
         return block
     if block_type in _TOOL_RESULT_BLOCK_TYPES:
@@ -1179,7 +1320,7 @@ def _blindfold_block(
             block.get("content"), mapping, session, l3_detector, inbox,
             declared_tools, hop_ctx, workspace, phone_candidates_enabled,
             system_confined_tokens, case_inconsistency,
-            provisional_catchup=provisional_catchup,
+            provisional_catchup=provisional_catchup, world_acting=world_acting,
         )
         return block
     if block_type in _TOOL_CALL_BLOCK_TYPES:
@@ -1191,7 +1332,7 @@ def _blindfold_block(
             block.get("input"), mapping, session, l3_detector, inbox,
             declared_tools, hop_ctx, workspace, phone_candidates_enabled,
             system_confined_tokens, case_inconsistency,
-            provisional_catchup=provisional_catchup,
+            provisional_catchup=provisional_catchup, world_acting=world_acting,
         )
         return block
     non_hop_keys = _non_hop_keys_for_block_type(block_type)
@@ -1201,7 +1342,7 @@ def _blindfold_block(
         block[key] = _blindfold_block_value(
             value, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
-            case_inconsistency, provisional_catchup=provisional_catchup,
+            case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
         )
     return block
 
@@ -1219,6 +1360,7 @@ def _blindfold_block_value(
     system_confined_tokens: frozenset[str] = frozenset(),
     case_inconsistency: "CaseInconsistencySuppression | None" = None,
     provisional_catchup: bool = False,
+    world_acting: bool = False,
 ) -> Any:
     """Recursively rewrite every string leaf of a content-block subtree (issue #323).
 
@@ -1235,7 +1377,7 @@ def _blindfold_block_value(
         return _blindfold_text(
             value, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
-            case_inconsistency, provisional_catchup=provisional_catchup,
+            case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
         )
     if isinstance(value, dict):
         return {
@@ -1245,7 +1387,7 @@ def _blindfold_block_value(
                 else _blindfold_block_value(
                     v, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
                     workspace, phone_candidates_enabled, system_confined_tokens,
-                    case_inconsistency, provisional_catchup=provisional_catchup,
+                    case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
                 )
             )
             for k, v in value.items()
@@ -1255,7 +1397,7 @@ def _blindfold_block_value(
             _blindfold_block_value(
                 item, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
                 workspace, phone_candidates_enabled, system_confined_tokens,
-                case_inconsistency, provisional_catchup=provisional_catchup,
+                case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
             )
             for item in value
         ]
@@ -1275,20 +1417,21 @@ def _blindfold_json_value(
     system_confined_tokens: frozenset[str] = frozenset(),
     case_inconsistency: "CaseInconsistencySuppression | None" = None,
     provisional_catchup: bool = False,
+    world_acting: bool = False,
 ) -> Any:
     """Recursively rewrite every string leaf in a JSON-shaped value via L1+L2."""
     if isinstance(value, str):
         return _blindfold_text(
             value, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
-            case_inconsistency, provisional_catchup=provisional_catchup,
+            case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
         )
     if isinstance(value, dict):
         return {
             k: _blindfold_json_value(
                 v, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
                 workspace, phone_candidates_enabled, system_confined_tokens,
-                case_inconsistency, provisional_catchup=provisional_catchup,
+                case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
             )
             for k, v in value.items()
         }
@@ -1297,7 +1440,7 @@ def _blindfold_json_value(
             _blindfold_json_value(
                 item, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
                 workspace, phone_candidates_enabled, system_confined_tokens,
-                case_inconsistency, provisional_catchup=provisional_catchup,
+                case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
             )
             for item in value
         ]
@@ -1381,6 +1524,81 @@ def _overlaps_any(start: int, end: int, ranges: Sequence[tuple[int, int]]) -> bo
     characters already replaced, not just a fully-contained hit.
     """
     return any(start < r_end and r_start < end for r_start, r_end in ranges)
+
+
+# ADR-0060 §3 (issue #410): the entity kinds containment redirects to the
+# reserved namespace in a world-acting request. Term/date/number/PII stay
+# untouched -- none of them can summon a locatable human.
+_CONTAINED_ENTITY_TYPES = frozenset({"person", "organization"})
+
+
+def _collect_containment_spans(
+    text: str,
+    mapping: SurrogateMapping,
+    inbox: ReviewInbox | None,
+    session: ExchangeSession,
+    hop_ctx: "_HopContext | None",
+    exclude: Sequence[tuple[int, int]] = (),
+) -> list[ReplacementSpan]:
+    """ADR-0060 §3 (issue #410): collect the redirect-to-reserved-namespace
+    spans for a world-acting request against frozen ``text`` -- the caller's
+    own gate (``world_acting``) decides whether this runs at all.
+
+    Highest precedence of every pass in :func:`_blindfold_text`: called
+    before L2/the confirmed-component pass/the provisional-pair pass, and its
+    ranges are excluded from all three, so a contained referent's own
+    (plausible) surrogate is never spliced in anywhere in this hop.
+
+    Candidates are every CONFIRMED entity (``mapping.entities()``) and
+    PROVISIONAL item (``inbox.list()``) whose OWN surrogate is plausible-named
+    (:func:`_is_plausible_named_surrogate`) -- canonical/real value plus every
+    known Variation -- unioned with every real value this exchange has
+    ALREADY contained on an earlier hop (:meth:`ExchangeSession.contained_reals`),
+    so a referent minted mid-request by the L3 world-acting mint guard further
+    down in :func:`_blindfold_text` is caught on every OTHER hop too -- the
+    same cross-hop discipline #386/#387 already established for the ordinary
+    provisional-pair pass. Additive and non-durable throughout
+    (:meth:`ExchangeSession.contain`): neither ``mapping`` nor ``inbox`` is
+    ever written here.
+    """
+    candidates: dict[str, str] = dict(session.contained_reals())
+    for entity in mapping.entities():
+        if not _is_plausible_named_surrogate(entity.surrogate):
+            continue
+        token = session.contain(entity.canonical)
+        candidates.setdefault(entity.canonical, token)
+        for variation in entity.variations:
+            candidates.setdefault(variation, token)
+    if inbox is not None:
+        for item in inbox.list():
+            if not _is_plausible_named_surrogate(item.provisional_surrogate):
+                continue
+            token = session.contain(item.real)
+            candidates.setdefault(item.real, token)
+            for variation in item.variations:
+                candidates.setdefault(variation, token)
+    if not candidates:
+        return []
+    claimed = list(exclude)
+    spans: list[ReplacementSpan] = []
+    for value in sorted(candidates, key=len, reverse=True):
+        if not value:
+            continue
+        token = candidates[value]
+        occurrences = [
+            (match.start(), match.end())
+            for match in _real_value_pattern(value).finditer(text)
+            if not _overlaps_any(match.start(), match.end(), claimed)
+        ]
+        if not occurrences:
+            continue
+        claimed.extend(occurrences)
+        session.record(token, value)
+        if hop_ctx is not None:
+            hop_ctx.surrogates.append(token)
+        for start, end in occurrences:
+            spans.append(ReplacementSpan(start, end, token, value, "containment"))
+    return spans
 
 
 def _collect_l2_spans(text: str, mapping: SurrogateMapping) -> list[ReplacementSpan]:
@@ -1469,6 +1687,7 @@ def _collect_confirmed_component_spans(
     session: ExchangeSession,
     hop_ctx: "_HopContext | None",
     exclude: Sequence[tuple[int, int]] = (),
+    world_acting: bool = False,
 ) -> list[ReplacementSpan]:
     """Collect issue #394's confirmed-entity bare-word-component replacement spans
     against frozen ``text`` -- the entity-graph mirror of
@@ -1480,6 +1699,18 @@ def _collect_confirmed_component_spans(
     :func:`_collect_provisional_pair_spans`'s own precedence discipline -- a
     confirmed entity's full canonical span always wins over its own bare
     component at the same position.
+
+    ``world_acting`` (ADR-0060 §3, issue #410): a bare-word component's
+    aligned surrogate word is ITSELF a fragment of a plausible person/org
+    name (e.g. "Vogt" from "Bernhard Vogt") -- summoning a locatable human is
+    exactly as possible from the fragment as from the whole. When the owning
+    entity's full surrogate is plausible-named
+    (:func:`_is_plausible_named_surrogate`), every one of its components is
+    redirected to that SAME entity's containment token
+    (:meth:`ExchangeSession.contain`, keyed by ``entity.canonical`` -- the
+    same key :func:`_collect_containment_spans` uses for the entity's whole
+    value, so a bare component and a whole-value mention of the same referent
+    always agree on one token).
     """
     entities = mapping.entities()
     component_map = _confirmed_component_map(entities)
@@ -1488,9 +1719,12 @@ def _collect_confirmed_component_spans(
     claimed = list(exclude)
     spans: list[ReplacementSpan] = []
     for entity in entities:
+        contained = world_acting and _is_plausible_named_surrogate(entity.surrogate)
         pairs = _confirmed_pair_map(entity, component_map)
         for value in sorted(pairs, key=len, reverse=True):
             target, recorded_real = pairs[value]
+            if contained:
+                target = session.contain(entity.canonical)
             occurrences = [
                 (match.start(), match.end())
                 for match in _real_value_pattern(value).finditer(text)
@@ -1515,6 +1749,7 @@ def _collect_provisional_pair_spans(
     session: ExchangeSession,
     hop_ctx: "_HopContext | None",
     exclude: Sequence[tuple[int, int]] = (),
+    world_acting: bool = False,
 ) -> list[ReplacementSpan]:
     """Collect ADR-0051 provisional-pair replacement spans against frozen ``text``
     (issue #299/#300, extended to real-word components by #306) -- the
@@ -1545,6 +1780,12 @@ def _collect_provisional_pair_spans(
     matching the pre-#325 behaviour: ``.subn()`` replaced every occurrence of
     one value in a single call, so a repeated value was one bookkeeping entry
     covering several spans, never one per occurrence.
+
+    ``world_acting`` (ADR-0060 §3, issue #410): mirrors
+    :func:`_collect_confirmed_component_spans`'s own containment redirect,
+    provisional side -- when ``item.provisional_surrogate`` is
+    plausible-named, every value (whole real, variation, or component word)
+    for that item is redirected to ``session.contain(item.real)`` instead.
     """
     if inbox is None:
         return []
@@ -1553,9 +1794,12 @@ def _collect_provisional_pair_spans(
     claimed = list(exclude)
     spans: list[ReplacementSpan] = []
     for item in items:
+        contained = world_acting and _is_plausible_named_surrogate(item.provisional_surrogate)
         pairs = _provisional_pair_map(item, component_map)
         for value in sorted(pairs, key=len, reverse=True):
             target, recorded_real = pairs[value]
+            if contained:
+                target = session.contain(item.real)
             occurrences = [
                 (match.start(), match.end())
                 for match in _real_value_pattern(value).finditer(text)
@@ -1637,6 +1881,7 @@ def _blindfold_text(
     system_confined_tokens: frozenset[str] = frozenset(),
     case_inconsistency: "CaseInconsistencySuppression | None" = None,
     provisional_catchup: bool = False,
+    world_acting: bool = False,
 ) -> str:
     """Rewrite ``text`` by replacing every L2-detected entity span with its surrogate.
 
@@ -1681,9 +1926,42 @@ def _blindfold_text(
     earlier hop of *this same exchange* already finished blinding. See
     :func:`_reapply_provisional_pairs_across_hops` for why a second pass is
     needed at all.
+
+    ``world_acting`` (ADR-0060 §2-§3, issue #410): when ``True``, an extra
+    highest-precedence pass (:func:`_collect_containment_spans`) runs first,
+    redirecting every person/org referent whose surrogate is plausible-named
+    to this exchange's own reserved-namespace containment token instead
+    (:meth:`ExchangeSession.contain`) -- additive and non-durable, never
+    written to ``mapping``/``inbox``. ``False`` (the default) reproduces
+    today's behavior exactly.
     """
     if provisional_catchup:
-        return _reapply_provisional_pairs_catchup(text, mapping, session, inbox, hop_ctx)
+        return _reapply_provisional_pairs_catchup(
+            text, mapping, session, inbox, hop_ctx, world_acting=world_acting
+        )
+    # Issue #394/#410: ``text`` is the untouched, pre-blind hop text on the
+    # main walk, but it is ALREADY-BLINDED output on the cross-hop closing
+    # sweep (#386's ``_close_cross_hop_mint_gap``, which re-enters this exact
+    # branch, not the ``provisional_catchup`` one). Computed before the
+    # containment pass too (not just confirmed-component/provisional-pair
+    # below), so a containment candidate's real value/variation can never
+    # match literally inside an already-injected surrogate's own text (the
+    # same #68/#292 self-poisoning class) -- e.g. a contained referent's bare
+    # first name coinciding with a word inside an unrelated, already-spliced
+    # surrogate.
+    injected_ranges = _injected_surrogate_ranges(text, mapping, session, inbox)
+    # ADR-0060 §3 (issue #410): computed before every other pass below so its
+    # ranges can be excluded from all of them -- see
+    # :func:`_collect_containment_spans` for why this is the highest-
+    # precedence stage in the whole function.
+    containment_spans = (
+        _collect_containment_spans(
+            text, mapping, inbox, session, hop_ctx, exclude=injected_ranges
+        )
+        if world_acting
+        else []
+    )
+    containment_ranges = [(span.start, span.end) for span in containment_spans]
     # Issue #325: stages 1 (L2), 1.5 (the provisional-pair pass, ADR-0051) and 2
     # (L1) each *collect* replacement spans against ``text`` -- the untouched,
     # frozen hop text -- instead of mutating a shared accumulator mid-detection.
@@ -1697,7 +1975,11 @@ def _blindfold_text(
     # final splice further down, which was already collect-then-apply before
     # this issue.
     l2_started_at = time.monotonic()
-    l2_spans = _collect_l2_spans(text, mapping)
+    l2_spans = [
+        span
+        for span in _collect_l2_spans(text, mapping)
+        if not _overlaps_any(span.start, span.end, containment_ranges)
+    ]
     if hop_ctx is not None:
         hop_ctx.l2_count += len(l2_spans)
         hop_ctx.l2_duration_ms += (time.monotonic() - l2_started_at) * 1000
@@ -1719,6 +2001,14 @@ def _blindfold_text(
     # not gated on ``inbox is not None`` -- because the confirmed-component pass
     # itself runs regardless of ``inbox`` (reads ``mapping.entities()`` alone),
     # so the guard must exist on the no-inbox call path too.
+    #
+    # Recomputed here rather than reusing the pre-containment set above
+    # (issue #410): this hop's own containment pass just ``session.record``ed
+    # a fresh token, so re-scanning ``text`` now also protects the
+    # confirmed-component/provisional-pair passes below from matching inside
+    # THAT token's own literal text on a future re-entry (the cross-hop
+    # closing sweep re-processes already-spliced text, containment token
+    # included).
     injected_ranges = _injected_surrogate_ranges(text, mapping, session, inbox)
 
     # Issue #394: a CONFIRMED entity's own bare-word component (e.g. "Doe" once
@@ -1728,7 +2018,12 @@ def _blindfold_text(
     # so a confirmed component always wins over a provisional one for the same
     # literal text below.
     confirmed_component_spans = _collect_confirmed_component_spans(
-        text, mapping, session, hop_ctx, exclude=l2_ranges + injected_ranges
+        text,
+        mapping,
+        session,
+        hop_ctx,
+        exclude=l2_ranges + injected_ranges + containment_ranges,
+        world_acting=world_acting,
     )
     confirmed_component_ranges = [
         (span.start, span.end) for span in confirmed_component_spans
@@ -1758,7 +2053,8 @@ def _blindfold_text(
         inbox,
         session,
         hop_ctx,
-        exclude=l2_ranges + confirmed_component_ranges + injected_ranges,
+        exclude=l2_ranges + confirmed_component_ranges + injected_ranges + containment_ranges,
+        world_acting=world_acting,
     )
     pp_ranges = [(span.start, span.end) for span in pp_spans]
 
@@ -1768,7 +2064,9 @@ def _blindfold_text(
     # already won; PII spans cover what L1 alone is meant to catch.
     l1_started_at = time.monotonic()
     l1_spans = _collect_l1_spans(
-        text, mapping, exclude=l2_ranges + confirmed_component_ranges + pp_ranges
+        text,
+        mapping,
+        exclude=l2_ranges + confirmed_component_ranges + pp_ranges + containment_ranges,
     )
     if hop_ctx is not None:
         hop_ctx.l1_duration_ms += (time.monotonic() - l1_started_at) * 1000
@@ -1788,7 +2086,7 @@ def _blindfold_text(
             hop_ctx.surrogates.append(span.surrogate)
 
     result = _apply_spans(
-        text, l2_spans + confirmed_component_spans + pp_spans + l1_spans
+        text, containment_spans + l2_spans + confirmed_component_spans + pp_spans + l1_spans
     )
     # L3 candidate-span adjudication (ADR-0003 / ADR-0010): novel capitalized tokens
     # the deterministic passes couldn't resolve. Confirmed candidates get a
@@ -2017,6 +2315,26 @@ def _blindfold_text(
             adjudicator,
             suppression_trace,
         ) in group_infos:
+            # ADR-0060 §3 (issue #410): a brand-new person/org referent, first
+            # confirmed in THIS world-acting request, must never reach the
+            # review inbox at all -- ``inbox.upsert`` below would write a
+            # durable row and advance ``ReviewInbox``'s own pool cursor with a
+            # PLAUSIBLE surrogate, exactly what "additive and non-durable"
+            # forbids. Mint this exchange's own reserved-namespace token
+            # directly instead (:meth:`ExchangeSession.contain`) and skip the
+            # inbox entirely; :func:`_collect_containment_spans` picks up this
+            # same real value on every OTHER hop of this request via
+            # ``session.contained_reals()``. A referent already known to
+            # ``mapping``/``inbox`` never reaches this loop in the first place
+            # (L2/the provisional-pair pass already claimed its text ahead of
+            # L3), so this branch only ever fires for a genuinely first-seen
+            # referent.
+            if world_acting and entity_type in _CONTAINED_ENTITY_TYPES:
+                surrogate = session.contain(real)
+                spans.append((start, end, surrogate, real))
+                if hop_ctx is not None:
+                    hop_ctx.l3_verdicts.append((entity_type, adjudicator))
+                continue
             # ADR-0037 hardening: also exclude provisional surrogates already
             # active in the inbox from mint candidacy, not just known real
             # values -- defense-in-depth so a stale/reset pool cursor (e.g. a
@@ -2376,6 +2694,7 @@ def _reapply_provisional_pairs_catchup(
     session: ExchangeSession,
     inbox: ReviewInbox | None,
     hop_ctx: "_HopContext | None",
+    world_acting: bool = False,
 ) -> str:
     """The leaf action behind ``_blindfold_text(..., provisional_catchup=True)``
     (issue #387): re-apply ADR-0051's provisional-pair substitution to ``text``
@@ -2396,12 +2715,37 @@ def _reapply_provisional_pairs_catchup(
     un-blinded* occurrence -- never one that merely sits inside someone else's
     surrogate -- leaving that accepted residual exactly as fail-closed as
     before.
+
+    ``world_acting`` (ADR-0060 §3, issue #410): also re-runs the containment
+    sweep (:func:`_collect_containment_spans`) over this already-blinded text
+    -- a referent contained mid-request by a LATER hop's L3 pass (the
+    ``ExchangeSession.contain`` guard in :func:`_blindfold_text`) must still
+    be caught here, on an EARLIER hop's own already-finished pass, the same
+    cross-hop discipline this whole catch-up mechanism exists for. Guarded by
+    the identical self-poisoning exclusion as the provisional-pair pass below
+    (this text already contains surrogates, unlike :func:`_blindfold_text`'s
+    own main-walk call) -- computed once, up front, and reused for both.
     """
+    pre_containment_exclude = _injected_surrogate_ranges(text, mapping, session, inbox)
+    containment_spans = (
+        _collect_containment_spans(
+            text, mapping, inbox, session, hop_ctx, exclude=pre_containment_exclude
+        )
+        if world_acting
+        else []
+    )
+    containment_ranges = [(span.start, span.end) for span in containment_spans]
     if inbox is None:
-        return text
-    exclude = _injected_surrogate_ranges(text, mapping, session, inbox)
-    spans = _collect_provisional_pair_spans(text, inbox, session, hop_ctx, exclude=exclude)
-    return _apply_spans(text, spans)
+        return _apply_spans(text, containment_spans) if containment_spans else text
+    # Recomputed (issue #410) rather than reusing ``pre_containment_exclude``:
+    # the containment pass above may have just ``session.record``ed a fresh
+    # token, so re-scanning also protects the provisional-pair pass below
+    # from matching inside THAT token's own literal text.
+    exclude = _injected_surrogate_ranges(text, mapping, session, inbox) + containment_ranges
+    spans = _collect_provisional_pair_spans(
+        text, inbox, session, hop_ctx, exclude=exclude, world_acting=world_acting
+    )
+    return _apply_spans(text, containment_spans + spans)
 
 
 def _restore_block(block: Any, session: ExchangeSession) -> Any:

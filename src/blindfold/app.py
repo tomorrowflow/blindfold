@@ -140,6 +140,8 @@ from .engine import (
     extract_declared_tools_messages,
     extract_system_confined_tokens_chat_completions,
     extract_system_confined_tokens_messages,
+    is_world_acting_request_chat_completions,
+    is_world_acting_request_messages,
     leak_gate,
     non_hop_block_type_fields,
     resolution_gate,
@@ -1852,6 +1854,7 @@ async def _exchange(
     extract_declared_tools: Callable[[dict], frozenset[str]],
     extract_system_confined_tokens: Callable[[dict], frozenset[str]],
     extract_case_inconsistency_evidence: Callable[[dict], CaseInconsistencyEvidence],
+    extract_world_acting: Callable[[dict], bool],
     blindfold: Callable[..., tuple[dict, ExchangeSession]],
     send_upstream: Callable[[dict, dict[str, str]], Awaitable[dict]],
     declared_tool_vocabulary: DeclaredToolVocabulary | None = None,
@@ -1889,6 +1892,14 @@ async def _exchange(
 
     A future ``/v1/responses`` wrapper (#263) supplies the same values;
     nothing here changes.
+
+    ``extract_world_acting`` (ADR-0060 §2-§3, issue #410) computes the
+    structural world-acting test on the untouched payload -- see
+    :func:`~blindfold.engine.is_world_acting_request_messages` /
+    :func:`~blindfold.engine.is_world_acting_request_chat_completions`. Always
+    threaded through to ``blindfold`` below, the same per-request-only
+    discipline as ``declared_tools``/``system_confined_tokens``: never
+    persisted, never state on ``l3_detector``.
     """
     start = time.monotonic()
     payload = await request.json()
@@ -1915,6 +1926,7 @@ async def _exchange(
         case_inconsistency = CaseInconsistencySuppression(
             evidence=extract_case_inconsistency_evidence(payload)
         )
+        world_acting = extract_world_acting(payload)
         result = await _mint_or_block(
             lambda: blindfold(
                 payload, mapping, effective_l3_detector, mint_inbox(inbox), declared_tools,
@@ -1923,6 +1935,7 @@ async def _exchange(
                 declared_tool_vocabulary=declared_tool_vocabulary,
                 system_confined_tokens=system_confined_tokens,
                 case_inconsistency=case_inconsistency,
+                world_acting=world_acting,
             ),
             workspace,
             policy.deterministic_only,
@@ -2046,6 +2059,7 @@ async def messages(
         extract_declared_tools=extract_declared_tools_messages,
         extract_system_confined_tokens=extract_system_confined_tokens_messages,
         extract_case_inconsistency_evidence=extract_case_inconsistency_evidence_messages,
+        extract_world_acting=is_world_acting_request_messages,
         blindfold=blindfold_payload,
         send_upstream=upstream.send_messages,
         declared_tool_vocabulary=declared_tool_vocabulary,
@@ -2133,6 +2147,7 @@ async def count_tokens(
         extract_declared_tools=extract_declared_tools_messages,
         extract_system_confined_tokens=extract_system_confined_tokens_messages,
         extract_case_inconsistency_evidence=extract_case_inconsistency_evidence_messages,
+        extract_world_acting=is_world_acting_request_messages,
         blindfold=blindfold_payload,
         send_upstream=upstream.send_count_tokens,
         mint_inbox=lambda i: i.read_only_view(),
@@ -2171,6 +2186,7 @@ async def chat_completions(
         extract_declared_tools=extract_declared_tools_chat_completions,
         extract_system_confined_tokens=extract_system_confined_tokens_chat_completions,
         extract_case_inconsistency_evidence=extract_case_inconsistency_evidence_chat_completions,
+        extract_world_acting=is_world_acting_request_chat_completions,
         blindfold=blindfold_chat_completions_payload,
         send_upstream=upstream.send_chat_completions,
         declared_tool_vocabulary=declared_tool_vocabulary,
