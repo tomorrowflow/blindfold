@@ -454,7 +454,7 @@ retainedTest.describe("Processing trace — exchange-level bulk Reveal switch", 
   );
 
   retainedTest(
-    "resolving does not consult the review inbox",
+    "resolving does not consult the review inbox, and the bulk-resolve request itself stays first-party",
     async ({ alicePage }) => {
       const requests: string[] = [];
       alicePage.on("request", (req) => requests.push(req.url()));
@@ -467,6 +467,29 @@ retainedTest.describe("Processing trace — exchange-level bulk Reveal switch", 
       await expect(section.getByTestId("retained-leaf-span-revealed").first()).toBeVisible();
 
       expect(requests.some((url) => url.includes("/review-inbox"))).toBe(false);
+
+      // The reveal switch's own request is the one call on this page that
+      // returns real values over the wire (ADR-0059 §5) -- the #400 egress
+      // test above never drives this action, so assert the same first-party
+      // claim here directly rather than leaving this specific request unchecked.
+      const firstPartyOrigin = new URL(RETAINED_BASE_URL).host;
+      const thirdParty = requests.filter((url) => {
+        try {
+          return new URL(url).host !== firstPartyOrigin;
+        } catch {
+          return false;
+        }
+      });
+      expect(
+        thirdParty,
+        "expected zero third-party requests while resolving the bulk Reveal switch"
+      ).toEqual([]);
+
+      const reidentifyRequests = requests.filter((url) => url.includes("/surrogate/") && url.includes("/real"));
+      expect(reidentifyRequests.length).toBeGreaterThan(0);
+      for (const url of reidentifyRequests) {
+        expect(new URL(url).host).toBe(firstPartyOrigin);
+      }
     }
   );
 });
