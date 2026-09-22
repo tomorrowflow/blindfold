@@ -21,6 +21,7 @@ from blindfold.app import (
     get_l3_detector,
     get_mapping,
     get_payload_inspection,
+    get_processing_trace,
     get_rbac,
     get_review_inbox,
     get_rewritten_leaf_store,
@@ -29,6 +30,7 @@ from blindfold.app import (
 )
 from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
 from blindfold.payload_inspection import PayloadInspection
+from blindfold.processing_trace import ProcessingTraceBuffer
 from blindfold.rbac import RbacRegistry
 from blindfold.review import ReviewInbox
 from blindfold.rewritten_leaves import RewrittenLeafStore
@@ -72,6 +74,20 @@ async def _post_messages(payload: dict, overrides: dict) -> httpx.Response:
             return await client.post("/v1/messages", json=payload)
     finally:
         app.dependency_overrides.clear()
+
+
+def test_retain_carries_the_caller_supplied_exchange_id():
+    # Issue #400: the Processing trace view needs to correlate one of its own
+    # rows with this store's retained leaves for that SAME exchange -- the two
+    # records are pushed by separate calls in `_exchange` (`trace.record` /
+    # `rewritten_leaf_store.retain`), so the only way to tie them together is
+    # a caller-supplied id threaded through both, not a derived timestamp
+    # (the two calls run at different lines, microseconds apart).
+    store = RewrittenLeafStore()
+    store.retain(workspace="ws-a", leaves=[], blocked=False, exchange_id="ex-123")
+
+    (exchange,) = store.for_workspace("ws-a")
+    assert exchange.exchange_id == "ex-123"
 
 
 def test_the_store_retains_only_the_last_5_exchanges_per_workspace():
@@ -229,6 +245,44 @@ async def test_a_leak_gate_block_is_retained_and_marked_never_sent():
 
 
 @pytest.mark.anyio
+async def test_a_retained_exchange_shares_its_exchange_id_with_its_processing_trace_row():
+    # Issue #400: the Processing trace view expands one specific row into its
+    # own retained leaves, so the two records `_exchange` pushes for the same
+    # request -- the processing-trace record and the retained-leaves entry --
+    # must carry the identical caller-supplied id (checked here through both
+    # real HTTP surfaces, not the two stores' constructors directly).
+    mapping = SurrogateMapping.from_pairs([("Anna Schmidt", "Berta Vogel")])
+    inspection = PayloadInspection()
+    inspection.arm()
+    store = RewrittenLeafStore()
+    trace = ProcessingTraceBuffer()
+    payload = {
+        "model": "claude-3-5-sonnet",
+        "messages": [{"role": "user", "content": "Please help Anna Schmidt today."}],
+    }
+
+    resp = await _post_messages(
+        payload,
+        {
+            get_upstream_client: lambda: _scripted_upstream(),
+            get_mapping: lambda: mapping,
+            get_review_inbox: lambda: ReviewInbox(),
+            get_l3_detector: lambda: L3Detector(_DismissAll()),
+            get_payload_inspection: lambda: inspection,
+            get_rewritten_leaf_store: lambda: store,
+            get_processing_trace: lambda: trace,
+        },
+    )
+    assert resp.status_code == 200
+
+    (trace_record,) = [r for r in trace.recent() if r.workspace == "default"]
+    (retained_exchange,) = store.for_workspace("default")
+
+    assert trace_record.exchange_id is not None
+    assert trace_record.exchange_id == retained_exchange.exchange_id
+
+
+@pytest.mark.anyio
 async def test_read_endpoint_requires_viewer_role():
     rbac = RbacRegistry()  # alice has no roles on ws-a
     store = RewrittenLeafStore()
@@ -300,6 +354,43 @@ async def test_a_rewritten_leaf_retained_through_a_real_request_is_readable_via_
     assert "Berta Vogel" in leaf["text"]
     assert "Anna Schmidt" not in leaf["text"]
     assert leaf["spans"][0]["surrogate"] == "Berta Vogel"
+
+
+@pytest.mark.anyio
+async def test_read_endpoint_reports_armed_state_to_a_viewer_without_admin():
+    # Issue #400: the Processing trace view (viewer-gated) needs to tell
+    # "disarmed" apart from "armed, nothing retained for this exchange yet"
+    # to render its own three distinguishable empty states -- but
+    # GET /v1/management/payload-inspection (the arm/disarm status endpoint)
+    # is admin-gated (ADR-0059 §4: "only the admin-facing Settings surface
+    # needs to read it"), and this feature must work for a caller who holds
+    # `viewer` but not `admin`. So the already viewer-gated leaves endpoint
+    # itself carries `armed`/`armed_at` -- operational metadata, not a real
+    # value, and no wider than what this same endpoint already exposes.
+    rbac = RbacRegistry()
+    rbac.grant("alice", "ws-a", "viewer")  # deliberately no admin role
+    store = RewrittenLeafStore()
+    inspection = PayloadInspection(now_iso=lambda: "2026-09-22T10:00:00+00:00")
+    inspection.arm()
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_rewritten_leaf_store] = lambda: store
+    app.dependency_overrides[get_payload_inspection] = lambda: inspection
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://proxy.test"
+        ) as client:
+            resp = await client.get(
+                "/v1/management/payload-inspection/leaves?workspace=ws-a",
+                headers={"x-blindfold-identity": "alice"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["armed"] is True
+    assert body["armed_at"] == "2026-09-22T10:00:00+00:00"
 
 
 @pytest.mark.anyio

@@ -77,6 +77,7 @@ class ProcessingTraceRecord:
     upstream_duration_ms: float | None = None
     declared_collisions: tuple[str, ...] = ()
     unlisted_forwarded_headers: tuple[str, ...] = ()
+    exchange_id: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -94,6 +95,7 @@ class ProcessingTraceRecord:
             "upstream_duration_ms": self.upstream_duration_ms,
             "declared_collisions": list(self.declared_collisions),
             "unlisted_forwarded_headers": list(self.unlisted_forwarded_headers),
+            "exchange_id": self.exchange_id,
         }
 
 
@@ -127,6 +129,7 @@ class ProcessingTraceBuffer:
         upstream_duration_ms: float | None = None,
         declared_collisions: Sequence[str] = (),
         unlisted_forwarded_headers: Sequence[str] = (),
+        exchange_id: str | None = None,
     ) -> None:
         self._entries.append(
             ProcessingTraceRecord(
@@ -144,6 +147,7 @@ class ProcessingTraceBuffer:
                 upstream_duration_ms=upstream_duration_ms,
                 declared_collisions=tuple(declared_collisions),
                 unlisted_forwarded_headers=tuple(unlisted_forwarded_headers),
+                exchange_id=exchange_id,
             )
         )
 

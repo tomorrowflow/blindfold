@@ -98,6 +98,7 @@ import codecs
 import json
 import logging
 import time
+import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from datetime import datetime
 
@@ -1287,6 +1288,7 @@ def _record_trace(
     upstream_duration_ms: float | None = None,
     declared_collisions: Sequence[str] = (),
     unlisted_forwarded_headers: Sequence[str] = (),
+    exchange_id: str | None = None,
 ) -> None:
     """Append one scrubbed processing-trace record for this exchange (ADR-0035).
 
@@ -1310,6 +1312,11 @@ def _record_trace(
     :func:`_unlisted_forwarded_header_names` already computed from this
     exchange's own forwarded-header dict -- names only, threaded straight
     through, never re-derived.
+
+    ``exchange_id`` (issue #400) is the id `_exchange` generates once per
+    request and also passes to `rewritten_leaf_store.retain` -- it lets the
+    Processing trace view correlate one of its own rows with Payload
+    inspection's separately-retained leaves for that same exchange.
     """
     hops = [hop.to_dict() for hop in session.hops] if session is not None else []
     l3_hops = [hop for hop in session.hops if hop.l3_provider is not None] if session else []
@@ -1329,6 +1336,7 @@ def _record_trace(
         upstream_duration_ms=upstream_duration_ms,
         declared_collisions=declared_collisions,
         unlisted_forwarded_headers=unlisted_forwarded_headers,
+        exchange_id=exchange_id,
     )
 
 
@@ -1942,6 +1950,12 @@ async def _exchange(
     streamed = streaming_supported and bool(payload.get("stream"))
     forwarded = _forwarded_headers(request)
     unlisted_forwarded_headers = _unlisted_forwarded_header_names(forwarded)
+    # Issue #400: one id per exchange, reused for both this exchange's
+    # processing-trace record and (while armed) its retained-leaves entry --
+    # the only way the Processing trace view can correlate the two, since
+    # they're pushed by two separate calls a few lines apart, each with its
+    # own independently-read wall clock.
+    exchange_id = uuid.uuid4().hex
 
     if unprotected_mode.is_active():
         # ADR-0038: the detection pipeline is skipped entirely and the pre-egress
@@ -1987,6 +2001,7 @@ async def _exchange(
                 trace, workspace, endpoint, streamed, OUTCOME_BLOCKED, 0, start,
                 reason=_block_reason(result),
                 unlisted_forwarded_headers=unlisted_forwarded_headers,
+                exchange_id=exchange_id,
             )
             return result
         blinded, session = result
@@ -2005,12 +2020,14 @@ async def _exchange(
                 workspace=workspace,
                 leaves=session.rewritten_leaves(),
                 blocked=block is not None,
+                exchange_id=exchange_id,
             )
         if block is not None:
             _record_trace(
                 trace, workspace, endpoint, streamed, OUTCOME_BLOCKED,
                 len(session.injected), start, reason=_block_reason(block), session=session,
                 unlisted_forwarded_headers=unlisted_forwarded_headers,
+                exchange_id=exchange_id,
             )
             return block
 
@@ -2025,6 +2042,7 @@ async def _exchange(
                 upstream_duration_ms=(time.monotonic() - upstream_start) * 1000,
                 declared_collisions=declared_collisions,
                 unlisted_forwarded_headers=unlisted_forwarded_headers,
+                exchange_id=exchange_id,
             )
             return _upstream_error_response(exc, workspace, audit_log, upstream_health)
         upstream_health.mark_success()
@@ -2034,6 +2052,7 @@ async def _exchange(
                 upstream_response, session, workspace, audit_log, trace, start,
                 open_stream_duration_ms, declared_collisions,
                 unlisted_forwarded_headers=unlisted_forwarded_headers,
+                exchange_id=exchange_id,
             ),
             media_type="text/event-stream",
         )
@@ -2048,6 +2067,7 @@ async def _exchange(
             upstream_duration_ms=(time.monotonic() - upstream_start) * 1000,
             declared_collisions=declared_collisions,
             unlisted_forwarded_headers=unlisted_forwarded_headers,
+            exchange_id=exchange_id,
         )
         return _upstream_error_response(exc, workspace, audit_log, upstream_health)
     upstream_health.mark_success()
@@ -2065,6 +2085,7 @@ async def _exchange(
                 upstream_duration_ms=upstream_duration_ms,
                 declared_collisions=declared_collisions,
                 unlisted_forwarded_headers=unlisted_forwarded_headers,
+                exchange_id=exchange_id,
             )
             return block
     else:
@@ -2076,6 +2097,7 @@ async def _exchange(
         upstream_duration_ms=upstream_duration_ms,
         declared_collisions=declared_collisions,
         unlisted_forwarded_headers=unlisted_forwarded_headers,
+        exchange_id=exchange_id,
     )
     return result_body
 
@@ -2447,6 +2469,7 @@ async def _stream_restored(
     open_stream_duration_ms: float,
     declared_collisions: Sequence[str] = (),
     unlisted_forwarded_headers: Sequence[str] = (),
+    exchange_id: str | None = None,
 ) -> AsyncIterator[bytes]:
     """Stream restored SSE bytes to the client.
 
@@ -2613,6 +2636,7 @@ async def _stream_restored(
             upstream_duration_ms=upstream_duration_ms,
             declared_collisions=declared_collisions,
             unlisted_forwarded_headers=unlisted_forwarded_headers,
+            exchange_id=exchange_id,
         )
         raise
 
@@ -2623,6 +2647,7 @@ async def _stream_restored(
             upstream_duration_ms=upstream_duration_ms,
             declared_collisions=declared_collisions,
             unlisted_forwarded_headers=unlisted_forwarded_headers,
+            exchange_id=exchange_id,
         )
     else:
         _record_trace(
@@ -2631,6 +2656,7 @@ async def _stream_restored(
             upstream_duration_ms=upstream_duration_ms,
             declared_collisions=declared_collisions,
             unlisted_forwarded_headers=unlisted_forwarded_headers,
+            exchange_id=exchange_id,
         )
 
 
@@ -3515,6 +3541,7 @@ async def list_rewritten_leaves(
     request: Request,
     rbac: RbacRegistry = Depends(get_rbac),
     rewritten_leaf_store: RewrittenLeafStore = Depends(get_rewritten_leaf_store),
+    payload_inspection: PayloadInspection = Depends(get_payload_inspection),
 ) -> dict:
     """List this workspace's retained rewritten leaves (ADR-0059 §2-§4, issue
     #399) -- "expose the retained leaves viewer-gated and workspace-scoped,
@@ -3534,12 +3561,28 @@ async def list_rewritten_leaves(
     what :func:`list_processing_trace`'s own hop/surrogate detail already
     does -- it is a deeper grain of the same scrubbed-by-construction
     surface, not a new access-control concept.
+
+    Also carries ``armed``/``armed_at`` (issue #400): the Processing trace
+    view renders three distinguishable empty states for an exchange with no
+    retained leaves here (disarmed / predates-arming / evicted), which needs
+    to know whether Payload inspection is CURRENTLY armed and since when.
+    :func:`get_payload_inspection_status` carries the identical fact but is
+    ``admin``-gated (ADR-0059 §4's own "only the admin-facing Settings
+    surface needs to read it", written before this view existed) -- this
+    view is ``viewer``-gated, so the fact is repeated here rather than
+    forcing a `viewer` to hold `admin` just to read it. It is operational
+    metadata (whether/since-when the capability is on), not a real value,
+    and no wider than what an admin who reads the other endpoint already
+    sees.
     """
     _require_role(request, workspace, "viewer", rbac)
+    status = payload_inspection.status()
     return {
         "exchanges": [
             exchange.to_dict() for exchange in rewritten_leaf_store.for_workspace(workspace)
-        ]
+        ],
+        "armed": status.armed,
+        "armed_at": status.armed_at,
     }
 
 

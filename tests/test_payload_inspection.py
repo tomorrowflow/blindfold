@@ -72,6 +72,34 @@ def test_status_reports_no_remaining_seconds_while_disarmed():
     assert status.remaining_seconds is None
 
 
+def test_status_reports_armed_at_wall_clock_while_armed():
+    # Issue #400: the Processing trace needs a wall-clock "armed since" moment
+    # to tell an exchange that predates arming apart from one that was armed
+    # but has since been evicted from the retention ring buffer -- neither
+    # `remaining_seconds` (monotonic-clock-derived) nor `armed` alone can
+    # answer "was this exchange's own timestamp before or after arming".
+    inspection = PayloadInspection(now_iso=lambda: "2026-09-22T10:00:00+00:00")
+    inspection.arm()
+
+    status = inspection.status()
+    assert status.armed_at == "2026-09-22T10:00:00+00:00"
+
+
+def test_status_reports_no_armed_at_while_disarmed():
+    inspection = PayloadInspection()
+    status = inspection.status()
+    assert status.armed_at is None
+
+
+def test_disarm_clears_armed_at():
+    inspection = PayloadInspection(now_iso=lambda: "2026-09-22T10:00:00+00:00")
+    inspection.arm()
+    inspection.disarm()
+
+    status = inspection.status()
+    assert status.armed_at is None
+
+
 def test_a_fresh_instance_is_disarmed_mirroring_a_proxy_restart():
     # Nothing about this state is persisted (ADR-0059 §4: "disarms on proxy
     # restart") -- a fresh process makes a fresh PayloadInspection, which is

@@ -92,6 +92,7 @@ class RetainedExchange:
     workspace: str
     blocked: bool
     leaves: tuple[RewrittenLeaf, ...] = ()
+    exchange_id: str | None = None
 
     def to_dict(self) -> dict:
         return {
@@ -99,6 +100,7 @@ class RetainedExchange:
             "workspace": self.workspace,
             "blocked": self.blocked,
             "leaves": [leaf.to_dict() for leaf in self.leaves],
+            "exchange_id": self.exchange_id,
         }
 
 
@@ -116,7 +118,12 @@ class RewrittenLeafStore:
         self._now_iso = now_iso
 
     def retain(
-        self, *, workspace: str, leaves: Sequence[RewrittenLeaf], blocked: bool
+        self,
+        *,
+        workspace: str,
+        leaves: Sequence[RewrittenLeaf],
+        blocked: bool,
+        exchange_id: str | None = None,
     ) -> None:
         self._entries.append(
             RetainedExchange(
@@ -124,6 +131,7 @@ class RewrittenLeafStore:
                 workspace=workspace,
                 blocked=blocked,
                 leaves=tuple(leaves),
+                exchange_id=exchange_id,
             )
         )
 

@@ -28,6 +28,22 @@ def test_buffer_evicts_oldest_once_over_the_bound():
     assert [r.detected for r in recent] == [2, 3, 4]
 
 
+def test_record_carries_the_caller_supplied_exchange_id():
+    # Issue #400: the Processing trace view correlates one of its own rows
+    # with Payload inspection's separately-pushed retained-leaves entry for
+    # the SAME exchange via a caller-supplied id, threaded through both
+    # `ProcessingTraceBuffer.record` and `RewrittenLeafStore.retain` from one
+    # shared value `_exchange` generates once per request.
+    buffer = ProcessingTraceBuffer(maxlen=3)
+    buffer.record(
+        workspace="ws-a", endpoint="messages", streamed=False,
+        outcome="passed", detected=0, duration_ms=1.0, exchange_id="ex-123",
+    )
+    (record,) = buffer.recent()
+    assert record.exchange_id == "ex-123"
+    assert record.to_dict()["exchange_id"] == "ex-123"
+
+
 def test_record_carries_scrubbed_hop_detail_and_l3_rollup():
     # Issue #153 (ADR-0035 per-hop expansion): the ring-buffer record extends with
     # per-hop detail (already-scrubbed dicts -- the request path is responsible for
