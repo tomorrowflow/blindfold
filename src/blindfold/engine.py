@@ -1109,6 +1109,18 @@ def non_hop_block_type_fields(block_type: Any) -> frozenset[str]:
 # tools[].name (ADR-0051/#307), and are never rewritten.
 _TOOL_CALL_BLOCK_TYPES = frozenset({"tool_use", "server_tool_use", "mcp_tool_use"})
 
+
+def tool_call_block_types() -> frozenset[str]:
+    """Public accessor for :data:`_TOOL_CALL_BLOCK_TYPES` (issue #409).
+
+    Lets the streaming path's ``content_block_start`` handler in app.py decide
+    whether to open a hold-back buffer for a block against the very same set
+    :func:`_restore_block` dispatches on for the buffered path, rather than a second
+    literal (previously just ``"tool_use"``) that could -- and did -- drift from it.
+    """
+    return _TOOL_CALL_BLOCK_TYPES
+
+
 # tool_result / mcp_tool_result both carry their payload under "content" (a
 # string or a nested content-block list); "is_error" is a boolean flag, never a
 # string leaf.
