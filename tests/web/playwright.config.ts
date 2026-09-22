@@ -47,6 +47,12 @@ const PERSISTENT_ENCRYPTED_PORT = 8958;
 // `_build_payload_inspection_retained_fixture`.
 const PAYLOAD_INSPECTION_RETAINED_PORT = 8959;
 const PAYLOAD_INSPECTION_DISARMED_PORT = 8960;
+// Eleventh fixture instance (issue #417): the two causes behind `leak_detected`'s
+// taxonomy split are both real-blinder-miss safety-net paths, neither reachable
+// by posting ordinary text at a healthy fixture -- serve_fixture.py seeds this
+// port's own block_history directly through the real `_leak_gate_or_block`
+// funnel (see its LEAK_TAXONOMY docstring) instead.
+const LEAK_TAXONOMY_PORT = 8961;
 
 export default defineConfig({
   testDir: "./specs",
@@ -165,6 +171,17 @@ export default defineConfig({
       env: {
         BLINDFOLD_FIXTURE_PORT: String(PAYLOAD_INSPECTION_DISARMED_PORT),
         BLINDFOLD_FIXTURE_STATE: "payload_inspection_disarmed",
+      },
+    },
+    {
+      command: "uv run python serve_fixture.py",
+      cwd: __dirname,
+      url: `http://127.0.0.1:${LEAK_TAXONOMY_PORT}/ui/status`,
+      reuseExistingServer: false,
+      timeout: 20_000,
+      env: {
+        BLINDFOLD_FIXTURE_PORT: String(LEAK_TAXONOMY_PORT),
+        BLINDFOLD_FIXTURE_STATE: "leak_taxonomy",
       },
     },
   ],

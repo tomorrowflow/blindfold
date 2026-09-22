@@ -147,9 +147,11 @@ import httpx
 import uvicorn
 
 from blindfold.app import (
+    _leak_gate_or_block,
     app,
     get_allowlist,
     get_audit_log,
+    get_block_history,
     get_entity_graph,
     get_gliner_activation_store,
     get_gliner_classifier_factory,
@@ -180,7 +182,7 @@ from blindfold.reidentify import InMemoryReIdentificationStore
 from blindfold.relationships import RelationshipStore
 from blindfold.review import Allowlist, ReviewInbox
 from blindfold.rewritten_leaves import RewrittenLeaf, RewrittenLeafStore, RewrittenSpan
-from blindfold.status import DependencyHealth, RecentFailureHealth
+from blindfold.status import BlockHistory, DependencyHealth, RecentFailureHealth
 from blindfold.store import vendored_seed_repository
 from blindfold.surrogates import SurrogateMapping
 from blindfold.transit import TransitClient
@@ -206,6 +208,17 @@ IS_EMPTY = FIXTURE_STATE == "empty"
 # _build_payload_inspection_retained_fixture below.
 PAYLOAD_INSPECTION_RETAINED = FIXTURE_STATE == "payload_inspection_retained"
 PAYLOAD_INSPECTION_DISARMED_ONLY = FIXTURE_STATE == "payload_inspection_disarmed"
+# Eleventh fixture instance (issue #417, browser-verify): the two causes behind
+# `leak_detected`'s taxonomy split are both real-blinder-miss safety-net paths --
+# neither is reachable by posting ordinary text at a healthy `/v1/messages`
+# (detection is supposed to catch both cases first). Seeded directly onto this
+# port's own `block_history` via the real `_leak_gate_or_block` funnel (never a
+# hand-typed scrubbed_reason -- see build_app()) so the Home/Status recent-blocks
+# table's differentiated remedy copy renders against genuine BlockRecord shapes,
+# not a fixture guess at the string format. Kept off the primary/shared port:
+# home-status.spec.ts's "recent-blocks empty state" test asserts that port's
+# blocks.recent stays empty.
+LEAK_TAXONOMY = FIXTURE_STATE == "leak_taxonomy"
 
 WORKSPACE = "acme"
 REAL_PERSON = "Martin Bach"
@@ -256,6 +269,12 @@ REVIEW_ITEM_REAL_ONE = "Klaus Bergmann"
 REVIEW_ITEM_CONTEXT_ONE = "Please brief Klaus Bergmann on the merger tomorrow."
 REVIEW_ITEM_REAL_TWO = "Nordwind Systems"
 REVIEW_ITEM_CONTEXT_TWO = "Nordwind Systems signed the new contract yesterday."
+
+# The leak-taxonomy fixture's own defect-cause real value (issue #417): a
+# mapping-known "miss" simulated the same way tests/test_leak_detected_curation_
+# sub_reason.py's `_LeakyMapping` does. Distinct from every other real value
+# seeded above so this fixture's two ports never share entity content.
+LEAK_TAXONOMY_DEFECT_REAL = "Rutherford Kessling"
 
 # Processing trace's own "confirmed" surrogate chip (issue #154, ADR-0035): a
 # hop-injected surrogate that's already a re-identifiable known entity, distinct
@@ -952,6 +971,64 @@ def build_app():
         retained_mapping.seed(REAL_PERSON, PERSON_SURROGATE)
         retained_mapping.seed(REAL_ORG, ORG_SURROGATE)
         app.dependency_overrides[get_mapping] = lambda: retained_mapping
+
+    if LEAK_TAXONOMY:
+        # Issue #417 (browser-verify): seed one real block of each cause behind
+        # `leak_detected`'s taxonomy split, through the actual `_leak_gate_or_block`
+        # funnel -- see LEAK_TAXONOMY's own docstring above for why this can't be
+        # reached by a live POST /v1/messages against a healthy fixture, and why a
+        # hand-typed scrubbed_reason would risk drifting from the real format.
+        leak_taxonomy_block_history = BlockHistory(window_minutes=15)
+        app.dependency_overrides[get_block_history] = lambda: leak_taxonomy_block_history
+        leak_taxonomy_audit_log = AuditLog()
+
+        class _LeakyMapping(SurrogateMapping):
+            """Mirrors tests/test_leak_detected_curation_sub_reason.py's own
+            `_LeakyMapping`: a mapping-known real value the blinder should have
+            rewritten but didn't -- the defect cause, never a review-inbox row."""
+
+            def real_values(self) -> list[str]:
+                return [LEAK_TAXONOMY_DEFECT_REAL]
+
+        _leak_gate_or_block(
+            {
+                "messages": [
+                    {"role": "user", "content": f"Brief {LEAK_TAXONOMY_DEFECT_REAL} now."}
+                ]
+            },
+            _LeakyMapping(),
+            WORKSPACE,
+            leak_taxonomy_audit_log,
+            leak_taxonomy_block_history,
+        )
+        # A fresh, empty mapping/inbox pair -- not `processing_trace_mapping`/
+        # `review_inbox` (this fixture's shared instances): `processing_trace_
+        # mapping` already confirms TRACE_HOP_REAL ("Klaus Weber"), and issue
+        # #394's bare-word-component check would match this scenario's own
+        # review-inbox real value on the shared first name "Klaus" alone --
+        # firing the DEFECT cause (a confirmed-entity component match) before
+        # the review-inbox items loop is ever reached, masking the curation
+        # cause this call exists to seed. Mirrors
+        # tests/test_leak_detected_curation_sub_reason.py's own isolated
+        # `_mapping()`/`ReviewInbox()` pair for exactly this reason.
+        leak_taxonomy_inbox = ReviewInbox()
+        leak_taxonomy_inbox.upsert(
+            REVIEW_ITEM_REAL_ONE,
+            context=REVIEW_ITEM_CONTEXT_ONE,
+            entity_type="person",
+        )
+        _leak_gate_or_block(
+            {
+                "messages": [
+                    {"role": "user", "content": f"Follow up with {REVIEW_ITEM_REAL_ONE}."}
+                ]
+            },
+            SurrogateMapping.from_pairs([]),
+            WORKSPACE,
+            leak_taxonomy_audit_log,
+            leak_taxonomy_block_history,
+            inbox=leak_taxonomy_inbox,
+        )
 
     if FORCE_DEPENDENCIES_HEALTHY:
         # See _build_empty_app()'s identical override for why upstream gets its
