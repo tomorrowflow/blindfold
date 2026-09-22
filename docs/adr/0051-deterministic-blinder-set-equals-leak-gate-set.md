@@ -782,3 +782,15 @@ output from the client's input, which is precisely where a genuine leak would hi
   amendment removes the need for it in *this* class only.
 - **Out of scope:** the *value*-scoped guards (`mapping.is_known_surrogate` on the L1 PII path).
   This decision is about ranges.
+- **A narrowing this decision accepts, recorded after `#415` landed.** The old search-based guard
+  also excluded a surrogate the *client* supplied — one quoted from a previous exchange, say, in
+  text the blinder is reading for the first time. The splice-derived record does not, because the
+  blinder did not write there. For a real value that is the intended gain (it gets blinded rather
+  than skipped). For the surrogate's own literal it means L3 may now treat a prior exchange's
+  surrogate as a novel candidate and mint a provisional row whose `real` is surrogate text — the
+  `#292` shape, on a much narrower surface, since restore normally leaves a client holding real
+  values and never surrogates. Bounded by `ReviewInbox.purge_surrogate_collisions`, the repair path
+  that already exists for exactly this, and never a leak in the clause-A sense: the worst outcome
+  is a surrogate visible to the client or a blocking row, never a real value reaching the provider.
+  The cheap backstop, if it is ever observed, is a *value*-scoped `mapping.is_known_surrogate`
+  refusal on the L3 novel-candidate path, mirroring the one the L1 PII path already has.
