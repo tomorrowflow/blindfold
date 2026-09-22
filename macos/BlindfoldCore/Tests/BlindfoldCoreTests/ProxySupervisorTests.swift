@@ -11,6 +11,7 @@ private final class FakeProxyProcess: ProxyProcess, @unchecked Sendable {
     var exitCode: Int32 = 0
     var standardErrorText = ""
     var terminationSignal: Int32?
+    var processIdentifier: Int32 = 4242
     var killed = false
 
     func kill() { killed = true }
@@ -24,6 +25,24 @@ private final class FakeProxyProcessLauncher: ProxyProcessLaunching, @unchecked 
         launches.append((exePath, args, environment))
         return process
     }
+}
+
+/// The orphan-sweep seam doubles (issue #414), mirroring the pair above -- driven by
+/// `ProxySupervisor.start()` without ever touching a real pid.
+private final class FakeOrphanPIDStore: OrphanPIDStoring, @unchecked Sendable {
+    var saved: [Int32] = []
+    var toLoad: Int32?
+
+    func save(pid: Int32) { saved.append(pid) }
+    func load() -> Int32? { toLoad }
+}
+
+private final class FakeOrphanProcessTerminating: OrphanProcessTerminating, @unchecked Sendable {
+    var alivePIDs: Set<Int32> = []
+    var terminatedGroups: [Int32] = []
+
+    func isAlive(pid: Int32) -> Bool { alivePIDs.contains(pid) }
+    func terminateGroup(pid: Int32) { terminatedGroups.append(pid) }
 }
 
 /// The supervisor (issue #212, ADR-0041 ported to Swift): spawns/stops the frozen
@@ -547,4 +566,136 @@ func supervisorLifecycleMatchesGoldenVector(_ vector: GoldenVectorFixture.Superv
     }
 
     #expect(supervisor.currentLiveness() == vector.expected_liveness.toLiveness(), "\(vector.name)")
+}
+
+/// Issue #414: `start()` records the freshly spawned child's pid through the injected
+/// `OrphanPIDStoring` seam -- previously nothing did (`RealProxyProcess.processIdentifier`
+/// was, per its own prior docstring, "not read anywhere in `ProxySupervisor`"). This is
+/// the write half of the cross-run orphan sweep: without it, a *later* run would have
+/// nothing to detect.
+@Test func startRecordsTheFreshlySpawnedChildsPIDThroughTheOrphanStore() {
+    let launcher = FakeProxyProcessLauncher()
+    launcher.process.processIdentifier = 9001
+    let orphanStore = FakeOrphanPIDStore()
+    let supervisor = ProxySupervisor(
+        launcher: launcher,
+        exePath: "blindfold-proxy",
+        args: ["serve"],
+        orphanPIDStore: orphanStore
+    )
+
+    supervisor.start()
+
+    #expect(orphanStore.saved == [9001])
+}
+
+/// Reviewer finding, cycle 2: a failed spawn's sentinel pid (`FailedProxyLaunch
+/// .processIdentifier == -1`, "nothing was actually spawned" per its own docstring) must
+/// never be persisted through the orphan store -- else a later run's `OrphanSweep.perform`
+/// would (pre-fix) treat it as a live pid and mis-attribute a genuine third-party "port in
+/// use" to Blindfold's own orphan.
+@Test func startNeverPersistsTheFailedLaunchSentinelPID() {
+    let launcher = FakeProxyProcessLauncher()
+    launcher.process.processIdentifier = -1
+    let orphanStore = FakeOrphanPIDStore()
+    let supervisor = ProxySupervisor(
+        launcher: launcher,
+        exePath: "blindfold-proxy",
+        args: ["serve"],
+        orphanPIDStore: orphanStore
+    )
+
+    supervisor.start()
+
+    #expect(orphanStore.saved.isEmpty)
+}
+
+/// Issue #414 AC: "on start, an orphan left by a previous run is detected and resolved
+/// before a new child is spawned". A pid recorded by a previous run is still alive, so
+/// `start()` must terminate its whole process group *before* calling the launcher.
+@Test func startSweepsAStillAliveOrphanBeforeSpawningTheNewChild() {
+    let launcher = FakeProxyProcessLauncher()
+    let orphanStore = FakeOrphanPIDStore()
+    orphanStore.toLoad = 4141
+    let terminating = FakeOrphanProcessTerminating()
+    terminating.alivePIDs = [4141]
+    let supervisor = ProxySupervisor(
+        launcher: launcher,
+        exePath: "blindfold-proxy",
+        args: ["serve"],
+        orphanPIDStore: orphanStore,
+        orphanTerminating: terminating
+    )
+
+    supervisor.start()
+
+    #expect(terminating.terminatedGroups == [4141])
+    #expect(launcher.launches.count == 1, "the new child is still spawned once the sweep is done")
+}
+
+/// The other half of the same AC: a recorded pid that is no longer alive is a stale
+/// record, not an orphan -- `start()` must not call `terminateGroup` on a process that
+/// isn't there.
+@Test func startDoesNotTerminateAnythingForAStaleOrphanRecord() {
+    let launcher = FakeProxyProcessLauncher()
+    let orphanStore = FakeOrphanPIDStore()
+    orphanStore.toLoad = 4141
+    let terminating = FakeOrphanProcessTerminating()
+    let supervisor = ProxySupervisor(
+        launcher: launcher,
+        exePath: "blindfold-proxy",
+        args: ["serve"],
+        orphanPIDStore: orphanStore,
+        orphanTerminating: terminating
+    )
+
+    supervisor.start()
+
+    #expect(terminating.terminatedGroups.isEmpty)
+    #expect(launcher.launches.count == 1)
+}
+
+/// Issue #414 AC: "`port in use` arising from Blindfold's own orphan is distinguishable
+/// in the refusal reason from a genuine third-party port conflict". This start swept a
+/// still-alive orphan (so the just-spawned replacement racing it for the port is the
+/// likely explanation for a "port in use" refusal) -- the refusal names that cause
+/// instead of the bare, cause-blind default.
+@Test func portInUseAfterSweepingAnOrphanNamesBlindfoldsOwnOrphanAsTheLikelyCause() {
+    let launcher = FakeProxyProcessLauncher()
+    let orphanStore = FakeOrphanPIDStore()
+    orphanStore.toLoad = 4141
+    let terminating = FakeOrphanProcessTerminating()
+    terminating.alivePIDs = [4141]
+    let supervisor = ProxySupervisor(
+        launcher: launcher,
+        exePath: "blindfold-proxy",
+        args: ["serve"],
+        orphanPIDStore: orphanStore,
+        orphanTerminating: terminating
+    )
+
+    supervisor.start()
+    launcher.process.hasExited = true
+    launcher.process.standardErrorText = "OSError: [Errno 98] Address already in use"
+
+    guard case let .refused(reason) = supervisor.currentLiveness() else {
+        Issue.record("expected .refused")
+        return
+    }
+    #expect(reason.contains("port in use"))
+    #expect(reason.contains("previous Blindfold"))
+}
+
+/// The negative control for the same AC: no orphan was swept this start, so a "port in
+/// use" refusal stays the bare, unattributed reason -- there is no basis here to claim
+/// the cause is Blindfold's own.
+@Test func portInUseWithoutASweptOrphanStaysTheBareReason() {
+    let launcher = FakeProxyProcessLauncher()
+    let supervisor = ProxySupervisor(launcher: launcher, exePath: "blindfold-proxy", args: ["serve"])
+
+    supervisor.start()
+    launcher.process.hasExited = true
+    launcher.process.standardErrorText = "OSError: [Errno 98] Address already in use"
+
+    #expect(supervisor.currentLiveness() == .refused(reason: "port in use"))
 }

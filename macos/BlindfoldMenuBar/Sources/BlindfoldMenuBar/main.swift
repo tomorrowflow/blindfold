@@ -50,6 +50,21 @@ let supervisorLogPath = FileManager.default.homeDirectoryForCurrentUser
 /// path (the real app or `--smoke-launch-full`) lands in the same durable file.
 let supervisorLogSink: SupervisorLogSink = FileSupervisorLogSink(path: supervisorLogPath)
 
+/// The orphan-sweep pid record's real, per-user location (issue #414): same app-data
+/// convention as `singleInstanceLockPath` above, a plain filesystem path resolved here in
+/// the untestable-on-Linux shell -- `FileOrphanPIDStore` only ever takes an already-resolved
+/// `path` (Linux-tested against disposable temp-file paths, never this one). Not `private`:
+/// `BlindfoldMenuBarApp.swift`'s `ProxySupervisor` construction site shares it.
+let orphanPIDPath = FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent("Library/Application Support/blindfold/menubar-proxy.pid")
+    .path
+
+/// The real orphan-sweep seams (issue #414): every `ProxySupervisor` construction site in
+/// this file and `BlindfoldMenuBarApp.swift` shares these two instances, mirroring
+/// `supervisorLogSink` above.
+let orphanPIDStore: OrphanPIDStoring = FileOrphanPIDStore(path: orphanPIDPath)
+let orphanTerminating: OrphanProcessTerminating = PosixOrphanProcessTerminating()
+
 /// Whether a persistent **store** (the default embedded-SQLite database, ADR-0043) already
 /// exists on disk -- the same default path `resolve_store_dir`/`resolve_database_url`
 /// (`src/blindfold/config.py`) compute. This is what `SupervisorStoreKey.provision`
@@ -156,7 +171,9 @@ func runSmokeLaunchFull() async -> Int32 {
         exePath: located.exePath,
         args: located.args,
         environmentProvider: childEnvironment,
-        logSink: supervisorLogSink
+        logSink: supervisorLogSink,
+        orphanPIDStore: orphanPIDStore,
+        orphanTerminating: orphanTerminating
     )
 
     let statusClient: StatusClient

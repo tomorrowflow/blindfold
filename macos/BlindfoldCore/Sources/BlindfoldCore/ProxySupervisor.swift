@@ -1,9 +1,18 @@
 /// A spawned proxy child (issue #212, ADR-0041 ported to Swift) — the process boundary
-/// `ProxySupervisor` drives, stubbed in tests, backed by `Process` in the real menu-bar
-/// app.
+/// `ProxySupervisor` drives, stubbed in tests, backed by a `posix_spawn`ed child
+/// (`RealProxyProcess`, issue #414) in the real menu-bar app.
 public protocol ProxyProcess: Sendable {
     var hasExited: Bool { get }
     var exitCode: Int32 { get }
+
+    /// The OS pid of the spawned child (issue #414) -- previously exposed only on the
+    /// concrete `RealProxyProcess` "not read anywhere in `ProxySupervisor`" per that
+    /// type's own prior docstring. That contract is revised here: `ProxySupervisor` now
+    /// reads this after every `start()` to persist it through the injected
+    /// `OrphanPIDStoring` seam, so a *later* run (after a crash/SIGKILL/power loss that
+    /// skipped this run's own cleanup) can detect and resolve the orphan before spawning
+    /// a replacement.
+    var processIdentifier: Int32 { get }
 
     /// The child's captured stderr text, verbatim. Never surfaced to the UI as-is —
     /// `ProxySupervisor` always routes it through `StartupRefusalReason` before it
@@ -22,7 +31,8 @@ public protocol ProxyProcess: Sendable {
 }
 
 /// Spawns the frozen proxy child — stubbed in tests (leak-audit's seam-stub pattern),
-/// backed by a real `Process` in the menu-bar app.
+/// backed by a real `posix_spawn`ed child (`RealProxyProcessLauncher`, issue #414) in the
+/// menu-bar app.
 public protocol ProxyProcessLaunching: Sendable {
     func launch(exePath: String, args: [String], environment: [String: String]) -> any ProxyProcess
 }
@@ -39,6 +49,11 @@ public enum StartupRefusalReason {
     /// further (issue #219's exit-code diagnostic) without duplicating the string.
     public static let genericReason = "startup failed"
 
+    /// The bare port-conflict reason -- exposed so `ProxySupervisor` can detect this exact
+    /// case (issue #414) and, when this start swept a still-alive orphan from a previous
+    /// run, name the far more likely cause instead of this cause-blind default.
+    public static let portInUseReason = "port in use"
+
     public static func scrub(_ rawStandardErrorText: String) -> String {
         let lowered = rawStandardErrorText.lowercased()
 
@@ -49,7 +64,7 @@ public enum StartupRefusalReason {
             return "refusing to start: L3 endpoint is not loopback"
         }
         if lowered.contains("address already in use") || lowered.contains("port in use") {
-            return "port in use"
+            return portInUseReason
         }
         // These three (issue #223) name a stale env var, a rejected model choice, and a
         // missing model directory -- configuration facts, not entity values, so naming
@@ -101,9 +116,20 @@ public final class ProxySupervisor: ProxySupervising, @unchecked Sendable {
     private let args: [String]
     private let environmentProvider: @Sendable () -> [String: String]
     private let logSink: SupervisorLogSink
+    private let orphanPIDStore: OrphanPIDStoring
+    private let orphanTerminating: OrphanProcessTerminating
     private var process: (any ProxyProcess)?
     private var everHealthy = false
     private var hasLoggedExitOutcome = false
+    /// Set by `start()` whenever this start swept a still-alive orphan left by a
+    /// previous run (issue #414 AC: "`port in use` arising from Blindfold's own orphan is
+    /// distinguishable... from a genuine third-party port conflict"). `terminateGroup`
+    /// only *requests* termination (never blocks waiting for it -- same discipline as
+    /// `stop()`/`kill()` elsewhere in this class), so the freshly spawned replacement can
+    /// still race the old child for the port; when that happens, this flag is what lets
+    /// `currentLiveness()` name the cause as "our own still-exiting orphan" instead of the
+    /// bare, cause-blind "port in use".
+    private var sweptOrphanThisStart = false
     /// Set by `restart()`, cleared once the killed child's exit is confirmed and the
     /// replacement has been spawned (issue #285). Never set by an unrequested crash --
     /// that is exactly what keeps ADR-0041's no-auto-restart-after-crash behaviour
@@ -132,13 +158,17 @@ public final class ProxySupervisor: ProxySupervising, @unchecked Sendable {
         exePath: String,
         args: [String],
         environmentProvider: @escaping @Sendable () -> [String: String],
-        logSink: SupervisorLogSink = NullSupervisorLogSink()
+        logSink: SupervisorLogSink = NullSupervisorLogSink(),
+        orphanPIDStore: OrphanPIDStoring = NullOrphanPIDStore(),
+        orphanTerminating: OrphanProcessTerminating = NullOrphanProcessTerminating()
     ) {
         self.launcher = launcher
         self.exePath = exePath
         self.args = args
         self.environmentProvider = environmentProvider
         self.logSink = logSink
+        self.orphanPIDStore = orphanPIDStore
+        self.orphanTerminating = orphanTerminating
     }
 
     /// Convenience overload for callers with a fixed environment snapshot (existing
@@ -149,16 +179,47 @@ public final class ProxySupervisor: ProxySupervising, @unchecked Sendable {
         exePath: String,
         args: [String],
         environment: [String: String] = [:],
-        logSink: SupervisorLogSink = NullSupervisorLogSink()
+        logSink: SupervisorLogSink = NullSupervisorLogSink(),
+        orphanPIDStore: OrphanPIDStoring = NullOrphanPIDStore(),
+        orphanTerminating: OrphanProcessTerminating = NullOrphanProcessTerminating()
     ) {
-        self.init(launcher: launcher, exePath: exePath, args: args, environmentProvider: { environment }, logSink: logSink)
+        self.init(
+            launcher: launcher,
+            exePath: exePath,
+            args: args,
+            environmentProvider: { environment },
+            logSink: logSink,
+            orphanPIDStore: orphanPIDStore,
+            orphanTerminating: orphanTerminating
+        )
     }
 
+    /// Issue #414 AC: "on start, an orphan left by a previous run is detected and
+    /// resolved before a new child is spawned" -- the sweep runs before the launcher is
+    /// ever called, and the freshly spawned child's own pid is recorded immediately after,
+    /// so a *later* run (should this one end via `SIGKILL`/a crash/power loss, none of
+    /// which this run can observe) has something to sweep in turn.
     public func start() {
         everHealthy = false
         hasLoggedExitOutcome = false
+
+        switch OrphanSweep.perform(recordedPID: orphanPIDStore.load(), terminating: orphanTerminating) {
+        case .nothingRecorded, .staleRecordCleared:
+            sweptOrphanThisStart = false
+        case let .terminatedOrphan(pid):
+            logSink.append("orphan sweep: terminated a previous run's still-alive pid=\(pid)")
+            sweptOrphanThisStart = true
+        }
+
         logSink.append("spawn: exe=\(exePath) args=\(args.joined(separator: " "))")
-        process = launcher.launch(exePath: exePath, args: args, environment: environmentProvider())
+        let spawned = launcher.launch(exePath: exePath, args: args, environment: environmentProvider())
+        process = spawned
+        // A failed spawn (`FailedProxyLaunch`) reports the sentinel pid -1 -- never
+        // persist it, or a later run's `OrphanSweep.perform` would have something to
+        // (mis)act on despite nothing having actually been spawned.
+        if spawned.processIdentifier > 0 {
+            orphanPIDStore.save(pid: spawned.processIdentifier)
+        }
     }
 
     /// Tells the supervisor a `/v1/status` poll succeeded — called by the menu bar's
@@ -232,6 +293,22 @@ public final class ProxySupervisor: ProxySupervising, @unchecked Sendable {
             // named further -- the exit code is a small integer, never entity data,
             // so it's safe to surface unscrubbed here just like the signal number.
             let scrubbed = StartupRefusalReason.scrub(process.standardErrorText)
+
+            // Issue #414 AC: "`port in use` arising from Blindfold's own orphan is
+            // distinguishable in the refusal reason from a genuine third-party port
+            // conflict". This start already swept a still-alive orphan (a previous run's
+            // child that outlived it) before spawning; `terminateGroup` only requests
+            // termination and never blocks, so the freshly spawned replacement can still
+            // lose the race for the port to that not-yet-exited orphan. Naming the cause
+            // here, rather than the bare symptom, is what tells the operator this is very
+            // likely Blindfold's own leftover process finishing its shutdown, not an
+            // unrelated program that happens to hold the same port.
+            if scrubbed == StartupRefusalReason.portInUseReason, sweptOrphanThisStart {
+                let reason = "port in use: a previous Blindfold proxy instance may still be shutting down"
+                logExitOutcomeOnce("refused: \(reason)")
+                return .refused(reason: reason)
+            }
+
             guard scrubbed == StartupRefusalReason.genericReason else {
                 logExitOutcomeOnce("refused: \(scrubbed)")
                 return .refused(reason: scrubbed)
