@@ -215,14 +215,22 @@ async def test_nothing_is_retained_while_unprotected_mode_is_active():
 
 @pytest.mark.anyio
 async def test_a_leak_gate_block_is_retained_and_marked_never_sent():
-    # Reuses the #405/#406 self-poisoning fixture from
-    # test_provisional_pairs_in_tool_descriptions.py -- a live, deterministic
-    # leak_gate 503 on today's code (tracked as #406, not fixed here): the
-    # blindfolded payload is fully constructed (so its leaves exist to
-    # retain) and then discarded by the pre-egress gate.
+    # Variant of the #405/#406 self-poisoning fixture from
+    # test_provisional_pairs_in_tool_descriptions.py. Issue #416 (ADR-0051's
+    # #406 amendment) excuses a match that falls WHOLLY inside a range the
+    # blinder itself wrote as a declared collision rather than a leak -- a
+    # bare "Baz" landing entirely inside the just-spliced "Foo Baz" no longer
+    # blocks (see tests/test_range_declared_collision.py). This fixture uses
+    # "Baz reports" instead: it STRADDLES the splice boundary (starts inside
+    # "Foo Baz", ends past it in the untouched " reports" that follows) --
+    # only partly the blinder's own output, so it is still a genuine miss and
+    # must still block. The blindfolded payload is fully constructed (so its
+    # leaves exist to retain) and then discarded by the pre-egress gate.
     mapping = SurrogateMapping.from_pairs([("Bar", "Foo Baz")])
     inbox = ReviewInbox()
-    inbox.upsert("Baz", context="...Baz signed off...", entity_type="organization")
+    inbox.upsert(
+        "Baz reports", context="...Baz reports to finance...", entity_type="organization"
+    )
     inspection = PayloadInspection()
     inspection.arm()
     store = RewrittenLeafStore()

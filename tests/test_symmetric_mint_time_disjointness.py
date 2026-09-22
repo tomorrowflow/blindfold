@@ -64,6 +64,7 @@ import pytest
 from blindfold import review
 from blindfold.app import (
     app,
+    get_audit_log,
     get_l3_detector,
     get_mapping,
     get_review_inbox,
@@ -71,6 +72,7 @@ from blindfold.app import (
 )
 from blindfold.engine import blindfold_payload
 from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
+from blindfold.policy import AuditLog
 from blindfold.review import (
     _PROVISIONAL_POOL,
     ProvisionalPoolExhaustedError,
@@ -276,13 +278,32 @@ async def test_symmetric_refusal_for_the_same_real_surrogate_collision_pair_rega
     # "Fink" L3-confirmed as a different, genuinely novel referent in the SAME
     # request -- both referents mentioned so the collision can actually reach
     # egressable text.
+    #
+    # Post-#416 (ADR-0051's #406 amendment, landed after this test was first
+    # written): "Fink"'s own occurrence is blinded to its own provisional
+    # surrogate, so the ONLY remaining "Fink" in the outbound text is the one
+    # already inside "Emil Fink" -- a range the blinder itself spliced into
+    # this same leaf for a DIFFERENT referent ("Someone Else"). Those
+    # characters are the blinder's own output, not a value that escaped it,
+    # so this is now a declared collision, not a leak -- the #406 shape this
+    # module's own #333 fix does not (and per that issue's own scope, need
+    # not) close: #333 stops a NEW surrogate being ISSUED so as to collide
+    # with an already-live real; it does not, and #416 does not ask it to,
+    # stop a NEW real from being detected inside an already-live surrogate.
+    # The #333 symmetry claim survives this narrowing: neither ordering lets
+    # "Fink" reach egress as a plaintext word the blinder MISSED -- order A
+    # never even assigns the colliding pool entry; order B's only literal
+    # "Fink" is contained, whole, inside the surrogate literal itself, and is
+    # recorded as such.
     mapping_b = SurrogateMapping.from_pairs([("Someone Else", "Emil Fink")])
     detector_b = L3Detector(_ConfirmSet({"Fink"}))
+    audit_log_b = AuditLog()
 
     recorded_b: list[httpx.Request] = []
     app.dependency_overrides[get_mapping] = lambda: mapping_b
     app.dependency_overrides[get_l3_detector] = lambda: detector_b
     app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(recorded_b)
+    app.dependency_overrides[get_audit_log] = lambda: audit_log_b
     try:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(
@@ -306,6 +327,13 @@ async def test_symmetric_refusal_for_the_same_real_surrogate_collision_pair_rega
     finally:
         app.dependency_overrides.clear()
 
-    assert resp_b.status_code == 503, resp_b.text
-    assert resp_b.json()["error"]["sub_reason"] == "leak_detected"
-    assert recorded_b == []
+    assert resp_b.status_code == 200, resp_b.text
+    egress_b = "".join(r.content.decode("utf-8") for r in recorded_b)
+    assert "Emil Fink" in egress_b
+
+    collision_records = [
+        r for r in audit_log_b.records if r.event == "declared-collision"
+    ]
+    assert len(collision_records) == 1
+    assert "range the blinder itself wrote" in collision_records[0].reason
+    assert "Fink" not in collision_records[0].reason
