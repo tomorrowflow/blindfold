@@ -39,7 +39,9 @@ from blindfold.engine import (
     ExchangeSession,
     LeakError,
     _collect_text,
+    blindfold_chat_completions_payload,
     blindfold_payload,
+    chat_completions_tool_container,
     leak_gate,
     resolution_gate,
     restore_response,
@@ -458,6 +460,107 @@ def test_a_stripped_schema_structural_leaf_does_not_shift_a_later_genuine_miss_i
 
     with pytest.raises(LeakError):
         leak_gate(blinded, mapping, None, session)
+
+
+def test_a_phantom_function_container_visit_does_not_mask_a_leaf_count_mismatch():
+    # Reviewer-found hole (cycle 2): the mirror walk's per-tool leaf visitor
+    # previously visited BOTH `tool` and `tool["function"]` unconditionally,
+    # regardless of which container the Messages-shape blinder
+    # (`_blindfold_tools_messages`) actually used (`tool` only -- `function`
+    # is never even read for this payload shape). On a payload that ALSO
+    # strips one leaf via `_strip_schema_structural_tokens` (an `enum`-nested
+    # schema description, the cycle-1 shape), the phantom `function`-container
+    # visit adds exactly one leaf the blind pass never created while the
+    # structural strip removes exactly one the blind pass DID create -- the
+    # aggregate leaf count comes out equal, so cycle 2's own count backstop
+    # cannot see the drift, and every leaf paired after the stripped one
+    # silently reuses the wrong slot.
+    mapping = SurrogateMapping.from_pairs([("Org A", "Aurora Systems")])
+    payload = {
+        "model": "m",
+        "messages": [{"role": "user", "content": "nothing sensitive here."}],
+        "tools": [
+            {
+                "name": "t1",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "p": {
+                            "type": "string",
+                            # Stripped wholesale by `_strip_schema_structural_tokens`
+                            # before the mirror walk runs -- one FEWER leaf than the
+                            # blind pass itself created (it recurses into `enum` via
+                            # `_blindfold_schema_prose` and blinds this description).
+                            "enum": [{"description": "Org A is on file."}],
+                        }
+                    },
+                },
+                # Messages shape: `_blindfold_tools_messages` never reads this
+                # sibling key at all -- the blind pass creates NO leaf slot for
+                # it. A mirror walk that visits it anyway (the old, shape-blind
+                # `_blank_blinder_tool_leaves`) creates ONE MORE leaf than the
+                # blind pass did -- compensating the strip above and leaving
+                # the aggregate count unchanged.
+                "function": {"description": "Bob stays as typed."},
+            },
+        ],
+    }
+
+    blinded, session = blindfold_payload(payload, mapping, None, None)
+    assert (
+        blinded["tools"][0]["input_schema"]["properties"]["p"]["enum"][0]["description"]
+        == "Aurora Systems is on file."
+    )
+    # Never touched by the Messages-shape blinder -- confirms this key really
+    # is outside `_blindfold_tools_messages`'s own traversal, not merely
+    # untouched by coincidence.
+    assert blinded["tools"][0]["function"]["description"] == "Bob stays as typed."
+
+    mapping.seed("Bob", "Some Other Surrogate")
+
+    with pytest.raises(LeakError):
+        leak_gate(blinded, mapping, None, session)
+
+
+def test_chat_completions_shape_tool_description_collision_uses_the_function_container():
+    # The exclusion applies uniformly across payload shapes (this issue's own
+    # acceptance criterion), not only Messages': for a payload blinded by
+    # ``blindfold_chat_completions_payload``, the tool-description container is
+    # ``tool["function"]`` (``chat_completions_tool_container``), never
+    # ``tool`` itself -- passing it explicitly proves the mirror walk pairs
+    # correctly against THIS shape's own blinder dispatch
+    # (``_blindfold_tools_chat_completions``).
+    mapping = SurrogateMapping.from_pairs([("Org A", "Aurora Systems")])
+    payload = {
+        "model": "gpt-4o-mini",
+        "messages": [{"role": "user", "content": "nothing sensitive here."}],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "lookup",
+                    "description": "Org A signed the agreement.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"q": {"type": "string"}},
+                    },
+                },
+            }
+        ],
+    }
+
+    blinded, session = blindfold_chat_completions_payload(payload, mapping, None, None)
+    assert (
+        blinded["tools"][0]["function"]["description"]
+        == "Aurora Systems signed the agreement."
+    )
+
+    mapping.seed("Systems", "Ridge Holdings")
+    collisions = leak_gate(
+        blinded, mapping, None, session, tool_container=chat_completions_tool_container
+    )
+    assert len(collisions) == 1
+    assert "range the blinder itself wrote" in collisions[0]
 
 
 def test_collect_text_joins_leaves_with_nul_so_a_value_cannot_match_across_fields():

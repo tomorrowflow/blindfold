@@ -135,6 +135,7 @@ from .engine import (
     UnresolvedSurrogateError,
     blindfold_chat_completions_payload,
     blindfold_payload,
+    chat_completions_tool_container,
     extract_case_inconsistency_evidence_chat_completions,
     extract_case_inconsistency_evidence_messages,
     extract_declared_tools_chat_completions,
@@ -144,6 +145,7 @@ from .engine import (
     is_world_acting_request_chat_completions,
     is_world_acting_request_messages,
     leak_gate,
+    messages_tool_container,
     non_hop_block_type_fields,
     resolution_gate,
     restore_chat_completion,
@@ -1627,6 +1629,7 @@ def _leak_gate_or_block(
     block_history: BlockHistory,
     inbox: ReviewInbox | None = None,
     session: ExchangeSession | None = None,
+    tool_container: Callable[[dict], object] = messages_tool_container,
 ) -> tuple[JSONResponse | None, list[str]]:
     """Run the pre-egress :func:`leak_gate`; return a block ``JSONResponse`` if it raised.
 
@@ -1656,9 +1659,17 @@ def _leak_gate_or_block(
     blinder itself wrote as a second, range-scoped declared collision rather than
     a leak. ``None`` on the Unprotected-mode path, which never calls this function
     at all (the leak gate is bypassed there, not merely un-sessioned).
+
+    ``tool_container`` (issue #416, cycle-2 reviewer fail) selects the same
+    tool-description container the caller's own ``blindfold`` used --
+    :func:`~blindfold.engine.messages_tool_container` (default, ``/v1/messages``/
+    ``/v1/messages/count_tokens``) or
+    :func:`~blindfold.engine.chat_completions_tool_container`
+    (``/v1/chat/completions``) -- so :func:`leak_gate`'s mirror walk visits
+    exactly the leaves the blind pass did, never more.
     """
     try:
-        declared_collisions = leak_gate(blinded, mapping, inbox, session)
+        declared_collisions = leak_gate(blinded, mapping, inbox, session, tool_container)
     except LeakError as exc:
         # SEC-3 (issue #40): `exc`'s message is already the one scrubbed reason
         # string leak_gate logged — forward it as-is so the 503 body, the audit
@@ -1888,6 +1899,7 @@ async def _exchange(
     extract_world_acting: Callable[[dict], bool],
     blindfold: Callable[..., tuple[dict, ExchangeSession]],
     send_upstream: Callable[[dict, dict[str, str]], Awaitable[dict]],
+    tool_container: Callable[[dict], object] = messages_tool_container,
     declared_tool_vocabulary: DeclaredToolVocabulary | None = None,
     mint_inbox: Callable[[ReviewInbox], ReviewInbox] = lambda inbox: inbox,
     restore: Callable[[dict, ExchangeSession], dict] | None = None,
@@ -1909,6 +1921,13 @@ async def _exchange(
     function (``restore``, ``None`` for ``count_tokens`` -- no restore side
     means no resolution gate either), the trace kind label (``endpoint``), and
     streaming support (``streaming_supported``/``reject_stream_request``).
+    ``tool_container`` (issue #416) is the fourth member of that same paired
+    set -- :func:`~blindfold.engine.messages_tool_container` (default, for
+    ``blindfold_payload``) or :func:`~blindfold.engine.chat_completions_tool_container`
+    (for ``blindfold_chat_completions_payload``) -- threaded into
+    :func:`_leak_gate_or_block` so its mirror walk visits exactly the same
+    tool-description container ``blindfold`` itself did, never a shape-blind
+    superset of it.
     ``declared_tool_vocabulary`` and ``mint_inbox`` are the two further
     deliberate differences count_tokens needs (issue #322): it measures rather
     than uses, so it must not grow the workspace's durable declared-tool
@@ -2015,7 +2034,8 @@ async def _exchange(
         blinded, session = result
 
         block, declared_collisions = _leak_gate_or_block(
-            blinded, mapping, workspace, audit_log, block_history, inbox, session
+            blinded, mapping, workspace, audit_log, block_history, inbox, session,
+            tool_container,
         )
         if retain_rewritten_leaves and rewritten_leaf_store is not None:
             # ADR-0059 §4: a blocked exchange is retained too, marked "never
@@ -2276,6 +2296,7 @@ async def chat_completions(
         extract_case_inconsistency_evidence=extract_case_inconsistency_evidence_chat_completions,
         extract_world_acting=is_world_acting_request_chat_completions,
         blindfold=blindfold_chat_completions_payload,
+        tool_container=chat_completions_tool_container,
         send_upstream=upstream.send_chat_completions,
         declared_tool_vocabulary=declared_tool_vocabulary,
         restore=restore_chat_completion,

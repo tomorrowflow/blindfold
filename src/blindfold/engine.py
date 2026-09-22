@@ -1156,6 +1156,23 @@ class DeclaredToolVocabulary:
         return frozenset(self._by_workspace.get(workspace, set()))
 
 
+def messages_tool_container(tool: dict[str, Any]) -> Any:
+    """The tool-description container for the Messages shape (ADR-0023 §3): the
+    tool dict itself. Named (rather than an inline lambda) so :func:`leak_gate`'s
+    mirror walk (:func:`_blank_blinder_tool_leaves`, issue #416) can share the
+    exact same container selection the blinder uses, instead of a shape-blind
+    walk that visits leaves the blind pass never did.
+    """
+    return tool
+
+
+def chat_completions_tool_container(tool: dict[str, Any]) -> Any:
+    """The tool-description container for the Chat Completions shape: ``tool["function"]``.
+    See :func:`messages_tool_container`'s docstring for why this is named and shared.
+    """
+    return tool.get("function")
+
+
 def _blindfold_tools_messages(
     tools: Any,
     mapping: SurrogateMapping,
@@ -1163,7 +1180,7 @@ def _blindfold_tools_messages(
     inbox: ReviewInbox | None,
 ) -> None:
     """Rewrite each tool's free-text ``description`` in place (Messages shape, ADR-0023 §3)."""
-    _blindfold_tool_descriptions(tools, mapping, session, inbox, lambda tool: tool)
+    _blindfold_tool_descriptions(tools, mapping, session, inbox, messages_tool_container)
 
 
 def _blindfold_tools_chat_completions(
@@ -1174,7 +1191,7 @@ def _blindfold_tools_chat_completions(
 ) -> None:
     """Rewrite each tool's free-text ``description`` in place (Chat Completions shape)."""
     _blindfold_tool_descriptions(
-        tools, mapping, session, inbox, lambda tool: tool.get("function")
+        tools, mapping, session, inbox, chat_completions_tool_container
     )
 
 
@@ -3955,16 +3972,31 @@ def _blank_blinder_tool_leaves(
     tools: Any,
     session: ExchangeSession,
     visit: Callable[["_LeafAccumulator", str], None],
+    get_container: Callable[[dict[str, Any]], Any],
 ) -> Any:
+    """Visit exactly the container ``get_container`` locates on each tool --
+    ``messages_tool_container``/``chat_completions_tool_container``, the SAME
+    selector the blinder itself dispatches on (:func:`_blindfold_tool_descriptions`).
+
+    Reviewer-found hole (cycle 2): visiting BOTH ``tool`` and ``tool["function"]``
+    unconditionally -- regardless of which one the blinder actually used for this
+    payload's shape -- creates a leaf slot the blind pass never did whenever the
+    unused container also happens to carry a ``description``. That phantom leaf
+    can silently cancel out a leaf ``_strip_schema_structural_tokens`` removed
+    elsewhere in the same call, leaving :func:`_split_blinder_visited_leaves`'s
+    own aggregate leaf-count invariant satisfied while the position-for-position
+    pairing has still drifted. Visiting only the blinder's own container makes
+    this walk faithful to the blind pass BY CONSTRUCTION, so the count check is
+    sufficient again rather than merely usually-sufficient.
+    """
     if not isinstance(tools, list):
         return tools
     for tool in tools:
         if not isinstance(tool, dict):
             continue
-        _blank_blinder_tool_container_leaves(tool, session, visit)
-        function = tool.get("function")
-        if isinstance(function, dict):
-            _blank_blinder_tool_container_leaves(function, session, visit)
+        container = get_container(tool)
+        if isinstance(container, dict):
+            _blank_blinder_tool_container_leaves(container, session, visit)
     return tools
 
 
@@ -4007,13 +4039,24 @@ def _blank_blinder_schema_prose_leaves(
 
 
 def _split_blinder_visited_leaves(
-    gate_view: dict[str, Any], session: ExchangeSession
+    gate_view: dict[str, Any],
+    session: ExchangeSession,
+    tool_container: Callable[[dict[str, Any]], Any] = messages_tool_container,
 ) -> tuple[list[tuple["_LeafAccumulator", str]], dict[str, Any]]:
     """Split ``gate_view`` into (a) the leaf/text pairs for every blinder-visited
     region, joined position-for-position to the ``_LeafAccumulator`` the original
     blind pass created for that same leaf, and (b) ``gate_view`` itself with those
     leaves blanked -- the residual :func:`leak_gate` keeps checking exhaustively,
     unchanged, for every other leaf (issue #416).
+
+    ``tool_container`` selects, per tool, exactly the container the blinder
+    itself used for this payload's shape -- ``messages_tool_container``
+    (default) or ``chat_completions_tool_container`` -- never both. Reviewer-
+    found hole (cycle 2): visiting both containers regardless of shape can add
+    a leaf the blind pass never created, which can silently cancel out a leaf
+    ``_strip_schema_structural_tokens`` removed elsewhere in the same call --
+    the aggregate leaf-count check below then passes while the pairing has
+    still drifted. See :func:`_blank_blinder_tool_leaves`'s own docstring.
 
     ``session.reset_leaf_walk()`` first, matching the exact discipline
     :func:`_close_cross_hop_mint_gap`'s own re-walk already uses, so this walk's
@@ -4062,7 +4105,9 @@ def _split_blinder_visited_leaves(
                 message["content"] = _blank_blinder_content_leaves(
                     message.get("content"), session, visit
                 )
-    working["tools"] = _blank_blinder_tool_leaves(working.get("tools"), session, visit)
+    working["tools"] = _blank_blinder_tool_leaves(
+        working.get("tools"), session, visit, tool_container
+    )
 
     if len(pairs) != expected_leaf_count:
         return [], gate_view
@@ -4075,6 +4120,7 @@ def leak_gate(
     mapping: SurrogateMapping,
     inbox: ReviewInbox | None = None,
     session: "ExchangeSession | None" = None,
+    tool_container: Callable[[dict[str, Any]], Any] = messages_tool_container,
 ) -> list[str]:
     """Pre-egress leak gate (SEC-5, ADR-0020): the prevention half of the egress split.
 
@@ -4145,6 +4191,19 @@ def leak_gate(
     entire pairing for this call is untrustworthy, so it is discarded wholesale --
     every blinder-visited leaf falls back to the exhaustive, unblanked check, same
     as ``session=None`` -- rather than trust a drifted position-for-position join.
+
+    Reviewer-found hole (cycle 2 -> this cycle): the count invariant above is
+    only sufficient when the mirror walk visits the SAME set of tool-description
+    containers the blinder did. ``tool_container`` (``messages_tool_container``
+    by default, matching :func:`blindfold_payload`'s own Messages-shape
+    dispatch; pass :func:`chat_completions_tool_container` for a payload
+    blinded by :func:`blindfold_chat_completions_payload`) selects, per tool,
+    exactly the container :func:`_blindfold_tool_descriptions` used -- never
+    both unconditionally. Visiting both let a phantom leaf the blind pass never
+    created silently cancel out a leaf the schema-structural strip removed,
+    keeping the aggregate count equal while the pairing still drifted -- the
+    count check alone cannot see that; the mirror must be faithful to the
+    blinder's own per-shape dispatch to begin with.
     """
     def _raise_leak(ref: str) -> NoReturn:
         # SEC-3 (issue #40): one scrubbed-reason format for both the mapping and the
@@ -4177,7 +4236,9 @@ def leak_gate(
         # so the SAME match is never evaluated twice by two different rules --
         # it is either checked leaf-scoped (below) or exhaustively (here), never
         # both.
-        leaf_pairs, gate_view = _split_blinder_visited_leaves(gate_view, session)
+        leaf_pairs, gate_view = _split_blinder_visited_leaves(
+            gate_view, session, tool_container
+        )
     else:
         leaf_pairs = []
     outbound_text = _collect_text(gate_view)
