@@ -234,15 +234,24 @@ def test_applied_provisional_surrogate_is_restored_and_resolution_gate_stays_cle
     resolution_gate(restored, session)
 
 
-def test_a_provisional_reals_component_inside_an_already_injected_l2_surrogate_is_left_alone():
+def test_a_provisional_reals_component_inside_an_already_injected_l2_surrogate_fails_closed_at_the_leak_gate():
     # Issue #405's self-poisoning guard (ADR-0022/#68/#292 precedent, mirroring
     # _reapply_provisional_pairs_catchup's own exclusion): the entity-graph pass
     # (L2) already spliced "Bar" -> "Foo Baz" into the description by the time
     # the provisional-pair pass runs over it. A live provisional referent whose
     # own real value ("Baz") happens to occur, literally, inside that
-    # already-injected surrogate must never be treated as a fresh match -- doing
-    # so would corrupt "Foo Baz" (the literal text session.record paired with
-    # "Bar") into something no restore key maps back to "Bar" at all.
+    # already-injected surrogate is left alone by the blinder -- doing otherwise
+    # would corrupt "Foo Baz" (the literal text session.record paired with "Bar")
+    # into something no restore key maps back to "Bar" at all.
+    #
+    # Issue #407 (reviewer finding on #405): leaving it alone at the blindfold
+    # step is only half the story. leak_gate has no matching exclusion (that
+    # asymmetry is #406's open decision, not resolved here), so it finds "Baz"
+    # whole-word inside "Foo Baz" and raises -- the real request path 503s on
+    # this exact, byte-identical payload every time. This test asserts that
+    # actual outcome, not just the intermediate blindfold text: restore_response
+    # is deliberately never reached in this test because leak_gate blocks the
+    # exchange before egress in production, so there is no response to restore.
     mapping = SurrogateMapping.from_pairs([("Bar", "Foo Baz")])
     inbox = ReviewInbox()
     inbox.upsert("Baz", context="...Baz signed off...", entity_type="organization")
@@ -264,6 +273,13 @@ def test_a_provisional_reals_component_inside_an_already_injected_l2_surrogate_i
     description = blinded["tools"][0]["description"]
     assert description == "Foo Baz reports to finance."
     assert item.provisional_surrogate not in description
+
+    # #406, not this issue, owns whether this deadlocks forever or is resolved
+    # some other way -- today it fails closed, and this pins that as the
+    # current, known-open end state rather than letting the earlier assertions
+    # above imply the scenario is handled cleanly end to end.
+    with pytest.raises(LeakError):
+        leak_gate(blinded, mapping, inbox)
 
 
 def test_the_substitution_set_is_derived_from_the_same_shared_function_leak_gate_uses(
