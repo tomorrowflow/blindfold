@@ -589,6 +589,27 @@ func supervisorLifecycleMatchesGoldenVector(_ vector: GoldenVectorFixture.Superv
     #expect(orphanStore.saved == [9001])
 }
 
+/// Reviewer finding, cycle 2: a failed spawn's sentinel pid (`FailedProxyLaunch
+/// .processIdentifier == -1`, "nothing was actually spawned" per its own docstring) must
+/// never be persisted through the orphan store -- else a later run's `OrphanSweep.perform`
+/// would (pre-fix) treat it as a live pid and mis-attribute a genuine third-party "port in
+/// use" to Blindfold's own orphan.
+@Test func startNeverPersistsTheFailedLaunchSentinelPID() {
+    let launcher = FakeProxyProcessLauncher()
+    launcher.process.processIdentifier = -1
+    let orphanStore = FakeOrphanPIDStore()
+    let supervisor = ProxySupervisor(
+        launcher: launcher,
+        exePath: "blindfold-proxy",
+        args: ["serve"],
+        orphanPIDStore: orphanStore
+    )
+
+    supervisor.start()
+
+    #expect(orphanStore.saved.isEmpty)
+}
+
 /// Issue #414 AC: "on start, an orphan left by a previous run is detected and resolved
 /// before a new child is spawned". A pid recorded by a previous run is still alive, so
 /// `start()` must terminate its whole process group *before* calling the launcher.

@@ -214,7 +214,12 @@ public final class ProxySupervisor: ProxySupervising, @unchecked Sendable {
         logSink.append("spawn: exe=\(exePath) args=\(args.joined(separator: " "))")
         let spawned = launcher.launch(exePath: exePath, args: args, environment: environmentProvider())
         process = spawned
-        orphanPIDStore.save(pid: spawned.processIdentifier)
+        // A failed spawn (`FailedProxyLaunch`) reports the sentinel pid -1 -- never
+        // persist it, or a later run's `OrphanSweep.perform` would have something to
+        // (mis)act on despite nothing having actually been spawned.
+        if spawned.processIdentifier > 0 {
+            orphanPIDStore.save(pid: spawned.processIdentifier)
+        }
     }
 
     /// Tells the supervisor a `/v1/status` poll succeeded — called by the menu bar's

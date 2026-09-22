@@ -50,3 +50,19 @@ private final class FakeOrphanProcessTerminating: OrphanProcessTerminating, @unc
     #expect(outcome == .terminatedOrphan(pid: 4242))
     #expect(terminating.terminatedGroups == [4242])
 }
+
+/// `FailedProxyLaunch.processIdentifier` is the sentinel `-1` (nothing was actually
+/// spawned). A non-positive recorded pid must never be treated as a live process to
+/// probe or terminate: `kill(-1, 0)` is a broadcast liveness probe (always "alive") and
+/// `kill(-(-1), SIGTERM)` targets pid 1, not a Blindfold child. Reviewer finding, cycle
+/// 2: without this guard a failed spawn's sentinel gets persisted and then swept as if
+/// it were a real orphan.
+@Test func nonPositiveRecordedPIDIsNeverProbedOrTerminated() {
+    let terminating = FakeOrphanProcessTerminating()
+    terminating.alivePIDs = [-1]
+
+    let outcome = OrphanSweep.perform(recordedPID: -1, terminating: terminating)
+
+    #expect(outcome == .nothingRecorded)
+    #expect(terminating.terminatedGroups.isEmpty)
+}

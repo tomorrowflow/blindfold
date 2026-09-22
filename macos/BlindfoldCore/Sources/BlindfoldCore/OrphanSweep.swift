@@ -117,7 +117,7 @@ public enum OrphanSweepOutcome: Equatable, Sendable {
 /// launch instead of leaking the port forever.
 public enum OrphanSweep {
     public static func perform(recordedPID: Int32?, terminating: OrphanProcessTerminating) -> OrphanSweepOutcome {
-        guard let pid = recordedPID else { return .nothingRecorded }
+        guard let pid = recordedPID, pid > 0 else { return .nothingRecorded }
         guard terminating.isAlive(pid: pid) else { return .staleRecordCleared }
         terminating.terminateGroup(pid: pid)
         return .terminatedOrphan(pid: pid)
