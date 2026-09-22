@@ -371,7 +371,6 @@ _declared_tool_vocabulary = DeclaredToolVocabulary()
 # via dependency_overrides[get_unprotected_mode].
 _unprotected_mode = UnprotectedMode()
 
-# Process-wide Payload inspection state (ADR-0059 §4, issue #398): armed flag +
 # Process-wide retained-leaf store (ADR-0059 §2-§4, issue #399): the last 5
 # exchanges' rewritten leaves, only ever populated while `_payload_inspection`
 # is armed (checked once per exchange, in `_exchange`, below). A SEPARATE
@@ -383,6 +382,7 @@ _unprotected_mode = UnprotectedMode()
 # `_payload_inspection`, below, can wire its release hook to it.
 _rewritten_leaf_store = RewrittenLeafStore()
 
+# Process-wide Payload inspection state (ADR-0059 §4, issue #398): armed flag +
 # fixed 30-minute expiry timer. Deliberately a singleton scoped to this proxy
 # process only -- never persisted to the shared store, never per-workspace --
 # same reasoning as `_unprotected_mode` above: the auto-disarm survives a
