@@ -250,6 +250,59 @@ async def test_read_endpoint_requires_viewer_role():
 
 
 @pytest.mark.anyio
+async def test_a_rewritten_leaf_retained_through_a_real_request_is_readable_via_the_endpoint():
+    # End to end, no UI needed (the issue's own bar): POST a real exchange
+    # through /v1/messages while armed, then GET it back through the viewer-
+    # gated endpoint -- the full loop every other test in this module only
+    # proves one half of.
+    mapping = SurrogateMapping.from_pairs([("Anna Schmidt", "Berta Vogel")])
+    inspection = PayloadInspection()
+    inspection.arm()
+    store = RewrittenLeafStore()
+    rbac = RbacRegistry()
+    rbac.grant("alice", "default", "viewer")
+    payload = {
+        "model": "claude-3-5-sonnet",
+        "messages": [{"role": "user", "content": "Please help Anna Schmidt today."}],
+    }
+
+    post_resp = await _post_messages(
+        payload,
+        {
+            get_upstream_client: lambda: _scripted_upstream(),
+            get_mapping: lambda: mapping,
+            get_review_inbox: lambda: ReviewInbox(),
+            get_l3_detector: lambda: L3Detector(_DismissAll()),
+            get_payload_inspection: lambda: inspection,
+            get_rewritten_leaf_store: lambda: store,
+        },
+    )
+    assert post_resp.status_code == 200
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_rewritten_leaf_store] = lambda: store
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://proxy.test"
+        ) as client:
+            get_resp = await client.get(
+                "/v1/management/payload-inspection/leaves?workspace=default",
+                headers={"x-blindfold-identity": "alice"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert get_resp.status_code == 200
+    body = get_resp.json()
+    assert len(body["exchanges"]) == 1
+    assert body["exchanges"][0]["blocked"] is False
+    (leaf,) = body["exchanges"][0]["leaves"]
+    assert "Berta Vogel" in leaf["text"]
+    assert "Anna Schmidt" not in leaf["text"]
+    assert leaf["spans"][0]["surrogate"] == "Berta Vogel"
+
+
+@pytest.mark.anyio
 async def test_read_endpoint_returns_this_workspaces_retained_exchanges_only():
     rbac = RbacRegistry()
     rbac.grant("alice", "ws-a", "viewer")

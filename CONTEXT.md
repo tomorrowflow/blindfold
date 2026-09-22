@@ -534,13 +534,19 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   round trip) and from the **Processing trace** itself (scrubbed, always on). _Avoid_: **dev
   mode**, **debug mode**, payload diff (no real text is retained, so there is no diff),
   preview (it is strictly after the fact).
-- **Retained payload** (ADR-0059) — what **Payload inspection** holds while armed: per
-  exchange, every string leaf the blindfold pass rewrote, keyed by its path in the payload,
-  in blindfolded form only. Wider than hop text — it reaches tool-result bodies, tool-call
-  inputs and tool descriptions, where substitutions actually concentrate — and narrower than
-  the outbound body, since untouched leaves are not retained. A **blocked** exchange's
-  retained payload is kept and marked *never sent*. _Avoid_: retained prompt (it is not only
-  the prompt), payload copy, buffer.
+- **Retained payload** (ADR-0059, issue #399) — what **Payload inspection** holds while
+  armed: per exchange, every string leaf the blindfold pass rewrote, each keyed by a stable
+  **walk-order id** plus a display label naming where it came from (hop kind, and the block
+  or field type — a tool-call input, a tool description, a user text block, a tool-result
+  body) — deliberately not a JSON path, which would need threading through every rewrite
+  site for addressability the view does not need. In blindfolded form only, with per-span
+  offsets recorded at mint time and the surrogate written at each; overlapping or nested
+  spans (a pre-existing L3 mint/coverage-sweep quirk) are kept faithfully, never dropped or
+  merged. Wider than hop text — it reaches tool-result bodies, tool-call inputs and tool
+  descriptions, where substitutions actually concentrate — and narrower than the outbound
+  body, since untouched leaves are not retained. A **blocked** exchange's retained payload is
+  kept and marked *never sent*. _Avoid_: retained prompt (it is not only the prompt), payload
+  copy, buffer, leaf path (see above).
 - **Executed argument** (ADR-0060) — a value in an outbound payload that is *acted upon*
   outside the model rather than merely read by it: a search query, a fetched URL, a shell
   command, a file path, a message recipient. The distinction that decides Blindfold's
