@@ -122,16 +122,31 @@ server keeps its state in-process for the request path).
 
 Point your client at it (see [Usability](#usability) below), and you're blindfolding.
 
-**Optional: OpenBao Transit** (production key custody for the mapping, ADR-0008 —
-needed today only for the re-identify/decrypt path):
+**Optional: the dev stack** — OpenBao Transit (production key custody for the mapping,
+ADR-0008 — needed today only for the re-identify/decrypt path) plus the standing
+Postgres behind `BLINDFOLD_DATABASE_URL` (ADR-0037 review-inbox persistence). One
+command brings both up and leaves them in a state `blindfold serve` will start against:
 
 ```bash
-docker compose -f infra/docker-compose.dev.yml up -d
-./infra/bootstrap-openbao.sh
-export BLINDFOLD_OPENBAO_ADDR=http://localhost:8200
-export BLINDFOLD_OPENBAO_TOKEN=$(bao token create -policy=blindfold-proxy -field=token)
+./infra/dev-up.sh
 uv run blindfold serve
 ```
+
+It works with **podman or docker** (podman preferred, ADR-0058), and is idempotent —
+re-running it is the supported recovery path.
+
+`podman compose up -d` on its own is *not* enough, which is why the script exists. It
+also waits for both services' healthchecks, runs `bootstrap-openbao.sh` (piped into the
+container, since the image has no `bash` and the host usually has no `bao` CLI), mints a
+scoped `blindfold-proxy` token into your `.env`, and applies
+`src/blindfold/store/migrations.sql` — `blindfold serve` refuses an empty database
+rather than migrating it.
+
+**After a `compose down`, re-run the script.** OpenBao runs `-dev`, so its Transit keys
+live in memory: tearing the stack down destroys `blindfold-mapping` and invalidates
+every token minted against it. That is also why the Postgres service deliberately has no
+volume — ciphertext must not outlive the key protecting it (see the note in
+`infra/docker-compose.dev.yml`).
 
 Never hand the running proxy the OpenBao **root** token (the `dev-root-token` the
 bootstrap script uses to set up keys/policies) — `blindfold serve` refuses to start
