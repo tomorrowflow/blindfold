@@ -235,3 +235,73 @@ def test_leak_gate_does_not_raise_on_a_known_real_confined_to_tools_function_nam
     }
 
     leak_gate(outbound, mapping)
+
+
+def test_leak_gate_still_raises_when_the_same_real_also_occurs_unblinded_alongside_mcp_servers():
+    # Scope discipline, mirroring the tools[].name case above: excluding
+    # mcp_servers is field-scoped, not value-scoped. The identical real value
+    # appearing unblinded in message text must still block.
+    mapping = _mapping()
+    outbound = {
+        "model": "m",
+        "messages": [{"role": "user", "content": "Please contact Weber directly."}],
+        "mcp_servers": [
+            {"type": "url", "url": "https://mcp.example.com/sse", "name": "tools"}
+        ],
+    }
+
+    with pytest.raises(LeakError):
+        leak_gate(outbound, mapping)
+
+
+def test_leak_gate_does_not_raise_on_a_known_real_confined_to_an_mcp_server_name():
+    # `mcp_servers[].name` is the dispatch key a paired `tools[].mcp_server_name`
+    # entry correlates against (ADR-0060) -- the same protocol-identifier class as
+    # `tools[].name`, not blindable prose.
+    mapping = _mapping()
+    outbound = {
+        "model": "m",
+        "messages": [{"role": "user", "content": "hello"}],
+        "mcp_servers": [
+            {"type": "url", "url": "https://mcp.example.com/sse", "name": "Weber"}
+        ],
+    }
+
+    leak_gate(outbound, mapping)
+
+
+def test_leak_gate_returns_a_declared_collision_for_an_mcp_server_url():
+    mapping = _mapping()
+    outbound = {
+        "model": "m",
+        "messages": [{"role": "user", "content": "hello"}],
+        "mcp_servers": [
+            {"type": "url", "url": "https://mcp.Weber.example.com/sse", "name": "tools"}
+        ],
+    }
+
+    collisions = leak_gate(outbound, mapping)
+
+    assert len(collisions) == 1
+    assert "Weber" not in collisions[0]
+    assert collisions[0].startswith("declared collision:")
+
+
+def test_leak_gate_does_not_raise_on_a_known_real_confined_to_an_mcp_server_url():
+    # Issue #408: `mcp_servers` (ADR-0060 §2) is never traversed by the blinder
+    # (which visits only `system`, `messages`, `tools`) but was gate-checked in
+    # full, so a real value in a server's `url` -- the ordinary case, since a
+    # connector endpoint routinely embeds a company or product name -- was a
+    # deterministic, permanent block: the same shape as #386, with no escape.
+    # The `url` is a protocol identifier the provider must resolve; rewriting it
+    # would break the connection, the same class as `tools[].name`.
+    mapping = _mapping()
+    outbound = {
+        "model": "m",
+        "messages": [{"role": "user", "content": "hello"}],
+        "mcp_servers": [
+            {"type": "url", "url": "https://mcp.Weber.example.com/sse", "name": "weber-tools"}
+        ],
+    }
+
+    leak_gate(outbound, mapping)

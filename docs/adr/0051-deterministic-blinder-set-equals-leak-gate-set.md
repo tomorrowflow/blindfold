@@ -547,3 +547,62 @@ favor of "let it through" would be exactly the over-widening the `#303`/`#328` a
 against. This class of collision is what `store._mint.pool_entry_collides_with_corpus` already
 exists to prevent at mint time; it is reachable here only via two direct `mapping.seed()` calls
 that bypass that guard, not through the ordinary L3-mint-then-confirm path.
+
+## Amendment (issue #408): a top-level field the blinder never traverses at all
+
+Surfaced while writing ADR-0060 §2, which had to enumerate where a provider-executed tool can be
+declared and named `mcp_servers` as one such signal. Independent of that decision — a live
+asymmetry on `main`, this ADR's own invariant violated a fourth way.
+
+`blindfold_payload`/`blindfold_chat_completions_payload` visit exactly three top-level payload
+regions — `system`, `messages[*].content`, `tools` — and carry everything else through by the
+initial `copy.deepcopy`, unread. `mcp_servers` (`{type: "url", url, name}`, plus a paired
+`tools[].mcp_server_name` entry) is one such field. `leak_gate` scanned it in full regardless: a
+real value in a server's `url` or `name` was checked but never substituted — the permanent-deadlock
+shape `#386` and the `#303` amendment both name, on a surface neither of those fixes touched
+because neither enumerated a field the blinder doesn't visit at the *top level* (they reasoned
+about sub-fields of `tools` and content-block types, both already inside a traversed region).
+
+**Decision: narrow the gate.** `mcp_servers` is excluded from `_gate_excluded_view`'s checked view
+in full, joining `tools[].name`/`function.name` and the content-block protocol identifiers (`#323`)
+as a field the blinder is structurally forbidden to rewrite — not partially, by field name, but as
+a unit, because *no* part of it is a top-level region the blinder ever reaches. The exclusion is
+derived from one constant, `_BLINDER_TRAVERSED_TOP_LEVEL_FIELDS`, rather than reimplemented at the
+call site: `_gate_excluded_view` asks whether `"mcp_servers"` is a member and drops the field
+wholesale when it is not, so a future top-level field gets the same treatment automatically if it
+is never added to that set, and gets none if it is.
+
+Bounded the same way `tools[].name`'s residual already is (this ADR's own #303 amendment): the
+identical real value occurring anywhere else in the payload — message text, tool descriptions —
+stays fully blinded and gate-checked; only the connector declaration's own literal is exempted, and
+it is recorded as a scrubbed declared collision, not dropped silently.
+
+**Rejected: extend the blinder to traverse `mcp_servers`.** Considered splitting `url` (a protocol
+identifier the provider must resolve to the live connector endpoint — rewriting it breaks the
+connection outright, stronger than `tools[].name`'s dispatch argument) from `name` (seemingly
+prose). But `name` is itself a dispatch key a paired `tools[].mcp_server_name` entry correlates
+against — the same protocol-identifier class this ADR's `#323` amendment already assigned to
+`mcp_tool_use.server_name`, `tool_use.name` and `server_tool_use.name`. Rewriting it without also
+rewriting the paired `tools[]` entry desyncs the two; keeping them in sync would need new
+cross-request consistency machinery this issue does not need in order to close the deadlock.
+Rejected as scope creep on a bug fix, not on the merits of the field decision.
+
+**Rejected: exempt the field on the grounds that it cannot carry a real value.** The issue's own
+body forecloses this: a connector `url` routinely embeds a company or product name, "the ordinary
+case, not an exotic one." The narrowing above is justified structurally (the field decides the
+direction, per this ADR's own rule), not by an impossible-to-prove absence claim.
+
+**Consequences:**
+- Closes the fourth instance of "a surface the gate checks that the blinder cannot reach," on a
+  top-level field rather than a sub-field or a content-block type — the three shapes this ADR had
+  already named (`#303`'s sub-fields, `#323`'s block types, `#387`'s ordering gap) did not cover a
+  field outside the blinder's traversed regions entirely.
+- No narrowing of message text, system blocks, or tool descriptions: every value `leak_gate`
+  already checked there keeps being checked.
+- The accepted residual: an operator whose `mcp_servers[].url`/`name` literally equals a registered
+  Term or a confirmed/provisional entity's real value ships that literal in the clear on the
+  connector declaration itself, every request, for as long as that declaration doesn't change —
+  same shape and same bound as `tools[].name`'s residual, not a new kind of exposure.
+- If a future field is added to `_BLINDER_TRAVERSED_TOP_LEVEL_FIELDS` (the blinder widens to reach
+  it), `_gate_excluded_view` stops excluding it automatically, restoring full gate coverage without
+  a second code change — the coupling this ADR's own invariant requires.
