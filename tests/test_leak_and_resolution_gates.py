@@ -161,6 +161,41 @@ def test_leak_gate_raises_when_a_provisional_entitys_real_value_is_in_a_tool_use
         leak_gate(leaky_outbound, mapping, inbox)
 
 
+def test_leak_error_carries_the_review_inbox_items_id_for_a_provisional_match():
+    # Issue #417: the two block causes behind `leak_detected` have opposite
+    # remedies -- a provisional inbox row is curation work with a row to act on,
+    # a mapping-known/confirmed miss is a blinder defect with no row at all. The
+    # caller (app._leak_gate_or_block) needs a structural way to tell them apart,
+    # never by parsing the scrubbed reason string -- so LeakError itself carries
+    # the review-inbox item id when the match is a provisional referent.
+    mapping = _mapping()
+    inbox = ReviewInbox()
+    item = inbox.upsert("Kestrel Dynamics", context="Please brief Kestrel Dynamics.")
+    leaky_outbound = {
+        "messages": [{"role": "user", "content": "Follow up with Kestrel Dynamics."}]
+    }
+
+    with pytest.raises(LeakError) as excinfo:
+        leak_gate(leaky_outbound, mapping, inbox)
+
+    assert excinfo.value.item_id == item.id
+
+
+def test_leak_error_carries_no_item_id_for_a_mapping_known_miss():
+    # The opposite case: a blindfold-engine miss on a mapping-known (confirmed)
+    # real value is a Blindfold defect, not curation work -- there is no review
+    # row to point at, so LeakError.item_id must be None.
+    mapping = _mapping()
+    leaky_outbound = {
+        "messages": [{"role": "user", "content": "Contact Anna Schmidt now."}]
+    }
+
+    with pytest.raises(LeakError) as excinfo:
+        leak_gate(leaky_outbound, mapping)
+
+    assert excinfo.value.item_id is None
+
+
 def test_leak_gate_does_not_block_on_an_empty_inbox_when_only_confirmed_values_are_present():
     # No change to what the gate does for confirmed entities (acceptance criterion):
     # passing an inbox with no provisional items must not alter the existing

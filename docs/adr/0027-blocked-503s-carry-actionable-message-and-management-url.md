@@ -1,6 +1,6 @@
 # ADR-0027: Blocked 503s carry an actionable message + management_url deep link, never a synthetic 200
 
-**Status:** Accepted — amended 2026-08-27 by [ADR-0057](0057-claude-desktop-gateway-mode-is-a-redirectable-client.md) §D4 (see "Amendment" below)
+**Status:** Accepted — amended 2026-08-27 by [ADR-0057](0057-claude-desktop-gateway-mode-is-a-redirectable-client.md) §D4, and 2026-09-22 by ADR-0010's #417 amendment (see "Amendment" below)
 **Date:** 2026-07-11
 
 ## Context
@@ -29,9 +29,9 @@ We will extend every `blindfold_blocked` 503 body with:
   (`http://<host>:<port>/ui/status`), derived from the actual serve bind (`Settings.host`
   / `Settings.port`, ADR-0021's loopback default) rather than hardcoded. Keyed by
   `sub_reason` so a future sub-reason can target a different view without reshaping the
-  funnel; every sub-reason shipped today (`l3_unavailable`, `leak_detected`,
-  `unresolved_surrogate`) resolves to Home/Status — the review inbox is never a block
-  target, because novel entities are protected non-blocking by design (ADR-0010).
+  funnel; every sub-reason shipped at the time resolved to Home/Status — the review inbox
+  was never a block target, because novel entities are protected non-blocking by design
+  (ADR-0010). Superseded for one sub_reason by the amendment below.
 
 The original scrubbed technical string moves to its own `reason` key (previously
 conflated with `message`) so the existing diagnosability contract (body/audit/log carry
@@ -100,3 +100,16 @@ generic gateway failure. `message`, `management_url`, `code`, `sub_reason`, `eve
 around them, it does not replace or rename anything. This is exactly the reopening
 clause this ADR's own Consequences section named ("If a client that matters is found to
 swallow error bodies silently, that fact reopens this decision").
+
+## Amendment (2026-09-22, ADR-0010's #417 amendment): the review inbox becomes a block target, for one cause only
+
+This ADR's premise above — "the review inbox is never a block target" — held only because
+`leak_detected` conflated two causes with opposite remedies: a match on a *provisional*
+review-inbox row (curation work, a row to act on) and a match on a mapping-known/confirmed
+value (a blinder-miss defect, no row exists). Splitting the second `sub_reason`,
+`leak_detected_review_inbox`, off `leak_detected` (never renamed — ADR-0057's Claude
+Desktop envelope still keys on it) means `_MANAGEMENT_URL_PATH_BY_SUB_REASON` now has one
+entry that resolves to `/ui/inbox?item=<id>` instead of Home/Status, carrying the
+review-inbox item id (not entity content) so the operator lands on the offending row
+rather than a page. Every other sub_reason, `leak_detected` included, is unaffected and
+still resolves to Home/Status.

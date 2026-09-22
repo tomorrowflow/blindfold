@@ -18,6 +18,11 @@ export type BlockRecord = {
   sub_reason: string;
   scrubbed_reason: string;
   management_url: string;
+  // Issue #417: the review-inbox item id for a curation-cause leak-gate block
+  // (sub_reason "leak_detected_review_inbox") -- absent for every other block.
+  // Not entity content -- carried as its own structured field rather than
+  // parsed out of scrubbed_reason, whose shape is a privacy contract, not an API.
+  item_id?: string;
 };
 
 export type StatusResponse = {
@@ -72,8 +77,19 @@ export const BLOCK_REMEDY_BY_SUB_REASON: Record<string, string> = {
   // deterministic-only -- this is a Blindfold defect, not an availability
   // problem, and neither on-ramp fixes a code bug.
   detection_internal: "This is a Blindfold defect, not an availability problem. Please report it.",
+  // ADR-0010's #417 amendment: leak_detected's one code used to cover two
+  // causes with opposite remedies. This is now the defect cause only (a match
+  // on a mapping-known real or confirmed component -- the blinder missed a
+  // value it was allowed to rewrite) -- same framing as detection_internal,
+  // never renamed (Claude Desktop's 3P Gateway mode keys on this string).
   leak_detected:
-    "The pre-egress leak gate caught a real value about to cross egress. Review the audit log for details.",
+    "This is a Blindfold defect, not a curation choice -- a known real value was not blindfolded before egress. Please report it.",
+  // The curation cause: a match on a pending review-inbox row. Names both
+  // verdicts and their consequences (a human-chosen fail-open is only real if
+  // the human is told it is one) -- static, never derived from the block's own
+  // scrubbed_reason, so it can never carry entity content.
+  leak_detected_review_inbox:
+    "A pending review-inbox row matches this value. Confirm it to keep the value protected and clear the block, or reject it to add it to the allowlist -- never blindfolded again, on every subsequent request, in every workspace. Curate the row in the review inbox.",
   unresolved_surrogate:
     "A surrogate was left unresolved after restore. Review the audit log for details.",
 };

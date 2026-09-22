@@ -62,7 +62,20 @@ logger = logging.getLogger(__name__)
 
 
 class LeakError(Exception):
-    """A real entity value was found in a payload about to egress (or that did)."""
+    """A real entity value was found in a payload about to egress (or that did).
+
+    ``item_id`` (issue #417) is the review-inbox item id when the match was a
+    provisional referent -- curation work, with a row to act on. ``None`` (the
+    default) means the match was a mapping-known real or confirmed component --
+    a blinder miss, i.e. a Blindfold defect, never a row. The caller
+    (``app._leak_gate_or_block``) reads this field to split the block's
+    ``sub_reason`` structurally, never by parsing this exception's scrubbed
+    message.
+    """
+
+    def __init__(self, reason: str, item_id: str | None = None) -> None:
+        super().__init__(reason)
+        self.item_id = item_id
 
 
 class UnresolvedSurrogateError(Exception):
@@ -4205,13 +4218,13 @@ def leak_gate(
     count check alone cannot see that; the mirror must be faithful to the
     blinder's own per-shape dispatch to begin with.
     """
-    def _raise_leak(ref: str) -> NoReturn:
+    def _raise_leak(ref: str, item_id: str | None = None) -> NoReturn:
         # SEC-3 (issue #40): one scrubbed-reason format for both the mapping and the
         # inbox path, so the string that reaches the log, the 503 body, and the audit
         # record is byte-identical no matter which set the leaked value came from.
         reason = f"real entity value would egress upstream (ref: {ref})"
         logger.warning("leak_gate: %s", reason)
-        raise LeakError(reason)
+        raise LeakError(reason, item_id=item_id)
 
     items = inbox.list() if inbox is not None else ()
     # ADR-0051 + #306: ``_provisional_pair_map`` is the same derivation
@@ -4243,19 +4256,21 @@ def leak_gate(
         leaf_pairs = []
     outbound_text = _collect_text(gate_view)
 
-    def _check_value_set(values: Sequence[str], ref: str) -> None:
+    def _check_value_set(
+        values: Sequence[str], ref: str, item_id: str | None = None
+    ) -> None:
         any_range_collision = False
         for value in values:
             pattern = _real_value_pattern(value)
             if pattern.search(outbound_text):
-                _raise_leak(ref)
+                _raise_leak(ref, item_id=item_id)
             for leaf, text in leaf_pairs:
                 ranges = _injected_surrogate_ranges(leaf)
                 for match in pattern.finditer(text):
                     if _wholly_inside_any(match.start(), match.end(), ranges):
                         any_range_collision = True
                     else:
-                        _raise_leak(ref)
+                        _raise_leak(ref, item_id=item_id)
         if any_range_collision:
             range_collisions.append(_range_declared_collision_reason(ref))
 
@@ -4278,6 +4293,7 @@ def leak_gate(
         _check_value_set(
             list(_provisional_pair_map(item, component_map)),
             f"review-inbox item {item.id} (surrogate: {item.provisional_surrogate})",
+            item_id=item.id,
         )
 
     collisions: list[str] = list(range_collisions)

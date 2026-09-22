@@ -133,6 +133,36 @@ test.describe("review inbox — alice (holds viewer)", () => {
     expect(backgroundColor).not.toBe(curatorGreen);
   });
 
+  test("reject states its consequence next to the control (ADR-0010's #417 amendment)", async ({
+    alicePage,
+  }) => {
+    // Confirm and reject are not symmetric: confirm keeps protection
+    // (workspace-scoped, reversible), reject removes it (process-global,
+    // permanent). A human-chosen fail-open is only real if the human is told
+    // it is one, so the consequence sits next to the control -- plain terms,
+    // no scare styling, no modal.
+    await alicePage.goto("/ui/inbox");
+    const klaus = alicePage.getByTestId("review-inbox-item").filter({ hasText: "Klaus Bergmann" });
+    const consequence = klaus.getByTestId("review-inbox-item-reject-consequence");
+    await expect(consequence).toBeVisible();
+    await expect(consequence).toContainText("Never blindfolded again");
+    await expect(consequence).toContainText("every request");
+    await expect(consequence).toContainText("every workspace");
+
+    // Adjacent to Reject, not to Confirm -- and not styled as a scare/red warning.
+    const rejectBtn = klaus.getByRole("button", { name: "Reject" });
+    const rejectBox = await rejectBtn.boundingBox();
+    const consequenceBox = await consequence.boundingBox();
+    const confirmBox = await klaus.getByRole("button", { name: "Confirm" }).boundingBox();
+    if (!rejectBox || !consequenceBox || !confirmBox) throw new Error("missing bounding box");
+    const distanceToReject = Math.abs(consequenceBox.y - (rejectBox.y + rejectBox.height));
+    const distanceToConfirm = Math.abs(consequenceBox.x - confirmBox.x);
+    expect(distanceToReject).toBeLessThan(distanceToConfirm);
+
+    const color = await consequence.evaluate((el) => getComputedStyle(el).color);
+    expect(color).not.toBe("rgb(179, 38, 30)"); // --bf-red
+  });
+
   test("confirming an item removes it from the list and decrements the sidebar badge", async ({
     alicePage,
   }) => {

@@ -101,6 +101,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from datetime import datetime
+from urllib.parse import quote
 
 import httpx
 from cryptography.exceptions import InvalidTag
@@ -1244,22 +1245,35 @@ _MANAGEMENT_URL_PATH_BY_SUB_REASON = {
     "l3_unavailable": "/ui/status",
     "detection_internal": "/ui/status",
     "leak_detected": "/ui/status",
+    # Issue #417: the curation cause (a leak-gate match on a provisional review-
+    # inbox row) deep-links to the row itself, not the Home/Status page -- there
+    # is a row to act on (confirm/reject), unlike every other sub_reason here.
+    "leak_detected_review_inbox": "/ui/inbox",
     "unresolved_surrogate": "/ui/status",
     "mint_pool_exhausted": "/ui/status",
     "provisional_pool_exhausted": "/ui/status",
 }
 _DEFAULT_MANAGEMENT_URL_PATH = "/ui/status"
+_REVIEW_INBOX_MANAGEMENT_URL_PATH = "/ui/inbox"
 
 
-def _management_url(sub_reason: str, settings: Settings) -> str:
-    """Deep link into the management app's Home/Status page (ADR-0027).
+def _management_url(sub_reason: str, settings: Settings, item_id: str | None = None) -> str:
+    """Deep link into the management app (ADR-0027).
 
     Derived from the actual serve host/port (``settings.host``/``settings.port``,
     loopback default per ADR-0021) -- never hardcoded, so it stays correct whether
     the operator bound loopback or opted into a non-default bind.
+
+    ``item_id`` (issue #417) carries the review-inbox row along for the one
+    sub_reason that deep-links to it (``leak_detected_review_inbox``) -- an id,
+    never entity content, so it may travel as a query param; every other
+    sub_reason ignores it and keeps pointing at the Home/Status page.
     """
     path = _MANAGEMENT_URL_PATH_BY_SUB_REASON.get(sub_reason, _DEFAULT_MANAGEMENT_URL_PATH)
-    return f"http://{settings.host}:{settings.port}{path}"
+    url = f"http://{settings.host}:{settings.port}{path}"
+    if item_id is not None and path == _REVIEW_INBOX_MANAGEMENT_URL_PATH:
+        url += f"?item={quote(item_id, safe='')}"
+    return url
 
 
 _CONNECT_URL_PATH = "/ui/connect"
@@ -1293,6 +1307,31 @@ _L3_DETECTION_INTERNAL_REMEDY = (
     "This is a Blindfold defect, not an adjudicator availability problem -- the "
     "payload was not sent. Please report it, along with the scrubbed reason "
     "below."
+)
+
+# ADR-0010's #417 amendment: leak_gate's one `leak_detected` sub_reason covered
+# two causes with opposite remedies. This is the defect cause -- a match on a
+# mapping-known real or confirmed component, i.e. the blinder missed a value it
+# was allowed to rewrite. Same framing as _L3_DETECTION_INTERNAL_REMEDY (a code
+# bug, never an availability or curation choice) -- there is no row to curate,
+# so this never names the review inbox.
+_LEAK_DETECTED_DEFECT_REMEDY = (
+    "This is a Blindfold defect, not a curation choice -- a known real value was "
+    "not blindfolded before egress. Please report it, along with the scrubbed "
+    "reason below."
+)
+
+# The curation cause: a match on a *provisional* review-inbox row, which the
+# operator can act on directly. Names both verdicts and their consequences
+# (ADR-0010's #417 amendment: a human-chosen fail-open is only real if the
+# human is told it is one) -- deliberately static, never derived from the
+# block's own scrubbed reason, so it can never carry entity content.
+_LEAK_DETECTED_REVIEW_INBOX_REMEDY = (
+    "A pending review-inbox row matches this value. Confirm it to keep the "
+    "value protected (grows the entity graph; detected deterministically from "
+    "then on) and clear the block, or reject it to add it to the allowlist -- "
+    "never blindfolded again, on every subsequent request, in every workspace. "
+    "Curate the row at the review inbox link above."
 )
 
 
@@ -1381,6 +1420,7 @@ def _blocked_response(
     sub_reason: str,
     block_history: BlockHistory,
     remedy: str = _DEFAULT_REMEDY,
+    item_id: str | None = None,
 ) -> JSONResponse:
     """Return the canonical fail-closed block response and write an audit record.
 
@@ -1413,13 +1453,22 @@ def _blocked_response(
     that recognises that shape (Claude Desktop's 3P Gateway mode) renders it rather
     than a generic gateway failure. Every field below is unchanged; the envelope is
     additive, not a replacement.
+
+    ``item_id`` (issue #417) is the review-inbox item id for the curation-cause
+    leak-gate block (``sub_reason="leak_detected_review_inbox"``) -- threaded into
+    both ``management_url`` (:func:`_management_url` only appends it for that one
+    sub_reason) and ``block_history``'s ``BlockRecord``, never parsed back out of
+    ``reason``.
     """
     logger.warning("blindfold_blocked: event=%s workspace=%s reason=%s", event, workspace, reason)
     audit_log.append(AuditRecord(workspace=workspace, event=event, reason=reason))
-    management_url = _management_url(sub_reason, get_settings())
+    management_url = _management_url(sub_reason, get_settings(), item_id=item_id)
     message = f"Blindfold blocked this request: {reason} Fix or review at {management_url}"
     block_history.record(
-        sub_reason=sub_reason, scrubbed_reason=reason, management_url=management_url
+        sub_reason=sub_reason,
+        scrubbed_reason=reason,
+        management_url=management_url,
+        item_id=item_id,
     )
     return JSONResponse(
         status_code=503,
@@ -1705,14 +1754,33 @@ def _leak_gate_or_block(
         # SEC-3 (issue #40): `exc`'s message is already the one scrubbed reason
         # string leak_gate logged — forward it as-is so the 503 body, the audit
         # record, and the log line all carry the identical scrubbed reference.
+        #
+        # Issue #417: `exc.item_id` (set by `leak_gate` only for a match on a
+        # provisional review-inbox row) is the structural signal that splits
+        # the block taxonomy -- never parse `reason` for it. A row match is
+        # curation work with a row to act on; anything else is a blinder-miss
+        # defect, same class as detection_internal. `leak_detected` itself is
+        # never renamed (ADR-0057, Claude Desktop's 3P Gateway mode keys on
+        # it) -- it keeps meaning the defect cause; the row cause is additive.
+        is_review_inbox_match = exc.item_id is not None
         return (
             _blocked_response(
                 event="blocked-leak",
                 reason=str(exc),
                 workspace=workspace,
                 audit_log=audit_log,
-                sub_reason="leak_detected",
+                sub_reason=(
+                    "leak_detected_review_inbox"
+                    if is_review_inbox_match
+                    else "leak_detected"
+                ),
                 block_history=block_history,
+                remedy=(
+                    _LEAK_DETECTED_REVIEW_INBOX_REMEDY
+                    if is_review_inbox_match
+                    else _LEAK_DETECTED_DEFECT_REMEDY
+                ),
+                item_id=exc.item_id,
             ),
             [],
         )

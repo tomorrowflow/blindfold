@@ -2482,8 +2482,27 @@ body {
 
 .bf-review-inbox-item-actions {
   display: flex;
+  align-items: flex-start;
   gap: 8px;
   flex-shrink: 0;
+}
+
+.bf-review-inbox-item-reject-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+/* Issue #417 (ADR-0010 amendment): reject's effect stated next to the control,
+   in plain terms -- what it does, never how to feel about it. No scare
+   styling: same neutral muted tone as the surrogate/context copy nearby. */
+.bf-review-inbox-item-reject-consequence {
+  max-width: 140px;
+  font-size: 0.75rem;
+  line-height: 1.3;
+  color: #6b7589;
+  text-align: center;
 }
 
 .bf-review-inbox-error {

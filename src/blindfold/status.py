@@ -149,20 +149,31 @@ class BlockRecord:
     Mirrors the 503 body's own fields exactly (#91 / ADR-0027) -- ``scrubbed_reason``
     and ``management_url`` are copied verbatim from the same `_blocked_response`
     funnel, never re-derived, so the two surfaces can never drift or leak.
+
+    ``item_id`` (issue #417) is the review-inbox item id for a curation-cause
+    leak-gate block (``sub_reason="leak_detected_review_inbox"``) -- ``None`` for
+    every other block. Not entity content (the scrubbed reason already names the
+    row by its provisional surrogate), so it may cross this surface; carried as
+    its own structured field rather than parsed back out of ``scrubbed_reason``,
+    whose shape is a privacy contract, not an API.
     """
 
     ts: str
     sub_reason: str
     scrubbed_reason: str
     management_url: str
+    item_id: str | None = None
 
     def to_dict(self) -> dict:
-        return {
+        body: dict = {
             "ts": self.ts,
             "sub_reason": self.sub_reason,
             "scrubbed_reason": self.scrubbed_reason,
             "management_url": self.management_url,
         }
+        if self.item_id is not None:
+            body["item_id"] = self.item_id
+        return body
 
 
 class BlockHistory:
@@ -188,7 +199,13 @@ class BlockHistory:
     def window_minutes(self) -> int:
         return self._window_minutes
 
-    def record(self, sub_reason: str, scrubbed_reason: str, management_url: str) -> None:
+    def record(
+        self,
+        sub_reason: str,
+        scrubbed_reason: str,
+        management_url: str,
+        item_id: str | None = None,
+    ) -> None:
         self._entries.append(
             (
                 self._clock(),
@@ -197,6 +214,7 @@ class BlockHistory:
                     sub_reason=sub_reason,
                     scrubbed_reason=scrubbed_reason,
                     management_url=management_url,
+                    item_id=item_id,
                 ),
             )
         )

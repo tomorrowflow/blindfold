@@ -23,6 +23,13 @@
 // is neutral (--bf-border / --bf-border-soft) — not --bf-ochre-* (reserved for
 // audited reveal), not a kind color, not red (not a block), not curator-green
 // (would pre-suggest Confirm).
+//
+// Reject's consequence, disclosed (ADR-0010's #417 amendment): confirm and
+// reject are not symmetric — confirm keeps protection (workspace-scoped,
+// reversible through curation), reject removes it (process-global, permanent).
+// A human-chosen fail-open is only real if the human is told it is one, so the
+// effect is stated next to the control, in plain terms — what it does, never
+// how to feel about it. No modal, no scare styling.
 
 import { useEffect, useState } from "react";
 import { useReviewInboxPending } from "../components/ReviewInboxContext";
@@ -139,14 +146,22 @@ export function ReviewInbox() {
                 <ContextWithHighlight item={item} />
               </div>
               <div className="bf-review-inbox-item-actions">
-                <button
-                  type="button"
-                  className="bf-btn-outline"
-                  disabled={busyId === item.id}
-                  onClick={() => triage(item, REJECT_URL(item.id))}
-                >
-                  Reject
-                </button>
+                <div className="bf-review-inbox-item-reject-group">
+                  <button
+                    type="button"
+                    className="bf-btn-outline"
+                    disabled={busyId === item.id}
+                    onClick={() => triage(item, REJECT_URL(item.id))}
+                  >
+                    Reject
+                  </button>
+                  <span
+                    className="bf-review-inbox-item-reject-consequence"
+                    data-testid="review-inbox-item-reject-consequence"
+                  >
+                    Never blindfolded again, on every request, in every workspace.
+                  </span>
+                </div>
                 <button
                   type="button"
                   className="bf-btn-lime"
