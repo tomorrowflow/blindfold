@@ -12,3 +12,42 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  # The standing dev Postgres behind BLINDFOLD_DATABASE_URL (ADR-0037 review-inbox
+  # persistence, ADR-0043 store). Distinct from the test suite's Postgres, which
+  # testcontainers starts and disposes of per run -- but pinned to the SAME image the
+  # tests pin (`postgres:16-alpine`, tests/test_entity_graph_postgres.py et al) so a
+  # schema behaviour that holds in dev holds in CI.
+  #
+  # DELIBERATELY NO VOLUME -- its lifetime is tied to openbao's above.
+  #
+  # `openbao` runs `-dev`, which keeps the Transit keys in memory only, so the
+  # `blindfold-mapping` key does not survive the container. Persisting Postgres past
+  # that point leaves ciphertext (reidentify_mappings, review_inbox) encrypted under a
+  # key that no longer exists, and `blindfold serve` then dies during startup hydration
+  # with `TransitError: transit decrypt failed: HTTP 400` -- the ADR-0045 §7 key-loss
+  # path, reached on an ordinary `podman compose down && up`. A named volume was tried
+  # here and removed for exactly that reason: the encrypted columns must not outlive the
+  # key that protects them.
+  #
+  # To make dev data actually persist, both halves have to persist together: take
+  # openbao out of `-dev` onto a file storage backend with its own volume (and an
+  # init/unseal step), then give this service a volume too. Do not add one on its own.
+  #
+  # The schema is NOT created on start: `blindfold serve` refuses an empty database
+  # rather than migrating it, so after every `up` run once (the DDL is idempotent):
+  #   podman exec -i infra-postgres-1 psql -U blindfold -d blindfold \
+  #     < src/blindfold/store/migrations.sql
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: blindfold
+      POSTGRES_PASSWORD: blindfold
+      POSTGRES_DB: blindfold
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U blindfold -d blindfold"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
