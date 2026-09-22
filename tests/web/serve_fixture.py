@@ -746,14 +746,12 @@ def build_app():
     # workspace (unlike bob, who holds no role anywhere) but Reveal/real-name search
     # must show the locked state.
     rbac.grant("dave", WORKSPACE, "curator")
-    # erin holds ONLY viewer on "acme" -- can see the Processing trace (and this
-    # exchange's retained payload) but not Reveal it. Distinct from dave (curator,
-    # no viewer at all -- refused the retained-leaves endpoint outright) and from
-    # every other persona above (all either hold re-identifier or no role at all):
-    # the exchange-level bulk Reveal switch (issue #401, ADR-0059 §5) needs an
-    # identity that reaches the switch itself -- visible, not hidden -- and is
-    # denied only at the point of attempting it.
-    rbac.grant("erin", WORKSPACE, "viewer")
+    # "erin" is deliberately NOT granted here: access-shell.spec.ts's "add identity"
+    # test (against this same shared fixture) asserts erin starts with zero access
+    # rows and grants her first role live. The issue #401 persona of the same name
+    # (viewer only, no re-identifier) is granted below, scoped to the two dedicated
+    # payload-inspection fixture ports only -- see the PAYLOAD_INSPECTION_RETAINED/
+    # PAYLOAD_INSPECTION_DISARMED_ONLY block.
 
     # Seeded real-space crossings/refusals for the full-page audit log view
     # (issue #102) — one of each kind (reveal/lookup/block), plus a second actor
@@ -923,6 +921,17 @@ def build_app():
     app.dependency_overrides[get_upstream_client] = _stub_upstream
 
     if PAYLOAD_INSPECTION_RETAINED or PAYLOAD_INSPECTION_DISARMED_ONLY:
+        # erin holds ONLY viewer on "acme" -- can see the Processing trace (and this
+        # exchange's retained payload) but not Reveal it. Distinct from dave (curator,
+        # no viewer at all -- refused the retained-leaves endpoint outright) and from
+        # every other persona above (all either hold re-identifier or no role at
+        # all): the exchange-level bulk Reveal switch (issue #401, ADR-0059 §5) needs
+        # an identity that reaches the switch itself -- visible, not hidden -- and is
+        # denied only at the point of attempting it. Granted only on these two
+        # dedicated fixture ports, never on the shared/default one, so it can't
+        # perturb access-shell.spec.ts's own use of "erin" as a fresh, role-less
+        # identity against the shared fixture.
+        rbac.grant("erin", WORKSPACE, "viewer")
         payload_inspection, rewritten_leaf_store, retained_trace = (
             _build_payload_inspection_retained_fixture(
                 armed=PAYLOAD_INSPECTION_RETAINED,
