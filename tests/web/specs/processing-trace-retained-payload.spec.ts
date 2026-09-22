@@ -1,4 +1,5 @@
-import { test as base, expect } from "@playwright/test";
+import { test as base, expect, request as pwRequest } from "@playwright/test";
+import { REAL_PERSON, REAL_ORG, WORKSPACE } from "./fixtures";
 
 // Processing trace's fourth grain level (ADR-0059 §7, issue #400): expanding a row
 // also renders whatever Payload inspection retained for THAT exchange -- an elided
@@ -181,6 +182,142 @@ disarmedTest.describe("Processing trace — retained payload (disarmed)", () => 
       await link.click();
       await expect(alicePage).toHaveURL(/\/ui\/settings$/);
       await expect(alicePage.getByTestId("payload-inspection-arm-toggle")).toBeVisible();
+    }
+  );
+});
+
+// SPA-side privacy properties for this slice (browser-verify gate, issue #400).
+//
+// - Browser egress hygiene: applicable, and asserted below on the armed fixture
+//   (the only one that actually carries retained leaf bytes over the wire).
+// - Authorized-only re-identification: retained-leaf `text` is blindfolded-form
+//   ONLY by construction (ADR-0059 §2 — RewrittenLeaf never carries a real
+//   value; the accumulator that builds it runs before any encrypt/decrypt seam
+//   exists). There is no decrypt affordance anywhere in RetainedLeafCard or
+//   RetainedPayloadSection, so "authorized-only re-identification" has no
+//   re-identification action to gate on the new UI surface itself. What IS
+//   this slice's responsibility is that the endpoint backing that surface
+//   stays viewer-gated for an identity that lacks the role — asserted below
+//   directly against the armed fixture (the one instance where a gating bug
+//   would actually leak retained bytes, not just an empty list). The
+//   pre-existing `re-identifier`-gated Reveal control elsewhere on this same
+//   page (hop-injected surrogates, ADR-0035) is unchanged by this diff and
+//   already covered by processing-trace.spec.ts — not re-asserted here.
+// - Audit-on-decrypt: N/A for this slice. Viewing a retained leaf triggers no
+//   decrypt (there is nothing to decrypt), so there is no reveal action here
+//   that could go unaudited. Arm/disarm's own audit records
+//   (payload-inspection-armed / -arm-refused) predate this diff and are
+//   covered by settings-payload-inspection*.spec.ts.
+retainedTest.describe("Processing trace — retained payload SPA-side privacy properties", () => {
+  retainedTest(
+    "egress hygiene: expanding every row and every elision stays first-party, never a third-party origin",
+    async ({ alicePage }) => {
+      const requests: { url: string; postData: string | null }[] = [];
+      alicePage.on("request", (req) => {
+        requests.push({ url: req.url(), postData: req.postData() });
+      });
+
+      await alicePage.goto("/ui/processing-trace");
+      const rows = alicePage.getByTestId("processing-trace-row");
+      for (let i = 0; i < 4; i++) {
+        await rows.nth(i).click();
+      }
+      // Expand every collapsed elision too — the fullest possible render of
+      // retained leaf text this page can produce. Each click replaces that
+      // button with an expanded <span>, shrinking the collection, so always
+      // take the first remaining one rather than indexing by a fixed count.
+      const elisions = alicePage.getByTestId("retained-leaf-elision");
+      while ((await elisions.count()) > 0) {
+        await elisions.first().click();
+      }
+
+      const firstPartyOrigin = new URL(RETAINED_BASE_URL).host;
+      const thirdParty = requests.filter((r) => {
+        try {
+          return new URL(r.url).host !== firstPartyOrigin;
+        } catch {
+          return false;
+        }
+      });
+      expect(
+        thirdParty.map((r) => r.url),
+        "expected zero third-party requests while driving the retained-payload section"
+      ).toEqual([]);
+
+      // The retained-leaves fetch itself must be first-party too, not just
+      // "no third party happened to fire" — a stray CDN/analytics beacon on
+      // this exact page would otherwise slip past the check above unnoticed.
+      const leavesRequests = requests.filter((r) => r.url.includes("/payload-inspection/leaves"));
+      expect(leavesRequests.length).toBeGreaterThan(0);
+      for (const req of leavesRequests) {
+        expect(new URL(req.url).host).toBe(firstPartyOrigin);
+      }
+    }
+  );
+
+  retainedTest(
+    "no real entity value behind a retained surrogate ever reaches the DOM or the network, only its blindfolded form",
+    async ({ alicePage }) => {
+      const responseBodies: string[] = [];
+      alicePage.on("response", async (res) => {
+        if (res.url().includes("/v1/management/")) {
+          try {
+            responseBodies.push(await res.text());
+          } catch {
+            // ignore bodies that can't be read (e.g. aborted by navigation)
+          }
+        }
+      });
+
+      await alicePage.goto("/ui/processing-trace");
+      const rows = alicePage.getByTestId("processing-trace-row");
+      for (let i = 0; i < 4; i++) {
+        await rows.nth(i).click();
+      }
+      const elisions = alicePage.getByTestId("retained-leaf-elision");
+      while ((await elisions.count()) > 0) {
+        await elisions.first().click();
+      }
+
+      // PERSON_SURROGATE ("Clara Hoffmann") is the retained leaves' own text —
+      // it is also the fixture's real re-identifiable surrogate for
+      // REAL_PERSON ("Martin Bach"), so this is a genuine "would the real
+      // value behind this exact surrogate ever surface here" check, not a
+      // fixture value chosen at random.
+      const bodyText = await alicePage.locator("body").innerText();
+      for (const realValue of [REAL_PERSON, REAL_ORG]) {
+        expect(bodyText, `real entity value "${realValue}" leaked into the retained-payload DOM`).not.toContain(
+          realValue
+        );
+      }
+      for (const body of responseBodies) {
+        for (const realValue of [REAL_PERSON, REAL_ORG]) {
+          expect(
+            body,
+            `real entity value "${realValue}" leaked into a /v1/management/* response body`
+          ).not.toContain(realValue);
+        }
+      }
+    }
+  );
+
+  retainedTest(
+    "an identity holding no viewer role on the workspace is refused the retained-leaves endpoint outright",
+    async ({}) => {
+      const api = await pwRequest.newContext({
+        baseURL: RETAINED_BASE_URL,
+        extraHTTPHeaders: { "x-blindfold-identity": "dave" },
+      });
+      // dave holds curator only (serve_fixture.py) — no viewer, so the same
+      // `_require_role("viewer")` gate `list_processing_trace` uses must also
+      // refuse this new endpoint, never fall through to a partial response.
+      const res = await api.get(`/v1/management/payload-inspection/leaves?workspace=${WORKSPACE}`);
+      expect(res.status()).toBe(403);
+      const body = await res.text();
+      for (const realValue of [REAL_PERSON, REAL_ORG, "Clara Hoffmann", "Pinnacle Corp"]) {
+        expect(body, `refused response still contained "${realValue}"`).not.toContain(realValue);
+      }
+      await api.dispose();
     }
   );
 });
