@@ -252,15 +252,25 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   (an opaque token, never natural language — ADR-0052).
 - **Learning loop** — review actions feed the system: **confirm** grows the entity
   graph; **reject** grows the **allowlist**. Bidirectional; makes detection more
-  deterministic over time.
+  deterministic over time. The two verdicts are **not symmetric** (ADR-0010 amendment,
+  issue #417): confirm *keeps* the value protected — the **provisional surrogate**
+  becomes canonical, so the deterministic pass reaches it everywhere afterwards — and
+  applies to the item's own **workspace**; reject *stops* protecting it, process-wide
+  and persistently. Confirm is therefore the clearance for a blocking row that is a
+  genuine referent; reject is for a candidate that was never an entity. Any affordance
+  whose effect is to stop protecting a value states that effect where the choice is
+  made.
 - **Allowlist** — tokens (or, since issue #294, **phrases** — a rejected
   multi-word/coalesced entity, e.g. "Apple Development") marked NOT sensitive,
   so they're never flagged as candidates again. Entries arrive two ways:
   **learned** (a reject verdict from the review inbox) and **seeded** (a
   curated list of common framework/code tokens shipped with Blindfold, plus —
   since issue #353 — this file's own Glossary vocabulary, mechanically kept in
-  sync with a dedicated test). Both
-  carry identical semantics; a registered **Term** always wins over an
+  sync with a dedicated test). Both carry identical semantics, and both are
+  **process-global**: unlike **confirm**, which is workspace-scoped, a learned
+  entry from one workspace's reject suppresses that value's novelty discovery in
+  every workspace (ADR-0010 amendment, issue #417 — recorded there as a known
+  asymmetry, not yet resolved). a registered **Term** always wins over an
   allowlist entry — the allowlist suppresses novelty discovery, never
   protection. A phrase entry is matched against the hop text span-wise, case-
   and whitespace-normalized (issue #294) — it never implicitly suppresses one
