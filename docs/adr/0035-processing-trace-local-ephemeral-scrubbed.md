@@ -175,6 +175,12 @@ already wired.
 This text is left as written rather than rewritten: decision 4 meant what it said, and
 ADR-0059 records when and why that stopped being true.
 
+**Placement forward-pointer (ADR-0059's #431 amendment):** Payload inspection no longer
+renders as this trace's next grain level — it moved to its own primary-nav destination.
+This trace now keeps only a per-row link to the retained exchange. This paragraph's own
+"rendered as this trace's next grain level" is left as written above; it accurately
+described placement at the time.
+
 ## Consequences
 
 - The trace is an *operational* surface, not a compliance one — it complements,
