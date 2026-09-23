@@ -3867,7 +3867,7 @@ async def reidentify_surrogate(
     also: list[str] = Query(default=[]),
     rbac: RbacRegistry = Depends(get_rbac),
     store: ReIdentificationStore = Depends(get_reidentify_store),
-    transit: TransitClient | None = Depends(get_transit_client),
+    mapping_cipher=Depends(get_mapping_cipher),
     audit_log: AuditLog = Depends(get_audit_log),
 ) -> dict:
     """Re-identify a surrogate: return its real value (ADR-0015 / issue #10).
@@ -3891,8 +3891,13 @@ async def reidentify_surrogate(
     a partial reveal would show some real values without the reader knowing the
     batch was incomplete.
 
+    Decrypts through whichever **mapping cipher** is active (ADR-0045 §4) --
+    Transit or the Local key cipher -- never Transit specifically (issue #430;
+    the read-side half #231 left on Transit when it moved seeding/writes onto
+    the mapping cipher).
+
     Returns 403 when the caller lacks the role; 404 when any surrogate is not found in
-    the requested workspace; 503 when Transit is not configured.
+    the requested workspace; 503 when no mapping cipher is configured.
     """
     workspace = _workspace_slug(request)
     identity = _caller_identity(request)
@@ -3925,24 +3930,27 @@ async def reidentify_surrogate(
             raise HTTPException(status_code=404, detail="surrogate not found in this workspace")
         ciphertexts[one] = ciphertext
 
-    if transit is None:
+    if mapping_cipher is None:
         audit_log.append(
             AuditRecord(
                 workspace=workspace,
                 event="re-identify-failed",
-                reason=f"surrogate={reason_surrogates}, outcome=transit-unconfigured",
+                reason=f"surrogate={reason_surrogates}, outcome=mapping-cipher-unconfigured",
                 identity=identity,
             )
         )
         raise HTTPException(
             status_code=503,
-            detail="Transit client not configured; set BLINDFOLD_OPENBAO_ADDR and BLINDFOLD_OPENBAO_TOKEN",
+            detail=(
+                "No mapping cipher configured; set BLINDFOLD_STORE_KEY (Local key "
+                "cipher) or BLINDFOLD_OPENBAO_TOKEN (Transit) to enable re-identify"
+            ),
         )
 
     results: dict[str, str] = {}
     try:
         for one, ciphertext in ciphertexts.items():
-            results[one] = transit.decrypt(ciphertext)
+            results[one] = mapping_cipher.decrypt(ciphertext)
     except Exception:
         audit_log.append(
             AuditRecord(

@@ -1,8 +1,11 @@
 """Re-identification endpoint: GET /v1/management/surrogate/{surrogate}/real (ADR-0015 / issue #10).
 
-Drives the management endpoint through the FastAPI test client.
-Transit and the re-identification store are stubbed: Transit via an httpx.MockTransport
-at the network boundary; the store via a pre-seeded in-memory mapping.
+Drives the management endpoint through the FastAPI test client. The endpoint decrypts
+through whichever **mapping cipher** is active (ADR-0045 §4, issue #430) -- Transit
+(stubbed via an httpx.MockTransport at the network boundary) or the Local key cipher
+(a real ``LocalKeyCipher`` over a throwaway Store key, never a stub -- it has no network
+boundary to stub). The re-identification store is stubbed via a pre-seeded in-memory
+mapping in both cases.
 
 Leak-audit clause analysis:
 - A/B/C/D/E — N/A: this slice does not add a new proxy request path; the existing
@@ -10,10 +13,12 @@ Leak-audit clause analysis:
 - F (access control) — covered: endpoint returns 403 when the calling identity lacks
   the ``re-identifier`` role on the requested workspace; workspace-scoped (surrogate
   from workspace A is NOT re-identifiable by a caller holding re-identifier only on B).
-  503 when Transit is not configured (env vars absent) — covered by test 6.
-- G (mapping secrecy) — covered by design: the endpoint decrypts via Transit (stubbed
-  at network boundary here); the real value is never stored in the audit record (only
-  the surrogate is recorded), honoring the CONTEXT invariant.
+  503 when no mapping cipher is configured (env vars absent) — covered by the
+  no-mapping-cipher test.
+- G (mapping secrecy) — covered by design: the endpoint decrypts via the active mapping
+  cipher (Transit stubbed at the network boundary, Local key cipher exercised for real);
+  the real value is never stored in the audit record (only the surrogate is recorded),
+  honoring the CONTEXT invariant.
 
 SEC-8 (issue #41): a denied (403) or failed (404 / 503 / decrypt exception) re-identify
 attempt writes an audit event too — ``re-identify-denied`` / ``re-identify-failed`` — so
@@ -29,7 +34,14 @@ import json
 import httpx
 import pytest
 
-from blindfold.app import app, get_audit_log, get_rbac, get_reidentify_store, get_transit_client
+from blindfold.app import (
+    app,
+    get_audit_log,
+    get_mapping_cipher,
+    get_rbac,
+    get_reidentify_store,
+    get_transit_client,
+)
 from blindfold.policy import AuditLog
 from blindfold.rbac import RbacRegistry
 from blindfold.transit import TransitClient, TransitError
@@ -102,6 +114,7 @@ async def test_reidentify_returns_real_value_for_authorized_re_identifier():
     app.dependency_overrides[get_rbac] = lambda: rbac
     app.dependency_overrides[get_reidentify_store] = lambda: store
     app.dependency_overrides[get_transit_client] = lambda: transit
+    app.dependency_overrides[get_mapping_cipher] = lambda: transit
     app.dependency_overrides[get_audit_log] = lambda: audit_log
     try:
         async with _make_client() as client:
@@ -226,6 +239,7 @@ async def test_reidentify_writes_audit_event_with_surrogate_not_real_value():
     app.dependency_overrides[get_rbac] = lambda: rbac
     app.dependency_overrides[get_reidentify_store] = lambda: store
     app.dependency_overrides[get_transit_client] = lambda: transit
+    app.dependency_overrides[get_mapping_cipher] = lambda: transit
     app.dependency_overrides[get_audit_log] = lambda: audit_log
     try:
         async with _make_client() as client:
@@ -276,6 +290,7 @@ async def test_reidentify_multi_workspace_referent_resolves_from_any_authorized_
     app.dependency_overrides[get_rbac] = lambda: rbac
     app.dependency_overrides[get_reidentify_store] = lambda: store
     app.dependency_overrides[get_transit_client] = lambda: transit
+    app.dependency_overrides[get_mapping_cipher] = lambda: transit
     app.dependency_overrides[get_audit_log] = lambda: audit_log
     try:
         async with _make_client() as client:
@@ -299,7 +314,12 @@ async def test_reidentify_multi_workspace_referent_resolves_from_any_authorized_
 
 
 @pytest.mark.anyio
-async def test_reidentify_returns_503_when_transit_not_configured():
+async def test_reidentify_returns_503_when_no_mapping_cipher_is_configured():
+    """Neither Transit nor the Local key cipher is configured (issue #430): fails
+    closed with a named, cipher-agnostic reason -- the message must not tell a
+    Local-key-cipher user to configure OpenBao specifically, since that is not
+    the only (or, for the menu bar default, even the relevant) remedy.
+    """
     surrogate = "Clara Hoffmann"
     ciphertext = "vault:v1:enc:martin"
 
@@ -312,6 +332,7 @@ async def test_reidentify_returns_503_when_transit_not_configured():
     app.dependency_overrides[get_rbac] = lambda: rbac
     app.dependency_overrides[get_reidentify_store] = lambda: store
     app.dependency_overrides[get_transit_client] = lambda: None
+    app.dependency_overrides[get_mapping_cipher] = lambda: None
     app.dependency_overrides[get_audit_log] = lambda: audit_log
     try:
         async with _make_client() as client:
@@ -326,13 +347,20 @@ async def test_reidentify_returns_503_when_transit_not_configured():
         app.dependency_overrides.clear()
 
     assert resp.status_code == 503
-    # SEC-8: a failed attempt (Transit unconfigured) is audited too.
+    # The message names both remedies -- Local key cipher first -- rather than
+    # steering every reader toward OpenBao regardless of which cipher they run.
+    detail = resp.json()["detail"]
+    assert "BLINDFOLD_STORE_KEY" in detail
+    assert "Transit client not configured" not in detail
+
+    # SEC-8: a failed attempt (no mapping cipher configured) is audited too.
     assert len(audit_log.records) == 1
     record = audit_log.records[0]
     assert record.event == "re-identify-failed"
     assert record.workspace == "default"
     assert record.identity == "alice"
     assert surrogate in record.reason
+    assert "outcome=mapping-cipher-unconfigured" in record.reason
 
 
 # ---------------------------------------------------------------------------
@@ -358,6 +386,7 @@ async def test_reidentify_writes_audit_event_when_decrypt_raises():
     app.dependency_overrides[get_rbac] = lambda: rbac
     app.dependency_overrides[get_reidentify_store] = lambda: store
     app.dependency_overrides[get_transit_client] = lambda: transit
+    app.dependency_overrides[get_mapping_cipher] = lambda: transit
     app.dependency_overrides[get_audit_log] = lambda: audit_log
     try:
         async with _make_client() as client:
@@ -411,6 +440,7 @@ async def test_reidentify_bulk_resolves_every_surrogate_in_one_call():
     app.dependency_overrides[get_rbac] = lambda: rbac
     app.dependency_overrides[get_reidentify_store] = lambda: store
     app.dependency_overrides[get_transit_client] = lambda: transit
+    app.dependency_overrides[get_mapping_cipher] = lambda: transit
     app.dependency_overrides[get_audit_log] = lambda: audit_log
     try:
         async with _make_client() as client:
@@ -527,3 +557,159 @@ def test_get_transit_client_returns_none_when_token_not_configured(monkeypatch):
     monkeypatch.delenv("BLINDFOLD_OPENBAO_TOKEN", raising=False)
     client = get_transit_client()
     assert client is None
+
+
+# ---------------------------------------------------------------------------
+# 10. Re-identify decrypts through whichever mapping cipher is active, not
+# Transit specifically (ADR-0045 §4, issue #430) -- the Local key cipher is
+# the menu bar app's default (Store key set, no OpenBao token).
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_reidentify_resolves_under_the_local_key_cipher_with_no_transit():
+    import base64
+    import os
+
+    from blindfold.mapping_cipher import LocalKeyCipher
+
+    cipher = LocalKeyCipher(base64.b64encode(os.urandom(32)).decode())
+    surrogate = "Clara Hoffmann"
+    real_value = "Martin Bach"
+    ciphertext = cipher.encrypt(real_value)
+
+    rbac = RbacRegistry()
+    rbac.grant("alice", "default", "re-identifier")
+
+    store = _store_with({(surrogate, "default"): ciphertext})
+    audit_log = AuditLog()
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_reidentify_store] = lambda: store
+    app.dependency_overrides[get_transit_client] = lambda: None
+    app.dependency_overrides[get_mapping_cipher] = lambda: cipher
+    app.dependency_overrides[get_audit_log] = lambda: audit_log
+    try:
+        async with _make_client() as client:
+            resp = await client.get(
+                f"/v1/management/surrogate/{surrogate}/real",
+                headers={
+                    "x-blindfold-identity": "alice",
+                    "x-blindfold-workspace": "default",
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["real"] == real_value
+    assert data["surrogate"] == surrogate
+    assert audit_log.records[-1].event == "re-identified"
+
+
+@pytest.mark.anyio
+async def test_reidentify_bulk_resolves_under_the_local_key_cipher_in_one_call():
+    """The exchange-level bulk Reveal switch (``also=``) resolves under the Local
+    key cipher too -- exactly one audit event, same as today under Transit
+    (issue #430 AC2).
+    """
+    import base64
+    import os
+
+    from blindfold.mapping_cipher import LocalKeyCipher
+
+    cipher = LocalKeyCipher(base64.b64encode(os.urandom(32)).decode())
+    primary = "Clara Hoffmann"
+    other = "Northwind Logistics"
+    plaintexts = {primary: "Martin Bach", other: "Acme Corp"}
+    ciphertexts = {name: cipher.encrypt(value) for name, value in plaintexts.items()}
+
+    rbac = RbacRegistry()
+    rbac.grant("alice", "default", "re-identifier")
+
+    store = _store_with(
+        {
+            (primary, "default"): ciphertexts[primary],
+            (other, "default"): ciphertexts[other],
+        }
+    )
+    audit_log = AuditLog()
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_reidentify_store] = lambda: store
+    app.dependency_overrides[get_transit_client] = lambda: None
+    app.dependency_overrides[get_mapping_cipher] = lambda: cipher
+    app.dependency_overrides[get_audit_log] = lambda: audit_log
+    try:
+        async with _make_client() as client:
+            resp = await client.get(
+                f"/v1/management/surrogate/{primary}/real",
+                params={"also": [other]},
+                headers={
+                    "x-blindfold-identity": "alice",
+                    "x-blindfold-workspace": "default",
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert resp.json()["results"] == plaintexts
+
+    # Exactly one audit event for the whole batch, same as under Transit.
+    assert len(audit_log.records) == 1
+    assert audit_log.records[0].event == "re-identified"
+
+
+@pytest.mark.anyio
+async def test_reidentify_resolves_under_the_local_key_cipher_through_production_wiring(
+    monkeypatch,
+):
+    """The production seam, not a stub: BLINDFOLD_STORE_KEY is set and neither
+    the cipher nor the Transit dependency is overridden, so the real
+    ``get_mapping_cipher()`` resolves the Local key cipher exactly as a menu
+    bar install would (issue #430 AC4) -- this is the class of bug that hid
+    behind every other test's ``get_mapping_cipher``/``get_transit_client``
+    override.
+    """
+    import base64
+    import os
+
+    from blindfold.mapping_cipher import LocalKeyCipher
+
+    store_key = base64.b64encode(os.urandom(32)).decode()
+    monkeypatch.setenv("BLINDFOLD_STORE_KEY", store_key)
+    monkeypatch.delenv("BLINDFOLD_OPENBAO_TOKEN", raising=False)
+
+    surrogate = "Clara Hoffmann"
+    real_value = "Martin Bach"
+    # Pre-seed the store with ciphertext produced by an independently-constructed
+    # cipher over the SAME Store key -- proving decrypt works via the key alone,
+    # not a shared cipher instance.
+    ciphertext = LocalKeyCipher(store_key).encrypt(real_value)
+
+    rbac = RbacRegistry()
+    rbac.grant("alice", "default", "re-identifier")
+
+    store = _store_with({(surrogate, "default"): ciphertext})
+    audit_log = AuditLog()
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_reidentify_store] = lambda: store
+    app.dependency_overrides[get_audit_log] = lambda: audit_log
+    try:
+        async with _make_client() as client:
+            resp = await client.get(
+                f"/v1/management/surrogate/{surrogate}/real",
+                headers={
+                    "x-blindfold-identity": "alice",
+                    "x-blindfold-workspace": "default",
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    assert resp.json()["real"] == real_value
+    assert audit_log.records[-1].event == "re-identified"

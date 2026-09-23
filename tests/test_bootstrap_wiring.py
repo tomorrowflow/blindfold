@@ -27,7 +27,14 @@ import json
 import httpx
 import pytest
 
-from blindfold.app import app, get_entity_graph, get_rbac, get_reidentify_store, get_transit_client
+from blindfold.app import (
+    app,
+    get_entity_graph,
+    get_mapping_cipher,
+    get_rbac,
+    get_reidentify_store,
+    get_transit_client,
+)
 from blindfold.bootstrap import bootstrap_admin
 from blindfold.policy import DEFAULT_WORKSPACE
 from blindfold.rbac import RbacRegistry
@@ -171,6 +178,11 @@ async def test_seeding_the_real_reidentify_store_lets_reveal_resolve_without_pos
 
     app.dependency_overrides[get_rbac] = lambda: rbac
     app.dependency_overrides[get_transit_client] = lambda: transit
+    # Issue #430: Reveal now decrypts through get_mapping_cipher, not
+    # get_transit_client directly -- mirror the same stubbed instance so this
+    # still resolves through the Transit path it means to exercise, not a
+    # real (unconfigured) mapping-cipher lookup.
+    app.dependency_overrides[get_mapping_cipher] = lambda: transit
     try:
         async with _make_client() as client:
             resp = await client.get(
