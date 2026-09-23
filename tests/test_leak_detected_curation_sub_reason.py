@@ -52,6 +52,12 @@ def test_a_review_inbox_match_gets_the_curation_sub_reason_and_deep_links_the_ro
     assert block is not None
     error = json.loads(bytes(block.body))["error"]
     assert error["sub_reason"] == "leak_detected_review_inbox"
+    # ADR-0057's 2026-09-23 amendment (issue #425): the curation-cause block must
+    # NOT inherit leak_detected's not-retryable verdict, even though both share a
+    # leak-gate origin -- ADR-0051's run-7 table records the same leak-gate cause
+    # blocking 13 times in one row and self-healing on the next request in
+    # another once the provisional pair was carried from the start.
+    assert error["retryability"] == "unknown"
     assert "/ui/inbox" in error["management_url"]
     assert item.id in error["management_url"]
     assert "Kestrel Dynamics" not in error["management_url"]
@@ -78,6 +84,9 @@ def test_a_mapping_known_miss_keeps_the_existing_leak_detected_sub_reason_and_st
     assert block is not None
     error = json.loads(bytes(block.body))["error"]
     assert error["sub_reason"] == "leak_detected"
+    # The defect cause is deterministic by construction (issue #417's blinder
+    # miss, not a curation choice) -- "not-retryable".
+    assert error["retryability"] == "not-retryable"
     assert error["management_url"].endswith("/ui/status")
 
     recent = block_history.recent()

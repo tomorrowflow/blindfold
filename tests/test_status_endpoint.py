@@ -312,6 +312,10 @@ async def test_blocks_recent_carries_the_scrubbed_reason_and_management_url_neve
     assert record["sub_reason"] == "l3_unavailable"
     assert record["management_url"] == block_resp.json()["error"]["management_url"]
     assert record["scrubbed_reason"] == block_resp.json()["error"]["reason"]
+    # Issue #425: /v1/status's blocks table never disagrees with the block's own
+    # error envelope -- both derive from the same block_retryability(sub_reason)
+    # funnel (status.BlockHistory.record / app._blocked_response).
+    assert record["retryability"] == block_resp.json()["error"]["retryability"]
     assert "ts" in record
     # The real entity ("Quentin") must never appear anywhere in this payload.
     assert "Quentin" not in str(body)

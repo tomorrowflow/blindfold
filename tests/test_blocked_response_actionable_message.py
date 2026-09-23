@@ -218,6 +218,11 @@ async def test_unresolved_surrogate_block_also_carries_message_and_management_ur
     assert resp.status_code == 503
     error = resp.json()["error"]
     assert error["sub_reason"] == "unresolved_surrogate"
+    # ADR-0057's 2026-09-23 amendment (issue #425): Anthropic vocabulary, never
+    # the retired private "blindfold_blocked" value; a resolution-gate miss is
+    # not proven deterministic by construction, so "unknown".
+    assert error["type"] == "api_error"
+    assert error["retryability"] == "unknown"
     assert error["management_url"].endswith("/ui/status")
     assert error["message"].startswith("Blindfold blocked this request:")
     assert error["management_url"] in error["message"]

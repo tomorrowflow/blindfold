@@ -190,11 +190,15 @@ def test_block_history_recent_returns_recorded_block_verbatim():
     )
     recent = history.recent()
     assert len(recent) == 1
+    # "retryability" (issue #425) is derived from sub_reason via the same
+    # block_retryability funnel the block's own error envelope uses -- l3_unavailable
+    # is an availability blip, not deterministic by construction, so "unknown".
     assert recent[0].to_dict() == {
         "ts": "2026-07-11T00:00:00+00:00",
         "sub_reason": "l3_unavailable",
         "scrubbed_reason": "hash:abc123",
         "management_url": "http://127.0.0.1:25463/ui/status",
+        "retryability": "unknown",
     }
 
 

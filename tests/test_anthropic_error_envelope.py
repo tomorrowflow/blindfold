@@ -85,8 +85,17 @@ async def test_fail_closed_block_carries_the_anthropic_envelope_and_every_prior_
     error = body["error"]
     assert isinstance(error["type"], str) and error["type"]
     assert isinstance(error["message"], str) and error["message"]
-    # Every pre-existing field, unchanged (ADR-0009 / #91's contract).
-    assert error["type"] == "blindfold_blocked"
+    # ADR-0057's 2026-09-23 amendment (issue #425): error.type is now drawn from
+    # Anthropic's own vocabulary, not the private "blindfold_blocked" value -- the
+    # HTTP status (503) is unchanged this slice, and every block currently carries
+    # that same status, so every block maps to the same Anthropic-vocabulary type.
+    assert error["type"] == "api_error"
+    assert error["type"] != "blindfold_blocked"
+    # An availability blip, not deterministic by construction -- "unknown".
+    assert error["retryability"] == "unknown"
+    # Every pre-existing private field, unchanged byte-for-byte (ADR-0009 / #91's
+    # contract, ADR-0057 D4): the private detail moved out of error.type, it was
+    # not lost.
     assert error["code"] == "blindfold_fail_closed"
     assert error["sub_reason"] == "l3_unavailable"
     assert error["event"] == "blocked-l3-unavailable"
@@ -94,6 +103,10 @@ async def test_fail_closed_block_carries_the_anthropic_envelope_and_every_prior_
     assert error["management_url"].endswith("/ui/status")
     assert "remedy" in error
     assert "workspace" in error
+    # ADR-0057 #390 amendment, decision 5: no block gains a retry-after -- a
+    # block's remedy is a human action with no time bound, so emitting one
+    # would be a second untruth on top of the first. Never re-proposed here.
+    assert "retry-after" not in resp.headers
 
 
 @pytest.mark.anyio
@@ -120,8 +133,12 @@ async def test_leak_gate_block_carries_the_anthropic_envelope_and_every_prior_fi
     body = resp.json()
     assert body["type"] == "error"
     error = body["error"]
-    assert error["type"] == "blindfold_blocked"
+    assert error["type"] == "api_error"
+    assert error["code"] == "blindfold_fail_closed"
     assert error["sub_reason"] == "leak_detected"
+    # The defect-cause leak code is deterministic by construction (issue #417's
+    # blinder-miss, not a curation choice) -- "not-retryable".
+    assert error["retryability"] == "not-retryable"
     assert error["management_url"].endswith("/ui/status")
     assert error["message"].startswith("Blindfold blocked this request:")
     # Scrubbed-reason invariant (SEC-3): the real value never appears on this surface,

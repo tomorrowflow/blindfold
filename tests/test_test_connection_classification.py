@@ -25,7 +25,7 @@ from blindfold.test_connection import (
 def test_a_blindfold_blocked_body_with_l3_unavailable_classifies_as_fail_closed_block():
     body = {
         "error": {
-            "type": "blindfold_blocked",
+            "type": "api_error",
             "code": "blindfold_fail_closed",
             "sub_reason": "l3_unavailable",
             "message": "Blindfold blocked this request: ...",
@@ -46,7 +46,7 @@ def test_a_blindfold_blocked_body_with_l3_unavailable_classifies_as_fail_closed_
 def test_a_blindfold_blocked_body_with_leak_detected_classifies_as_leak_flagged():
     body = {
         "error": {
-            "type": "blindfold_blocked",
+            "type": "api_error",
             "code": "blindfold_fail_closed",
             "sub_reason": "leak_detected",
             "message": "Blindfold blocked this request: ...",
@@ -67,7 +67,7 @@ def test_a_blindfold_blocked_body_with_leak_detected_classifies_as_leak_flagged(
 def test_a_blindfold_blocked_body_with_unresolved_surrogate_classifies_as_leak_flagged():
     body = {
         "error": {
-            "type": "blindfold_blocked",
+            "type": "api_error",
             "code": "blindfold_fail_closed",
             "sub_reason": "unresolved_surrogate",
             "message": "...",

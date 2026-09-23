@@ -18,6 +18,11 @@ export type BlockRecord = {
   sub_reason: string;
   scrubbed_reason: string;
   management_url: string;
+  // Issue #425: what this block claims about its own future -- "not-retryable"
+  // only for the causes that are deterministic by construction, "unknown" (the
+  // default) everywhere else. Never derived client-side from sub_reason; always
+  // present, mirroring the identical field in the block's own error envelope.
+  retryability: "not-retryable" | "retryable" | "unknown";
   // Issue #417: the review-inbox item id for a curation-cause leak-gate block
   // (sub_reason "leak_detected_review_inbox") -- absent for every other block.
   // Not entity content -- carried as its own structured field rather than

@@ -142,6 +142,36 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# ADR-0057's 2026-09-23 amendment (issue #425): only these causes are deterministic
+# *by construction* -- a Blindfold defect, the two reserved-namespace pool
+# exhaustions, and #417's defect-cause leak code (a known real/confirmed value the
+# blinder should have rewritten and did not). Every other sub_reason, including the
+# curation-cause `leak_detected_review_inbox`, defaults to "unknown": ADR-0051's
+# run-7 table records the same leak-gate origin blocking 13 times in one row and
+# self-healing on the very next request in another, so retryability is not a
+# property of the cause beyond this named list.
+_BLOCK_NOT_RETRYABLE_SUB_REASONS = frozenset(
+    {
+        "detection_internal",
+        "mint_pool_exhausted",
+        "provisional_pool_exhausted",
+        "leak_detected",
+    }
+)
+
+
+def block_retryability(sub_reason: str) -> str:
+    """Three-valued retryability for a block's ``sub_reason`` (issue #425).
+
+    ``"unknown"`` is the default, not a hedge -- it is a refusal to predict
+    Blindfold's own future detection verdicts. ``"retryable"`` is reserved for a
+    future cause proven deterministic-and-retryable; no current cause emits it.
+    """
+    if sub_reason in _BLOCK_NOT_RETRYABLE_SUB_REASONS:
+        return "not-retryable"
+    return "unknown"
+
+
 @dataclass(frozen=True)
 class BlockRecord:
     """One fail-closed/leak-gate block, scrubbed by construction (issue #92).
@@ -156,12 +186,18 @@ class BlockRecord:
     row by its provisional surrogate), so it may cross this surface; carried as
     its own structured field rather than parsed back out of ``scrubbed_reason``,
     whose shape is a privacy contract, not an API.
+
+    ``retryability`` (issue #425) is :func:`block_retryability` applied to
+    ``sub_reason`` -- derived, not caller-supplied, so this surface can never
+    disagree with the identical field in the block's own error envelope
+    (:func:`~blindfold.app._blocked_response`).
     """
 
     ts: str
     sub_reason: str
     scrubbed_reason: str
     management_url: str
+    retryability: str
     item_id: str | None = None
 
     def to_dict(self) -> dict:
@@ -170,6 +206,7 @@ class BlockRecord:
             "sub_reason": self.sub_reason,
             "scrubbed_reason": self.scrubbed_reason,
             "management_url": self.management_url,
+            "retryability": self.retryability,
         }
         if self.item_id is not None:
             body["item_id"] = self.item_id
@@ -214,6 +251,7 @@ class BlockHistory:
                     sub_reason=sub_reason,
                     scrubbed_reason=scrubbed_reason,
                     management_url=management_url,
+                    retryability=block_retryability(sub_reason),
                     item_id=item_id,
                 ),
             )

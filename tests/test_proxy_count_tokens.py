@@ -179,7 +179,9 @@ async def test_count_tokens_blocks_when_l3_unavailable_for_a_novel_candidate():
 
     assert resp.status_code == 503
     body = resp.json()
-    assert body["error"]["type"] == "blindfold_blocked"
+    # ADR-0057's 2026-09-23 amendment (issue #425): error.type is Anthropic
+    # vocabulary now, not the retired private "blindfold_blocked" value.
+    assert body["error"]["type"] == "api_error"
     assert body["error"]["code"] == "blindfold_fail_closed"
     assert body["error"]["sub_reason"] == "l3_unavailable"
     # Block came BEFORE egress -- no count call reached the upstream either.

@@ -118,7 +118,7 @@ async def test_chat_completions_leak_gate_violation_blocks_with_audit_and_scrubs
     # Not a bare 500 -- the structured fail-closed block, same shape as /v1/messages.
     assert resp.status_code == 503
     error = resp.json()["error"]
-    assert error["type"] == "blindfold_blocked"
+    assert error["code"] == "blindfold_fail_closed"
     assert error["event"] == "blocked-leak"
     assert error["workspace"] == "gamma"
 
@@ -183,7 +183,7 @@ async def test_count_tokens_leak_gate_violation_blocks_with_audit_and_scrubs_the
 
     assert resp.status_code == 503
     error = resp.json()["error"]
-    assert error["type"] == "blindfold_blocked"
+    assert error["code"] == "blindfold_fail_closed"
     assert error["event"] == "blocked-leak"
     assert error["workspace"] == "gamma"
 

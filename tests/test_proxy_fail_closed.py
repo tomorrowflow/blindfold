@@ -105,7 +105,9 @@ async def test_proxy_blocks_when_l3_unavailable_for_a_novel_candidate():
 
     assert resp.status_code == 503
     body = resp.json()
-    assert body["error"]["type"] == "blindfold_blocked"
+    # ADR-0057's 2026-09-23 amendment (issue #425): error.type is Anthropic
+    # vocabulary now; the stable private signal moved to `code`.
+    assert body["error"]["code"] == "blindfold_fail_closed"
     # Block came BEFORE egress.
     assert recorded == []
 
@@ -240,7 +242,7 @@ async def test_block_response_explains_why_and_how_to_opt_into_degraded_mode():
 
     assert resp.status_code == 503
     error = resp.json()["error"]
-    assert error["type"] == "blindfold_blocked"
+    assert error["code"] == "blindfold_fail_closed"
     assert error["event"] == "blocked-l3-unavailable"
     assert error["workspace"] == "beta"
     # "Why" — names L3 / the unavailable subsystem so the client knows what failed.
@@ -471,7 +473,7 @@ async def test_leak_gate_violation_returns_structured_block_with_audit_not_a_bar
     # NOT a 500. The structured block uses 503 (same as the L3-unavailable block).
     assert resp.status_code == 503
     error = resp.json()["error"]
-    assert error["type"] == "blindfold_blocked"
+    assert error["code"] == "blindfold_fail_closed"
     assert error["event"] == "blocked-leak"
     assert error["workspace"] == "gamma"
     assert any(

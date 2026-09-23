@@ -220,8 +220,14 @@ def classify_response(status_code: int, body: Any) -> TestConnectionVerdict | No
     error = body.get("error")
     if isinstance(error, dict):
         error_type = error.get("type")
+        code = error.get("code")
         sub_reason = error.get("sub_reason")
-        if error_type == "blindfold_blocked":
+        # ADR-0057's 2026-09-23 amendment (issue #425): error.type on a Blindfold
+        # block is now Anthropic vocabulary (e.g. "api_error"), not the private
+        # "blindfold_blocked" value this used to key on -- the private, stable,
+        # machine-routable signal for "this is a fail-closed block" is now `code`
+        # (unchanged: it was always "blindfold_fail_closed", ADR-0009).
+        if code == "blindfold_fail_closed":
             ref = error.get("reason")
             if sub_reason in _LEAK_SUB_REASONS:
                 return _verdict(CODE_LEAK_FLAGGED, ref=ref)

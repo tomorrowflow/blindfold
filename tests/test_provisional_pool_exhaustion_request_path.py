@@ -115,6 +115,12 @@ async def test_provisional_pool_exhaustion_blocks_the_request_fail_closed_and_sc
     body = resp.json()
     assert body["error"]["code"] == "blindfold_fail_closed"
     assert body["error"]["sub_reason"] == "provisional_pool_exhausted"
+    # ADR-0057's 2026-09-23 amendment (issue #425): Anthropic vocabulary, never the
+    # retired private "blindfold_blocked" value; deterministic by construction --
+    # the provisional pool has no mint-time-disjoint candidate left, so
+    # "not-retryable".
+    assert body["error"]["type"] == "api_error"
+    assert body["error"]["retryability"] == "not-retryable"
     assert "Klaus" not in json.dumps(body)
     assert "BFX" not in json.dumps(body)
     # Clause A: blocked before any egress -- the stub upstream saw nothing.

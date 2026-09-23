@@ -208,6 +208,7 @@ from .status import (
     CachedHealthProbe,
     DependencyHealth,
     RecentFailureHealth,
+    block_retryability,
     compute_state,
 )
 from .payload_inspection import PayloadInspection
@@ -1454,6 +1455,26 @@ def _blocked_response(
     than a generic gateway failure. Every field below is unchanged; the envelope is
     additive, not a replacement.
 
+    ADR-0057's 2026-09-23 amendment (issue #425): ``error.type`` is now drawn from
+    Anthropic's own vocabulary instead of the private ``"blindfold_blocked"``
+    value -- issue #380's rule for relayed upstream errors extends to Blindfold's
+    own blocks, the one place it didn't reach. Every block in this slice carries
+    HTTP 503 (the narrow 400 split is the sibling issue, deliberately out of
+    scope here), and Anthropic's vocabulary has no 503-specific entry, so every
+    block maps to the same generic 5xx entry, ``"api_error"`` -- distinct from
+    ``"overloaded_error"`` (529), which the amendment explicitly declined for
+    blocks. The private detail moves out of ``error.type``, not lost: ``code``
+    stays ``"blindfold_fail_closed"``, the stable machine-routable value a
+    caller keyed on ``error.type == "blindfold_blocked"`` must now read instead
+    (see ``test_connection.classify_response``).
+
+    ``error.retryability`` (issue #425) is the three-valued, additive claim about
+    this block's own future (:func:`~blindfold.status.block_retryability`):
+    ``"not-retryable"`` only for the causes that are deterministic by
+    construction, ``"unknown"`` (the default) everywhere else -- never derived
+    from ``sub_reason`` by a second, independently-written rule, so this field
+    and ``block_history``'s identical one can never disagree.
+
     ``item_id`` (issue #417) is the review-inbox item id for the curation-cause
     leak-gate block (``sub_reason="leak_detected_review_inbox"``) -- threaded into
     both ``management_url`` (:func:`_management_url` only appends it for that one
@@ -1475,9 +1496,10 @@ def _blocked_response(
         content={
             "type": "error",
             "error": {
-                "type": "blindfold_blocked",
+                "type": "api_error",
                 "code": "blindfold_fail_closed",
                 "sub_reason": sub_reason,
+                "retryability": block_retryability(sub_reason),
                 "event": event,
                 "message": message,
                 "reason": reason,
