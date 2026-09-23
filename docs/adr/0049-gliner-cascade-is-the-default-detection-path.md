@@ -179,3 +179,74 @@ defensible answer to a miss.
   made here. Ranking inner models needs a corpus built from GLiNER-negatives, which is
   #258's territory; the sample behind this ADR had exactly one such positive and every
   configuration missed it.
+
+## Amendment (issue #421): an unloadable extra is a second unsatisfiable condition, and it was invisible
+
+Found by live-verifying the assembled `.app` on 2026-09-22: `/v1/status` reported
+`l3: {healthy: true, latency_ms: 10.8}` while **every** `POST /v1/messages` against that same
+proxy returned 503. The one dependency guaranteed to fail 100% of requests was the one reporting
+green.
+
+### Why the probe could not see it
+
+`app._default_l3_probe` checks two things: that the model directory is provisioned
+(`is_gliner_model_ready`, the same shape check the startup guard and the settings view use) and
+that the **inner** adjudicator answers on the network (`_inner_l3_probe`). Neither can observe the
+third precondition — that the `gliner` package is **importable**. The import is deliberately
+deferred to `l3_gliner._load_gliner_model`, so an absent `blindfold[gliner]` extra surfaces only
+at adjudication time, as `GlinerExtraMissingError`.
+
+Green therefore requires a precise combination, which is why it went unnoticed: model provisioned,
+**and** inner adjudicator reachable, **and** extra missing. The block itself is correct and its
+message is actionable; only the status surface contradicts it. That matters because ADR-0027 makes
+Home/Status the place an operator confirms posture before trusting the proxy.
+
+### The rule already exists — it was written for one condition and never extended
+
+This ADR's own machinery (`Settings.l3_gliner_activation_is_explicit`,
+`serve.refuse_if_gliner_model_missing`) already splits behaviour for the *model-not-provisioned*
+case: an **explicit** activation — `BLINDFOLD_L3_PROVIDER=gliner`, or the persisted Setup flag —
+is refused at startup; the **bare `DEFAULT_L3_PROVIDER` fallback** boots and fails closed per
+candidate, because refusing to start over a default nobody asked for would make every
+never-configured or LLM-only install unable to start at all.
+
+**Decision: the same two branches govern an unloadable extra.** Explicit activation with the extra
+absent is refused at startup with a named reason, joining the provisioning guard. The bare default
+with the extra absent boots and fails closed per candidate, exactly as today. No new policy — this
+ADR's existing rule applied to the condition it did not enumerate.
+
+**And the probe reports it.** A configured-but-unloadable provider is never `healthy: true`, with a
+`detail` distinguishable from both siblings (`gliner model not provisioned`, and the inner
+adjudicator's own unreachability), because the three remedies are different. Loadability is an
+import check, not a model load — the probe runs on a ~5s poll cadence and must stay cheap, the same
+constraint that made the provisioning check a directory check rather than a model load.
+
+### The frozen binary does not ship the extra, and will not
+
+`packaging/blindfold-proxy.spec` names only `blindfold.app` in `hiddenimports`, so the `.app`'s
+embedded proxy cannot load the cascade — while `DEFAULT_L3_PROVIDER` is `gliner`.
+
+**Rejected: bundle `gliner` + `onnxruntime` into the frozen artifact.** It would add runtime weight
+to every `.app` and still not make the cascade work out of the box, because the model is provisioned
+to a data directory at Setup and is not part of the binary either way. ADR-0034 §6's "197 MB opt-in
+weight" is that model, not the packages — a distinction worth stating, because it is the number
+usually cited against bundling and it is not the number that decides this.
+
+**Consequence for the remedy text:** `GlinerExtraMissingError` tells the operator to run
+`uv pip install 'blindfold[gliner]'`, which cannot work against a PyInstaller binary. The remedy
+must name the remedy that applies to the artifact the operator is actually running — a
+pip-installed proxy, or a provider the binary supports — rather than one that is correct only for a
+source install.
+
+### Consequences of this amendment
+
+- The `.app` remains a bare-LLM-path artifact by construction. That was already true; it was simply
+  never stated, and the default provider pointed the other way.
+- Tests that assert the shipped default wiring's fail-closed behaviour are sensitive to whether the
+  extra is installed — the same input blocks with a different sub-reason on a machine without it.
+  Issue `#393`'s five stale-premise tests are downstream of this decision and must state the
+  environment they assume rather than inheriting whatever the developer's virtualenv happens to
+  hold.
+- The three-way distinction (extra absent / model absent / inner adjudicator unreachable) is now
+  load-bearing in three places that must not drift: the startup guard, the status probe, and the
+  block's own remedy text.
