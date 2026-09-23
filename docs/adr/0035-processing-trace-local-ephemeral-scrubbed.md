@@ -103,6 +103,11 @@ the **"gate"** half of a **"gate, then enrich"** ordering): a future candidate-s
 highlight in the review inbox makes that plaintext more prominent, and must not
 land before the endpoint is access-controlled.
 
+**The "enrich" half landed in ADR-0028's #404 amendment**: review-inbox triage is a
+real-space crossing, the gate rises from `viewer` to `curator`, and the values are masked
+by default behind an audited per-item reveal. This decision stands as written — it was the
+first of two steps and said so.
+
 ### 12. Per-hop expansion + L3 provider/timing (issue #153)
 
 The second grain level decision 5 deferred: a ring-buffer record now also carries

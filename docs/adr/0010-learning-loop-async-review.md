@@ -99,3 +99,9 @@ confirm applies to one — is left open deliberately. Closing it means splitting
 (deliberately global, and since `#353` carrying this repository's own glossary) from the learned
 half, ruling on existing global entries, and deciding whether one workspace's reject should be
 *offerable* to others rather than silently applied. Each is arguable; none is mechanical.
+
+### Related (issue #404)
+
+Who may *read* a pending candidate, and whether that read is audited, is decided in ADR-0028's
+`#404` amendment: triage is a real-space crossing, gated on `curator`, masked by default behind an
+audited per-item reveal. It changes who performs this loop's entry point, not the loop itself.

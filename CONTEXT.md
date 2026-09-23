@@ -495,10 +495,14 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   protection.
 - **Audit event** — a recorded **real-space crossing or refusal**: every **Re-identify**
   attempt (success, denied, failed — SEC-8), every real-name lookup (hit or miss —
-  ADR-0018), every block (fail-closed, leak gate). Surrogate-space structural work
-  (**Merge**, surrogate rename, **Relationship** edits, review-inbox triage) is
-  *never* an audit event — recording that would be history/versioning, a distinct
-  concept requiring its own term. _Avoid_: activity log, event log (for this concept).
+  ADR-0018), every block (fail-closed, leak gate). Reading a **review inbox** candidate's
+  real value is a real-space crossing too (ADR-0028 amendment, issue #404) — it displays a
+  real value, whatever the **entity graph** knows about it yet; the audited per-item reveal
+  that records it ships with the application-wide auth slice, and until then the reading of
+  this entry is the decision, not the code. Surrogate-space structural work (**Merge**,
+  surrogate rename, **Relationship** edits) is *never* an audit event — recording that
+  would be history/versioning, a distinct concept requiring its own term. The test is
+  whether the operation can display a real value at all, not whether it changes one. _Avoid_: activity log, event log (for this concept).
 - **Scrubbed reason** — a failure reason string that references an offending entity
   by its surrogate or a hashed id, never the plaintext. The pre-egress leak gate's
   one scrubbed reason routes identically to the 503 body, the audit record, and the
