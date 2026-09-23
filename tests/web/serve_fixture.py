@@ -159,6 +159,7 @@ from blindfold.app import (
     get_gliner_provisioning_tracker,
     get_l3_health_probe,
     get_mapping,
+    get_mapping_cipher,
     get_payload_inspection,
     get_processing_trace,
     get_rbac,
@@ -174,6 +175,7 @@ from blindfold.app import (
 )
 from blindfold.entity_graph import EntityGraph
 from blindfold.gliner_status import GlinerProvisioningTracker
+from blindfold.mapping_cipher import LocalKeyCipher
 from blindfold.payload_inspection import PayloadInspection
 from blindfold.policy import AuditLog, AuditRecord
 from blindfold.processing_trace import ProcessingTraceBuffer
@@ -464,6 +466,10 @@ def _build_empty_app():
     app.dependency_overrides[get_audit_log] = lambda: audit_log
     app.dependency_overrides[get_reidentify_store] = lambda: reidentify_store
     app.dependency_overrides[get_transit_client] = _stub_transit
+    # Issue #430: re-identify now decrypts through whichever mapping cipher is
+    # active, not Transit specifically -- mirror the same stub onto
+    # get_mapping_cipher so Reveal keeps resolving here exactly as before.
+    app.dependency_overrides[get_mapping_cipher] = _stub_transit
     app.dependency_overrides[get_review_inbox] = lambda: review_inbox
     app.dependency_overrides[get_allowlist] = lambda: allowlist
 
@@ -933,6 +939,10 @@ def build_app():
     app.dependency_overrides[get_audit_log] = lambda: audit_log
     app.dependency_overrides[get_reidentify_store] = lambda: reidentify_store
     app.dependency_overrides[get_transit_client] = lambda: transit
+    # Issue #430: re-identify now decrypts through whichever mapping cipher is
+    # active, not Transit specifically -- mirror the same stub instance onto
+    # get_mapping_cipher so Reveal keeps resolving here exactly as before.
+    app.dependency_overrides[get_mapping_cipher] = lambda: transit
     app.dependency_overrides[get_review_inbox] = lambda: review_inbox
     app.dependency_overrides[get_allowlist] = lambda: allowlist
     app.dependency_overrides[get_processing_trace] = lambda: processing_trace
@@ -971,6 +981,19 @@ def build_app():
         retained_mapping.seed(REAL_PERSON, PERSON_SURROGATE)
         retained_mapping.seed(REAL_ORG, ORG_SURROGATE)
         app.dependency_overrides[get_mapping] = lambda: retained_mapping
+
+        # Issue #430 AC6: this port is the browser-verify target for "bulk Reveal
+        # on a retained payload succeeds against a proxy running the Local key
+        # cipher" -- a real LocalKeyCipher, never the shared Transit stub every
+        # other port resolves Reveal through, decrypting real ciphertext for the
+        # two surrogates this port's own "passed, retained" exchange marks
+        # confirmed (PERSON_SURROGATE, ORG_SURROGATE). TRACE_HOP_SURROGATE's
+        # fixed literal ciphertext is untouched and unused here -- this port's
+        # own trace/mapping never carries that surrogate.
+        retained_cipher = LocalKeyCipher(base64.b64encode(os.urandom(32)).decode())
+        reidentify_store.seed(PERSON_SURROGATE, WORKSPACE, retained_cipher.encrypt(REAL_PERSON))
+        reidentify_store.seed(ORG_SURROGATE, WORKSPACE, retained_cipher.encrypt(REAL_ORG))
+        app.dependency_overrides[get_mapping_cipher] = lambda: retained_cipher
 
     if LEAK_TAXONOMY:
         # Issue #417 (browser-verify): seed one real block of each cause behind
