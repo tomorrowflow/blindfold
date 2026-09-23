@@ -16,23 +16,41 @@ function formatRemaining(seconds: number): string {
 }
 
 export function PayloadInspectionBanner() {
-  const { armed, remainingSeconds } = usePayloadInspection();
+  const { armed, remainingSeconds, window: retentionWindow, countBound, retainedCount } =
+    usePayloadInspection();
 
   if (!armed) return null;
+
+  // "Until disarmed" (issue #433) carries no timer -- `remainingSeconds` is
+  // `null` for it, same as a status response this banner hasn't heard from yet.
+  // `retentionWindow` distinguishes the two: only render the count form once
+  // the status fetch has actually reported that window.
+  const isUntimed = retentionWindow === "until_disarmed";
 
   return (
     <div className="bf-payload-inspection-banner" data-testid="payload-inspection-banner" role="status">
       <Eye size={16} aria-hidden="true" />
       <span>
         Payload inspection is armed — recent payload text is retained in memory
-        {remainingSeconds !== null && (
+        {isUntimed ? (
           <>
             {" "}
-            for <strong data-testid="payload-inspection-banner-remaining">
-              {formatRemaining(remainingSeconds)}
+            until disarmed ·{" "}
+            <strong data-testid="payload-inspection-banner-retained-count">
+              {retainedCount} of {countBound}
             </strong>{" "}
-            more
+            retained
           </>
+        ) : (
+          remainingSeconds !== null && (
+            <>
+              {" "}
+              for <strong data-testid="payload-inspection-banner-remaining">
+                {formatRemaining(remainingSeconds)}
+              </strong>{" "}
+              more
+            </>
+          )
         )}
         .
       </span>

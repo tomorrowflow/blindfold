@@ -105,18 +105,41 @@ def test_clear_releases_every_retained_exchange_across_workspaces():
     assert store.for_workspace("ws-b") == []
 
 
-def test_the_store_retains_only_the_last_5_exchanges_per_workspace():
-    # ADR-0059 §4: "last 5 exchanges, in memory only" -- oldest evicted.
+def test_the_store_defaults_to_the_30_minute_windows_25_exchange_bound():
+    # Issue #433 (ADR-0059 amendment #431 §4): the class default mirrors the
+    # 30-minute window's own bound -- oldest evicted, bounded FIFO not a filter.
     store = RewrittenLeafStore()
 
-    for i in range(7):
+    for i in range(27):
         store.retain(workspace="ws-a", leaves=[], blocked=(i == 0))
 
     exchanges = store.for_workspace("ws-a")
-    assert len(exchanges) == 5
-    # The two oldest (including the one blocked exchange, i == 0) evicted --
-    # bounded FIFO, not a filter.
+    assert len(exchanges) == 25
     assert all(not exchange.blocked for exchange in exchanges)
+
+
+def test_set_bound_changes_the_count_bound_going_forward():
+    # Issue #433: `set_bound` is the seam `PayloadInspection.arm`'s `on_arm`
+    # hook drives, so the store's own bound tracks whichever window was
+    # chosen (25/100/200) -- pinned here at the object level, independent of
+    # the wiring in app.py.
+    store = RewrittenLeafStore(maxlen=25)
+    store.set_bound(100)
+
+    for i in range(30):
+        store.retain(workspace="ws-a", leaves=[], blocked=False)
+
+    assert len(store.for_workspace("ws-a")) == 30
+
+
+def test_set_bound_evicts_down_to_a_smaller_bound_immediately():
+    store = RewrittenLeafStore(maxlen=200)
+    for i in range(10):
+        store.retain(workspace="ws-a", leaves=[], blocked=False)
+
+    store.set_bound(5)
+
+    assert len(store.for_workspace("ws-a")) == 5
 
 
 @pytest.mark.anyio
@@ -210,6 +233,42 @@ async def test_nothing_is_retained_while_unprotected_mode_is_active():
     # upstream verbatim (Unprotected mode's own, unrelated point), and no
     # leaf record was ever built to retain, entity-free-by-construction
     # having never held in the first place for this exchange.
+    assert store.for_workspace("default") == []
+
+
+@pytest.mark.anyio
+async def test_nothing_is_retained_while_unprotected_mode_is_active_under_the_until_disarmed_window():
+    # Issue #433 AC: "every window ... retains nothing under Unprotected mode."
+    # "Until disarmed" is the case most likely to tempt a bug here -- it never
+    # auto-disarms on its own, so if the Unprotected-mode pipeline-skip check
+    # were ever bypassed for it specifically, retention would run unbounded by
+    # time for as long as the operator forgot to disarm.
+    mapping = SurrogateMapping.from_pairs([("Anna Schmidt", "Berta Vogel")])
+    inspection = PayloadInspection()
+    inspection.arm("until_disarmed")
+    store = RewrittenLeafStore()
+    unprotected = UnprotectedMode()
+    unprotected.enable_capability()
+    unprotected.enable(bound="next-request")
+    payload = {
+        "model": "claude-3-5-sonnet",
+        "messages": [{"role": "user", "content": "Please help Anna Schmidt today."}],
+    }
+
+    resp = await _post_messages(
+        payload,
+        {
+            get_upstream_client: lambda: _scripted_upstream(),
+            get_mapping: lambda: mapping,
+            get_review_inbox: lambda: ReviewInbox(),
+            get_l3_detector: lambda: L3Detector(_DismissAll()),
+            get_payload_inspection: lambda: inspection,
+            get_rewritten_leaf_store: lambda: store,
+            get_unprotected_mode: lambda: unprotected,
+        },
+    )
+
+    assert resp.status_code == 200
     assert store.for_workspace("default") == []
 
 

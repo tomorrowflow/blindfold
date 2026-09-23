@@ -9,7 +9,7 @@ import { test, expect } from "./fixtures";
 // admin); bob holds no role anywhere.
 
 test.describe("settings payload inspection — section renders", () => {
-  test("Payload inspection section renders between Unprotected mode and Detection, toggle OFF by default", async ({
+  test("Payload inspection section renders between Unprotected mode and Detection, toggle OFF and window defaulted to 30 minutes", async ({
     alicePage,
   }) => {
     await alicePage.goto("/ui/settings");
@@ -28,6 +28,15 @@ test.describe("settings payload inspection — section renders", () => {
     await expect(toggle).toBeVisible();
     await expect(toggle).toHaveAttribute("aria-checked", "false");
 
+    // Issue #433 AC: "Settings offers the three windows, defaulting to 30 minutes."
+    const select = alicePage.getByTestId("payload-inspection-window-select");
+    await expect(select).toHaveValue("30m");
+    await expect(select.locator("option")).toHaveText([
+      "30 minutes (25 exchanges)",
+      "2 hours (100 exchanges)",
+      "Until disarmed (200 exchanges)",
+    ]);
+
     // ADR-0059 §4 / issue #402 AC: states what arming retains, and that
     // entity-free is not the same as harmless.
     await expect(alicePage.locator("body")).toContainText("entity-free");
@@ -36,7 +45,7 @@ test.describe("settings payload inspection — section renders", () => {
 });
 
 test.describe("settings payload inspection — arm as admin", () => {
-  test("flipping the toggle ON calls the arm endpoint and shows the danger note + danger card treatment", async ({
+  test("flipping the toggle ON calls the arm endpoint with the default window and shows the danger note + danger card treatment", async ({
     alicePage,
   }) => {
     await alicePage.goto("/ui/settings");
@@ -51,6 +60,7 @@ test.describe("settings payload inspection — arm as admin", () => {
       toggle.click(),
     ]);
     expect(postRequest.url()).toContain("workspace=acme");
+    expect(postRequest.url()).toContain("window=30m");
 
     await expect(toggle).toHaveAttribute("aria-checked", "true");
     await expect(alicePage.getByTestId("payload-inspection-danger-note")).toContainText(
@@ -59,9 +69,42 @@ test.describe("settings payload inspection — arm as admin", () => {
     await expect(alicePage.getByTestId("payload-inspection-icon")).toHaveClass(
       /bf-policy-icon-badge--danger/
     );
+    // Issue #433 AC: "changing it means disarming and re-arming" -- the select
+    // is disabled once armed.
+    await expect(alicePage.getByTestId("payload-inspection-window-select")).toBeDisabled();
 
     // Flip back so later tests (and any other spec sharing this fixture instance's
     // process-global PayloadInspection singleton) start from the off default.
+    await Promise.all([
+      alicePage.waitForRequest(
+        (req) =>
+          req.url().includes("/v1/management/payload-inspection") && req.method() === "DELETE"
+      ),
+      toggle.click(),
+    ]);
+    await expect(toggle).toHaveAttribute("aria-checked", "false");
+  });
+
+  test("picking 2 hours before arming carries that window through to the arm request and the danger note", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto("/ui/settings");
+    const toggle = alicePage.getByTestId("payload-inspection-arm-toggle");
+    const select = alicePage.getByTestId("payload-inspection-window-select");
+    await select.selectOption("2h");
+
+    const [postRequest] = await Promise.all([
+      alicePage.waitForRequest(
+        (req) =>
+          req.url().includes("/v1/management/payload-inspection") && req.method() === "POST"
+      ),
+      toggle.click(),
+    ]);
+    expect(postRequest.url()).toContain("window=2h");
+    await expect(alicePage.getByTestId("payload-inspection-danger-note")).toContainText(
+      "2 hours"
+    );
+
     await Promise.all([
       alicePage.waitForRequest(
         (req) =>
@@ -85,6 +128,7 @@ test.describe("settings payload inspection — admin-gated", () => {
     await expect(toggle).toBeVisible();
     await expect(toggle).toBeDisabled();
     await expect(toggle).toHaveAttribute("aria-checked", "false");
+    await expect(davePage.getByTestId("payload-inspection-window-select")).toBeDisabled();
     await expect(davePage.getByTestId("payload-inspection-admin-note")).toContainText(
       "Requires the admin role"
     );
