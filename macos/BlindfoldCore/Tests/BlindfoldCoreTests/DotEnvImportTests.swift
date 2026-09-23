@@ -202,4 +202,66 @@ struct DotEnvImportTests {
             DotEnvImportPlan.Entry(key: "BLINDFOLD_L3_MODEL", newValue: "mixtral", previousValue: "llama3", destination: .settings),
         ])
     }
+
+    /// ADR-0045 §4: with a Store key already held, importing an OpenBao token would make
+    /// the proxy refuse to start (both mapping ciphers configured). The token is withheld
+    /// from the plan -- surfaced with its reason, never written on `apply`.
+    @Test
+    func anOpenBaoTokenIsWithheldWhenAStoreKeyIsConfigured() {
+        let plan = DotEnvImport.plan(
+            fileValues: ["BLINDFOLD_OPENBAO_TOKEN": "s.dev-token", "BLINDFOLD_L3_MODEL": "m"],
+            currentValues: [:],
+            storeKeyConfigured: true
+        )
+        #expect(plan.entries.map(\.key) == ["BLINDFOLD_L3_MODEL"])
+        #expect(plan.withheldKeys == [
+            DotEnvImportPlan.WithheldKey(key: "BLINDFOLD_OPENBAO_TOKEN", reason: .storeKeyConfigured),
+        ])
+
+        let suiteName = "test-\(UUID().uuidString)"
+        defer { UserDefaults().removePersistentDomain(forName: suiteName) }
+        let store = LaunchEnvironmentStore(suiteName: suiteName)
+        let secrets = UserDefaultsSecretsStore(suiteName: "\(suiteName).secrets")
+        defer { UserDefaults().removePersistentDomain(forName: "\(suiteName).secrets") }
+        DotEnvImport.apply(plan, importDatabaseURL: false, into: store, secretsStore: secrets)
+        #expect(secrets.value(for: "BLINDFOLD_OPENBAO_TOKEN") == nil)
+    }
+
+    @Test
+    func anOpenBaoTokenStillImportsWhenNoStoreKeyIsConfigured() {
+        let plan = DotEnvImport.plan(
+            fileValues: ["BLINDFOLD_OPENBAO_TOKEN": "s.dev-token"],
+            currentValues: [:],
+            storeKeyConfigured: false
+        )
+        #expect(plan.entries.map(\.key) == ["BLINDFOLD_OPENBAO_TOKEN"])
+        #expect(plan.withheldKeys.isEmpty)
+    }
+
+    /// ADR-0044's "never echoed back into the settings UI as plaintext": the preview line
+    /// for a secret names only whether a value is held, never the old or new value.
+    @Test
+    func aSecretEntrysPreviewTextNeverContainsEitherValue() {
+        let secret = DotEnvImportPlan.Entry(
+            key: "BLINDFOLD_L3_API_KEY", newValue: "sk-new-value", previousValue: "sk-old-value", destination: .secret
+        )
+        let setting = DotEnvImportPlan.Entry(
+            key: "BLINDFOLD_L3_MODEL", newValue: "new-model", previousValue: nil, destination: .settings
+        )
+
+        #expect(!secret.previewText.contains("sk-new-value"))
+        #expect(!secret.previewText.contains("sk-old-value"))
+        #expect(secret.previewText.contains("BLINDFOLD_L3_API_KEY"))
+        #expect(setting.previewText == "BLINDFOLD_L3_MODEL: (unset) → new-model")
+    }
+
+    /// A database URL's userinfo is a credential -- the import toggle's label shows the
+    /// target (scheme/host/path) without it.
+    @Test
+    func theDatabaseURLPreviewRedactsCredentials() {
+        let shown = DotEnvImport.redactingCredentials(inDatabaseURL: "postgresql://blindfold:hunter2@localhost:5432/blindfold")
+        #expect(!shown.contains("hunter2"))
+        #expect(shown == "postgresql://***@localhost:5432/blindfold")
+        #expect(DotEnvImport.redactingCredentials(inDatabaseURL: "sqlite:///tmp/x.sqlite3") == "sqlite:///tmp/x.sqlite3")
+    }
 }

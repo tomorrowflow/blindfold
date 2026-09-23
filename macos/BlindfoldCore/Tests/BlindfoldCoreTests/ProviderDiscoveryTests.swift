@@ -210,3 +210,52 @@ private func withStubbedOmlx(statusCode: Int, body: String, apiKey: String) asyn
     )
     return await ProviderDiscovery.discoverOmlx(apiKey: apiKey, prober: prober)
 }
+
+/// With the GLiNER cascade pinned, a discovered Ollama/oMLX model is the cascade's
+/// *inner* adjudicator (config.py `effective_inner_l3_provider`) -- selecting it must fill
+/// the inner-provider slot and keep `gliner`, never silently replace the cascade with a
+/// plain LLM provider.
+@Test func applyingADiscoveredModelUnderGlinerFillsTheInnerProviderSlot() {
+    let discovered = ProviderDiscoveryResult(
+        provider: .omlx,
+        baseURL: "http://127.0.0.1:8000",
+        outcome: .running(models: ["gemma-4-e2b-it-4bit"])
+    )
+    let original = SupervisorSettings(l3Provider: .explicit(.gliner), l3InnerProvider: .ollama)
+
+    let updated = discovered.applying(model: "gemma-4-e2b-it-4bit", to: original)
+
+    #expect(updated == SupervisorSettings(
+        l3Provider: .explicit(.gliner),
+        l3BaseURL: "http://127.0.0.1:8000",
+        l3Model: "gemma-4-e2b-it-4bit",
+        l3InnerProvider: .omlx
+    ))
+}
+
+/// The per-provider model picker shows the configured model as selected only on the
+/// provider that actually receives adjudicator calls -- the inner slot under GLiNER, the
+/// provider itself otherwise -- so two providers serving the same tag never both read
+/// as selected.
+@Test func selectedModelFollowsTheProviderThatReceivesAdjudicatorCalls() {
+    let omlx = ProviderDiscoveryResult(provider: .omlx, baseURL: "http://127.0.0.1:8000", outcome: .running(models: ["m"]))
+    let ollama = ProviderDiscoveryResult(provider: .ollama, baseURL: "http://127.0.0.1:11434", outcome: .running(models: ["m"]))
+    let cascade = SupervisorSettings(
+        l3Provider: .explicit(.gliner), l3BaseURL: "http://127.0.0.1:8000", l3Model: "m", l3InnerProvider: .omlx
+    )
+    let plain = SupervisorSettings(l3Provider: .explicit(.ollama), l3BaseURL: "http://127.0.0.1:11434", l3Model: "m")
+
+    #expect(omlx.selectedModel(in: cascade) == "m")
+    #expect(ollama.selectedModel(in: cascade) == nil)
+    #expect(ollama.selectedModel(in: plain) == "m")
+    #expect(omlx.selectedModel(in: plain) == nil)
+}
+
+/// A configured model the server no longer lists is not shown as selected (the picker
+/// would otherwise bind to a tag it has no row for).
+@Test func selectedModelIsNilWhenTheServerNoLongerListsIt() {
+    let omlx = ProviderDiscoveryResult(provider: .omlx, baseURL: "http://127.0.0.1:8000", outcome: .running(models: ["other"]))
+    let settings = SupervisorSettings(l3Provider: .explicit(.omlx), l3BaseURL: "http://127.0.0.1:8000", l3Model: "gone")
+
+    #expect(omlx.selectedModel(in: settings) == nil)
+}

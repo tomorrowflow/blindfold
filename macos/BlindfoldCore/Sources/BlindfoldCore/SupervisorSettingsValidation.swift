@@ -6,6 +6,7 @@ public enum SupervisorSettingsAdvisoryWarning: Equatable, Sendable {
     case omlxBaseURLNotLoopback
     case cloudModelTag
     case legacyOllamaEnvVarPresent(String)
+    case ambiguousMappingCipher
 
     /// An actionable message for the settings surface -- never an entity/secret value,
     /// only configuration shape (a URL scheme's loopback-ness, a model tag, an env var
@@ -18,6 +19,8 @@ public enum SupervisorSettingsAdvisoryWarning: Equatable, Sendable {
             return "L3 model is tagged :cloud (remotely-executing) -- the proxy will refuse to start against it."
         case let .legacyOllamaEnvVarPresent(key):
             return "\(key) is a legacy variable the proxy no longer reads -- the proxy will refuse to start while it's set."
+        case .ambiguousMappingCipher:
+            return "An OpenBao token is set alongside this install's Store key -- the proxy will refuse to start (a store is encrypted under one cipher only). Clear the OpenBao token to keep the local store; never clear the Store key against an existing store."
         }
     }
 }
@@ -34,9 +37,15 @@ public enum SupervisorSettingsValidation {
     /// plus the launch environment's currently-held values (where a legacy
     /// `BLINDFOLD_OLLAMA_*` key can only arrive via the `.env` one-shot import, since
     /// #220 stopped the ambient environment reaching the child at all).
+    ///
+    /// `openBaoTokenConfigured`/`storeKeyConfigured` mirror
+    /// `serve.refuse_if_ambiguous_mapping_cipher` (ADR-0045 §4) -- presence only, never
+    /// a secret's value.
     public static func advisoryWarnings(
         for settings: SupervisorSettings,
-        environment: [String: String]
+        environment: [String: String],
+        openBaoTokenConfigured: Bool = false,
+        storeKeyConfigured: Bool = false
     ) -> [SupervisorSettingsAdvisoryWarning] {
         var warnings: [SupervisorSettingsAdvisoryWarning] = []
         let provider: String
@@ -53,6 +62,9 @@ public enum SupervisorSettingsValidation {
         }
         for key in legacyOllamaEnvVarKeys(in: environment) {
             warnings.append(.legacyOllamaEnvVarPresent(key))
+        }
+        if openBaoTokenConfigured && storeKeyConfigured {
+            warnings.append(.ambiguousMappingCipher)
         }
         return warnings
     }

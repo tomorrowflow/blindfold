@@ -128,11 +128,40 @@ extension ProviderDiscoveryResult {
     /// than a second write path. Pure: the caller still has to call `save(into:)` on the
     /// result for it to actually reach the launch environment, so discovery never
     /// mutates configuration on its own.
+    ///
+    /// With the GLiNER cascade pinned, the discovered provider is the cascade's *inner*
+    /// adjudicator (config.py `effective_inner_l3_provider`), so it fills the inner slot
+    /// and `gliner` stays -- selecting a model never silently replaces the cascade.
     public func applying(model: String, to settings: SupervisorSettings) -> SupervisorSettings {
         var updated = settings
-        updated.l3Provider = .explicit(provider)
+        if case .explicit(.gliner) = settings.l3Provider {
+            updated.l3InnerProvider = provider
+        } else {
+            updated.l3Provider = .explicit(provider)
+        }
         updated.l3BaseURL = baseURL
         updated.l3Model = model
         return updated
+    }
+
+    /// The model the settings' adjudicator currently resolves to on *this* provider, if
+    /// any -- what the per-provider picker shows as selected. Only the provider that
+    /// actually receives adjudicator calls (the inner slot under GLiNER, the provider
+    /// itself otherwise) matches, and only for a tag this server still lists.
+    public func selectedModel(in settings: SupervisorSettings) -> String? {
+        guard case let .running(models) = outcome else { return nil }
+        let receivingProvider: L3Provider?
+        switch settings.l3Provider {
+        case .explicit(.gliner):
+            receivingProvider = settings.l3InnerProvider
+        case let .explicit(explicitProvider):
+            receivingProvider = explicitProvider
+        case .automatic:
+            receivingProvider = nil
+        }
+        guard receivingProvider == provider, settings.l3BaseURL == baseURL, models.contains(settings.l3Model) else {
+            return nil
+        }
+        return settings.l3Model
     }
 }

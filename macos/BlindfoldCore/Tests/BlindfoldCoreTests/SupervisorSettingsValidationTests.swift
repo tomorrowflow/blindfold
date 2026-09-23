@@ -70,3 +70,21 @@ func legacyOllamaEnvVarAdvisoryMatchesGoldenVector(_ vector: GoldenVectorFixture
     #expect(SupervisorSettingsAdvisoryWarning.cloudModelTag.message.contains("cloud"))
     #expect(SupervisorSettingsAdvisoryWarning.legacyOllamaEnvVarPresent("BLINDFOLD_OLLAMA_ADDR").message.contains("BLINDFOLD_OLLAMA_ADDR"))
 }
+
+/// Mirrors `serve.refuse_if_ambiguous_mapping_cipher` (ADR-0045 §4): an OpenBao token
+/// alongside the supervisor's Store key is a guaranteed startup refusal, so the settings
+/// surface says so before a boot cycle discovers it.
+@Test func advisoryWarningsFlagsAnOpenBaoTokenAlongsideTheStoreKey() {
+    let settings = SupervisorSettings()
+
+    #expect(SupervisorSettingsValidation.advisoryWarnings(
+        for: settings, environment: [:], openBaoTokenConfigured: true, storeKeyConfigured: true
+    ) == [.ambiguousMappingCipher])
+    #expect(SupervisorSettingsValidation.advisoryWarnings(
+        for: settings, environment: [:], openBaoTokenConfigured: true, storeKeyConfigured: false
+    ).isEmpty)
+    #expect(SupervisorSettingsValidation.advisoryWarnings(
+        for: settings, environment: [:], openBaoTokenConfigured: false, storeKeyConfigured: true
+    ).isEmpty)
+    #expect(SupervisorSettingsAdvisoryWarning.ambiguousMappingCipher.message.contains("OpenBao token"))
+}

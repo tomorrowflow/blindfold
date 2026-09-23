@@ -52,7 +52,12 @@ final class SupervisorSettingsViewModel: ObservableObject {
     /// have arrived via the `.env` one-shot import. Never gates `save()`: the proxy's
     /// startup guards remain the real gate.
     var advisoryWarnings: [SupervisorSettingsAdvisoryWarning] {
-        SupervisorSettingsValidation.advisoryWarnings(for: settings, environment: store.values())
+        SupervisorSettingsValidation.advisoryWarnings(
+            for: settings,
+            environment: store.values(),
+            openBaoTokenConfigured: !secrets.openBaoToken.isEmpty,
+            storeKeyConfigured: storeKeyConfigured
+        )
     }
 
     init(
@@ -125,7 +130,11 @@ final class SupervisorSettingsViewModel: ObservableObject {
         }
         do {
             let fileValues = try DotEnvImport.readFileValues(contentsOf: fileURL)
-            dotEnvImportPlan = DotEnvImport.plan(fileValues: fileValues, currentValues: currentValues)
+            dotEnvImportPlan = DotEnvImport.plan(
+                fileValues: fileValues,
+                currentValues: currentValues,
+                storeKeyConfigured: storeKeyConfigured
+            )
             dotEnvImportError = nil
         } catch {
             dotEnvImportPlan = nil

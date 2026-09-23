@@ -72,6 +72,44 @@ public struct DotEnvImportPlan: Equatable, Sendable {
             self.previousValue = previousValue
             self.destination = destination
         }
+
+        /// The preview line the settings surface renders. A secret's line names only
+        /// whether a value is held -- never the old or new value (ADR-0044: a stored
+        /// secret is never echoed back into the settings UI as plaintext).
+        public var previewText: String {
+            switch destination {
+            case .settings:
+                return "\(key): \(previousValue ?? "(unset)") → \(newValue)"
+            case .secret:
+                let held = previousValue == nil ? "(unset)" : "(set)"
+                return "\(key): \(held) → (new value, hidden)"
+            }
+        }
+    }
+
+    /// Why a recognized key is left out of the import rather than written.
+    public enum WithheldReason: Equatable, Sendable {
+        /// ADR-0045 §4: a Store key is already held, so an OpenBao token would configure
+        /// both mapping ciphers and the proxy would refuse to start.
+        case storeKeyConfigured
+
+        public var message: String {
+            switch self {
+            case .storeKeyConfigured:
+                return "not imported -- this install already has a Store key, and an OpenBao token alongside it makes the proxy refuse to start (ADR-0045 §4)"
+            }
+        }
+    }
+
+    /// A recognized key the file held that `apply` will deliberately not write.
+    public struct WithheldKey: Equatable, Sendable {
+        public let key: String
+        public let reason: WithheldReason
+
+        public init(key: String, reason: WithheldReason) {
+            self.key = key
+            self.reason = reason
+        }
     }
 
     public var entries: [Entry]
@@ -88,17 +126,22 @@ public struct DotEnvImportPlan: Equatable, Sendable {
     /// side effect of importing L3 settings"). `apply` only writes it when the caller
     /// passes a distinct, explicit confirmation.
     public var databaseURLValue: String?
+    /// Recognized keys held back from the import, each with its reason -- shown in the
+    /// preview, never written on `apply`.
+    public var withheldKeys: [WithheldKey]
 
     public init(
         entries: [Entry] = [],
         unknownKeys: [String] = [],
         legacyKeys: [String] = [],
-        databaseURLValue: String? = nil
+        databaseURLValue: String? = nil,
+        withheldKeys: [WithheldKey] = []
     ) {
         self.entries = entries
         self.unknownKeys = unknownKeys
         self.legacyKeys = legacyKeys
         self.databaseURLValue = databaseURLValue
+        self.withheldKeys = withheldKeys
     }
 }
 
@@ -126,19 +169,28 @@ public enum DotEnvImport {
     /// Classifies `fileValues` (already parsed, `BLINDFOLD_*` keys only expected) against
     /// `currentValues` (the launch environment's held values plus the two known secrets,
     /// merged -- their key sets never collide) to build the preview.
+    ///
+    /// `storeKeyConfigured` is whether the supervisor already holds a Store key: if so, an
+    /// OpenBao token is withheld (ADR-0045 §4 -- both ciphers configured is a startup
+    /// refusal, and the Store key is the one an existing local store is encrypted under).
     public static func plan(
         fileValues: [String: String],
-        currentValues: [String: String]
+        currentValues: [String: String],
+        storeKeyConfigured: Bool = false
     ) -> DotEnvImportPlan {
         var entries: [DotEnvImportPlan.Entry] = []
         var unknownKeys: [String] = []
         var legacyKeys: [String] = []
+        var withheldKeys: [DotEnvImportPlan.WithheldKey] = []
         var databaseURLValue: String?
         for (key, value) in fileValues {
             guard key.hasPrefix(LaunchEnvironment.blindfoldPrefix) else { continue }
             let destination: DotEnvImportPlan.Destination
             if key == databaseURLKey {
                 databaseURLValue = value
+                continue
+            } else if key == SupervisorSecrets.openBaoTokenKey && storeKeyConfigured {
+                withheldKeys.append(DotEnvImportPlan.WithheldKey(key: key, reason: .storeKeyConfigured))
                 continue
             } else if SupervisorSettingsValidation.legacyOllamaEnvVarNames.contains(key) {
                 legacyKeys.append(key)
@@ -164,8 +216,19 @@ public enum DotEnvImport {
             entries: entries,
             unknownKeys: unknownKeys,
             legacyKeys: legacyKeys,
-            databaseURLValue: databaseURLValue
+            databaseURLValue: databaseURLValue,
+            withheldKeys: withheldKeys
         )
+    }
+
+    /// A database URL for display: any userinfo (`user:password@`) is a credential and is
+    /// replaced with `***`, leaving scheme, host, port and path readable.
+    public static func redactingCredentials(inDatabaseURL value: String) -> String {
+        guard let schemeEnd = value.range(of: "://") else { return value }
+        let rest = value[schemeEnd.upperBound...]
+        let authorityEnd = rest.firstIndex(of: "/") ?? rest.endIndex
+        guard let at = rest[..<authorityEnd].lastIndex(of: "@") else { return value }
+        return String(value[..<schemeEnd.upperBound]) + "***" + String(rest[at...])
     }
 
     /// Applies a previewed plan (issue #226): every ordinary entry is written to its

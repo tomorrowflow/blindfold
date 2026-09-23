@@ -115,7 +115,9 @@ struct SupervisorSettingsView: View {
                 }
             }
         }
-        .padding()
+        // A grouped Form scrolls on macOS; the default (columns) style does not, so a long
+        // discovery result pushed Save off the bottom of the window.
+        .formStyle(.grouped)
         .alert("Restart Blindfold?", isPresented: $model.pendingRestartConfirmation) {
             Button("Restart", role: .destructive) { model.confirmRestart() }
             Button("Cancel", role: .cancel) { model.cancelRestart() }
@@ -137,7 +139,10 @@ struct SupervisorSettingsView: View {
     @ViewBuilder
     private func dotEnvImportPreview(_ plan: DotEnvImportPlan) -> some View {
         ForEach(plan.entries, id: \.key) { entry in
-            Text("\(entry.key): \(entry.previousValue ?? "(unset)") → \(entry.newValue)")
+            Text(entry.previewText)
+        }
+        ForEach(plan.withheldKeys, id: \.key) { withheld in
+            Text("\(withheld.key): \(withheld.reason.message)").foregroundStyle(.orange)
         }
         ForEach(plan.unknownKeys, id: \.self) { key in
             Text("\(key) is not a recognized Blindfold key -- skipped").foregroundStyle(.orange)
@@ -146,7 +151,7 @@ struct SupervisorSettingsView: View {
             Text("\(key) is a legacy variable -- flagged, not imported").foregroundStyle(.orange)
         }
         if let databaseURLValue = plan.databaseURLValue {
-            Toggle("Also import BLINDFOLD_DATABASE_URL (\(databaseURLValue)) -- moves this install off the SQLite default", isOn: $confirmDatabaseURLImport)
+            Toggle("Also import BLINDFOLD_DATABASE_URL (\(DotEnvImport.redactingCredentials(inDatabaseURL: databaseURLValue))) -- moves this install off its SQLite store; the existing local store will no longer be used", isOn: $confirmDatabaseURLImport)
         }
         HStack {
             Button("Apply import") {
@@ -162,8 +167,8 @@ struct SupervisorSettingsView: View {
 
     /// One provider's discovery outcome (issue #225's own AC list): "neither running"
     /// says so plainly, an unauthenticated oMLX is reported as needing a key (not as
-    /// absent), and a running provider lists its models as selectable model tags -- no
-    /// outcome here ever reads or displays the API key itself.
+    /// absent), and a running provider offers its models in one drop-down -- no outcome
+    /// here ever reads or displays the API key itself.
     @ViewBuilder
     private func discoveryRow(for result: ProviderDiscoveryResult) -> some View {
         switch result.outcome {
@@ -174,11 +179,28 @@ struct SupervisorSettingsView: View {
             Text("\(result.provider.rawValue): found a server, needs an API key")
                 .foregroundStyle(.orange)
         case let .running(models):
-            ForEach(models, id: \.self) { modelTag in
-                Button("\(result.provider.rawValue): \(modelTag)") {
-                    model.selectDiscoveredModel(result, model: modelTag)
+            Picker(result.provider.rawValue, selection: discoveredModelChoice(for: result)) {
+                Text("Choose a model…").tag(String?.none)
+                ForEach(models, id: \.self) { modelTag in
+                    Text(modelTag).tag(String?.some(modelTag))
                 }
             }
+            .pickerStyle(.menu)
         }
+    }
+
+    /// Binds a provider's drop-down to the edit buffer: `get` is `BlindfoldCore`'s
+    /// `selectedModel(in:)` (which provider receives adjudicator calls, GLiNER-inner
+    /// aware), `set` goes through the same `selectDiscoveredModel` path the old per-model
+    /// buttons used.
+    private func discoveredModelChoice(for result: ProviderDiscoveryResult) -> Binding<String?> {
+        Binding(
+            get: { result.selectedModel(in: model.settings) },
+            set: { newValue in
+                if let newValue {
+                    model.selectDiscoveredModel(result, model: newValue)
+                }
+            }
+        )
     }
 }
