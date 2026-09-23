@@ -91,9 +91,29 @@ test.describe("Degraded state", () => {
       },
     });
     expect(blockResp.status()).toBe(503);
+    const blockBody = await blockResp.json();
+    // Issue #425: l3_unavailable is not in the deterministic-by-construction set,
+    // so its own error envelope claims "unknown" -- never "not-retryable".
+    expect(blockBody.error.retryability).toBe("unknown");
     await api.dispose();
 
-    await alicePage.goto("/ui/status");
+    // Issue #425: the block_history entry the status page's own network fetch
+    // returns must carry the identical retryability the 503 above just claimed --
+    // block_retryability(sub_reason) is one funnel, never re-derived per surface.
+    const [statusResponse] = await Promise.all([
+      alicePage.waitForResponse(
+        (res) => res.url().includes("/v1/status") && res.request().method() === "GET"
+      ),
+      alicePage.goto("/ui/status"),
+    ]);
+    const statusBody = await statusResponse.json();
+    const record = statusBody.blocks.recent[0];
+    expect(record.retryability).toBe(blockBody.error.retryability);
+    // Not entity content and not derived client-side -- confirm it merely rode
+    // along in the same first-party JSON the browser already fetched, without
+    // needing the recent-blocks table to render it as a cell of its own.
+    expect(JSON.stringify(statusBody)).not.toContain("Persimmon Okafor-Delacroix");
+
     const table = alicePage.getByTestId("blocks-table");
     await expect(table).toBeVisible();
     const row = alicePage.getByTestId("blocks-row").first();

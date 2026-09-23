@@ -88,6 +88,37 @@ test.describe("Recent blocks — leak_detected taxonomy split", () => {
     // leaks to anyone", already pinned above.
   });
 
+  test("retryability differentiates the two causes: leak_detected is not-retryable, the curation cause stays unknown (issue #425)", async ({
+    alicePage,
+  }) => {
+    // ADR-0057's #425 amendment: only causes deterministic by construction claim
+    // "not-retryable" -- leak_detected (the defect cause) is one; the curation
+    // cause (a human-pending review-inbox match) is not, and defaults to
+    // "unknown" like every other non-deterministic sub_reason. block_history's
+    // own retryability field is asserted here, not the rendered table -- the
+    // page never surfaces it as a cell (RecentBlocksTable renders scrubbed_reason
+    // and the remedy lookup only), so the browser-observable surface for this
+    // property is the /v1/status response the page itself fetched, not the DOM.
+    const [statusResponse] = await Promise.all([
+      alicePage.waitForResponse(
+        (res) => res.url().includes("/v1/status") && res.request().method() === "GET"
+      ),
+      alicePage.goto("/ui/status"),
+    ]);
+    const statusBody = await statusResponse.json();
+    const records: Array<{ sub_reason: string; retryability: string }> = statusBody.blocks.recent;
+
+    const defect = records.find((r) => r.sub_reason === "leak_detected");
+    const curation = records.find((r) => r.sub_reason === "leak_detected_review_inbox");
+    expect(defect?.retryability).toBe("not-retryable");
+    expect(curation?.retryability).toBe("unknown");
+
+    // Not entity content, but confirm it never smuggled any anyway.
+    const serialized = JSON.stringify(statusBody);
+    expect(serialized).not.toContain(DEFECT_REAL);
+    expect(serialized).not.toContain(REVIEW_INBOX_REAL);
+  });
+
   test("loading Home/Status makes no cross-origin request, and none carries the blocked values", async ({
     alicePage,
   }) => {
