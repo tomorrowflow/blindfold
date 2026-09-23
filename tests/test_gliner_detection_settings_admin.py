@@ -31,6 +31,7 @@ from blindfold.app import (
     get_rbac,
     get_settings,
 )
+import blindfold.gliner_status as gliner_status
 from blindfold.config import Settings
 from blindfold.gliner_provisioning import resolve_gliner_model_path
 from blindfold.gliner_status import GlinerProvisioningTracker
@@ -176,6 +177,8 @@ async def test_retry_activates_the_persisted_flag_and_prompts_restart(tmp_path, 
     # provision_gliner_model) proves this without depending on the real pinned
     # model's actual sha256 digests.
     monkeypatch.setenv("BLINDFOLD_DATA_DIR", str(tmp_path))
+    # Issue #429: this test's own axis is retry/activation, not extra-importability.
+    monkeypatch.setattr(gliner_status, "is_gliner_extra_importable", lambda: True)
     model_path = resolve_gliner_model_path(str(tmp_path))
     model_dir = Path(model_path)
     model_dir.mkdir(parents=True)

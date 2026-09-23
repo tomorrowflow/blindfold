@@ -26,6 +26,7 @@ from blindfold.serve import (
     DEFAULT_PORT,
     AmbiguousMappingCipherError,
     DevModeRequiredError,
+    GlinerExtraUnimportableError,
     GlinerModelMissingError,
     LegacyEnvVarError,
     LocalOnlyModelRequiredError,
@@ -34,6 +35,7 @@ from blindfold.serve import (
     mirror_bind_into_env,
     refuse_if_ambiguous_mapping_cipher,
     refuse_if_cloud_model,
+    refuse_if_gliner_extra_missing,
     refuse_if_gliner_model_missing,
     refuse_if_legacy_root_token_opt_in_env_var,
     refuse_if_legacy_l3_env_vars,
@@ -292,6 +294,98 @@ def test_refuse_if_gliner_model_missing_is_a_noop_when_the_cascade_is_only_the_u
 
     assert settings.l3_provider == "gliner"
     refuse_if_gliner_model_missing(settings)
+
+
+# ---------------------------------------------------------------------------
+# 1b4. refuse_if_gliner_extra_missing — ADR-0049 #421 amendment (issue #429): an
+# explicitly-chosen gliner cascade whose model directory is provisioned but whose
+# gliner/onnxruntime extra is not importable must also refuse at startup, not 503
+# every request via a runtime GlinerExtraMissingError. Not faked: `gliner`
+# genuinely isn't installed in this sandbox (an opt-in extra, ADR-0034 §6), so the
+# "blocks" tests exercise the real absence rather than a simulated one.
+# ---------------------------------------------------------------------------
+
+
+def test_refuse_if_gliner_extra_missing_blocks_an_explicit_activation(tmp_path):
+    model_dir = tmp_path / "gliner-pii-base-v1.0"
+    model_dir.mkdir()
+    (model_dir / "gliner_config.json").write_text("{}")
+    settings = Settings(
+        l3_provider="gliner",
+        l3_gliner_model_path=str(model_dir),
+        l3_gliner_activation_is_explicit=True,
+    )
+
+    with pytest.raises(GlinerExtraUnimportableError):
+        refuse_if_gliner_extra_missing(settings)
+
+
+def test_refuse_if_gliner_extra_missing_names_the_frozen_aware_remedy(tmp_path, monkeypatch):
+    import blindfold.serve as serve
+
+    monkeypatch.setattr(serve, "gliner_extra_missing_message", lambda: "stand-in remedy text")
+    model_dir = tmp_path / "gliner-pii-base-v1.0"
+    model_dir.mkdir()
+    (model_dir / "gliner_config.json").write_text("{}")
+    settings = Settings(
+        l3_provider="gliner",
+        l3_gliner_model_path=str(model_dir),
+        l3_gliner_activation_is_explicit=True,
+    )
+
+    with pytest.raises(GlinerExtraUnimportableError, match="stand-in remedy text"):
+        refuse_if_gliner_extra_missing(settings)
+
+
+def test_refuse_if_gliner_extra_missing_is_a_noop_when_the_model_is_unprovisioned():
+    # refuse_if_gliner_model_missing already covers the unprovisioned case -- this
+    # guard only concerns itself with a provisioned-but-unloadable cascade, so it
+    # must not raise (or double-report) for a path that isn't provisioned at all.
+    settings = Settings(
+        l3_provider="gliner", l3_gliner_model_path="", l3_gliner_activation_is_explicit=True
+    )
+
+    refuse_if_gliner_extra_missing(settings)
+
+
+def test_refuse_if_gliner_extra_missing_is_a_noop_for_the_ollama_provider():
+    settings = Settings(l3_provider="ollama", l3_gliner_model_path="")
+
+    refuse_if_gliner_extra_missing(settings)
+
+
+def test_refuse_if_gliner_extra_missing_is_a_noop_when_the_cascade_is_only_the_unconfigured_default(
+    tmp_path,
+):
+    # ADR-0049's own scoping (mirrored from refuse_if_gliner_model_missing above):
+    # a defaulted (not explicit) gliner cascade must still boot and degrade at
+    # request time -- refusing to start over a default nobody asked for would brick
+    # every never-configured or LLM-only install the moment the extra happened to
+    # be missing.
+    model_dir = tmp_path / "gliner-pii-base-v1.0"
+    model_dir.mkdir()
+    (model_dir / "gliner_config.json").write_text("{}")
+    settings = Settings(l3_gliner_model_path=str(model_dir))
+
+    assert settings.l3_provider == "gliner"
+    assert settings.l3_gliner_activation_is_explicit is False
+    refuse_if_gliner_extra_missing(settings)
+
+
+def test_refuse_if_gliner_extra_missing_allows_an_importable_extra(tmp_path, monkeypatch):
+    import blindfold.serve as serve
+
+    monkeypatch.setattr(serve, "is_gliner_extra_importable", lambda: True)
+    model_dir = tmp_path / "gliner-pii-base-v1.0"
+    model_dir.mkdir()
+    (model_dir / "gliner_config.json").write_text("{}")
+    settings = Settings(
+        l3_provider="gliner",
+        l3_gliner_model_path=str(model_dir),
+        l3_gliner_activation_is_explicit=True,
+    )
+
+    refuse_if_gliner_extra_missing(settings)
 
 
 # ---------------------------------------------------------------------------
@@ -1151,6 +1245,55 @@ def test_run_server_refuses_a_missing_gliner_model_before_starting_the_asgi_serv
         )
 
     assert calls == []
+
+
+def test_run_server_refuses_an_explicit_gliner_activation_with_the_extra_unimportable(
+    tmp_path,
+):
+    # ADR-0049 #421 amendment, issue #429: same no-override stance as the guard
+    # above -- a provisioned-but-unloadable cascade fails at startup, not on the
+    # first request. Not faked: gliner genuinely isn't installed in this sandbox
+    # (an opt-in extra, ADR-0034 §6), so this exercises the real absence.
+    model_dir = tmp_path / "gliner-pii-base-v1.0"
+    model_dir.mkdir()
+    (model_dir / "gliner_config.json").write_text("{}")
+    settings = Settings(
+        l3_provider="gliner",
+        l3_gliner_model_path=str(model_dir),
+        l3_gliner_activation_is_explicit=True,
+    )
+    calls = []
+
+    with pytest.raises(GlinerExtraUnimportableError):
+        run_server(
+            settings=settings,
+            runner=lambda app, **kwargs: calls.append((app, kwargs)),
+        )
+
+    assert calls == []
+
+
+def test_run_server_boots_a_defaulted_gliner_cascade_with_the_extra_unimportable(tmp_path):
+    # ADR-0049's own scoping, issue #429 AC4: DEFAULT_L3_PROVIDER's bare fallback
+    # (nobody explicitly chose gliner) must still start the ASGI server even with
+    # the extra unimportable -- it keeps degrading at request time per candidate
+    # (ADR-0009), exactly like today, rather than bricking every never-configured
+    # or LLM-only install the moment the extra happens to be missing.
+    model_dir = tmp_path / "gliner-pii-base-v1.0"
+    model_dir.mkdir()
+    (model_dir / "gliner_config.json").write_text("{}")
+    settings = Settings(l3_gliner_model_path=str(model_dir))
+    calls = []
+
+    assert settings.l3_provider == "gliner"
+    assert settings.l3_gliner_activation_is_explicit is False
+
+    run_server(
+        settings=settings,
+        runner=lambda app, **kwargs: calls.append((app, kwargs)),
+    )
+
+    assert len(calls) == 1
 
 
 # ---------------------------------------------------------------------------

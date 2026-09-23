@@ -39,6 +39,7 @@ from .config import (
 )
 from .entity_graph import EntityGraph
 from .gliner_provisioning import is_gliner_model_ready
+from .l3_gliner import gliner_extra_missing_message, is_gliner_extra_importable
 from .mapping_cipher import SCHEME_PREFIX, InvalidStoreKeyError, LocalKeyCipher
 from .ollama import is_cloud_model
 from .transit import CIPHERTEXT_PREFIX as TRANSIT_CIPHERTEXT_PREFIX
@@ -97,6 +98,25 @@ class GlinerModelMissingError(RuntimeError):
     on-disk state (issue #150). Failing at startup rather than mid-request keeps the
     failure mode identical to the other local-only guards: an actionable error before
     the ASGI server accepts traffic, not a per-candidate runtime surprise.
+    """
+
+
+class GlinerExtraUnimportableError(RuntimeError):
+    """Raised when ``BLINDFOLD_L3_PROVIDER=gliner`` is explicitly configured with a
+    provisioned model directory, but the ``blindfold[gliner]`` extra (``gliner`` +
+    ``onnxruntime``) is not importable (ADR-0049 #421 amendment, issue #429).
+
+    Distinct from :class:`GlinerModelMissingError`: that guard's on-disk directory
+    check (``is_gliner_model_ready``) says nothing about whether the extra is
+    importable at all -- that import is deliberately deferred to adjudication time
+    (``l3_gliner._load_gliner_model``), which is exactly how this combination
+    (model provisioned by an earlier source run + extra absent from a frozen
+    build's deliberately extra-less bundle, ADR-0034 §6) shipped a live proxy that
+    reported ``/v1/status`` healthy while every real request 503'd with
+    ``detection_internal``. Scoped the same way ``GlinerModelMissingError`` is --
+    a no-op for the *defaulted* (not ``l3_gliner_activation_is_explicit``) cascade,
+    which must keep booting and failing closed per candidate (ADR-0009) exactly as
+    it does today.
     """
 
 
@@ -507,6 +527,35 @@ def refuse_if_gliner_model_missing(settings: Settings | None = None) -> None:
         )
 
 
+def refuse_if_gliner_extra_missing(settings: Settings | None = None) -> None:
+    """Fail fast (ADR-0049 #421 amendment, issue #429) if an *explicitly* chosen
+    ``BLINDFOLD_L3_PROVIDER=gliner`` names a provisioned model directory whose
+    ``blindfold[gliner]`` extra (``gliner`` + ``onnxruntime``) is not importable.
+
+    No-op for every other ``l3_provider`` value, for the *defaulted* (not
+    ``settings.l3_gliner_activation_is_explicit``) cascade -- same ADR-0049 scoping
+    :func:`refuse_if_gliner_model_missing` uses, for the same reason: refusing to
+    start over a default nobody asked for would brick every never-configured or
+    LLM-only-configured install -- and for an unprovisioned model directory
+    (:func:`refuse_if_gliner_model_missing` above already covers that case; this
+    guard only adds the third precondition an on-disk check can't see).
+
+    Without this, an explicit activation with the extra missing keeps booting and
+    503ing every single request with ``detection_internal`` (the import is
+    deferred to adjudication time, ``l3_gliner._load_gliner_model``) instead of
+    refusing once, before the ASGI server accepts traffic -- exactly the failure
+    mode ``refuse_if_gliner_model_missing``'s own docstring names as the reason it
+    exists, just for a precondition that guard's on-disk check cannot see.
+    """
+    settings = settings or get_settings()
+    if settings.l3_provider != "gliner" or not settings.l3_gliner_activation_is_explicit:
+        return
+    if not is_gliner_model_ready(settings.l3_gliner_model_path):
+        return
+    if not is_gliner_extra_importable():
+        raise GlinerExtraUnimportableError(f"refusing to start: {gliner_extra_missing_message()}")
+
+
 def _entity_graph_for_startup_check(settings: Settings) -> EntityGraph:
     """Construct a throwaway store to answer "is the store empty?" at startup.
 
@@ -590,9 +639,10 @@ def run_server(
     populated-plaintext-store guard (issue #238 -- the upgrade path every
     pre-#229/#230 install hits), the ADR-0022 local-only-L3 guard (Ollama's ``:cloud``
     tag), the ADR-0031 §3 local-only-L3 guard (oMLX's loopback-only base url), and the
-    ADR-0033 §2 local-only-L3 guard (GLiNER's readable-model-file check) before
-    starting the server so a misconfigured deploy never has the ASGI server accept
-    traffic in the first place.
+    ADR-0033 §2 local-only-L3 guard (GLiNER's readable-model-file check), and the
+    ADR-0049 #421 amendment's guard (GLiNER's extra-importability check, issue
+    #429) before starting the server so a misconfigured deploy never has the ASGI
+    server accept traffic in the first place.
     """
     # This refusal is deliberately absent from fixtures/supervisor-golden-vectors.json
     # (issue #250). Per ADR-0044 the supervisor is sole author of the child's launch
@@ -619,6 +669,7 @@ def run_server(
         refuse_if_cloud_model(settings)
         refuse_if_omlx_non_loopback(settings)
         refuse_if_gliner_model_missing(settings)
+        refuse_if_gliner_extra_missing(settings)
         # A no-op if the process already configured logging (e.g. an embedding app, or
         # pytest's own log capture); otherwise this is the only thing standing between
         # the line below and Python's logging module silently dropping it (issue #82 —

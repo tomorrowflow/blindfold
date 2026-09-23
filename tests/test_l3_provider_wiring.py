@@ -276,6 +276,13 @@ def test_default_l3_probe_reports_healthy_for_a_provisioned_gliner_model_directo
     monkeypatch.setenv("BLINDFOLD_L3_GLINER_MODEL_PATH", model_path)
     monkeypatch.setenv("BLINDFOLD_L3_MODEL", "llama3.1")
     monkeypatch.setenv("BLINDFOLD_L3_BASE_URL", "http://localhost:11434")
+    # Issue #429: healthy also now requires the gliner/onnxruntime extra to be
+    # importable -- faked true here since this test's own axis is the
+    # directory+inner-reachability combination, not extra-importability (covered
+    # below by test_default_l3_probe_reports_unhealthy_when_the_gliner_extra_is_not_importable,
+    # which deliberately does NOT fake this, since gliner genuinely isn't installed
+    # in this sandbox).
+    monkeypatch.setattr(app, "is_gliner_extra_importable", lambda: True)
 
     def fake_ping_ollama(base_url, **kwargs):
         from blindfold.status import DependencyHealth
@@ -287,6 +294,67 @@ def test_default_l3_probe_reports_healthy_for_a_provisioned_gliner_model_directo
     health = _default_l3_probe()
 
     assert health.healthy is True
+
+
+def test_default_l3_probe_reports_unhealthy_when_the_gliner_extra_is_not_importable(
+    monkeypatch, tmp_path
+):
+    # ADR-0049 #421 amendment (issue #429): the exact false-green combination that
+    # shipped -- model directory provisioned + inner adjudicator reachable +
+    # gliner/onnxruntime not importable -- previously reported /v1/status healthy
+    # while every real request 503'd, because the import is deferred to
+    # adjudication time (l3_gliner._load_gliner_model), invisible to both the
+    # directory check and the inner-reachability probe. Not faked: `gliner`
+    # genuinely isn't installed in this sandbox (an opt-in extra, ADR-0034 §6), so
+    # this exercises the real absence rather than a simulated one.
+    model_path = _make_provisioned_model_dir(tmp_path)
+    monkeypatch.setenv("BLINDFOLD_L3_PROVIDER", "gliner")
+    monkeypatch.setenv("BLINDFOLD_L3_GLINER_MODEL_PATH", model_path)
+    monkeypatch.setenv("BLINDFOLD_L3_MODEL", "llama3.1")
+    monkeypatch.setenv("BLINDFOLD_L3_BASE_URL", "http://localhost:11434")
+
+    def fake_ping_ollama(base_url, **kwargs):
+        from blindfold.status import DependencyHealth
+
+        return DependencyHealth(healthy=True)
+
+    monkeypatch.setattr(app, "ping_ollama", fake_ping_ollama)
+
+    health = _default_l3_probe()
+
+    assert health.healthy is False
+    # Distinct from both sibling details -- "gliner model not provisioned" and
+    # "ollama unreachable" -- because the three remedies differ (issue #429 AC).
+    assert health.detail == "gliner extra not installed"
+
+
+def test_default_l3_probe_does_not_probe_the_network_when_the_gliner_extra_is_missing(
+    monkeypatch, tmp_path
+):
+    # The cheap import-check must short-circuit before the network probe, exactly
+    # like the model-directory check already does (issue #381 AC4's precedent) --
+    # an unloadable cascade has nothing more informative to learn from probing the
+    # inner adjudicator.
+    model_path = _make_provisioned_model_dir(tmp_path)
+    monkeypatch.setenv("BLINDFOLD_L3_PROVIDER", "gliner")
+    monkeypatch.setenv("BLINDFOLD_L3_GLINER_MODEL_PATH", model_path)
+    monkeypatch.setenv("BLINDFOLD_L3_MODEL", "llama3.1")
+    monkeypatch.setenv("BLINDFOLD_L3_BASE_URL", "http://localhost:11434")
+
+    calls: list[str] = []
+
+    def fake_ping_ollama(base_url, **kwargs):
+        calls.append(base_url)
+        from blindfold.status import DependencyHealth
+
+        return DependencyHealth(healthy=True)
+
+    monkeypatch.setattr(app, "ping_ollama", fake_ping_ollama)
+
+    health = _default_l3_probe()
+
+    assert health.healthy is False
+    assert calls == []
 
 
 def test_default_l3_probe_reports_unhealthy_for_a_missing_gliner_model_directory(
@@ -329,6 +397,10 @@ def test_default_l3_probe_reports_unhealthy_when_gliner_cascade_inner_adjudicato
     monkeypatch.setenv("BLINDFOLD_L3_GLINER_MODEL_PATH", model_path)
     monkeypatch.setenv("BLINDFOLD_L3_MODEL", "llama3.1")
     monkeypatch.setenv("BLINDFOLD_L3_BASE_URL", "http://localhost:11434")
+    # Issue #429: this test's axis is inner-reachability, not extra-importability --
+    # faked true so an unloadable-extra sandbox doesn't mask the "ollama unreachable"
+    # detail this test exists to pin.
+    monkeypatch.setattr(app, "is_gliner_extra_importable", lambda: True)
 
     def fake_ping_ollama(base_url, **kwargs):
         from blindfold.status import DependencyHealth
@@ -404,6 +476,8 @@ def test_status_endpoint_polls_the_gliner_cascade_inner_adjudicator_at_most_once
     monkeypatch.setenv("BLINDFOLD_L3_GLINER_MODEL_PATH", model_path)
     monkeypatch.setenv("BLINDFOLD_L3_MODEL", "llama3.1")
     monkeypatch.setenv("BLINDFOLD_L3_BASE_URL", "http://localhost:11434")
+    # Issue #429: this test's axis is TTL caching, not extra-importability.
+    monkeypatch.setattr(app, "is_gliner_extra_importable", lambda: True)
 
     calls: list[str] = []
 

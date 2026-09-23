@@ -18,8 +18,11 @@ Cascade logic (Position A):
 
 from __future__ import annotations
 
+import importlib.util
+import sys
 from typing import Protocol
 
+from .build_info import SOURCE_FROZEN, get_build_identity
 from .l3 import ADJUDICATOR_GLINER, CandidateSpan, L3Adjudication, L3Adjudicator
 
 
@@ -67,6 +70,71 @@ class GlinerExtraMissingError(RuntimeError):
 GLINER_ONNX_MODEL_FILE = "onnx/model_quint8.onnx"
 
 
+def is_gliner_extra_importable() -> bool:
+    """Cheap "is the ``blindfold[gliner]`` extra importable?" check (ADR-0049 #421
+    amendment, issue #429).
+
+    A model directory being provisioned (:func:`~blindfold.gliner_provisioning.
+    is_gliner_model_ready`) says nothing about whether ``gliner``/``onnxruntime``
+    are actually importable -- that import is deliberately deferred to adjudication
+    time (:func:`_load_gliner_model`), which is exactly why a provisioned-but-
+    unloadable cascade could report ``/v1/status`` healthy while every request
+    503'd. This is the shared predicate the startup guard
+    (``serve.refuse_if_gliner_extra_missing``), the ``/v1/status`` probe
+    (``app._default_l3_probe``) and the detection/settings view
+    (``gliner_status.gliner_detection_status``) all now consult, so none of the
+    three can disagree about the same import state.
+
+    Uses :func:`importlib.util.find_spec` rather than a real import -- this runs on
+    the ``/v1/status`` ~5s polling cadence, and a real ``import gliner`` would
+    eagerly load ``onnxruntime``'s native extension on every poll (the same reason
+    the provisioning check is a directory check, not a model load). ``sys.modules``
+    is consulted first: a name already present there (a real prior import, a
+    test's fake module, or ``tests/conftest.py``'s ``block_import`` fixture setting
+    it to ``None`` to force absence deterministically) is authoritative without
+    needing a real installed/absent package either way.
+    """
+    for name in ("gliner", "onnxruntime"):
+        if name in sys.modules:
+            if sys.modules[name] is None:
+                return False
+            continue
+        try:
+            if importlib.util.find_spec(name) is None:
+                return False
+        except (ImportError, ValueError):
+            return False
+    return True
+
+
+def gliner_extra_missing_message() -> str:
+    """Actionable remedy for a missing ``blindfold[gliner]`` extra, artifact-aware
+    (ADR-0049 #421 amendment, issue #429).
+
+    A source run can install the extra (``uv pip install 'blindfold[gliner]'``); a
+    frozen PyInstaller build (:mod:`blindfold.build_info`) deliberately never bundles
+    it (ADR-0034 §6's ~197MB weight, rejected for the menu-bar app) and that command
+    can never work against it -- telling a frozen-binary user to run it is an
+    impossible remedy (the defect this issue reports), not merely an inconvenient
+    one. Shared by both raise sites (this module's own deferred cascade-load import
+    and :class:`~blindfold.gliner_provisioning.HuggingFaceHubClient`'s deferred
+    ``huggingface_hub`` import) so the two contexts never drift apart.
+    """
+    if get_build_identity().source == SOURCE_FROZEN:
+        return (
+            "the GLiNER cascade requires the 'blindfold[gliner]' extra "
+            "(gliner + onnxruntime), which this frozen build does not bundle "
+            "(ADR-0049); use BLINDFOLD_L3_PROVIDER=omlx instead, or run "
+            "blindfold from source with the extra installed."
+        )
+    return (
+        "the GLiNER cascade requires the 'blindfold[gliner]' extra "
+        "(gliner + onnxruntime), which is not installed; run "
+        "`uv pip install 'blindfold[gliner]'` (or `pip install "
+        "'blindfold[gliner]'`) to enable it."
+    )
+
+
 def _load_gliner_model(model_path: str):
     # Deferred import: the ``gliner`` package (ONNX/CPU inference) is an optional
     # dependency of this seam (``blindfold[gliner]``, ADR-0034 §6), not a base
@@ -75,12 +143,7 @@ def _load_gliner_model(model_path: str):
     try:
         from gliner import GLiNER
     except ImportError as exc:
-        raise GlinerExtraMissingError(
-            "the GLiNER cascade requires the 'blindfold[gliner]' extra "
-            "(gliner + onnxruntime), which is not installed; run "
-            "`uv pip install 'blindfold[gliner]'` (or `pip install "
-            "'blindfold[gliner]'`) to enable it."
-        ) from exc
+        raise GlinerExtraMissingError(gliner_extra_missing_message()) from exc
 
     return GLiNER.from_pretrained(
         model_path,

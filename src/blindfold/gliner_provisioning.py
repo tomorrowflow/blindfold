@@ -21,6 +21,7 @@ from .l3_gliner import (
     GlinerClassifier,
     GlinerExtraMissingError,
     GlinerOnnxClassifier,
+    gliner_extra_missing_message,
     run_gliner_activation_smoke_test,
 )
 
@@ -85,12 +86,7 @@ class HuggingFaceHubClient:
         try:
             from huggingface_hub import snapshot_download
         except ImportError as exc:
-            raise GlinerExtraMissingError(
-                "the GLiNER cascade requires the 'blindfold[gliner]' extra "
-                "(gliner + onnxruntime), which is not installed; run "
-                "`uv pip install 'blindfold[gliner]'` (or `pip install "
-                "'blindfold[gliner]'`) to enable it."
-            ) from exc
+            raise GlinerExtraMissingError(gliner_extra_missing_message()) from exc
         return snapshot_download(
             repo_id=repo_id,
             revision=revision,

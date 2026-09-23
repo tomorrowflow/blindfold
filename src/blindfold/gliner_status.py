@@ -28,6 +28,8 @@ from .l3_gliner import (
     GlinerActivationSmokeTestFailedError,
     GlinerClassifier,
     GlinerExtraMissingError,
+    gliner_extra_missing_message,
+    is_gliner_extra_importable,
 )
 
 
@@ -78,6 +80,15 @@ def gliner_detection_status(
     model_path = resolve_gliner_model_path(resolve_data_dir(), settings.l3_gliner_model_path)
     provisioned = is_already_provisioned(model_path)
     currently_active = settings.l3_gliner_activation_is_explicit
+
+    # ADR-0049 #421 amendment, issue #429: an on-disk model says nothing about
+    # whether gliner/onnxruntime are actually importable -- without this, a
+    # provisioned-but-unloadable cascade reports "provisioned"/"active" with
+    # error: null, which reads as healthy to an operator when every real request
+    # would 503 (the import is deferred to adjudication time). A genuine tracker
+    # error (an actual failed retry attempt) always takes precedence over this.
+    if last_error is None and provisioned and not is_gliner_extra_importable():
+        last_error = gliner_extra_missing_message()
 
     if last_error is not None:
         status = "verification_failed"

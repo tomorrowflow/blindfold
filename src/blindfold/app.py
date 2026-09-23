@@ -183,6 +183,7 @@ from .l3_gliner import (
     GlinerClassifier,
     GlinerExtraMissingError,
     GlinerOnnxClassifier,
+    is_gliner_extra_importable,
 )
 from .l3_openai_compat import OpenAICompatibleAdjudicator, ping_omlx
 from .ollama import OllamaAdjudicator, ping_ollama
@@ -485,10 +486,18 @@ def _default_l3_probe() -> DependencyHealth:
     # not the whole cascade -- every GLiNER-negative candidate still escalates to the
     # inner adjudicator, so that (via _inner_l3_probe, shared with the plain path
     # below) must be probed too before reporting healthy.
-    if settings.l3_provider == "gliner" and not is_gliner_model_ready(
-        settings.l3_gliner_model_path
-    ):
-        return DependencyHealth(healthy=False, detail="gliner model not provisioned")
+    if settings.l3_provider == "gliner":
+        if not is_gliner_model_ready(settings.l3_gliner_model_path):
+            return DependencyHealth(healthy=False, detail="gliner model not provisioned")
+        # ADR-0049 #421 amendment, issue #429: a provisioned directory says nothing
+        # about whether gliner/onnxruntime are actually importable -- that import is
+        # deferred to adjudication time (l3_gliner._load_gliner_model), which is
+        # exactly how a provisioned-but-unloadable cascade reported healthy here
+        # while every real request 503'd. Gated on settings.l3_model so the
+        # unconfigured-inner-model case below still reports its own honest detail
+        # ("no L3 adjudicator configured") rather than this one masking it.
+        if settings.l3_model and not is_gliner_extra_importable():
+            return DependencyHealth(healthy=False, detail="gliner extra not installed")
     return _inner_l3_probe(settings)
 
 

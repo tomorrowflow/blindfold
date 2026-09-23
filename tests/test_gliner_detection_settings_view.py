@@ -18,6 +18,7 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+import blindfold.gliner_status as gliner_status
 from blindfold.config import Settings
 from blindfold.gliner_provisioning import resolve_gliner_model_path
 from blindfold.gliner_status import (
@@ -71,6 +72,10 @@ def test_status_is_not_provisioned_when_no_model_on_disk(tmp_path, monkeypatch):
 
 def test_status_is_provisioned_when_model_on_disk_and_not_activated(tmp_path, monkeypatch):
     monkeypatch.setenv("BLINDFOLD_DATA_DIR", str(tmp_path))
+    # Issue #429: this test's own axis is on-disk provisioning, not extra-
+    # importability -- faked true so an unloadable-extra sandbox doesn't change
+    # this test's verdict (covered on its own axis below).
+    monkeypatch.setattr(gliner_status, "is_gliner_extra_importable", lambda: True)
     settings = Settings(l3_gliner_model_path="", database_url="")
     model_path = resolve_gliner_model_path(str(tmp_path))
     (tmp_path / "models" / "gliner-pii-base-v1.0").mkdir(parents=True)
@@ -82,6 +87,26 @@ def test_status_is_provisioned_when_model_on_disk_and_not_activated(tmp_path, mo
     assert result["model_path"] == model_path
 
 
+def test_status_is_verification_failed_when_provisioned_but_the_extra_is_not_importable(
+    tmp_path, monkeypatch
+):
+    # ADR-0049 #421 amendment, issue #429 AC2: a provisioned-on-disk model whose
+    # gliner/onnxruntime extra is not importable must not be reported "provisioned"
+    # with error: null -- that reads as healthy to an operator when every real
+    # request would 503. Not faked: gliner genuinely isn't installed in this
+    # sandbox (an opt-in extra, ADR-0034 §6), so this exercises the real absence.
+    monkeypatch.setenv("BLINDFOLD_DATA_DIR", str(tmp_path))
+    settings = Settings(l3_gliner_model_path="", database_url="")
+    (tmp_path / "models" / "gliner-pii-base-v1.0").mkdir(parents=True)
+    (tmp_path / "models" / "gliner-pii-base-v1.0" / "gliner_config.json").write_text("{}")
+
+    result = gliner_detection_status(settings=settings, activated=False, last_error=None)
+
+    assert result["status"] != "provisioned"
+    assert result["error"] is not None
+    assert "blindfold[gliner]" in result["error"]
+
+
 def _provision_a_model_on_disk(tmp_path: Path) -> None:
     model_dir = tmp_path / "models" / "gliner-pii-base-v1.0"
     model_dir.mkdir(parents=True)
@@ -90,6 +115,7 @@ def _provision_a_model_on_disk(tmp_path: Path) -> None:
 
 def test_status_is_active_when_model_provisioned_and_flag_activated(tmp_path, monkeypatch):
     monkeypatch.setenv("BLINDFOLD_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(gliner_status, "is_gliner_extra_importable", lambda: True)
     _provision_a_model_on_disk(tmp_path)
     # This process itself has already picked up the activation (a real activation
     # signal at its own startup, ADR-0049) -- no restart prompt.
@@ -110,6 +136,7 @@ def test_status_active_prompts_restart_when_this_process_has_not_picked_up_the_f
     tmp_path, monkeypatch
 ):
     monkeypatch.setenv("BLINDFOLD_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(gliner_status, "is_gliner_extra_importable", lambda: True)
     _provision_a_model_on_disk(tmp_path)
     # The persisted flag is on (activated=True), but this process started before
     # that and is still running the bare LLM tier -- ADR-0034 §1's
@@ -133,6 +160,7 @@ def test_status_active_prompts_restart_when_gliner_is_only_the_unconfigured_defa
     # the moment the cascade became the default, so the status computation must
     # key off settings.l3_gliner_activation_is_explicit instead.
     monkeypatch.setenv("BLINDFOLD_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(gliner_status, "is_gliner_extra_importable", lambda: True)
     _provision_a_model_on_disk(tmp_path)
     settings = Settings(l3_gliner_model_path="", database_url="")
 
@@ -176,6 +204,7 @@ class _InMemoryActivationStore:
 
 def test_retry_reports_an_already_provisioned_model_as_provisioned(tmp_path, monkeypatch):
     monkeypatch.setenv("BLINDFOLD_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(gliner_status, "is_gliner_extra_importable", lambda: True)
     _provision_a_model_on_disk(tmp_path)
     settings = Settings(l3_gliner_model_path="", database_url="")
     tracker = GlinerProvisioningTracker()
@@ -199,6 +228,7 @@ def test_retry_activates_the_persisted_flag_on_a_fresh_successful_provision(
     # model that needs activation (issue #147's "prompts for restart when a
     # newly-provisioned model needs activation").
     monkeypatch.setenv("BLINDFOLD_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(gliner_status, "is_gliner_extra_importable", lambda: True)
     # l3_provider pinned to the bare LLM tier: ADR-0049 made "gliner" the default,
     # but this test's whole point is that *this process's own* settings never
     # change mid-process (ADR-0034 §1) -- it must still have started before the
@@ -283,6 +313,7 @@ def test_retry_surfaces_a_digest_mismatch_refusal_as_verification_failed(tmp_pat
 
 def test_retry_after_a_prior_failure_clears_the_tracker_on_success(tmp_path, monkeypatch):
     monkeypatch.setenv("BLINDFOLD_DATA_DIR", str(tmp_path))
+    monkeypatch.setattr(gliner_status, "is_gliner_extra_importable", lambda: True)
     settings = Settings(l3_gliner_model_path="", database_url="")
     tracker = GlinerProvisioningTracker()
     tracker.record_error("a stale prior failure")
