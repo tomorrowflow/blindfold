@@ -41,6 +41,7 @@ from blindfold.review import Allowlist, ReviewInbox
 from blindfold.store import vendored_seed_repository
 from blindfold.surrogates import SurrogateMapping
 from blindfold.upstream import UpstreamClient
+from conftest import _shipped_default_l3_is_unconfigured
 
 # The negative test set from the trusted curation comments (2026-07-09 and the
 # 2026-07-10 live review-inbox run, issue #87): minted live, but generic
@@ -428,6 +429,15 @@ async def test_seed_is_loaded_at_startup_into_the_real_process_allowlist():
     assert "Ollama" in recorded[0].content.decode("utf-8")
 
 
+@pytest.mark.skipif(
+    not _shipped_default_l3_is_unconfigured(),
+    reason=(
+        "this machine has a GLiNER model provisioned in its Data directory, so the "
+        "shipped default's verdict for 'Zolfgang' now depends on whether the "
+        "gliner extra is importable too (ADR-0049 #421 amendment) -- an axis this "
+        "test (issue #393) deliberately does not pin"
+    ),
+)
 @pytest.mark.anyio
 async def test_novel_candidate_alongside_seeded_token_still_fail_closes():
     # Clause F: suppression is token-scoped, not a blanket L3 bypass. A genuine
@@ -437,6 +447,12 @@ async def test_novel_candidate_alongside_seeded_token_still_fail_closes():
     # test above, this deliberately does NOT override get_l3_detector /
     # get_allowlist, so the real (test-env) _UnconfiguredAdjudicator adjudicates:
     # "Ollama" is suppressed by the seed, but "Zolfgang" reaches L3 and blocks.
+    #
+    # Environment this test assumes (issue #393): no GLiNER model provisioned in
+    # this run's Data directory -- see
+    # conftest._shipped_default_l3_is_unconfigured's docstring. That is the state
+    # of any fresh checkout, the postgres-verify CI runner, and this sandbox; the
+    # skip guard above covers the one state where it wouldn't hold.
     mapping = SurrogateMapping.from_pairs(vendored_seed_repository().seeded_pairs())
     scripted_response = {
         "id": "msg_1",

@@ -51,6 +51,35 @@ def block_import(monkeypatch):
     return _block
 
 
+def _shipped_default_l3_is_unconfigured() -> bool:
+    """True iff the real (no-``dependency_overrides``) process-wide L3 wiring
+    reaches the honest fail-closed ``_UnconfiguredAdjudicator`` -- i.e. no GLiNER
+    model is provisioned in this run's Data directory (the state of any fresh
+    checkout, CI runner, or never-configured install).
+
+    A handful of tests deliberately exercise the *actual shipped default*
+    end-to-end (no ``get_l3_detector`` override at all) to pin SEC-7 (issue #48):
+    a novel candidate must fail closed under the wiring that ships, not a test
+    double. Once a GLiNER model IS provisioned on the machine running the suite,
+    ``_build_l3_adjudicator`` stops returning ``_UnconfiguredAdjudicator`` and the
+    same request's outcome starts depending on whether the ``gliner`` extra is
+    importable too (ADR-0049's #421 amendment: a provisioned-but-unloadable
+    cascade fails closed with a *different* sub-reason; a provisioned-and-loadable
+    one may resolve the candidate outright and return 200) -- an axis those tests
+    deliberately do not want to depend on (issue #393). They skip in that case
+    instead of silently asserting whatever intent the running venv happens to
+    produce. Shared here (mirroring ``_docker_available`` above) since more than
+    one test file needs it.
+    """
+    from blindfold.config import get_settings
+    from blindfold.gliner_provisioning import is_gliner_model_ready
+
+    settings = get_settings()
+    if settings.l3_provider != "gliner":
+        return True
+    return not is_gliner_model_ready(settings.l3_gliner_model_path)
+
+
 def _docker_available() -> bool:
     """Single source for the Docker-gate check (issue #318) -- was copy-pasted
     verbatim into 9 ``tests/test_postgres_*.py`` / ``test_entity_graph_postgres.py`` /

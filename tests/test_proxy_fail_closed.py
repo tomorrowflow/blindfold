@@ -50,6 +50,7 @@ from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
 from blindfold.policy import WorkspacePolicies
 from blindfold.surrogates import SurrogateMapping
 from blindfold.upstream import UpstreamClient
+from conftest import _shipped_default_l3_is_unconfigured
 
 
 class _UnavailableAdjudicator:
@@ -109,6 +110,15 @@ async def test_proxy_blocks_when_l3_unavailable_for_a_novel_candidate():
     assert recorded == []
 
 
+@pytest.mark.skipif(
+    not _shipped_default_l3_is_unconfigured(),
+    reason=(
+        "this machine has a GLiNER model provisioned in its Data directory, so the "
+        "shipped default's verdict for this candidate now depends on whether the "
+        "gliner extra is importable too (ADR-0049 #421 amendment) -- an axis this "
+        "test (issue #393) deliberately does not pin"
+    ),
+)
 @pytest.mark.anyio
 async def test_default_production_wiring_blocks_a_novel_candidate_with_no_overrides():
     # SEC-7 (issue #48): with NO dependency_overrides at all -- the actual shipped
@@ -117,6 +127,15 @@ async def test_default_production_wiring_blocks_a_novel_candidate_with_no_overri
     # silently classified every novel candidate as "not an entity" instead of
     # signalling that no real L3 is configured, so the payload egressed unscanned:
     # fail-*open* by default, contradicting ADR-0009.
+    #
+    # Environment this test assumes (issue #393): no GLiNER model provisioned in
+    # this run's Data directory, so `_build_l3_adjudicator` resolves the bare
+    # `DEFAULT_L3_PROVIDER="gliner"` default straight to `_UnconfiguredAdjudicator`
+    # -- deterministically, independent of whether the `gliner` extra happens to be
+    # importable in this venv. That is the state of any fresh checkout, the
+    # postgres-verify CI runner, and this sandbox; the skip guard above covers the
+    # one state where it wouldn't hold (a machine that has separately provisioned
+    # the model).
     recorded: list[httpx.Request] = []
     audit_log = get_audit_log()
     audit_log.records.clear()
@@ -424,6 +443,11 @@ async def test_leak_gate_violation_returns_structured_block_with_audit_not_a_bar
     # SEC-7 (#48): isolate the leak-gate block from the (now fail-closed-by-default)
     # L3 scan -- "Brief"/"Quentin" would otherwise trip blocked-l3-unavailable first.
     # This test's concern is the leak gate specifically, so skip L3 entirely.
+    #
+    # Environment this test assumes (issue #393): none -- `policy.deterministic_only`
+    # substitutes `effective_l3_detector = None` for the whole mint pass (app.py),
+    # so this test's verdict is independent of whether a GLiNER model is provisioned
+    # or the `gliner` extra is importable; L3 (cascade or otherwise) never runs.
     policies.opt_in_deterministic_only("gamma")
     app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(recorded)
     app.dependency_overrides[get_mapping] = lambda: _LeakyMapping(leaked_real="Quentin")
@@ -463,6 +487,10 @@ async def test_pre_egress_leak_gate_blocks_before_anything_reaches_upstream():
     # Same blindfold-engine miss as above (_LeakyMapping), but this time the stub
     # upstream MUST record zero requests — the block happens before
     # upstream.send_messages is ever called (leak-audit clause A: no egress at all).
+    #
+    # Environment this test assumes (issue #393): none -- see the sibling test
+    # above; the deterministic-only opt-in skips L3 entirely, so this is
+    # independent of GLiNER provisioning/importability.
     recorded: list[httpx.Request] = []
     audit_log = get_audit_log()
     audit_log.records.clear()
@@ -500,6 +528,11 @@ async def test_leak_gate_violation_scrubs_the_real_value_from_body_audit_and_log
     # 503 body, the audit record, AND the process log at WARNING — a privacy bug on
     # the error/observability surface itself. All three sinks must instead carry one
     # identical scrubbed reason string that names the entity by surrogate/hashed id.
+    #
+    # Environment this test assumes (issue #393): none -- see
+    # test_leak_gate_violation_returns_structured_block_with_audit_not_a_bare_500
+    # above; the deterministic-only opt-in skips L3 entirely, so this is
+    # independent of GLiNER provisioning/importability.
     recorded: list[httpx.Request] = []
     audit_log = get_audit_log()
     audit_log.records.clear()
