@@ -557,19 +557,26 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   trace (that is the Processing trace).
 - **Payload inspection** (ADR-0059) — the shipped, **armed** capability that lets an
   operator see what the provider actually received: the payload leaves the blindfold pass
-  rewrote, retained in **blindfolded** form with mint-time span offsets, rendered as the
-  **Processing trace**'s next grain level with an audited exchange-level **Reveal** switch.
-  Off by default; `admin` enables it (an **audit event**), it holds the last few exchanges,
-  auto-disarms on a timer and on restart, is never persisted, and retains **nothing** while
-  **Unprotected mode** is active. Its claim is *transformation*, not verification — it
-  demonstrates what a payload became and does not prove the absence of a leak, because a
-  missed entity was never rewritten and so renders identically on both sides of the switch.
-  Distinct from the **Exchange capture** (plaintext, source-only, on disk, both sides of the
-  round trip) and from the **Processing trace** itself (scrubbed, always on). _Avoid_: **dev
-  mode**, **debug mode**, payload diff (no real text is retained, so there is no diff),
-  preview (it is strictly after the fact).
+  rewrote, retained in **blindfolded** form with mint-time span offsets, rendered in its own
+  primary-nav destination (issue #431) with an audited exchange-level **Reveal** switch. Off
+  by default; `admin` enables it (an **audit event**) and picks one of three retention
+  windows — 30 minutes (default, 25-exchange bound), 2 hours (100-exchange bound), or until
+  disarmed (never on a timer, 200-exchange bound, matching the **Processing trace**'s own
+  ring) — every window disarming on proxy restart regardless; never persisted; retains
+  **nothing** while **Unprotected mode** is active. The exchange list filters **relative to
+  the retention window** — time presets, a per-hour histogram, an outcome filter, a search
+  over blindfolded text only — never calendar ranges, since retention is in memory and
+  restart-scoped. Its claim is *transformation*, not verification — it demonstrates what a
+  payload became and does not prove the absence of a leak, because a missed entity was never
+  rewritten and so renders identically on both sides of the switch. Distinct from the
+  **Exchange capture** (plaintext, source-only, on disk, both sides of the round trip) and
+  from the **Processing trace** itself (scrubbed, always on; now holding only a per-row link
+  to the retained exchange rather than the leaves themselves). _Avoid_: **dev mode**,
+  **debug mode**, payload diff (no real text is retained, so there is no diff), preview (it
+  is strictly after the fact), prompt viewer.
 - **Retained payload** (ADR-0059, issue #399) — what **Payload inspection** holds while
-  armed: per exchange, every string leaf the blindfold pass rewrote, each keyed by a stable
+  armed, bounded by the chosen window's count limit (issue #431): per exchange, every string
+  leaf the blindfold pass rewrote, each keyed by a stable
   **walk-order id** plus a display label naming where it came from (hop kind, and the block
   or field type — a tool-call input, a tool description, a user text block, a tool-result
   body) — deliberately not a JSON path, which would need threading through every rewrite

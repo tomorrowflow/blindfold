@@ -288,3 +288,70 @@ depends on.
   ciphertext *outside* the audited path. This feature goes *through* that path, gated and
   audited, and the proxy is per-machine, so the retained leaves are only ever this
   operator's own. The rule does not transfer because its reason does not.
+
+## Amendment (2026-09-23, issue #431): its own destination, a selectable retention window, and window-relative filters
+
+Decided by the operator after using Payload inspection live. **Decided; not re-derived.**
+Three changes, additive to §4, §7 and §8; nothing else about the surface moves.
+
+### §7 narrowed: Payload inspection gets its own primary-nav destination
+
+It moves out of the Processing trace's expansion into its own primary-nav destination,
+named **Payload inspection** (the glossary term; _Avoid_: prompt viewer, preview, payload
+diff).
+
+**Provenance.** §7 read its placement off an instruction to integrate the prototype "into
+the existing [UI], not a separate UI." The prototype was a standalone HTML file, so a
+destination *inside the management SPA* already satisfies that instruction — it never
+required nesting under the Processing trace. That grain-level argument is superseded; the
+rest of §7 stands unchanged: an elided diff renders primary, the replacements-first table
+is the secondary view, and it is not a native window (`BlindfoldMenuBar` still holds no
+RBAC, re-identification or audit).
+
+**Why it needed to move.** The Processing trace is a scrubbed engineering follow-along —
+ADR-0035 decision 4 promises "never … a payload diff" for it — while Payload inspection
+answers a different reader's question, *"what did my prompt become?"* Nesting the second
+inside the first made the trace's own promise false and buried the user-facing question
+behind an engineering table.
+
+The Processing trace keeps a per-row link to the retained exchange, when one exists, and
+stops rendering retained leaves inline.
+
+### §4 narrowed: a selectable retention window
+
+Arming is no longer one fixed shape. An `admin` picks one of three windows when arming,
+each with its own count bound; the ring evicts the oldest exchange on whichever bound is
+hit first:
+
+| Window | Auto-disarm | Count bound |
+|---|---|---|
+| 30 minutes (default) | after 30 min | 25 exchanges |
+| 2 hours | after 2 h | 100 exchanges |
+| Until disarmed | never on a timer; bounded by the limit only | 200 exchanges (matches the Processing trace's own ring, decision 3) |
+
+Everything else in §4 stands: off by default; arming is `admin`-only and an **audit
+event**, which now also records the chosen window; in memory only, never the **store** and
+never disk; it disarms on proxy restart in every window; announced in-app only; blocked
+exchanges are retained and marked "never sent"; nothing is retained while **Unprotected
+mode** is active.
+
+**Consequence, recorded so it is not missed later:** "until disarmed" is exactly the
+always-on-retention shape the Alternatives section rejected for *every install*. It is
+acceptable here only because it stays opt-in, `admin`-armed, bounded by count, bannered
+while active, and restart-scoped — properties the rejected always-on alternative had none
+of. That distinction is the one to preserve if a future change proposes making any window
+the default.
+
+### §8 narrowed: filters return, relative to the window
+
+§8 named its own revisit condition: "if a future bound makes retention span days." A
+200-exchange, until-disarmed window meets that in spirit, so the exchange list gains
+filters. They stay relative to the retention window, never calendar ranges — retention is
+in memory and restart-scoped, so the prototype's month presets and from→to date inputs stay
+rejected:
+
+- time presets (last 15 minutes / last hour / today / all retained), plus a per-hour
+  histogram
+- an outcome filter (sent / never sent)
+- a search over the **blindfolded** text only — it can never match or reveal a real value,
+  because no real text is retained
