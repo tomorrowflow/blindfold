@@ -95,6 +95,11 @@ this set (404, 500, a bare 503, …) keeps the pre-existing generic 502
 `blindfold_upstream_error` mapping. Transport failures (connect refused, TTFB timeout,
 upstream unreachable) are entirely unaffected — still 502/504, generic.
 
+**Scope extended (issue #390):** this amendment's `anthropic_error_type` rule was written for
+*relayed upstream* errors only. ADR-0057's 2026-09-23 amendment extends the same vocabulary rule to
+Blindfold's **own blocks**, which until then emitted a private `error.type`. The rule is the same;
+only its reach changed.
+
 ## Alternatives considered
 
 - **Proxy-managed upstream credential (separate env var, never forwarded inbound

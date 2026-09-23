@@ -503,6 +503,14 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   surrogate rename, **Relationship** edits) is *never* an audit event — recording that
   would be history/versioning, a distinct concept requiring its own term. The test is
   whether the operation can display a real value at all, not whether it changes one. _Avoid_: activity log, event log (for this concept).
+- **Block retryability** (ADR-0057 amendment, issue #390) — what a **fail-closed** block claims
+  about its own future: **not-retryable** (deterministic *by construction* — a defect, an
+  exhausted pool — so the identical payload can never succeed), **retryable**, or **unknown**.
+  `unknown` is the default and is a refusal to predict Blindfold's own later detection
+  verdicts, not a hedge: the same cause can block forever or clear on the next request,
+  depending on whether the deterministic blinder reaches the value next time. Carried in the
+  error envelope in the client's own vocabulary; only a not-retryable block changes its HTTP
+  status.
 - **Scrubbed reason** — a failure reason string that references an offending entity
   by its surrogate or a hashed id, never the plaintext. The pre-egress leak gate's
   one scrubbed reason routes identically to the 503 body, the audit record, and the

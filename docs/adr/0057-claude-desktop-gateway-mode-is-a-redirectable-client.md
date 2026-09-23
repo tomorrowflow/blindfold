@@ -240,6 +240,88 @@ is `x-api-key`. The emitted profile must pin `x-api-key`, not `bearer`. #376 (Co
 profile) and #377 (CLI writer) were blocked on #372 for exactly this question and are now
 unblocked; both must emit `x-api-key`.
 
+## Amendment (2026-09-23, issue #390): the status question D4 deferred, answered
+
+D4 said the block status "is not changed by this ADR; whether Desktop retries a 503 silently is a
+question for the contract spike (#372), and if it does, the status choice reopens as a follow-up
+under this ADR rather than being guessed now." It does: the spike measured Claude Desktop retrying
+a blocked, byte-identical payload **11 times** before surfacing anything, with the user seeing an
+unexplained stall rather than an error.
+
+### Two facts that move the answer away from the obvious one
+
+**No status code stops the retries.** The same spike measured a **401** — a 4xx — retried roughly
+**6 times**. So moving a block to 4xx does not buy "the client stops retrying"; it buys about half
+as many retries before the same silent stall. The intuition behind "make it a 4xx so clients do not
+retry" is not what was measured.
+
+**The spike cannot isolate the variable.** Those two data points differ in *both* dimensions: the
+11-retry block was `503` carrying `error.type: "blindfold_blocked"`; the ~6-retry case was `401`
+carrying the canonical `authentication_error`. Status class and error vocabulary moved together.
+Nothing here attributes the difference to either one, and a later improvement must not be read as
+proof of which lever caused it.
+
+### The rule this ADR was already following, unextended
+
+Issue `#380`'s dated amendment to ADR-0019 introduced `anthropic_error_type` so that "a client that
+keys off that shape (Claude Desktop's 3P Gateway mode) can render it meaningfully instead of a
+generic gateway failure" — and scoped it to *relayed upstream* errors (401/403/429/400/529).
+Blindfold's own blocks were left emitting `error.type: "blindfold_blocked"`, a private value in the
+one field a client is known to key on. Blocks are now the only place that rule does not reach.
+
+### Decision
+
+**The envelope tells the truth in the client's own vocabulary; the status code changes only when
+Blindfold knows the request can never succeed.**
+
+1. **Canonical `error.type` for every Blindfold-authored block.** `#380`'s vocabulary rule extends
+   from relayed upstream errors to blocks. The Blindfold-private fields (`code`, `sub_reason`,
+   `event`, `reason`, `remedy`, `management_url`, `workspace`) are preserved byte-for-byte, exactly
+   as D4 requires — the private detail moves out of `error.type`, it is not lost.
+
+2. **Retryability is three-valued, and `unknown` is the default.** *Not-retryable* applies only to
+   causes that are deterministic **by construction** — a defect (`detection_internal`), pool
+   exhaustion, and `#417`'s defect-cause leak code. *Retryable* and *unknown* keep today's status.
+   The default is a refusal to predict Blindfold's own future detection verdicts, not a hedge: ADR-0051's
+   run-7 table records two `leak_detected` blocks with opposite fates — one blocked 13 times and
+   killed the run, one **self-healed on the next request** once the pair was carried from the start.
+   Determinism is therefore *not* a property of the cause, and classifying by `sub_reason` alone
+   would tell a client to give up on a request that was about to succeed.
+
+3. **The status split is narrow.** Not-retryable-by-construction blocks become **400 /
+   `invalid_request_error`** — "this request cannot be processed as-is", which is exactly true.
+   Everything else, including the curation-cause leak block, stays **503**.
+
+4. **Transient blocks are not moved to 529.** Symmetry would suggest it (529 is Anthropic's own
+   overload signal, and its `retry-after` is already preserved), but there is no evidence for it and
+   it invites a client to apply rate-limit backoff to something that is not rate limiting.
+
+5. **`retry-after` is declined, deliberately.** ADR-0019's amendment already relays it for 429/529,
+   so the plumbing exists. But `retry-after` is a *time* promise, and a block's remedy is a human
+   action with no bound — curate a row, install an extra, fix a defect. Emitting one would be a
+   second untruth on top of the first. Recorded as considered so it is not re-proposed as an
+   obvious win.
+
+### What this decision is for
+
+**Wire-contract honesty, not Desktop's retry count.** Optimising for one closed client's
+undocumented heuristics is building on sand — the count moved between 11 and 6 for reasons we
+inferred rather than read, and the next release can move it again. What Blindfold controls is
+whether its own error is truthful: a block that can never succeed should not wear the status that
+means "try again later". A shorter Desktop stall is a hoped-for consequence, never the
+justification.
+
+### Verification
+
+**Claude Code is a merge gate.** It is the client where blocks work today (ADR-0027 named it as the
+one that renders `error.message` verbatim), and every piece of evidence in this decision is about a
+different client. Any status this decision moves must be shown to still surface the block message
+immediately in Claude Code before it ships.
+
+**Desktop is measured after landing**, on the `#372` rig, and recorded as an observation rather than
+a gate — gating on it would be optimising for the black box this decision just declined to optimise
+for.
+
 ## Alternatives considered
 
 - **MITM / TLS interception (the July draft).** Rejected (D2). Even before the vendor shipped

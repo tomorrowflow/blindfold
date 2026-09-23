@@ -374,3 +374,4 @@ World-acting tool
 # rules text did NOT mint and is deliberately not seeded (evidence-first).
 Repository visibility
 Blinder-written range
+Block retryability
