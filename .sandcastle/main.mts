@@ -26,7 +26,7 @@ import * as sandcastle from "@ai-hero/sandcastle";
 import { podman } from "@ai-hero/sandcastle/sandboxes/podman";
 import { z } from "zod";
 import { execSync, execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import {
@@ -93,11 +93,17 @@ const MAX_GATE_STRIKES = 3;
 //   - haiku  = claude-haiku-4-5 ($1/$5  per MTok) — not used: no role here is
 //     pure read-only exploration, and the roles that explore also make
 //     consequential decisions (plan graph / write code / gate a merge).
-const MODEL_PLAN = "claude-sonnet-5";
-const MODEL_IMPLEMENT = "claude-sonnet-5";
-const MODEL_REVIEW = "claude-opus-4-8"; // fail-closed privacy gate — keep strongest
-const MODEL_WEB_VERIFY = "claude-sonnet-5";
-const MODEL_MERGE = "claude-sonnet-5";
+//
+// These are the built-in DEFAULTS per role. .sandcastle/.env overrides any role
+// with SANDCASTLE_MODEL_<ROLE> — see "Per-role model settings" below.
+const DEFAULT_MODELS = {
+  PLAN: "claude-sonnet-5",
+  IMPLEMENT: "claude-sonnet-5",
+  REVIEW: "claude-opus-4-8", // fail-closed privacy gate — keep strongest
+  WEB_VERIFY: "claude-sonnet-5",
+  MERGE: "claude-sonnet-5",
+  MERGE_REVIEW: "claude-opus-4-8", // fail-closed merge gate — same as REVIEW
+} as const;
 
 // ---------------------------------------------------------------------------
 // Trust boundary for autonomous pickup (finding SC-3)
@@ -263,6 +269,121 @@ const REPO_ROOT = (() => {
 // from git: the harness must behave identically however it is launched. Env is read
 // from the process environment (not a cwd-relative .env), so this does not affect auth.
 if (process.cwd() !== REPO_ROOT) process.chdir(REPO_ROOT);
+
+// .sandcastle/.env, parsed once. Sandcastle itself forwards into the sandbox ONLY
+// the keys listed there (a listed key with an empty value falls back to the host
+// environment; an unlisted key never reaches the container). The orchestrator
+// reads it too, for the per-role model settings below. Commented lines are ignored.
+const dotenv = new Map<string, string>();
+{
+  const envFile = join(REPO_ROOT, ".sandcastle", ".env");
+  if (existsSync(envFile)) {
+    for (const line of readFileSync(envFile, "utf8").split("\n")) {
+      const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)$/);
+      if (m) dotenv.set(m[1]!, m[2]!.trim().replace(/^(["'])(.*)\1$/, "$2"));
+    }
+  }
+}
+const envVar = (k: string): string =>
+  dotenv.has(k) ? dotenv.get(k) || process.env[k] || "" : "";
+
+// ── Per-role model settings (Anthropic or Ollama) ────────────────────────────
+// Each role's model is set in .env as SANDCASTLE_MODEL_<ROLE>, ROLE one of PLAN,
+// IMPLEMENT, REVIEW, WEB_VERIFY, MERGE, MERGE_REVIEW. The value is
+// `<provider>:<model>` or a bare `<model>` (Anthropic):
+//   SANDCASTLE_MODEL_IMPLEMENT=ollama:glm-5.3
+//   SANDCASTLE_MODEL_REVIEW=anthropic:claude-opus-5-5
+// Unset roles use DEFAULT_MODELS. `ollama:` with no model uses OLLAMA_MODEL.
+//
+// Ollama speaks the Anthropic Messages API, so Claude Code runs unchanged against
+// it: point ANTHROPIC_BASE_URL at Ollama and authenticate with ANTHROPIC_AUTH_TOKEN
+// (which outranks CLAUDE_CODE_OAUTH_TOKEN, so the Anthropic token can stay in .env).
+//   OLLAMA_API_KEY    required for Ollama Cloud (https://ollama.com/settings/keys)
+//   OLLAMA_BASE_URL   default https://ollama.com; a host-local Ollama is
+//                     http://host.containers.internal:11434 (no key needed)
+// Every Claude Code model alias (haiku/sonnet/opus, subagents) is pinned to the
+// role's Ollama model — the Anthropic model IDs don't exist there.
+type Role = keyof typeof DEFAULT_MODELS;
+type Provider = "anthropic" | "ollama";
+const ROLES = Object.keys(DEFAULT_MODELS) as Role[];
+const OLLAMA_MODEL = envVar("OLLAMA_MODEL");
+const OLLAMA_BASE_URL = envVar("OLLAMA_BASE_URL") || "https://ollama.com";
+const OLLAMA_API_KEY = envVar("OLLAMA_API_KEY");
+const OLLAMA_IS_CLOUD = /^https:\/\/(www\.)?ollama\.com/.test(OLLAMA_BASE_URL);
+
+function resolveRole(role: Role): { provider: Provider; model: string } {
+  const spec = envVar(`SANDCASTLE_MODEL_${role}`);
+  const m = spec.match(/^(anthropic|ollama):(.*)$/);
+  const provider: Provider = m ? (m[1] as Provider) : "anthropic";
+  const model =
+    (m ? m[2]!.trim() : spec) || (provider === "ollama" ? OLLAMA_MODEL : DEFAULT_MODELS[role]);
+  if (!model) {
+    console.error(
+      `\n✗ ${role} is set to Ollama but has no model: set SANDCASTLE_MODEL_${role}=ollama:<model> ` +
+        `or OLLAMA_MODEL in .sandcastle/.env.\n`,
+    );
+    process.exit(1);
+  }
+  return { provider, model };
+}
+const ROLE_MODELS = Object.fromEntries(ROLES.map((r) => [r, resolveRole(r)])) as Record<
+  Role,
+  { provider: Provider; model: string }
+>;
+
+function agentFor(role: Role) {
+  const { provider, model } = ROLE_MODELS[role];
+  if (provider === "anthropic") return sandcastle.claudeCode(model);
+  const routing = {
+    ANTHROPIC_BASE_URL: OLLAMA_BASE_URL,
+    ANTHROPIC_DEFAULT_HAIKU_MODEL: model,
+    ANTHROPIC_DEFAULT_SONNET_MODEL: model,
+    ANTHROPIC_DEFAULT_OPUS_MODEL: model,
+    CLAUDE_CODE_SUBAGENT_MODEL: model,
+  };
+  const base = sandcastle.claudeCode(model, {
+    // Local Ollama accepts any bearer token; the docs use the literal "ollama".
+    env: { ...routing, ANTHROPIC_AUTH_TOKEN: OLLAMA_API_KEY || "ollama" },
+  });
+  // The provider `env` above only reaches the agent via sandcastle.run().
+  // createSandbox() starts the container with an EMPTY agent env and
+  // sandbox.run() execs without it (sandcastle 0.12), so branch-scoped runs
+  // would silently drop the redirect and send the Ollama model id to Anthropic
+  // ("There's an issue with the selected model"). Prefix the assignments onto
+  // the command itself: per-command, so an Anthropic role in the SAME sandbox
+  // (the Opus reviewer) is unaffected. The key is referenced as
+  // $OLLAMA_API_KEY (already in the container env from .env) so its value
+  // never appears in the command string or the logs.
+  const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+  const prefix =
+    Object.entries(routing)
+      .map(([k, v]) => `${k}=${shq(v)}`)
+      .join(" ") +
+    ` ANTHROPIC_AUTH_TOKEN=${OLLAMA_API_KEY ? '"$OLLAMA_API_KEY"' : "ollama"} `;
+  return {
+    ...base,
+    buildPrintCommand(opts: Parameters<typeof base.buildPrintCommand>[0]) {
+      const cmd = base.buildPrintCommand(opts);
+      return { ...cmd, command: prefix + cmd.command };
+    },
+  };
+}
+
+// Fail fast on a missing Ollama Cloud key, and print what each role runs on so
+// a misconfigured .env is visible at startup rather than as a failed agent.
+{
+  const usesOllama = ROLES.some((r) => ROLE_MODELS[r].provider === "ollama");
+  if (usesOllama && OLLAMA_IS_CLOUD && !OLLAMA_API_KEY) {
+    console.error(`\n✗ A role runs on Ollama Cloud but OLLAMA_API_KEY is not set in .sandcastle/.env.\n`);
+    process.exit(1);
+  }
+  console.log("\nAgent models:");
+  for (const r of ROLES) {
+    const { provider, model } = ROLE_MODELS[r];
+    const where = provider === "ollama" ? `ollama @ ${OLLAMA_BASE_URL}` : "anthropic";
+    console.log(`  ${r.toLowerCase().padEnd(12)} ${model}  (${where})`);
+  }
+}
 
 // Where sandcastle lays out its per-issue worktrees. This MUST match the
 // library's own layout (`<repo>/.sandcastle/worktrees/<name>`) exactly, because
@@ -1137,6 +1258,11 @@ const _tracePrev = new Map<string, string>(); // branch -> last surface UUID in 
 const _traceOpened = new Set<string>(); // "branch|role" -> pane already opened
 
 function worktreeIdForBranch(branch: string): string | null {
+  // The target's panes live in the invoking terminal's tab (see openTracePane),
+  // so address that terminal's own worktree.
+  if (branch === TARGET_BRANCH && process.env.SUPACODE_WORKTREE_ID) {
+    return process.env.SUPACODE_WORKTREE_ID;
+  }
   const path = branch === TARGET_BRANCH ? REPO_ROOT : worktreePathForBranch(branch);
   if (!path) return null;
   return encodeURIComponent(path.endsWith("/") ? path : path + "/");
@@ -1182,6 +1308,19 @@ function openTracePane(branch: string, role: string): void {
     _traceTab.set(branch, newTab);
     _tracePrev.set(branch, newTab);
   };
+
+  // Roles on the target (the planner) split BELOW the terminal running this
+  // orchestrator instead of opening a separate tab: seed the target's traces tab
+  // with the invoking surface, whose IDs Supacode exports into its terminals.
+  if (
+    branch === TARGET_BRANCH &&
+    !_traceTab.has(branch) &&
+    process.env.SUPACODE_TAB_ID &&
+    process.env.SUPACODE_SURFACE_ID
+  ) {
+    _traceTab.set(branch, process.env.SUPACODE_TAB_ID);
+    _tracePrev.set(branch, process.env.SUPACODE_SURFACE_ID);
+  }
 
   try {
     const tab = _traceTab.get(branch);
@@ -1287,6 +1426,12 @@ function ensureSupacodeWorktreeSurface(branch: string): void {
       [
         "repo",
         "worktree-new",
+        // Explicit repo: the default ($SUPACODE_REPO_ID) is whichever repo the
+        // invoking terminal belongs to, which silently registered another
+        // project's issue worktrees under that repo when the loop was launched
+        // from a terminal outside this checkout.
+        "--repo",
+        encodeURIComponent(REPO_ROOT.endsWith("/") ? REPO_ROOT : REPO_ROOT + "/"),
         "--branch",
         branch,
         "--base",
@@ -1684,7 +1829,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     maxIterations: 1,
     // Sonnet: the dependency graph is reasoning, but the slices are precise and
     // the fail-closed reviewer is the real safety net downstream.
-    agent: sandcastle.claudeCode(MODEL_PLAN),
+    agent: agentFor("PLAN"),
     promptFile: promptPath("plan-prompt.md"),
     // Extract and validate the <plan> JSON into a typed object. Throws
     // StructuredOutputError if the tag is missing, the JSON is malformed, or
@@ -1835,7 +1980,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         const implement = await sandbox.run({
           name: "implementer",
           maxIterations: 100,
-          agent: sandcastle.claudeCode(MODEL_IMPLEMENT),
+          agent: agentFor("IMPLEMENT"),
           promptFile: promptPath("implement-prompt.md"),
           promptArgs: {
             TASK_ID: issue.id,
@@ -1919,7 +2064,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           name: "reviewer",
           maxIterations: 1,
           // Opus — the fail-closed leak-audit gate stays on the strongest model.
-          agent: sandcastle.claudeCode(MODEL_REVIEW),
+          agent: agentFor("REVIEW"),
           promptFile: promptPath("review-prompt.md"),
           // TARGET_BRANCH is a sandcastle built-in prompt arg (the host's active
           // branch) and is injected automatically — passing it here is an error.
@@ -2053,7 +2198,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           const webVerify = await sandbox.run({
             name: "web-verify",
             maxIterations: 30,
-            agent: sandcastle.claudeCode(MODEL_WEB_VERIFY),
+            agent: agentFor("WEB_VERIFY"),
             promptFile: promptPath("web-verify-prompt.md"),
             // TARGET_BRANCH is a sandcastle built-in (injected automatically);
             // passing it in promptArgs is rejected. {{TARGET_BRANCH}} still resolves.
@@ -2412,7 +2557,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   const merge = await mergeSandbox.run({
     name: "merger",
     maxIterations: 1,
-    agent: sandcastle.claudeCode(MODEL_MERGE),
+    agent: agentFor("MERGE"),
     promptFile: promptPath("merge-prompt.md"),
     promptArgs: {
       // A markdown list of branch names, one per line.
@@ -2456,7 +2601,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
       name: "merge-reviewer",
       maxIterations: 1,
       // Opus — the post-merge tree faces the SAME fail-closed leak-audit gate.
-      agent: sandcastle.claudeCode(MODEL_REVIEW),
+      agent: agentFor("MERGE_REVIEW"),
       promptFile: promptPath("merge-review-prompt.md"),
       promptArgs: {
         REVIEW_BASE: preMergeSha,
