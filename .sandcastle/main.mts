@@ -26,7 +26,8 @@ import * as sandcastle from "@ai-hero/sandcastle";
 import { podman } from "@ai-hero/sandcastle/sandboxes/podman";
 import { z } from "zod";
 import { execSync, execFileSync } from "node:child_process";
-import { appendFileSync, existsSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import {
   awaitWorkflowConclusion,
@@ -120,10 +121,11 @@ const TRUSTED_MAINTAINERS = ["tomorrowflow"];
 // Blindfold is a Python/uv project, so `uv sync` (not npm install) installs the
 // dependency groups declared in pyproject.toml into the worktree's .venv.
 //
-// The hook runs INSIDE the Podman sandbox, which doesn't share the host's
-// ~/.cache/uv, so every run is a cold sync that re-downloads the full dependency
-// tree (the Playwright wheel alone is ~40 MB). A cold sync is merely slow — the
-// real hazard is a *stalled* one: uv can hang on a mid-stream read from PyPI's
+// The hook runs INSIDE the Podman sandbox. Without DEPENDENCY_CACHE_MOUNTS
+// (below) every run was a cold sync re-downloading the full ~470 MB tree
+// (measured: ~11 min cold vs ~12 s warm). The cache mount makes the common case
+// warm; a cold sync (first run, lockfile bump) is merely slow — the real hazard
+// is a *stalled* one: uv can hang on a mid-stream read from PyPI's
 // CDN and sit on an open-but-idle socket indefinitely. Because onSandboxReady is
 // synchronous, that freezes the whole orchestration (observed: a 12-min stall on
 // an ESTABLISHED :443 connection to Fastly). A bare `timeoutMs` only caps the
@@ -175,6 +177,52 @@ const hooks = {
     ],
   },
 };
+
+// Persistent dependency caches shared by every sandbox, so a run reuses what the
+// previous one downloaded instead of re-fetching it through the Podman VM's
+// (flaky — TLS "bad record mac" mid-download observed) network. Keyed by content,
+// so they stay correct across lockfile bumps: a bump costs one cold fetch, not
+// one per sandbox. Measured on this repo: `uv sync` ~11 min cold -> ~12 s warm;
+// frontend `npm ci` 16 s offline from the warm cache.
+//
+// A DEDICATED host dir, never the host's own ~/.cache/uv or ~/.npm: the macOS
+// toolchain must not share entries with the Linux sandbox, and a sandbox's writes
+// must not reach anything the host itself installs from.
+//
+// Writable, not read-only: uv refuses a read-only cache outright ("Could not
+// acquire lock ... Read-only file system"), so the stricter "agents read, only a
+// trusted warm step writes" split isn't expressible with a plain mount. Residual
+// risk accepted: a compromised sandbox could plant entries later sandboxes install
+// from — the gates' test runs, not the host. Wipe the dir to reset it.
+//
+// Chromium is deliberately NOT here: the Containerfile bakes the lockfile-pinned
+// build into ~/.cache/ms-playwright, and a mount over it would hide that.
+// UV_LINK_MODE=copy: cache and worktree are different mounts, so uv's default
+// hardlink mode would fall back (with a warning) on every sync anyway.
+// NuGet goes through NUGET_PACKAGES under ~/.cache (which the image already owns)
+// rather than a mount at ~/.nuget/packages, whose missing ~/.nuget parent Podman
+// would create root-owned.
+const DEPENDENCY_CACHE_ROOT = join(homedir(), ".cache", "blindfold-sandcastle");
+const DEPENDENCY_CACHE_MOUNTS = [
+  { host: "uv", sandbox: "~/.cache/uv" },
+  { host: "npm", sandbox: "~/.npm" },
+  { host: "nuget", sandbox: "~/.cache/nuget-packages" },
+].map(({ host, sandbox }) => {
+  const hostPath = join(DEPENDENCY_CACHE_ROOT, host);
+  // podman() fails sandbox creation on a missing hostPath.
+  mkdirSync(hostPath, { recursive: true });
+  return { hostPath, sandboxPath: sandbox };
+});
+
+function sandboxProvider() {
+  return podman({
+    mounts: DEPENDENCY_CACHE_MOUNTS,
+    env: {
+      UV_LINK_MODE: "copy",
+      NUGET_PACKAGES: "/home/agent/.cache/nuget-packages",
+    },
+  });
+}
 
 // Nothing to pre-copy from the host: the only node_modules in this repo is the
 // sandcastle tooling itself (irrelevant inside the sandbox), and uv builds the
@@ -1629,7 +1677,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     // project or runs a test (maxIterations: 1, no write tools). GRAPHIFY_BUILD is
     // dropped with it for the same reason: a code graph it does not consult, built
     // into the host's own tree.
-    sandbox: podman(),
+    sandbox: sandboxProvider(),
     name: "planner",
     // One iteration is enough: the planner just needs to read and reason,
     // not write code. (Structured output requires maxIterations: 1.)
@@ -1747,7 +1795,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
 
       const sandbox = await sandcastle.createSandbox({
         branch: issue.branch,
-        sandbox: podman(),
+        sandbox: sandboxProvider(),
         hooks,
         copyToWorktree,
       });
@@ -2355,7 +2403,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   ensureSupacodeWorktreeSurface(MERGE_STAGING_BRANCH);
   const mergeSandbox = await sandcastle.createSandbox({
     branch: MERGE_STAGING_BRANCH,
-    sandbox: podman(),
+    sandbox: sandboxProvider(),
     hooks,
     copyToWorktree,
   });
