@@ -6,21 +6,18 @@
 // plus a Hops column that expands inline into one card per hop; reveal and
 // deep-links remain out of scope for this slice.
 
-import { Fragment, useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { Lock, CheckCircle2, AlertTriangle, CloudOff, ChevronDown } from "../components/icons";
 import { RevealButton } from "../components/RevealButton";
-import { RetainedLeafCard } from "../components/RetainedLeafCard";
-import { RetainedPayloadTable } from "../components/RetainedPayloadTable";
 import { useWorkspace } from "../components/WorkspaceContext";
-import { revealSurrogatesBulk } from "../lib/entityListApi";
 import {
   fetchProcessingTrace,
   type ProcessingTraceHop,
   type ProcessingTraceRecord,
   type ProcessingTraceSurrogate,
 } from "../lib/processingTraceApi";
-import { fetchRewrittenLeaves, type RetainedExchange } from "../lib/rewrittenLeavesApi";
+import { fetchRewrittenLeaves } from "../lib/rewrittenLeavesApi";
 
 const POLL_INTERVAL_MS = 2000;
 const FRESHNESS_TICK_MS = 1000;
@@ -174,270 +171,6 @@ function HopCard({
   );
 }
 
-// Payload inspection's own retained-leaves snapshot for the active workspace,
-// reshaped once per poll (issue #400) so each row's lookup below is O(1)
-// rather than a linear scan of `exchanges` per row per render.
-type RetainedLeavesSnapshot = {
-  armed: boolean;
-  armedAt: string | null;
-  exchangesById: Map<string, RetainedExchange>;
-};
-
-// Exchange-level bulk Reveal switch (issue #401, ADR-0059 §5): one switch per
-// exchange, defaulting to blindfolded, resolving every `confirmed` surrogate
-// across the exchange's retained leaves in a single audited call. Reused
-// unchanged whether or not the caller holds `re-identifier` -- deliberately
-// NOT `disabled` (that would make it unclickable, so a denied caller could
-// never actually attempt it): the control stays clickable and styled as
-// locked, so a click always reaches the server, which is the only place
-// RBAC is enforced and the denial audited (SEC-8 -- "the control must be
-// present to be denied").
-function RevealSwitch({
-  workspace,
-  confirmedSurrogates,
-  canReveal,
-  revealed,
-  onRevealed,
-}: {
-  workspace: string;
-  confirmedSurrogates: string[];
-  canReveal: boolean;
-  revealed: Record<string, string> | null;
-  onRevealed: (result: Record<string, string> | null) => void;
-}) {
-  const [busy, setBusy] = useState(false);
-  const [denied, setDenied] = useState(false);
-  const on = revealed !== null;
-
-  async function handleToggle() {
-    if (on) {
-      onRevealed(null);
-      setDenied(false);
-      return;
-    }
-    // Nothing to resolve -- flip locally with an empty result rather than
-    // calling an endpoint that requires at least one surrogate. Nothing real
-    // is at stake (there is no confirmed surrogate to decrypt), so no audit
-    // event is expected here either.
-    if (confirmedSurrogates.length === 0) {
-      onRevealed({});
-      return;
-    }
-    setBusy(true);
-    setDenied(false);
-    const result = await revealSurrogatesBulk(workspace, confirmedSurrogates);
-    setBusy(false);
-    if (result.outcome === "locked") {
-      setDenied(true);
-      return;
-    }
-    if (result.outcome === "error") {
-      return;
-    }
-    onRevealed(result.results);
-  }
-
-  return (
-    <div className="bf-retained-payload-reveal">
-      <button
-        type="button"
-        role="switch"
-        aria-checked={on}
-        aria-label="Reveal real values for this exchange"
-        className={`bf-policy-toggle${on ? " bf-policy-toggle--on" : ""}${
-          !canReveal ? " bf-policy-toggle--locked-style" : ""
-        }`}
-        data-testid="retained-payload-reveal-switch"
-        disabled={busy}
-        title={canReveal ? "This will be logged" : "re-identifier role required"}
-        onClick={handleToggle}
-      >
-        <span className="bf-policy-toggle-knob" />
-      </button>
-      <span className="bf-retained-payload-reveal-label" data-testid="retained-payload-reveal-label">
-        {on ? "Revealed — logged to the audit trail" : "Blindfolded (default)"}
-      </span>
-      {denied && (
-        <span
-          className="bf-retained-payload-reveal-denied"
-          role="alert"
-          data-testid="retained-payload-reveal-denied"
-        >
-          Access denied — re-identifier role required.
-        </span>
-      )}
-    </div>
-  );
-}
-
-// The Processing trace's fourth grain level (ADR-0059 §7, issue #400): expanding
-// a row also renders whatever Payload inspection retained for THIS exchange,
-// reached by the row's own `exchange_id` -- never a new route, page or nav
-// entry, just the next thing revealed by the expansion that already exists
-// (ADR-0035 decisions 5/12/13). Issue #401 adds the bulk Reveal switch: it
-// resolves through the existing audited Re-identify path
-// (`revealSurrogatesBulk`) and lives in local state here, so collapsing this
-// row or navigating away unmounts it and the reveal reverts -- no timer, no
-// persistence across reload.
-//
-// Three empty states must stay distinguishable (issue #400's own bar: with a
-// 5-exchange bound and a 200-row trace, "evicted" will be the overwhelming
-// majority and conflating it with "disarmed" makes the feature look broken):
-// disarmed (names the reason, links to Settings), predates-arming (this
-// exchange happened before the current arm window), and evicted (aged out of
-// the 5-exchange ring buffer).
-function RetainedPayloadSection({
-  row,
-  leaves,
-  workspace,
-  canReveal,
-}: {
-  row: ProcessingTraceRecord;
-  leaves: RetainedLeavesSnapshot | null;
-  workspace: string;
-  canReveal: boolean;
-}) {
-  const [revealed, setRevealed] = useState<Record<string, string> | null>(null);
-  // Issue #403: which secondary view of the same retained payload is showing
-  // -- component-local, so it resets to the default (diff) on every collapse/
-  // re-expand, same as `revealed` above never persisting across reload.
-  const [view, setView] = useState<"diff" | "table">("diff");
-
-  const retained = leaves && row.exchange_id ? leaves.exchangesById.get(row.exchange_id) : undefined;
-
-  // This exchange's own hop-surrogate lifecycle classification (already
-  // fetched for the hop chips above), keyed by token -- shared by the
-  // confirmed-tokens list below (issue #401) and the replacements table
-  // (issue #403), so the two views can never disagree about a span's
-  // lifecycle.
-  const lifecycleByToken = useMemo(() => {
-    const map = new Map<string, ProcessingTraceSurrogate["lifecycle"]>();
-    for (const hop of row.hops) {
-      for (const surrogate of hop.surrogates) {
-        map.set(surrogate.token, surrogate.lifecycle);
-      }
-    }
-    return map;
-  }, [row.hops]);
-
-  // Confirmed surrogate tokens actually appearing in this exchange's retained
-  // leaves (issue #401): the Reveal switch only ever resolves `confirmed`
-  // surrogates (ADR-0035 decision 13) -- `pending`/`rejected` stay visibly
-  // unresolved regardless of switch position.
-  const confirmedSurrogates = useMemo(() => {
-    if (!retained) return [];
-    const tokens = new Set<string>();
-    for (const leaf of retained.leaves) {
-      for (const span of leaf.spans) {
-        if (lifecycleByToken.get(span.surrogate) === "confirmed") tokens.add(span.surrogate);
-      }
-    }
-    return Array.from(tokens);
-  }, [retained, lifecycleByToken]);
-
-  if (!leaves) return null;
-
-  return (
-    <div className="bf-retained-payload" data-testid="retained-payload-section">
-      <div className="bf-retained-payload-header">
-        <h3 className="bf-retained-payload-heading">Retained payload</h3>
-        {retained && (
-          <>
-            <div
-              className="bf-search-mode-toggle"
-              role="tablist"
-              aria-label="Elided diff or replacements table"
-              data-testid="retained-payload-view-toggle"
-            >
-              <button
-                type="button"
-                role="tab"
-                aria-selected={view === "diff"}
-                className={`bf-search-mode-option${view === "diff" ? " bf-search-mode-option--active" : ""}`}
-                onClick={() => setView("diff")}
-                data-testid="retained-payload-view-diff-button"
-              >
-                Diff
-              </button>
-              <button
-                type="button"
-                role="tab"
-                aria-selected={view === "table"}
-                className={`bf-search-mode-option${view === "table" ? " bf-search-mode-option--active" : ""}`}
-                onClick={() => setView("table")}
-                data-testid="retained-payload-view-table-button"
-              >
-                Table
-              </button>
-            </div>
-            <RevealSwitch
-              workspace={workspace}
-              confirmedSurrogates={confirmedSurrogates}
-              canReveal={canReveal}
-              revealed={revealed}
-              onRevealed={setRevealed}
-            />
-          </>
-        )}
-      </div>
-      {retained ? (
-        <>
-          {/* ADR-0059 §6: this surface claims transformation, not verification --
-              a missed entity has no span and would render identically either way,
-              so it must never be mistaken for a leak check. Surfaces the pre-egress
-              leak gate's own verdict (already witnessed by this same row's Outcome
-              pill), which costs nothing new here, and says so explicitly. */}
-          <p className="bf-retained-payload-claim" data-testid="retained-payload-claim">
-            This shows what Blindfold rewrote, not a leak check — an entity Blindfold
-            never detected would look identical either way. Leak gate verdict:{" "}
-            <strong data-testid="retained-payload-leak-verdict">
-              {row.outcome === "blocked" ? "blocked" : "passed"}
-            </strong>
-            {row.reason ? ` — ${row.reason}` : ""}.
-          </p>
-          {retained.blocked && (
-            <div className="bf-retained-payload-never-sent" data-testid="retained-payload-never-sent">
-              <AlertTriangle size={14} />
-              Never sent — this blindfolded payload was blocked before it reached the
-              provider.
-            </div>
-          )}
-          {retained.leaves.length === 0 ? (
-            <p className="bf-empty">Blindfold rewrote nothing in this exchange.</p>
-          ) : view === "diff" ? (
-            retained.leaves.map((leaf) => (
-              <RetainedLeafCard key={leaf.leaf_id} leaf={leaf} revealed={revealed} />
-            ))
-          ) : (
-            <RetainedPayloadTable
-              leaves={retained.leaves}
-              lifecycleByToken={lifecycleByToken}
-              revealed={revealed}
-            />
-          )}
-        </>
-      ) : !leaves.armed ? (
-        <p className="bf-empty" data-testid="retained-payload-disarmed">
-          Payload inspection is disarmed, so no payload is retained for any exchange.{" "}
-          <Link to="/settings" data-testid="retained-payload-arm-link">
-            Arm it in Settings →
-          </Link>
-        </p>
-      ) : leaves.armedAt && new Date(row.ts).getTime() < new Date(leaves.armedAt).getTime() ? (
-        <p className="bf-empty" data-testid="retained-payload-predates-arming">
-          This exchange happened before Payload inspection was armed, so nothing was
-          retained for it.
-        </p>
-      ) : (
-        <p className="bf-empty" data-testid="retained-payload-evicted">
-          This exchange's retained payload has aged out of the 5-exchange retention
-          window.
-        </p>
-      )}
-    </div>
-  );
-}
-
 export function ProcessingTrace() {
   const { activeWorkspace } = useWorkspace();
   const workspace = activeWorkspace?.slug ?? null;
@@ -446,7 +179,10 @@ export function ProcessingTrace() {
   const canReveal = activeWorkspace?.roles.includes("re-identifier") ?? false;
 
   const [records, setRecords] = useState<ProcessingTraceRecord[]>([]);
-  const [leavesSnapshot, setLeavesSnapshot] = useState<RetainedLeavesSnapshot | null>(null);
+  // Issue #432: no longer the retained leaves themselves (that rendering moved
+  // to its own destination, Payload inspection) -- just which exchange ids
+  // currently have something retained, so a row can link to it.
+  const [retainedExchangeIds, setRetainedExchangeIds] = useState<Set<string>>(new Set());
   const [locked, setLocked] = useState(false);
   const [loading, setLoading] = useState(true);
   const [live, setLive] = useState(true);
@@ -476,9 +212,10 @@ export function ProcessingTrace() {
     if (!workspace || !live) return;
     let cancelled = false;
     function poll() {
-      // Issue #400: Payload inspection's own retained-leaves snapshot is
-      // fetched alongside the trace itself, on the same poll tick -- one
-      // extra viewer-gated GET, no second poll loop.
+      // Issue #432: still fetched alongside the trace itself, on the same
+      // poll tick (one extra viewer-gated GET, no second poll loop) -- only
+      // the exchange ids are kept now, to link a row to Payload inspection's
+      // own destination rather than render the leaves inline.
       Promise.all([fetchProcessingTrace(workspace!), fetchRewrittenLeaves(workspace!)])
         .then(([result, leavesResult]) => {
           if (cancelled) return;
@@ -492,17 +229,15 @@ export function ProcessingTrace() {
             setRecords(result.records);
           }
           if (leavesResult.locked) {
-            setLeavesSnapshot(null);
+            setRetainedExchangeIds(new Set());
           } else {
-            setLeavesSnapshot({
-              armed: leavesResult.armed,
-              armedAt: leavesResult.armedAt,
-              exchangesById: new Map(
+            setRetainedExchangeIds(
+              new Set(
                 leavesResult.exchanges
                   .filter((exchange) => exchange.exchange_id)
-                  .map((exchange) => [exchange.exchange_id as string, exchange])
-              ),
-            });
+                  .map((exchange) => exchange.exchange_id as string)
+              )
+            );
           }
         })
         .catch(() => {
@@ -618,6 +353,7 @@ export function ProcessingTrace() {
                 <th>Detected</th>
                 <th>L3</th>
                 <th>Hops</th>
+                <th>Payload</th>
               </tr>
             </thead>
             <tbody>
@@ -671,10 +407,24 @@ export function ProcessingTrace() {
                           />
                         </span>
                       </td>
+                      <td>
+                        {row.exchange_id && retainedExchangeIds.has(row.exchange_id) ? (
+                          <Link
+                            to={`/payload-inspection?exchange=${encodeURIComponent(row.exchange_id)}`}
+                            className="bf-trace-retained-link"
+                            data-testid="processing-trace-row-retained-link"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            View →
+                          </Link>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
                     </tr>
                     {expanded && (
                       <tr className="bf-trace-expansion-row">
-                        <td colSpan={7}>
+                        <td colSpan={8}>
                           <div
                             className="bf-trace-hop-cards"
                             data-testid="processing-trace-hop-cards"
@@ -690,12 +440,6 @@ export function ProcessingTrace() {
                             {hopCount === 0 && (
                               <p className="bf-empty">No hop detail for this exchange.</p>
                             )}
-                            <RetainedPayloadSection
-                              row={row}
-                              leaves={leavesSnapshot}
-                              workspace={workspace!}
-                              canReveal={canReveal}
-                            />
                           </div>
                         </td>
                       </tr>
@@ -705,7 +449,7 @@ export function ProcessingTrace() {
               })}
               {rows.length === 0 && (
                 <tr>
-                  <td colSpan={7} className="bf-empty">
+                  <td colSpan={8} className="bf-empty">
                     No processing-trace records yet.
                   </td>
                 </tr>

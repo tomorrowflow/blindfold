@@ -7,6 +7,7 @@ import { EntityList } from "./routes/EntityList";
 import { GraphEditor } from "./routes/GraphEditor";
 import { AuditLog } from "./routes/AuditLog";
 import { ProcessingTrace } from "./routes/ProcessingTrace";
+import { PayloadInspection } from "./routes/PayloadInspection";
 import { Access } from "./routes/Access";
 import { Settings } from "./routes/Settings";
 import { Setup } from "./routes/Setup";
@@ -27,6 +28,7 @@ export function App() {
         <Route path="inbox" element={<ReviewInbox />} />
         <Route path="audit" element={<AuditLog />} />
         <Route path="processing-trace" element={<ProcessingTrace />} />
+        <Route path="payload-inspection" element={<PayloadInspection />} />
         <Route path="access" element={<Access />} />
         <Route path="settings" element={<Settings />} />
         <Route path="setup" element={<Setup />} />
