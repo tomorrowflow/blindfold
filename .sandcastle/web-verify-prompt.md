@@ -21,7 +21,11 @@ through to the shell's `index.html`). The legacy embedded `spa.py` pages are all
 (#98/#99/#128). The page calls first-party `/v1/management/*` endpoints on the same origin.
 Branch diff vs the merge base, across the SPA surface:
 
-!`git diff {{TARGET_BRANCH}}...{{BRANCH}} -- {{SPA_PATHS}}`
+!`git diff {{TARGET_BRANCH}}...{{BRANCH}} -- {{SPA_PATHS}} ':(exclude)src/blindfold/ui_dist/'`
+
+_(`src/blindfold/ui_dist/` — the committed, minified SPA bundle — is omitted here: it can be
+hundreds of thousands of tokens, and the hosted `ui-dist-freshness` gate already proves it matches
+`frontend/src`. Review the `frontend/` source instead.)_
 
 # SETUP — discover, don't assume
 
