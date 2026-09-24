@@ -279,6 +279,34 @@ async def test_arm_sets_the_rewritten_leaf_stores_bound_to_the_chosen_window():
 
 
 @pytest.mark.anyio
+async def test_arm_with_until_disarmed_window_sets_the_rewritten_leaf_stores_bound_to_200():
+    # Issue #433 AC: "each window enforces its count bound ... a test pins each
+    # bound" -- the 30m (25) and 2h (100) bounds are already pinned at the
+    # boundary above; this is "until disarmed"'s own 200-exchange bound, the
+    # largest of the three and the one with no timer to fall back on.
+    rbac = RbacRegistry()
+    rbac.grant("alice", "ws-a", "admin")
+    store = RewrittenLeafStore()
+    inspection = PayloadInspection(on_arm=store.set_bound)
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_payload_inspection] = lambda: inspection
+    app.dependency_overrides[get_rewritten_leaf_store] = lambda: store
+    try:
+        async with _make_client() as client:
+            await client.post(
+                "/v1/management/payload-inspection?workspace=ws-a&window=until_disarmed",
+                headers={"x-blindfold-identity": "alice"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    for i in range(250):
+        store.retain(workspace="ws-a", leaves=[], blocked=False)
+    assert len(store.for_workspace("ws-a")) == 200
+
+
+@pytest.mark.anyio
 async def test_disarm_denied_without_admin_role():
     rbac = RbacRegistry()  # alice has no roles on ws-a
     inspection = PayloadInspection()
