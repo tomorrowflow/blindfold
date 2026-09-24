@@ -1,4 +1,4 @@
-import { test, expect } from "./fixtures";
+import { test, expect, auditEventsFor } from "./fixtures";
 
 // Settings -> Payload inspection arming control (issue #402, ADR-0059 §4). Backs
 // onto #398's proxy-side arm/disarm endpoints (GET/POST/DELETE
@@ -113,6 +113,73 @@ test.describe("settings payload inspection — arm as admin", () => {
       toggle.click(),
     ]);
     await expect(toggle).toHaveAttribute("aria-checked", "false");
+  });
+
+  // Coverage gap this browser-verify pass found: the "until disarmed" window's
+  // danger-note/banner text is exercised elsewhere ONLY against a mocked
+  // `page.route` GET response (settings-payload-inspection-banner.spec.ts's
+  // "until-disarmed banner text" test, which fabricates retained_count=3 --
+  // there is no way to actually populate a retained leaf by clicking through
+  // this page alone, since that requires a real /v1/messages exchange). That
+  // leaves the real backend contract for `window=until_disarmed` -- the real
+  // POST, the real count_bound=200 threading through to both the Settings
+  // danger note AND the shell-level persistent banner (PayloadInspectionBanner
+  // renders above every routed view, including this one -- Shell.tsx) -- with
+  // zero real, unmocked coverage. This test drives the real toggle click with
+  // "Until disarmed" selected and reads both surfaces' real (0 of 200, since
+  // no exchange has happened) response back from `blindfold.app` itself.
+  test("picking 'Until disarmed' before arming carries that window through to a real arm request, the danger note, the persistent banner (real, unmocked 0-of-200 count), and the audit trail", async ({
+    alicePage,
+    baseURL,
+  }) => {
+    await alicePage.goto("/ui/settings");
+    const toggle = alicePage.getByTestId("payload-inspection-arm-toggle");
+    const select = alicePage.getByTestId("payload-inspection-window-select");
+    await select.selectOption("until_disarmed");
+
+    const [postRequest] = await Promise.all([
+      alicePage.waitForRequest(
+        (req) =>
+          req.url().includes("/v1/management/payload-inspection") && req.method() === "POST"
+      ),
+      toggle.click(),
+    ]);
+    expect(postRequest.url()).toContain("window=until_disarmed");
+
+    // Settings danger note: no timer wording, states the real 200-exchange bound.
+    const dangerNote = alicePage.getByTestId("payload-inspection-danger-note");
+    await expect(dangerNote).toContainText("Until disarmed");
+    await expect(dangerNote).toContainText("up to 200 exchanges");
+    await expect(dangerNote).toContainText("until it is disarmed");
+    await expect(dangerNote).not.toContainText("auto-disarms");
+
+    // Persistent banner (Shell-level, rendered above this same route): a real,
+    // unmocked GET against blindfold.app reports retained_count=0 (nothing was
+    // ever retained -- no /v1/messages exchange occurred), never a countdown.
+    const banner = alicePage.getByTestId("payload-inspection-banner");
+    await expect(banner).toBeVisible();
+    await expect(banner).toContainText("until disarmed");
+    await expect(alicePage.getByTestId("payload-inspection-banner-retained-count")).toContainText(
+      "0 of 200"
+    );
+    await expect(alicePage.getByTestId("payload-inspection-banner-remaining")).not.toBeAttached();
+
+    // Audit trail: the arm event's reason names the real chosen window (app.py's
+    // `arm_payload_inspection`), not just the default -- a real record, read back
+    // from the audit endpoint the way an authorized auditor would (never scraped
+    // from the page's own DOM/network capture).
+    const armedEvents = await auditEventsFor(baseURL!, "payload-inspection-armed", "alice");
+    expect(armedEvents.some((e) => e.reason.includes("window=until_disarmed"))).toBe(true);
+
+    await Promise.all([
+      alicePage.waitForRequest(
+        (req) =>
+          req.url().includes("/v1/management/payload-inspection") && req.method() === "DELETE"
+      ),
+      toggle.click(),
+    ]);
+    await expect(toggle).toHaveAttribute("aria-checked", "false");
+    await expect(banner).not.toBeAttached();
   });
 });
 
