@@ -16,7 +16,9 @@ slice, and retention is a future slice.
 
 from __future__ import annotations
 
-from blindfold.payload_inspection import PayloadInspection
+import pytest
+
+from blindfold.payload_inspection import InvalidRetentionWindowError, PayloadInspection
 
 
 def test_defaults_disarmed():
@@ -115,6 +117,28 @@ def test_disarm_invokes_the_injected_release_hook():
     assert released == [True]
 
 
+def test_arm_invokes_the_injected_arm_hook_with_the_chosen_windows_count_bound():
+    # Issue #433: the retained-leaf store's own bound must track whichever
+    # window was chosen -- `on_arm` is the seam, mirroring `on_disarm` above,
+    # wired at the app level to `RewrittenLeafStore.set_bound`.
+    bounds = []
+    inspection = PayloadInspection(on_arm=lambda count_bound: bounds.append(count_bound))
+
+    inspection.arm("2h")
+
+    assert bounds == [100]
+
+
+def test_arm_hook_is_not_invoked_on_an_invalid_window():
+    bounds = []
+    inspection = PayloadInspection(on_arm=lambda count_bound: bounds.append(count_bound))
+
+    with pytest.raises(InvalidRetentionWindowError):
+        inspection.arm("nonsense")
+
+    assert bounds == []
+
+
 def test_auto_disarm_also_invokes_the_injected_release_hook_via_fake_clock():
     # Issue #420's more serious half: the 30-minute auto-disarm calls the same
     # `disarm()` internally (`_expire_if_due`), so it must release too -- pinned
@@ -133,6 +157,60 @@ def test_auto_disarm_also_invokes_the_injected_release_hook_via_fake_clock():
     assert released == [True]
 
 
+def test_arming_with_no_window_defaults_to_30_minutes_with_a_25_exchange_bound():
+    # Issue #433 (ADR-0059 amendment #431 §4): arming with no window argument keeps
+    # the original fixed shape as the default -- 30 minutes, now with a *named*
+    # 25-exchange count bound alongside it (the bound used to live only in
+    # RewrittenLeafStore's own default maxlen).
+    inspection = PayloadInspection()
+    inspection.arm()
+
+    status = inspection.status()
+    assert status.window == "30m"
+    assert status.count_bound == 25
+
+
+def test_arming_2h_window_carries_a_100_exchange_bound_and_auto_disarms_after_2_hours():
+    ticks = [0.0]
+    inspection = PayloadInspection(clock=lambda: ticks[0])
+    inspection.arm("2h")
+
+    status = inspection.status()
+    assert status.window == "2h"
+    assert status.count_bound == 100
+
+    ticks[0] = 2 * 60 * 60 - 1
+    assert inspection.is_armed() is True
+
+    ticks[0] = 2 * 60 * 60
+    assert inspection.is_armed() is False
+
+
+def test_arming_until_disarmed_window_carries_a_200_exchange_bound_and_never_auto_disarms():
+    # Acceptance criterion: "until disarmed" never auto-disarms on a timer --
+    # pinned with an injected clock ticking far past every other window's
+    # deadline, not a sleep.
+    ticks = [0.0]
+    inspection = PayloadInspection(clock=lambda: ticks[0])
+    inspection.arm("until_disarmed")
+
+    status = inspection.status()
+    assert status.window == "until_disarmed"
+    assert status.count_bound == 200
+    assert status.remaining_seconds is None
+
+    ticks[0] = 365 * 24 * 60 * 60  # a full year later
+    assert inspection.is_armed() is True
+    assert inspection.status().remaining_seconds is None
+
+
+def test_arming_with_an_unrecognized_window_raises():
+    inspection = PayloadInspection()
+    with pytest.raises(InvalidRetentionWindowError):
+        inspection.arm("30-minutes")
+    assert inspection.is_armed() is False
+
+
 def test_a_fresh_instance_is_disarmed_mirroring_a_proxy_restart():
     # Nothing about this state is persisted (ADR-0059 §4: "disarms on proxy
     # restart") -- a fresh process makes a fresh PayloadInspection, which is
@@ -141,6 +219,20 @@ def test_a_fresh_instance_is_disarmed_mirroring_a_proxy_restart():
     # never observes it.
     armed_before_restart = PayloadInspection()
     armed_before_restart.arm()
+    assert armed_before_restart.is_armed() is True
+
+    after_restart = PayloadInspection()
+
+    assert after_restart.is_armed() is False
+
+
+@pytest.mark.parametrize("window", ["30m", "2h", "until_disarmed"])
+def test_every_window_still_disarms_on_a_simulated_restart(window):
+    # Issue #433 AC: "every window still disarms on restart" -- including
+    # "until disarmed", which has no timer of its own to fall back on; only a
+    # fresh process (a fresh instance, standing in for restart) clears it.
+    armed_before_restart = PayloadInspection()
+    armed_before_restart.arm(window)
     assert armed_before_restart.is_armed() is True
 
     after_restart = PayloadInspection()

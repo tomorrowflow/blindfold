@@ -16,8 +16,13 @@ Two halves, deliberately kept apart:
   global, never-persisted shape: a fresh process starts with an empty store,
   so disarm-on-restart (ADR-0059 §4) falls out for free.
 
-Retains only the last **5** exchanges (ADR-0059 §4), oldest evicted -- never
-the store, never disk. A blocked exchange is retained too, marked
+Retains up to the armed window's own count bound (ADR-0059 amendment #431 §4,
+issue #433) -- 25/100/200 exchanges for the 30-minute/2-hour/until-disarmed
+windows respectively, oldest evicted -- never the store, never disk. The class
+default (25) mirrors the 30-minute window, the default window
+(``payload_inspection.DEFAULT_RETENTION_WINDOW``); ``PayloadInspection.arm``'s
+``on_arm`` hook calls :meth:`RewrittenLeafStore.set_bound` to track whichever
+window was actually chosen. A blocked exchange is retained too, marked
 ``blocked=True`` ("never sent", ADR-0059 §4): a fail-closed block is the
 most interesting exchange to look at, and the mark is load-bearing -- a
 reader must never conclude a retained payload egressed.
@@ -105,17 +110,27 @@ class RetainedExchange:
 
 
 class RewrittenLeafStore:
-    """In-memory, count-bounded (last 5, ADR-0059 §4) ring buffer of retained
-    exchanges, never persisted to the store, empty after a restart -- the
-    same process-global, evaporate-on-restart shape as
+    """In-memory, count-bounded ring buffer of retained exchanges, never
+    persisted to the store, empty after a restart -- the same process-global,
+    evaporate-on-restart shape as
     :class:`~blindfold.payload_inspection.PayloadInspection` and
     :class:`~blindfold.processing_trace.ProcessingTraceBuffer`, just a
-    separate instance (ADR-0059 §3) rather than folded into either.
+    separate instance (ADR-0059 §3) rather than folded into either. The bound
+    defaults to 25 (the 30-minute window's own bound, ADR-0059 amendment #431
+    §4) and tracks whichever window is actually armed via :meth:`set_bound`.
     """
 
-    def __init__(self, maxlen: int = 5, now_iso: Callable[[], str] = _utc_now_iso) -> None:
+    def __init__(self, maxlen: int = 25, now_iso: Callable[[], str] = _utc_now_iso) -> None:
         self._entries: deque[RetainedExchange] = deque(maxlen=maxlen)
         self._now_iso = now_iso
+
+    def set_bound(self, maxlen: int) -> None:
+        """Change the count bound going forward (issue #433) -- the seam
+        :class:`~blindfold.payload_inspection.PayloadInspection`'s ``on_arm``
+        hook drives with the newly armed window's own bound. Existing entries
+        carry over, evicted from the oldest end immediately if the new bound
+        is smaller."""
+        self._entries = deque(self._entries, maxlen=maxlen)
 
     def retain(
         self,
