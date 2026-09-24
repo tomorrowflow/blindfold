@@ -18,6 +18,15 @@ terms must appear either in the seeded allowlist (``load_seeded_allowlist_tokens
 or in ``GLOSSARY_EXCLUSIONS`` with a recorded reason -- so a new glossary term
 added later can't silently drift out of sync with the allowlist the way the whole
 domain-term category did until now.
+
+issue #428: a loaded-machine full-suite run once caught these two tests failing
+alongside the frozen-binary tests' 10s-startup-budget flakiness, raising the
+question of whether they share that same load-sensitivity. They do not:
+``extract_glossary_terms``/``load_seeded_allowlist_tokens`` (``allowlist_seed.py``)
+do one synchronous file read plus a regex match each, with no subprocess, no
+socket wait, and no clock-based deadline anywhere in the call path -- there is no
+mechanism by which machine load can flip either from pass to fail, only make it
+(harmlessly) slower. That run's failure here was never reproduced in isolation.
 """
 
 from __future__ import annotations
