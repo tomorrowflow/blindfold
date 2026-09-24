@@ -400,6 +400,103 @@ retainedTest.describe("Payload inspection — exchange-level bulk Reveal switch"
       expect(bodyText).not.toContain(REAL_ORG);
     }
   );
+
+  // Carried over from processing-trace-retained-payload.spec.ts (issue #401):
+  // the reveal switch's own request is the one call on this page that returns
+  // real values over the wire (ADR-0059 §5), so its first-party claim is
+  // asserted directly rather than left to the list-driving egress test below.
+  retainedTest(
+    "resolving does not consult the review inbox, and the bulk-resolve request itself stays first-party",
+    async ({ alicePage }) => {
+      const requests: string[] = [];
+      alicePage.on("request", (req) => requests.push(req.url()));
+
+      await alicePage.goto("/ui/payload-inspection");
+      const rows = alicePage.getByTestId("payload-inspection-row");
+      await rows.nth(1).click();
+      const section = alicePage.getByTestId("retained-payload-section");
+      await section.getByTestId("retained-payload-reveal-switch").click();
+      await expect(section.getByTestId("retained-leaf-span-revealed").first()).toBeVisible();
+
+      expect(requests.some((url) => url.includes("/review-inbox"))).toBe(false);
+
+      const firstPartyOrigin = new URL(RETAINED_BASE_URL).host;
+      const thirdParty = requests.filter((url) => {
+        try {
+          return new URL(url).host !== firstPartyOrigin;
+        } catch {
+          return false;
+        }
+      });
+      expect(
+        thirdParty,
+        "expected zero third-party requests while resolving the bulk Reveal switch"
+      ).toEqual([]);
+
+      const reidentifyRequests = requests.filter((url) => url.includes("/surrogate/") && url.includes("/real"));
+      expect(reidentifyRequests.length).toBeGreaterThan(0);
+      for (const url of reidentifyRequests) {
+        expect(new URL(url).host).toBe(firstPartyOrigin);
+      }
+    }
+  );
+
+  // Carried over from processing-trace-retained-payload.spec.ts (issue #403):
+  // the same privacy properties, driven from the table view rather than the diff.
+  retainedTest(
+    "egress hygiene holds in the table view too: switching to Table and revealing stays first-party",
+    async ({ alicePage }) => {
+      const requests: string[] = [];
+      alicePage.on("request", (req) => requests.push(req.url()));
+
+      await alicePage.goto("/ui/payload-inspection");
+      const rows = alicePage.getByTestId("payload-inspection-row");
+      await rows.nth(1).click();
+      const section = alicePage.getByTestId("retained-payload-section");
+      await section.getByTestId("retained-payload-view-table-button").click();
+      await section.getByTestId("retained-payload-reveal-switch").click();
+      await expect(
+        section
+          .getByTestId("retained-payload-table-row")
+          .first()
+          .getByTestId("retained-payload-table-value")
+      ).toHaveText(REAL_PERSON);
+
+      const firstPartyOrigin = new URL(RETAINED_BASE_URL).host;
+      const thirdParty = requests.filter((url) => {
+        try {
+          return new URL(url).host !== firstPartyOrigin;
+        } catch {
+          return false;
+        }
+      });
+      expect(
+        thirdParty,
+        "expected zero third-party requests while driving the table view's reveal switch"
+      ).toEqual([]);
+    }
+  );
+
+  retainedTest(
+    "a denied reveal attempt in the table view is audited as denied, and its Value column never resolves",
+    async ({ erinPage }) => {
+      const before = await auditEventsFor(RETAINED_BASE_URL, "re-identify-denied", "erin");
+      await erinPage.goto("/ui/payload-inspection");
+      const rows = erinPage.getByTestId("payload-inspection-row");
+      await rows.nth(1).click();
+      const section = erinPage.getByTestId("retained-payload-section");
+      await section.getByTestId("retained-payload-view-table-button").click();
+      await section.getByTestId("retained-payload-reveal-switch").click();
+      await expect(section.getByTestId("retained-payload-reveal-denied")).toBeVisible();
+
+      const after = await auditEventsFor(RETAINED_BASE_URL, "re-identify-denied", "erin");
+      expect(after.length).toBe(before.length + 1);
+
+      const bodyText = await erinPage.locator("body").innerText();
+      expect(bodyText).not.toContain(REAL_PERSON);
+      expect(bodyText).not.toContain(REAL_ORG);
+    }
+  );
 });
 
 disarmedTest.describe("Payload inspection — disarmed", () => {
