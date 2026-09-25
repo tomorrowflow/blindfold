@@ -771,7 +771,9 @@ def _build_payload_inspection_filters_fixture():
     payload_inspection = PayloadInspection(now_iso=lambda: now.isoformat())
     payload_inspection.arm("until_disarmed")
 
-    ts_iter = iter([ts_recent, ts_hour_ago, ts_yesterday])
+    # Appended oldest first, exactly as the real ring buffer fills -- so the
+    # list's own newest-first reversal puts "recent" at the top.
+    ts_iter = iter([ts_yesterday, ts_hour_ago, ts_recent])
     store = RewrittenLeafStore(maxlen=200, now_iso=lambda: next(ts_iter))
 
     recent_id = "filters-fixture-recent"
@@ -798,20 +800,19 @@ def _build_payload_inspection_filters_fixture():
         workspace=WORKSPACE, endpoint="messages", streamed=False,
         outcome="passed", detected=1, duration_ms=10.0, exchange_id=yesterday_id,
     )
-
     store.retain(
         workspace=WORKSPACE,
         blocked=False,
-        exchange_id=recent_id,
+        exchange_id=yesterday_id,
         leaves=[
             RewrittenLeaf(
                 leaf_id="leaf-0",
                 label="user: text block",
-                text=recent_text,
+                text=yesterday_text,
                 spans=(
                     RewrittenSpan(
-                        recent_span_start, recent_span_start + len("Widgetary Corp"),
-                        "Widgetary Corp", "l3",
+                        yesterday_span_start, yesterday_span_start + len("Solstice Analytics"),
+                        "Solstice Analytics", "l3",
                     ),
                 ),
             ),
@@ -838,16 +839,16 @@ def _build_payload_inspection_filters_fixture():
     store.retain(
         workspace=WORKSPACE,
         blocked=False,
-        exchange_id=yesterday_id,
+        exchange_id=recent_id,
         leaves=[
             RewrittenLeaf(
                 leaf_id="leaf-0",
                 label="user: text block",
-                text=yesterday_text,
+                text=recent_text,
                 spans=(
                     RewrittenSpan(
-                        yesterday_span_start, yesterday_span_start + len("Solstice Analytics"),
-                        "Solstice Analytics", "l3",
+                        recent_span_start, recent_span_start + len("Widgetary Corp"),
+                        "Widgetary Corp", "l3",
                     ),
                 ),
             ),

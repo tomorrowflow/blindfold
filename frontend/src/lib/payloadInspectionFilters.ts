@@ -138,6 +138,8 @@ export type HourBucket = {
   key: string;
   label: string;
   count: number;
+  // The first-seen exchange's own timestamp inside this hour -- not the hour's
+  // boundary. Buckets sort on it, and isBucketDimmed tests it against a preset.
   startMs: number;
 };
 

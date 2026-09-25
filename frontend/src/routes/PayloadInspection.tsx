@@ -198,6 +198,7 @@ export function PayloadInspection() {
   const filteredExchanges = filterExchanges(exchanges, { timeFilter, outcome, query }, now);
   const presetHitCounts = presetCounts(exchanges, outcome, query, now);
   const buckets = histogramBuckets(exchanges, outcome, query);
+  const maxBucketCount = Math.max(0, ...buckets.map((b) => b.count));
 
   // Selection: a deep link from the Processing trace's own retained-payload
   // link is honored once (issue #432's own "the trace links to it instead of
@@ -296,7 +297,6 @@ export function PayloadInspection() {
                     data-testid="payload-inspection-histogram"
                   >
                     {buckets.map((bucket) => {
-                      const maxCount = Math.max(...buckets.map((b) => b.count));
                       const isSelected = timeFilter.kind === "hour" && timeFilter.hourKey === bucket.key;
                       const dimmed = isBucketDimmed(bucket, timeFilter, now);
                       return (
@@ -319,7 +319,7 @@ export function PayloadInspection() {
                           <span
                             className="bf-payload-inspection-histogram-hour-bar"
                             data-testid="payload-inspection-histogram-hour-bar"
-                            style={{ width: `${Math.round((bucket.count / maxCount) * 100)}%` }}
+                            style={{ width: `${Math.round((bucket.count / maxBucketCount) * 100)}%` }}
                           />
                           <span
                             className="bf-payload-inspection-histogram-hour-count"
