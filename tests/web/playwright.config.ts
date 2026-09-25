@@ -41,9 +41,9 @@ const ACCESS_EMPTY_PORT = 8956;
 // no real OpenBao daemon is ever contacted.
 const PERSISTENT_UNENCRYPTED_PORT = 8957;
 const PERSISTENT_ENCRYPTED_PORT = 8958;
-// Ninth and tenth fixture instances (issue #400): Processing trace's retained-
-// payload expansion (ADR-0059 §7) needs its own armed-with-retained-leaves and
-// disarmed fixture state -- see serve_fixture.py's
+// Ninth and tenth fixture instances (issue #400, relocated to its own
+// destination by #432): Payload inspection needs its own armed-with-retained-
+// leaves and disarmed fixture state -- see serve_fixture.py's
 // `_build_payload_inspection_retained_fixture`.
 const PAYLOAD_INSPECTION_RETAINED_PORT = 8959;
 const PAYLOAD_INSPECTION_DISARMED_PORT = 8960;
@@ -154,7 +154,7 @@ export default defineConfig({
     {
       command: "uv run python serve_fixture.py",
       cwd: __dirname,
-      url: `http://127.0.0.1:${PAYLOAD_INSPECTION_RETAINED_PORT}/ui/processing-trace`,
+      url: `http://127.0.0.1:${PAYLOAD_INSPECTION_RETAINED_PORT}/ui/payload-inspection`,
       reuseExistingServer: false,
       timeout: 20_000,
       env: {
@@ -165,7 +165,7 @@ export default defineConfig({
     {
       command: "uv run python serve_fixture.py",
       cwd: __dirname,
-      url: `http://127.0.0.1:${PAYLOAD_INSPECTION_DISARMED_PORT}/ui/processing-trace`,
+      url: `http://127.0.0.1:${PAYLOAD_INSPECTION_DISARMED_PORT}/ui/payload-inspection`,
       reuseExistingServer: false,
       timeout: 20_000,
       env: {

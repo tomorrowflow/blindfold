@@ -17,7 +17,7 @@ const TRACE_HOP_REJECTED_SURROGATE = "Igor Talvik";
 const TRACE_HOP_PENDING_SURROGATE = "Alex Brenner"; // review inbox's first provisional pool entry
 
 test.describe("Processing trace — alice (holds viewer)", () => {
-  test("renders header, subtitle and the seven-column grid", async ({ alicePage }) => {
+  test("renders header, subtitle and the eight-column grid", async ({ alicePage }) => {
     await alicePage.goto("/ui/processing-trace");
     const view = alicePage.getByTestId("processing-trace-page");
     await expect(view.locator("h1")).toHaveText("Processing trace");
@@ -31,7 +31,27 @@ test.describe("Processing trace — alice (holds viewer)", () => {
       "Detected",
       "L3",
       "Hops",
+      "Payload",
     ]);
+  });
+
+  // Issue #432: Payload inspection moved out of this page's own inline
+  // expansion into its own destination -- none of the primary fixture's three
+  // seeded rows have anything retained (Payload inspection is never armed on
+  // the shared fixture, to avoid perturbing every other spec that polls it),
+  // so every row's Payload cell must show nothing extra, not a broken link.
+  test("a row with nothing retained shows nothing extra in the Payload column", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto("/ui/processing-trace");
+    const cells = alicePage.locator(
+      "[data-testid='processing-trace-table'] tbody tr[data-testid='processing-trace-row'] td:last-child"
+    );
+    await expect(cells).toHaveText(["—", "—", "—"]);
+    await expect(alicePage.getByTestId("processing-trace-row-retained-link")).toHaveCount(0);
+    // The subtitle's own claim ("never ... a payload diff") is true again now
+    // that nothing here renders retained leaf text inline.
+    await expect(alicePage.getByTestId("retained-payload-section")).toHaveCount(0);
   });
 
   test("Total and Blindfold / Upstream columns split the seeded passed row's timing", async ({

@@ -203,11 +203,11 @@ FORCE_DEPENDENCIES_HEALTHY = FIXTURE_STATE != "degraded"
 # and the create-first-workspace/creator-becomes-admin flow exercise real state,
 # not a stub.
 IS_EMPTY = FIXTURE_STATE == "empty"
-# Ninth and tenth fixture instances (issue #400): Processing trace's retained-
-# payload expansion needs its own armed-with-retained-leaves and disarmed
-# fixture state, distinct from the primary instance's 3 seeded rows (issue
-# #151, seeded before `exchange_id` existed) -- see
-# _build_payload_inspection_retained_fixture below.
+# Ninth and tenth fixture instances (issue #400, relocated to Payload
+# inspection's own destination by #432): needs its own armed-with-retained-
+# leaves and disarmed fixture state, distinct from the primary instance's 3
+# seeded Processing trace rows (issue #151, seeded before `exchange_id`
+# existed) -- see _build_payload_inspection_retained_fixture below.
 PAYLOAD_INSPECTION_RETAINED = FIXTURE_STATE == "payload_inspection_retained"
 PAYLOAD_INSPECTION_DISARMED_ONLY = FIXTURE_STATE == "payload_inspection_disarmed"
 # Eleventh fixture instance (issue #417, browser-verify): the two causes behind
@@ -508,14 +508,15 @@ def _build_empty_app():
 
 
 def _build_payload_inspection_retained_fixture(*, armed: bool, pending_surrogate: str):
-    """Issue #400: seeds the state the Processing trace's retained-payload
-    expansion needs -- an armed, retained "passed" exchange (spans, including
-    a deliberately overlapping pair -- ADR-0059 §3), an armed, retained
-    "blocked" exchange (the "never sent" mark), one exchange that predates
-    arming, and one that's armed but simply never retained (fixture-level
-    stand-in for "evicted from the 5-exchange ring buffer" -- indistinguishable
-    from the view's own perspective, see ProcessingTrace.tsx's
-    RetainedPayloadSection).
+    """Issue #400, relocated to its own destination by #432: seeds the state
+    Payload inspection's retained-exchange list/detail needs -- an armed,
+    retained "passed" exchange (spans, including a deliberately overlapping
+    pair -- ADR-0059 §3), an armed, retained "blocked" exchange (the "never
+    sent" mark), one Processing-trace-only exchange that predates arming, and
+    one that's armed but simply never retained -- neither of the latter two
+    is ever retained, so neither appears in Payload inspection's own list;
+    they exist only so the Processing trace's own link-or-nothing rendering
+    (issue #432) has a non-retained row to assert against.
 
     A dedicated `ProcessingTraceBuffer`/`RewrittenLeafStore`/`PayloadInspection`
     triple, replacing (not joining) the standard 3-row seed built above --

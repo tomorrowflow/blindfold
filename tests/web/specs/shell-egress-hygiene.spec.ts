@@ -14,6 +14,11 @@ const SHELL_ROUTES = [
   "/ui/graph",
   "/ui/inbox",
   "/ui/audit",
+  "/ui/processing-trace",
+  // Payload inspection (issue #432): its own shell route, never armed on this
+  // shared fixture (other specs poll it) -- egress hygiene must hold on its
+  // disarmed empty state too.
+  "/ui/payload-inspection",
   "/ui/access",
   "/ui/setup",
   "/ui/settings",

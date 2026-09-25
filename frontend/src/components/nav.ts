@@ -6,6 +6,7 @@ import {
   Inbox,
   ScrollText,
   Activity,
+  Eye,
   ShieldCheck,
   Settings,
   PlugZap,
@@ -37,6 +38,10 @@ export const PRIMARY_NAV: NavItem[] = [
   { label: "Review inbox", path: "/inbox", icon: Inbox },
   { label: "Audit log", path: "/audit", icon: ScrollText },
   { label: "Processing trace", path: "/processing-trace", icon: Activity },
+  // Payload inspection (issue #432, ADR-0059 amendment #431 §7): its own
+  // destination, not nested under the Processing trace -- viewer-gated and
+  // workspace-scoped the same way (the endpoint 403s, not this nav item).
+  { label: "Payload inspection", path: "/payload-inspection", icon: Eye },
 ];
 
 export const SECONDARY_NAV: NavItem[] = [

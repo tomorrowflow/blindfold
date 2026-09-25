@@ -12,6 +12,17 @@ export async function fetchUnprotectedModeCapability(): Promise<boolean> {
   return Boolean(body.unprotected_mode?.capability_enabled);
 }
 
+// Payload inspection's Unprotected-mode-active empty state (issue #432, ADR-0059
+// §4's "nothing is retained while Unprotected mode is active"): read the same
+// `/v1/status` field, this time the *active* override rather than the
+// capability that merely permits invoking it.
+export async function fetchUnprotectedModeActive(): Promise<boolean> {
+  const r = await fetch("/v1/status");
+  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const body = await r.json();
+  return Boolean(body.unprotected_mode?.active);
+}
+
 export async function setUnprotectedModeCapability(enabled: boolean): Promise<boolean> {
   const r = await fetch("/v1/unprotected-mode/capability", {
     method: "POST",
