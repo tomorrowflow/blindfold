@@ -76,10 +76,12 @@ test.describe("Connect page — Claude Desktop", () => {
       .getByTestId("copyable-snippet")
       .locator("code");
     // Bob never gets a workspace header, so we can't wait on its presence the way
-    // alice's half does. Wait for WorkspaceContext's own settled signal instead
-    // (the shell's workspace switcher leaving its loading state) -- otherwise a
-    // still-loading render would make this negative assertion pass by accident.
-    await expect(bobPage.locator(".bf-workspace-switcher--loading")).toHaveCount(0);
+    // alice's half does. Wait for WorkspaceContext's own settled signal instead --
+    // the switcher's positive "No workspace" state for a role-less identity, not
+    // merely the absence of its loading state (which also holds before the shell
+    // has mounted) -- otherwise a still-loading render would make this negative
+    // assertion pass by accident.
+    await expect(bobPage.locator(".bf-workspace-switcher--empty")).toBeVisible();
     const bobSnippet = await bobCode.innerText();
     expect(JSON.parse(bobSnippet)).not.toHaveProperty("inferenceCustomHeaders");
   });
