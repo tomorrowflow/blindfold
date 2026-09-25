@@ -35,7 +35,7 @@ test.describe("Connect page — Claude Desktop", () => {
     expect(profile.inferenceModels.length).toBeGreaterThan(0);
   });
 
-  test("never renders or asks for an API key", async ({ alicePage }) => {
+  test("never renders or asks for an API key", async ({ alicePage, baseURL }) => {
     await alicePage.goto("/ui/connect");
     const card = alicePage.getByTestId("connect-card-claude-desktop");
     await expect(card).toBeVisible();
@@ -44,7 +44,11 @@ test.describe("Connect page — Claude Desktop", () => {
     await expect(card.locator("input")).toHaveCount(0);
     const cardText = await card.innerText();
     expect(cardText.toLowerCase()).not.toContain("sk-ant-");
-    const snippetText = await card.getByTestId("copyable-snippet").locator("code").innerText();
+    const snippet = card.getByTestId("copyable-snippet").locator("code");
+    // Wait for the live host/port to land (same async render as the copy-button
+    // test above) before parsing, so a still-loading snippet can't be read mid-render.
+    await expect(snippet).toContainText(baseURL!);
+    const snippetText = await snippet.innerText();
     expect(JSON.parse(snippetText)).not.toHaveProperty("inferenceGatewayApiKey");
   });
 
@@ -53,21 +57,30 @@ test.describe("Connect page — Claude Desktop", () => {
     bobPage,
   }) => {
     await alicePage.goto("/ui/connect");
-    const aliceSnippet = await alicePage
+    const aliceCode = alicePage
       .getByTestId("connect-card-claude-desktop")
       .getByTestId("copyable-snippet")
-      .locator("code")
-      .innerText();
+      .locator("code");
+    // WorkspaceContext resolves the active workspace asynchronously; wait for the
+    // header to actually land in the snippet before parsing, or a pre-resolution
+    // read captures the transient no-header render (issue #436).
+    await expect(aliceCode).toContainText("x-blindfold-workspace");
+    const aliceSnippet = await aliceCode.innerText();
     expect(JSON.parse(aliceSnippet).inferenceCustomHeaders).toEqual({
       "x-blindfold-workspace": WORKSPACE,
     });
 
     await bobPage.goto("/ui/connect");
-    const bobSnippet = await bobPage
+    const bobCode = bobPage
       .getByTestId("connect-card-claude-desktop")
       .getByTestId("copyable-snippet")
-      .locator("code")
-      .innerText();
+      .locator("code");
+    // Bob never gets a workspace header, so we can't wait on its presence the way
+    // alice's half does. Wait for WorkspaceContext's own settled signal instead
+    // (the shell's workspace switcher leaving its loading state) -- otherwise a
+    // still-loading render would make this negative assertion pass by accident.
+    await expect(bobPage.locator(".bf-workspace-switcher--loading")).toHaveCount(0);
+    const bobSnippet = await bobCode.innerText();
     expect(JSON.parse(bobSnippet)).not.toHaveProperty("inferenceCustomHeaders");
   });
 
