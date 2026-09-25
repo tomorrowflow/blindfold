@@ -434,8 +434,17 @@ def _apply_gliner_detection_overrides() -> None:
     hub client, which is stateless and safe to reconstruct per request.
     """
     import blindfold.gliner_provisioning as gliner_provisioning_module
+    import blindfold.gliner_status as gliner_status_module
 
     gliner_provisioning_module.GLINER_MODEL_MANIFEST = _STUB_GLINER_MANIFEST
+    # Issue #429 added `is_gliner_extra_importable()` as a third precondition that
+    # `gliner_detection_status`/`retry_gliner_provisioning` read straight off this
+    # module's own namespace (not re-resolved through l3_gliner). #429's own pytest
+    # tests fake it the same way (monkeypatch.setattr(gliner_status, ...)); this
+    # fixture never installs the ~197 MB `blindfold[gliner]` extra, so without this
+    # the fixture's real environment answers False and every provisioned/activated
+    # status here reads back "verification_failed" (issue #435).
+    gliner_status_module.is_gliner_extra_importable = lambda: True
     activation_store = _InMemoryGlinerActivationStore()
     tracker = GlinerProvisioningTracker()
     app.dependency_overrides[get_gliner_hub_client] = _StubGlinerHubClient

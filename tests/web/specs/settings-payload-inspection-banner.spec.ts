@@ -46,6 +46,40 @@ test.describe("payload inspection — persistent banner", () => {
   });
 });
 
+test.describe("payload inspection — until-disarmed banner text", () => {
+  test("shows 'until disarmed · N of 200 retained' instead of a countdown", async ({ alicePage }) => {
+    // Issue #433 AC: "the banner shows ... 'until disarmed · N of 200
+    // retained' for the untimed [window]." Mocked at the status endpoint
+    // (mirrors the auto-disarm test below) rather than driving a real 2-hour/
+    // until-disarmed clock through the UI.
+    await alicePage.route("**/v1/management/payload-inspection*", async (route) => {
+      if (route.request().method() === "GET") {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({
+            armed: true,
+            remaining_seconds: null,
+            window: "until_disarmed",
+            count_bound: 200,
+            retained_count: 3,
+          }),
+        });
+        return;
+      }
+      await route.continue();
+    });
+
+    await alicePage.goto("/ui/settings");
+    const banner = alicePage.getByTestId("payload-inspection-banner");
+    await expect(banner).toBeVisible();
+    await expect(banner).toContainText("until disarmed");
+    await expect(alicePage.getByTestId("payload-inspection-banner-retained-count")).toContainText(
+      "3 of 200"
+    );
+  });
+});
+
 test.describe("payload inspection — auto-disarm notification", () => {
   test("a poll that observes armed -> not-armed (without this tab's own disarm click) raises a toast and clears the banner", async ({
     alicePage,

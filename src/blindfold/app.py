@@ -212,7 +212,11 @@ from .status import (
     block_retryability,
     compute_state,
 )
-from .payload_inspection import PayloadInspection
+from .payload_inspection import (
+    DEFAULT_RETENTION_WINDOW,
+    InvalidRetentionWindowError,
+    PayloadInspection,
+)
 from .rewritten_leaves import RewrittenLeafStore
 from .store import VendoredSeedRepository, vendored_seed_repository
 from .surrogates import MintPoolExhaustedError, SurrogateMapping
@@ -376,29 +380,33 @@ _declared_tool_vocabulary = DeclaredToolVocabulary()
 # via dependency_overrides[get_unprotected_mode].
 _unprotected_mode = UnprotectedMode()
 
-# Process-wide retained-leaf store (ADR-0059 §2-§4, issue #399): the last 5
-# exchanges' rewritten leaves, only ever populated while `_payload_inspection`
-# is armed (checked once per exchange, in `_exchange`, below). A SEPARATE
-# singleton from `_payload_inspection` itself (ADR-0059 §3: "keep this in a
-# separate store, not as extra fields on the [Processing] trace record") --
-# same never-persisted, evaporates-on-restart shape as every other process-
-# global store on this page. Tests substitute their own via
-# dependency_overrides[get_rewritten_leaf_store]. Constructed first so
-# `_payload_inspection`, below, can wire its release hook to it.
+# Process-wide retained-leaf store (ADR-0059 §2-§4, issue #399): the armed
+# window's own count-bounded ring of rewritten leaves (issue #433), only ever
+# populated while `_payload_inspection` is armed (checked once per exchange, in
+# `_exchange`, below). A SEPARATE singleton from `_payload_inspection` itself
+# (ADR-0059 §3: "keep this in a separate store, not as extra fields on the
+# [Processing] trace record") -- same never-persisted, evaporates-on-restart
+# shape as every other process-global store on this page. Tests substitute
+# their own via dependency_overrides[get_rewritten_leaf_store]. Constructed
+# first so `_payload_inspection`, below, can wire its release/bound hooks to it.
 _rewritten_leaf_store = RewrittenLeafStore()
 
-# Process-wide Payload inspection state (ADR-0059 §4, issue #398): armed flag +
-# fixed 30-minute expiry timer. Deliberately a singleton scoped to this proxy
-# process only -- never persisted to the shared store, never per-workspace --
-# same reasoning as `_unprotected_mode` above: the auto-disarm survives a
-# menu-bar-app crash, and disarm-on-restart falls out of the singleton being
-# reconstructed with a fresh process. `on_disarm` releases `_rewritten_leaf_store`
-# on both the explicit and the 30-minute auto-disarm path (issue #420) -- wired
-# here, the app-level seam that already holds both, rather than giving
-# `PayloadInspection` a direct reference to the store (ADR-0059 §3: kept
-# separate). Tests substitute their own via
+# Process-wide Payload inspection state (ADR-0059 §4, issue #398; selectable
+# window + per-window count bound, ADR-0059 amendment #431 §4, issue #433).
+# Deliberately a singleton scoped to this proxy process only -- never
+# persisted to the shared store, never per-workspace -- same reasoning as
+# `_unprotected_mode` above: the auto-disarm survives a menu-bar-app crash, and
+# disarm-on-restart falls out of the singleton being reconstructed with a
+# fresh process. `on_disarm` releases `_rewritten_leaf_store` on both the
+# explicit and the timed-window auto-disarm path (issue #420); `on_arm` sets
+# the store's own count bound to whichever window was just armed (issue #433)
+# -- both wired here, the app-level seam that already holds both, rather than
+# giving `PayloadInspection` a direct reference to the store (ADR-0059 §3:
+# kept separate). Tests substitute their own via
 # dependency_overrides[get_payload_inspection].
-_payload_inspection = PayloadInspection(on_disarm=_rewritten_leaf_store.clear)
+_payload_inspection = PayloadInspection(
+    on_disarm=_rewritten_leaf_store.clear, on_arm=_rewritten_leaf_store.set_bound
+)
 
 # Process-wide rolling window of fail-closed/leak-gate blocks (issue #92), fed by the
 # single `_blocked_response` funnel (#91) so `/v1/status`'s `blocks.recent` carries the
@@ -3619,16 +3627,38 @@ async def retry_gliner_detection(
     )
 
 
+def _status_with_retained_count(
+    payload_inspection: PayloadInspection,
+    rewritten_leaf_store: RewrittenLeafStore,
+    workspace: str,
+) -> dict:
+    """Merge :meth:`PayloadInspection.status`'s dict with this workspace's
+    current retained-exchange count (issue #433) -- read from the SEPARATE
+    store instance (ADR-0059 §3), the same merge shape
+    :func:`list_rewritten_leaves` already uses for ``armed``/``armed_at``. The
+    banner needs this to render "until disarmed · N of 200 retained" for the
+    untimed window without a second fetch to the viewer-gated leaves endpoint.
+    """
+    body = payload_inspection.status().to_dict()
+    body["retained_count"] = len(rewritten_leaf_store.for_workspace(workspace))
+    return body
+
+
 @app.post("/v1/management/payload-inspection")
 async def arm_payload_inspection(
     workspace: str,
     request: Request,
+    window: str = DEFAULT_RETENTION_WINDOW,
     rbac: RbacRegistry = Depends(get_rbac),
     payload_inspection: PayloadInspection = Depends(get_payload_inspection),
+    rewritten_leaf_store: RewrittenLeafStore = Depends(get_rewritten_leaf_store),
     audit_log: AuditLog = Depends(get_audit_log),
 ) -> dict:
-    """Arm Payload inspection (ADR-0059 §4, issue #398): retaining nothing yet --
-    this is the arm/disarm precondition only.
+    """Arm Payload inspection (ADR-0059 §4, issue #398), with a selectable
+    retention window (ADR-0059 amendment #431 §4, issue #433): ``window`` is one
+    of ``"30m"`` (default), ``"2h"``, or ``"until_disarmed"``, each carrying its
+    own auto-disarm timer (or none) and count bound -- see
+    ``payload_inspection.RETENTION_WINDOWS``.
 
     Requires the ``admin`` role, checked against ``workspace`` -- install-global
     like the GLiNER detection endpoints (ADR-0034 §5), not a scope on the
@@ -3639,6 +3669,11 @@ async def arm_payload_inspection(
     surface reasoning Unprotected mode's capability gate uses (ADR-0038), applied
     here directly to the ``admin`` gate since this capability has no separate
     two-step toggle.
+
+    An unrecognized ``window`` 422s (mirroring ``enable_unprotected_mode``'s
+    ``InvalidBoundError`` handling) and is neither armed nor audited -- nothing
+    was armed, so there is nothing to record as refused either (the admin gate
+    above is the only refusal this endpoint audits).
     """
     identity = _caller_identity(request)
     if not rbac.has_role(identity, workspace, "admin"):
@@ -3651,16 +3686,19 @@ async def arm_payload_inspection(
             )
         )
         raise HTTPException(status_code=403, detail="insufficient rights")
-    payload_inspection.arm()
+    try:
+        payload_inspection.arm(window)
+    except InvalidRetentionWindowError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     audit_log.append(
         AuditRecord(
             workspace=workspace,
             event="payload-inspection-armed",
-            reason="admin armed Payload inspection",
+            reason=f"admin armed Payload inspection (window={window})",
             identity=identity,
         )
     )
-    return payload_inspection.status().to_dict()
+    return _status_with_retained_count(payload_inspection, rewritten_leaf_store, workspace)
 
 
 @app.delete("/v1/management/payload-inspection")
@@ -3669,12 +3707,13 @@ async def disarm_payload_inspection(
     request: Request,
     rbac: RbacRegistry = Depends(get_rbac),
     payload_inspection: PayloadInspection = Depends(get_payload_inspection),
+    rewritten_leaf_store: RewrittenLeafStore = Depends(get_rewritten_leaf_store),
 ) -> dict:
     """Disarm Payload inspection (ADR-0059 §4, issue #398). Requires ``admin``,
     same gate as arming."""
     _require_role(request, workspace, "admin", rbac)
     payload_inspection.disarm()
-    return payload_inspection.status().to_dict()
+    return _status_with_retained_count(payload_inspection, rewritten_leaf_store, workspace)
 
 
 @app.get("/v1/management/payload-inspection")
@@ -3683,15 +3722,17 @@ async def get_payload_inspection_status(
     request: Request,
     rbac: RbacRegistry = Depends(get_rbac),
     payload_inspection: PayloadInspection = Depends(get_payload_inspection),
+    rewritten_leaf_store: RewrittenLeafStore = Depends(get_rewritten_leaf_store),
 ) -> dict:
-    """Read Payload inspection's armed state and remaining time (ADR-0059 §4) --
-    "the armed state is readable by an authorized caller" (issue #398). Requires
-    ``admin``, matching the write gate: the supervisor deliberately does not
-    reflect this state (no alarm-icon reuse, ADR-0059 §4), so only the
-    admin-facing Settings surface needs to read it.
+    """Read Payload inspection's armed state, chosen window, count bound and
+    remaining time (ADR-0059 §4; window/bound, ADR-0059 amendment #431 §4,
+    issue #433) -- "the armed state is readable by an authorized caller"
+    (issue #398). Requires ``admin``, matching the write gate: the supervisor
+    deliberately does not reflect this state (no alarm-icon reuse, ADR-0059
+    §4), so only the admin-facing Settings surface needs to read it.
     """
     _require_role(request, workspace, "admin", rbac)
-    return payload_inspection.status().to_dict()
+    return _status_with_retained_count(payload_inspection, rewritten_leaf_store, workspace)
 
 
 @app.get("/v1/management/payload-inspection/leaves")

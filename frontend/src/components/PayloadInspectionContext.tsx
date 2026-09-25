@@ -21,6 +21,7 @@ import {
   disarmPayloadInspection,
   fetchPayloadInspectionStatus,
   type PayloadInspectionStatus,
+  type RetentionWindow,
 } from "../lib/payloadInspectionApi";
 
 const POLL_INTERVAL_MS = 5000;
@@ -28,14 +29,23 @@ const POLL_INTERVAL_MS = 5000;
 type PayloadInspectionContextValue = {
   armed: boolean;
   remainingSeconds: number | null;
+  window: RetentionWindow | null;
+  countBound: number | null;
+  retainedCount: number;
   isAdmin: boolean;
-  arm: () => Promise<void>;
+  arm: (window: RetentionWindow) => Promise<void>;
   disarm: () => Promise<void>;
 };
 
 const PayloadInspectionContext = createContext<PayloadInspectionContextValue | null>(null);
 
-const DEFAULT_STATUS: PayloadInspectionStatus = { armed: false, remainingSeconds: null };
+const DEFAULT_STATUS: PayloadInspectionStatus = {
+  armed: false,
+  remainingSeconds: null,
+  window: null,
+  countBound: null,
+  retainedCount: 0,
+};
 
 export function PayloadInspectionProvider({ children }: { children: React.ReactNode }) {
   const { activeWorkspace } = useWorkspace();
@@ -79,11 +89,14 @@ export function PayloadInspectionProvider({ children }: { children: React.ReactN
     };
   }, [workspace, isAdmin, applyStatus]);
 
-  const arm = useCallback(async () => {
-    if (!workspace || !isAdmin) return;
-    const result = await armPayloadInspection(workspace);
-    if (!("locked" in result)) applyStatus(result);
-  }, [workspace, isAdmin, applyStatus]);
+  const arm = useCallback(
+    async (retentionWindow: RetentionWindow) => {
+      if (!workspace || !isAdmin) return;
+      const result = await armPayloadInspection(workspace, retentionWindow);
+      if (!("locked" in result)) applyStatus(result);
+    },
+    [workspace, isAdmin, applyStatus]
+  );
 
   const disarm = useCallback(async () => {
     if (!workspace || !isAdmin) return;
@@ -94,7 +107,16 @@ export function PayloadInspectionProvider({ children }: { children: React.ReactN
 
   return (
     <PayloadInspectionContext.Provider
-      value={{ armed: status.armed, remainingSeconds: status.remainingSeconds, isAdmin, arm, disarm }}
+      value={{
+        armed: status.armed,
+        remainingSeconds: status.remainingSeconds,
+        window: status.window,
+        countBound: status.countBound,
+        retainedCount: status.retainedCount,
+        isAdmin,
+        arm,
+        disarm,
+      }}
     >
       {children}
     </PayloadInspectionContext.Provider>

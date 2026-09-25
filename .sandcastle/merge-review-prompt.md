@@ -18,7 +18,11 @@ implement iteration or a human — never an unaudited edit stacked on top.
 
 ## The merge delta — what the merger introduced beyond the reviewed branches
 
-!`git diff {{REVIEW_BASE}}..HEAD`
+!`git diff {{REVIEW_BASE}}..HEAD -- . ':(exclude)src/blindfold/ui_dist/'`
+
+_(`src/blindfold/ui_dist/` — the committed, minified SPA bundle — is omitted here: it can be
+hundreds of thousands of tokens, and the hosted `ui-dist-freshness` gate already proves it matches
+`frontend/src`. Review the `frontend/` source instead.)_
 
 ## Commits in the merge delta
 
@@ -58,6 +62,21 @@ implement iteration or a human — never an unaudited edit stacked on top.
   is what blocks the merge from being blessed — that is the whole point of this gate.
 - If the merge result is verified correct and leak-clean: output
   <promise>COMPLETE</promise>.
+
+# LONG-RUNNING SUITES — ONE TURN, NO BACKGROUNDING
+
+You get exactly **one turn**. If it ends without `<promise>COMPLETE</promise>` (including
+because you stopped to "wait for a background task's notification"), that counts as a
+**failed gate** — a strike against the issue, even if everything was green. Every suite you
+start must therefore finish **inside this turn**:
+
+- Run suites in the foreground (Bash `timeout` up to 600000 ms).
+- `uv run pytest` can exceed that limit when PyInstaller is installed (the frozen-binary
+  build). Then start it in the background with its output going to a log file, and in the
+  **same turn** keep issuing foreground wait commands (e.g.
+  `for i in $(seq 1 90); do kill -0 $PID 2>/dev/null || break; sleep 6; done; tail -5 log`)
+  until it has exited. Then read the result.
+- Never end your turn while a suite is still running.
 
 # HANDOFF NOTES (required)
 

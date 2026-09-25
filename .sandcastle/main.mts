@@ -288,21 +288,31 @@ const envVar = (k: string): string =>
   dotenv.has(k) ? dotenv.get(k) || process.env[k] || "" : "";
 
 // ── Per-role model settings (Anthropic or Ollama) ────────────────────────────
-// Each role's model is set in .env as SANDCASTLE_MODEL_<ROLE>, ROLE one of PLAN,
-// IMPLEMENT, REVIEW, WEB_VERIFY, MERGE, MERGE_REVIEW. The value is
-// `<provider>:<model>` or a bare `<model>` (Anthropic):
+// Kept IDENTICAL across the blindfold and voice-diary harnesses — only
+// DEFAULT_MODELS (the role set and each role's built-in model) is per repo.
+//
+// Each role's model is set in .env as SANDCASTLE_MODEL_<ROLE>, where ROLE is a
+// key of DEFAULT_MODELS. The value is `<provider>:<model>` or a bare `<model>`
+// for the default provider:
 //   SANDCASTLE_MODEL_IMPLEMENT=ollama:glm-5.3
 //   SANDCASTLE_MODEL_REVIEW=anthropic:claude-opus-5-5
-// Unset roles use DEFAULT_MODELS. `ollama:` with no model uses OLLAMA_MODEL.
+//   SANDCASTLE_MODEL_MERGE=glm-5.3            (default provider)
+// Unset roles use DEFAULT_MODELS, unless OLLAMA_MODEL is set — then every unset
+// role runs on Ollama with OLLAMA_MODEL (the "switch everything to Ollama"
+// lever). A bare `<model>` means the default provider: `ollama` when
+// OLLAMA_MODEL is set, else `anthropic`. `ollama:` / `anthropic:` with no model
+// means that provider's default (OLLAMA_MODEL / the role's DEFAULT_MODELS entry).
 //
 // Ollama speaks the Anthropic Messages API, so Claude Code runs unchanged against
 // it: point ANTHROPIC_BASE_URL at Ollama and authenticate with ANTHROPIC_AUTH_TOKEN
-// (which outranks CLAUDE_CODE_OAUTH_TOKEN, so the Anthropic token can stay in .env).
+// (the same variables `ollama launch claude` sets). ANTHROPIC_AUTH_TOKEN outranks
+// CLAUDE_CODE_OAUTH_TOKEN in Claude Code's auth precedence, so the Anthropic token
+// can stay in .env while a role runs on Ollama.
 //   OLLAMA_API_KEY    required for Ollama Cloud (https://ollama.com/settings/keys)
 //   OLLAMA_BASE_URL   default https://ollama.com; a host-local Ollama is
 //                     http://host.containers.internal:11434 (no key needed)
-// Every Claude Code model alias (haiku/sonnet/opus, subagents) is pinned to the
-// role's Ollama model — the Anthropic model IDs don't exist there.
+// Every Claude Code model alias (haiku/sonnet/opus, subagents, background tasks)
+// is pinned to the role's Ollama model — the Anthropic model IDs don't exist there.
 type Role = keyof typeof DEFAULT_MODELS;
 type Provider = "anthropic" | "ollama";
 const ROLES = Object.keys(DEFAULT_MODELS) as Role[];
@@ -310,13 +320,16 @@ const OLLAMA_MODEL = envVar("OLLAMA_MODEL");
 const OLLAMA_BASE_URL = envVar("OLLAMA_BASE_URL") || "https://ollama.com";
 const OLLAMA_API_KEY = envVar("OLLAMA_API_KEY");
 const OLLAMA_IS_CLOUD = /^https:\/\/(www\.)?ollama\.com/.test(OLLAMA_BASE_URL);
+const DEFAULT_PROVIDER: Provider = OLLAMA_MODEL ? "ollama" : "anthropic";
 
 function resolveRole(role: Role): { provider: Provider; model: string } {
   const spec = envVar(`SANDCASTLE_MODEL_${role}`);
   const m = spec.match(/^(anthropic|ollama):(.*)$/);
-  const provider: Provider = m ? (m[1] as Provider) : "anthropic";
+  const provider: Provider = m ? (m[1] as Provider) : DEFAULT_PROVIDER;
+  // `ollama:` / `anthropic:` with no model = that provider's default model.
   const model =
-    (m ? m[2]!.trim() : spec) || (provider === "ollama" ? OLLAMA_MODEL : DEFAULT_MODELS[role]);
+    (m ? m[2]!.trim() : spec) ||
+    (provider === "ollama" ? OLLAMA_MODEL : DEFAULT_MODELS[role]);
   if (!model) {
     console.error(
       `\n✗ ${role} is set to Ollama but has no model: set SANDCASTLE_MODEL_${role}=ollama:<model> ` +
@@ -351,7 +364,7 @@ function agentFor(role: Role) {
   // would silently drop the redirect and send the Ollama model id to Anthropic
   // ("There's an issue with the selected model"). Prefix the assignments onto
   // the command itself: per-command, so an Anthropic role in the SAME sandbox
-  // (the Opus reviewer) is unaffected. The key is referenced as
+  // (e.g. an Opus reviewer) is unaffected. The key is referenced as
   // $OLLAMA_API_KEY (already in the container env from .env) so its value
   // never appears in the command string or the logs.
   const shq = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
@@ -369,12 +382,25 @@ function agentFor(role: Role) {
   };
 }
 
-// Fail fast on a missing Ollama Cloud key, and print what each role runs on so
-// a misconfigured .env is visible at startup rather than as a failed agent.
+// Fail fast on missing credentials, and print what each role runs on so a
+// misconfigured .env is visible at startup rather than as a failed agent. A
+// missing GH_TOKEN otherwise surfaces as an opaque PromptError from the
+// planner's `gh issue list` preprocessing step.
 {
-  const usesOllama = ROLES.some((r) => ROLE_MODELS[r].provider === "ollama");
-  if (usesOllama && OLLAMA_IS_CLOUD && !OLLAMA_API_KEY) {
-    console.error(`\n✗ A role runs on Ollama Cloud but OLLAMA_API_KEY is not set in .sandcastle/.env.\n`);
+  const used = new Set(ROLES.map((r) => ROLE_MODELS[r].provider));
+  const missing: string[] = [];
+  if (!envVar("GH_TOKEN")) missing.push("GH_TOKEN");
+  if (used.has("anthropic") && !envVar("CLAUDE_CODE_OAUTH_TOKEN")) {
+    missing.push("CLAUDE_CODE_OAUTH_TOKEN");
+  }
+  if (used.has("ollama") && OLLAMA_IS_CLOUD && !OLLAMA_API_KEY) {
+    missing.push("OLLAMA_API_KEY (Ollama Cloud)");
+  }
+  if (missing.length > 0) {
+    console.error(
+      `\n✗ Missing sandbox credential(s): ${missing.join(", ")}.\n` +
+        `  Add them to .sandcastle/.env (see .sandcastle/.env.example).\n`,
+    );
     process.exit(1);
   }
   console.log("\nAgent models:");
