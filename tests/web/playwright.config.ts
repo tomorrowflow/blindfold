@@ -53,6 +53,11 @@ const PAYLOAD_INSPECTION_DISARMED_PORT = 8960;
 // port's own block_history directly through the real `_leak_gate_or_block`
 // funnel (see its LEAK_TAXONOMY docstring) instead.
 const LEAK_TAXONOMY_PORT = 8961;
+// Twelfth fixture instance (issue #434): Payload inspection's list filters need
+// retained exchanges spread across real wall-clock time to differentiate the
+// window-relative time presets and per-hour histogram -- see serve_fixture.py's
+// `_build_payload_inspection_filters_fixture`.
+const PAYLOAD_INSPECTION_FILTERS_PORT = 8962;
 
 export default defineConfig({
   testDir: "./specs",
@@ -182,6 +187,17 @@ export default defineConfig({
       env: {
         BLINDFOLD_FIXTURE_PORT: String(LEAK_TAXONOMY_PORT),
         BLINDFOLD_FIXTURE_STATE: "leak_taxonomy",
+      },
+    },
+    {
+      command: "uv run python serve_fixture.py",
+      cwd: __dirname,
+      url: `http://127.0.0.1:${PAYLOAD_INSPECTION_FILTERS_PORT}/ui/payload-inspection`,
+      reuseExistingServer: false,
+      timeout: 20_000,
+      env: {
+        BLINDFOLD_FIXTURE_PORT: String(PAYLOAD_INSPECTION_FILTERS_PORT),
+        BLINDFOLD_FIXTURE_STATE: "payload_inspection_filters",
       },
     },
   ],

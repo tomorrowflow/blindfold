@@ -1102,6 +1102,121 @@ body {
   min-height: 120px;
 }
 
+/* Payload inspection — list filters (issue #434, ADR-0059 amendment #431 §8):
+   window-relative time presets, per-hour histogram, outcome filter, search. */
+
+.bf-payload-inspection-filters {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 4px 12px;
+  border-bottom: 1px solid var(--bf-border-soft);
+  margin-bottom: 8px;
+}
+
+.bf-payload-inspection-time-presets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.bf-payload-inspection-preset-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.75rem;
+  padding: 3px 8px;
+  border-radius: 9999px;
+  border: 1px solid var(--bf-border-soft);
+  background: var(--bf-canvas);
+  cursor: pointer;
+  color: inherit;
+}
+
+.bf-payload-inspection-preset-chip--active {
+  border-color: var(--bf-accent-lime);
+  background: var(--bf-canvas);
+  font-weight: 600;
+}
+
+.bf-payload-inspection-preset-chip--dimmed {
+  opacity: 0.5;
+}
+
+.bf-payload-inspection-preset-chip-count {
+  font-family: var(--bf-font-mono);
+  font-size: 0.6875rem;
+  color: #6b7589;
+}
+
+.bf-payload-inspection-histogram {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.bf-payload-inspection-histogram-hour {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  padding: 2px 4px;
+  cursor: pointer;
+  border-radius: 4px;
+  font: inherit;
+}
+
+.bf-payload-inspection-histogram-hour:hover {
+  background: var(--bf-canvas);
+}
+
+.bf-payload-inspection-histogram-hour--selected {
+  background: var(--bf-canvas);
+  outline: 1px solid var(--bf-accent-lime);
+}
+
+.bf-payload-inspection-histogram-hour--dimmed {
+  opacity: 0.4;
+}
+
+.bf-payload-inspection-histogram-hour-label {
+  font-size: 0.6875rem;
+  color: #6b7589;
+  white-space: nowrap;
+}
+
+.bf-payload-inspection-histogram-hour-bar {
+  display: block;
+  height: 6px;
+  min-width: 2px;
+  background: var(--bf-accent-lime);
+  border-radius: 3px;
+}
+
+.bf-payload-inspection-histogram-hour-count {
+  font-family: var(--bf-font-mono);
+  font-size: 0.6875rem;
+  color: #6b7589;
+}
+
+.bf-payload-inspection-outcome-filter {
+  display: flex;
+  gap: 4px;
+}
+
+.bf-payload-inspection-search {
+  width: 100%;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--bf-border-soft);
+  background: var(--bf-canvas);
+  font-size: 0.8125rem;
+  color: inherit;
+}
+
 /* -----------------------------------------------------------------------
    Toast outlet (issue #95)
    ----------------------------------------------------------------------- */

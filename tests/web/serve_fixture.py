@@ -46,6 +46,7 @@ import json
 import os
 import tempfile
 import threading
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -210,6 +211,14 @@ IS_EMPTY = FIXTURE_STATE == "empty"
 # existed) -- see _build_payload_inspection_retained_fixture below.
 PAYLOAD_INSPECTION_RETAINED = FIXTURE_STATE == "payload_inspection_retained"
 PAYLOAD_INSPECTION_DISARMED_ONLY = FIXTURE_STATE == "payload_inspection_disarmed"
+# Twelfth fixture instance (issue #434): the list filters -- window-relative
+# time presets and the per-hour histogram -- need retained exchanges spread
+# across real wall-clock time, which _build_payload_inspection_retained_fixture
+# deliberately does not have (both its rows land within the same instant, at
+# build time, which is enough for the outcome filter and the search box but
+# cannot exercise "some preset chips have zero hits" or "more than one hour
+# bucket"). See _build_payload_inspection_filters_fixture below.
+PAYLOAD_INSPECTION_FILTERS = FIXTURE_STATE == "payload_inspection_filters"
 # Eleventh fixture instance (issue #417, browser-verify): the two causes behind
 # `leak_detected`'s taxonomy split are both real-blinder-miss safety-net paths --
 # neither is reachable by posting ordinary text at a healthy `/v1/messages`
@@ -721,6 +730,133 @@ def _build_payload_inspection_retained_fixture(*, armed: bool, pending_surrogate
     return payload_inspection, store, trace
 
 
+def _build_payload_inspection_filters_fixture():
+    """Issue #434: seeds retained exchanges spread across distinct real
+    wall-clock offsets, so the exchange list's window-relative time presets
+    and per-hour histogram (ADR-0059 amendment #431 §8) have something to
+    differentiate -- unlike _build_payload_inspection_retained_fixture above,
+    whose two rows both land within the same instant at fixture-build time.
+
+    Offsets are real deltas from THIS PROCESS'S OWN start time, not a frozen/
+    injected clock: the filters read Date.now() in the browser, so the
+    fixture's "past" has to be genuinely in the past relative to whenever the
+    test actually runs, not relative to some fixed epoch. Three exchanges:
+
+    - "recent" (20 min ago, sent) -- inside the last hour and today, but
+      OUTSIDE the last 15 minutes, so that chip reads a real zero (dimmed,
+      still clickable) rather than the trivial case of every chip having a
+      hit.
+    - "within_hour_ago" (85 min ago, blocked/"never sent") -- outside the
+      last hour, inside today. The 65-minute gap from "recent" guarantees a
+      DIFFERENT hour bucket (any two timestamps more than 60 minutes apart
+      cannot share one, since a bucket spans at most 60 minutes) regardless
+      of what minute this process happens to boot in.
+    - "yesterday" (26 hours ago, sent) -- outside today by construction: any
+      offset >= 24h always lands on a calendar date strictly before today's,
+      whatever today's time-of-day is.
+
+    Residual flake window, accepted rather than engineered around further:
+    if this process boots within the first 85 minutes after local midnight,
+    "within_hour_ago" could itself read as yesterday, undercounting "today"
+    by one. Rare, and the same category of real-wall-clock risk every
+    since-relative filter (e.g. AuditLog.tsx's "Last 24 hours") already
+    carries.
+    """
+    now = datetime.now(timezone.utc)
+    ts_recent = (now - timedelta(minutes=20)).isoformat()
+    ts_hour_ago = (now - timedelta(minutes=85)).isoformat()
+    ts_yesterday = (now - timedelta(hours=26)).isoformat()
+
+    trace = ProcessingTraceBuffer(now_iso=lambda: now.isoformat())
+    payload_inspection = PayloadInspection(now_iso=lambda: now.isoformat())
+    payload_inspection.arm("until_disarmed")
+
+    ts_iter = iter([ts_recent, ts_hour_ago, ts_yesterday])
+    store = RewrittenLeafStore(maxlen=200, now_iso=lambda: next(ts_iter))
+
+    recent_id = "filters-fixture-recent"
+    hour_ago_id = "filters-fixture-hour-ago"
+    yesterday_id = "filters-fixture-yesterday"
+
+    recent_text = "Kickoff notes: Widgetary Corp confirmed the new contract terms this morning."
+    recent_span_start = recent_text.index("Widgetary Corp")
+    hour_ago_text = "Draft blocked: Nightshade Ventures flagged for review before sending."
+    hour_ago_span_start = hour_ago_text.index("Nightshade Ventures")
+    yesterday_text = "Yesterday's summary mentioned Solstice Analytics closing the deal."
+    yesterday_span_start = yesterday_text.index("Solstice Analytics")
+
+    trace.record(
+        workspace=WORKSPACE, endpoint="messages", streamed=False,
+        outcome="passed", detected=1, duration_ms=12.0, exchange_id=recent_id,
+    )
+    trace.record(
+        workspace=WORKSPACE, endpoint="messages", streamed=False,
+        outcome="blocked", detected=0, duration_ms=8.0, exchange_id=hour_ago_id,
+        reason="leak_gate: a mapped entity matched the outbound payload",
+    )
+    trace.record(
+        workspace=WORKSPACE, endpoint="messages", streamed=False,
+        outcome="passed", detected=1, duration_ms=10.0, exchange_id=yesterday_id,
+    )
+
+    store.retain(
+        workspace=WORKSPACE,
+        blocked=False,
+        exchange_id=recent_id,
+        leaves=[
+            RewrittenLeaf(
+                leaf_id="leaf-0",
+                label="user: text block",
+                text=recent_text,
+                spans=(
+                    RewrittenSpan(
+                        recent_span_start, recent_span_start + len("Widgetary Corp"),
+                        "Widgetary Corp", "l3",
+                    ),
+                ),
+            ),
+        ],
+    )
+    store.retain(
+        workspace=WORKSPACE,
+        blocked=True,
+        exchange_id=hour_ago_id,
+        leaves=[
+            RewrittenLeaf(
+                leaf_id="leaf-0",
+                label="user: text block",
+                text=hour_ago_text,
+                spans=(
+                    RewrittenSpan(
+                        hour_ago_span_start, hour_ago_span_start + len("Nightshade Ventures"),
+                        "Nightshade Ventures", "l3",
+                    ),
+                ),
+            ),
+        ],
+    )
+    store.retain(
+        workspace=WORKSPACE,
+        blocked=False,
+        exchange_id=yesterday_id,
+        leaves=[
+            RewrittenLeaf(
+                leaf_id="leaf-0",
+                label="user: text block",
+                text=yesterday_text,
+                spans=(
+                    RewrittenSpan(
+                        yesterday_span_start, yesterday_span_start + len("Solstice Analytics"),
+                        "Solstice Analytics", "l3",
+                    ),
+                ),
+            ),
+        ],
+    )
+
+    return payload_inspection, store, trace
+
+
 def build_app():
     if IS_EMPTY:
         return _build_empty_app()
@@ -1004,6 +1140,18 @@ def build_app():
         reidentify_store.seed(PERSON_SURROGATE, WORKSPACE, retained_cipher.encrypt(REAL_PERSON))
         reidentify_store.seed(ORG_SURROGATE, WORKSPACE, retained_cipher.encrypt(REAL_ORG))
         app.dependency_overrides[get_mapping_cipher] = lambda: retained_cipher
+
+    if PAYLOAD_INSPECTION_FILTERS:
+        # Issue #434: a third, dedicated Payload inspection fixture -- this one
+        # never needs erin/dave/Reveal-lifecycle coverage (that's
+        # PAYLOAD_INSPECTION_RETAINED's job); it exists purely to give the list
+        # filters real wall-clock time diversity to differentiate.
+        payload_inspection, rewritten_leaf_store, filters_trace = (
+            _build_payload_inspection_filters_fixture()
+        )
+        app.dependency_overrides[get_payload_inspection] = lambda: payload_inspection
+        app.dependency_overrides[get_rewritten_leaf_store] = lambda: rewritten_leaf_store
+        app.dependency_overrides[get_processing_trace] = lambda: filters_trace
 
     if LEAK_TAXONOMY:
         # Issue #417 (browser-verify): seed one real block of each cause behind

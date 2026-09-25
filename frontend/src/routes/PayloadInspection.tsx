@@ -24,6 +24,18 @@ import { useWorkspace } from "../components/WorkspaceContext";
 import { fetchRewrittenLeaves, type RetainedExchange } from "../lib/rewrittenLeavesApi";
 import { fetchProcessingTrace, type ProcessingTraceSurrogateLifecycle } from "../lib/processingTraceApi";
 import { fetchUnprotectedModeActive } from "../lib/unprotectedModeApi";
+import {
+  DEFAULT_TIME_FILTER,
+  TIME_PRESETS,
+  filterExchanges,
+  histogramBuckets,
+  isBucketDimmed,
+  presetCounts,
+  replacementCountOf,
+  type OutcomeFilter,
+  type TimeFilter,
+  type TimePreset,
+} from "../lib/payloadInspectionFilters";
 
 const POLL_INTERVAL_MS = 2000;
 
@@ -41,8 +53,18 @@ function excerptOf(exchange: RetainedExchange): string {
   return text.length > 140 ? `${text.slice(0, 140)}…` : text;
 }
 
-function replacementCountOf(exchange: RetainedExchange): number {
-  return exchange.leaves.reduce((sum, leaf) => sum + leaf.spans.length, 0);
+const OUTCOME_FILTERS: { value: OutcomeFilter; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "sent", label: "Sent" },
+  { value: "never_sent", label: "Never sent" },
+];
+
+function timeFilterFromParams(params: URLSearchParams): TimeFilter {
+  const hour = params.get("hour");
+  if (hour) return { kind: "hour", hourKey: hour };
+  const preset = params.get("time") as TimePreset | null;
+  if (preset && TIME_PRESETS.some((p) => p.value === preset)) return { kind: "preset", preset };
+  return DEFAULT_TIME_FILTER;
 }
 
 export function PayloadInspection() {
@@ -63,9 +85,55 @@ export function PayloadInspection() {
   );
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
 
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const deepLinkExchangeId = searchParams.get("exchange");
   const appliedDeepLinkRef = useRef(false);
+
+  // Filter state lives entirely in the URL (issue #434, ADR-0059 amendment
+  // #431 §8) -- read fresh from `searchParams` every render rather than
+  // mirrored into its own useState, so there is exactly one source of truth
+  // and a filtered view survives reload/back-forward for free.
+  const timeFilter = timeFilterFromParams(searchParams);
+  const outcomeFilterParam = searchParams.get("outcome") as OutcomeFilter | null;
+  const outcome: OutcomeFilter = OUTCOME_FILTERS.some((o) => o.value === outcomeFilterParam)
+    ? (outcomeFilterParam as OutcomeFilter)
+    : "all";
+  const query = searchParams.get("q") ?? "";
+
+  function updateParams(mutate: (next: URLSearchParams) => void) {
+    const next = new URLSearchParams(searchParams);
+    mutate(next);
+    setSearchParams(next, { replace: true });
+  }
+
+  function setPreset(preset: TimePreset) {
+    updateParams((next) => {
+      next.delete("hour");
+      if (preset === "all") next.delete("time");
+      else next.set("time", preset);
+    });
+  }
+
+  function setHour(hourKey: string) {
+    updateParams((next) => {
+      next.delete("time");
+      next.set("hour", hourKey);
+    });
+  }
+
+  function setOutcome(next: OutcomeFilter) {
+    updateParams((params) => {
+      if (next === "all") params.delete("outcome");
+      else params.set("outcome", next);
+    });
+  }
+
+  function setQuery(next: string) {
+    updateParams((params) => {
+      if (next.trim() === "") params.delete("q");
+      else params.set("q", next);
+    });
+  }
 
   useEffect(() => {
     if (!workspace) return;
@@ -123,11 +191,22 @@ export function PayloadInspection() {
     };
   }, [workspace]);
 
+  // Small, count-bounded dataset (<=200 exchanges, ADR-0059 amendment #431
+  // §4) -- recomputed plainly on every render rather than memoized, so
+  // `timeFilter`'s own shape never needs a bespoke dependency-array key.
+  const now = Date.now();
+  const filteredExchanges = filterExchanges(exchanges, { timeFilter, outcome, query }, now);
+  const presetHitCounts = presetCounts(exchanges, outcome, query, now);
+  const buckets = histogramBuckets(exchanges, outcome, query);
+
   // Selection: a deep link from the Processing trace's own retained-payload
   // link is honored once (issue #432's own "the trace links to it instead of
   // embedding it"); afterwards the operator's own click wins, and reselecting
-  // the newest row is only ever a fallback for "nothing selected yet" or "the
-  // selected exchange is gone" (e.g. evicted by the retention ring).
+  // the newest VISIBLE row is a fallback for "nothing selected yet", "the
+  // selected exchange is gone" (e.g. evicted by the retention ring), or --
+  // issue #434 -- "a filter change just excluded the selected exchange,"
+  // which must not strand the detail pane on a stale "no match" read.
+  const timePresetOrHourKey = timeFilter.kind === "hour" ? timeFilter.hourKey : timeFilter.preset;
   useEffect(() => {
     setSelectedKey((prev) => {
       if (!appliedDeepLinkRef.current && deepLinkExchangeId) {
@@ -137,10 +216,11 @@ export function PayloadInspection() {
           return rowKey(match);
         }
       }
-      if (prev && exchanges.some((e) => rowKey(e) === prev)) return prev;
-      return exchanges[0] ? rowKey(exchanges[0]) : null;
+      if (prev && filteredExchanges.some((e) => rowKey(e) === prev)) return prev;
+      return filteredExchanges[0] ? rowKey(filteredExchanges[0]) : null;
     });
-  }, [exchanges, deepLinkExchangeId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [exchanges, deepLinkExchangeId, timeFilter.kind, timePresetOrHourKey, outcome, query]);
 
   if (!workspace) {
     return (
@@ -151,8 +231,8 @@ export function PayloadInspection() {
     );
   }
 
-  const selected = exchanges.find((e) => rowKey(e) === selectedKey) ?? null;
-  const totalReplacements = exchanges.reduce((sum, e) => sum + replacementCountOf(e), 0);
+  const selected = filteredExchanges.find((e) => rowKey(e) === selectedKey) ?? null;
+  const filteredReplacements = filteredExchanges.reduce((sum, e) => sum + replacementCountOf(e), 0);
 
   return (
     <div className="bf-status-view bf-payload-inspection" data-testid="payload-inspection-page">
@@ -178,12 +258,121 @@ export function PayloadInspection() {
       {!loading && !locked && (
         <div className="bf-payload-inspection-layout">
           <aside className="bf-payload-inspection-sidebar">
+            {exchanges.length > 0 && (
+              <div className="bf-payload-inspection-filters" data-testid="payload-inspection-filters">
+                <div
+                  className="bf-payload-inspection-time-presets"
+                  data-testid="payload-inspection-time-presets"
+                >
+                  {TIME_PRESETS.map(({ value, label }) => {
+                    const count = presetHitCounts[value];
+                    const isActive = timeFilter.kind === "preset" && timeFilter.preset === value;
+                    return (
+                      <button
+                        key={value}
+                        type="button"
+                        className={`bf-payload-inspection-preset-chip${
+                          isActive ? " bf-payload-inspection-preset-chip--active" : ""
+                        }${count === 0 ? " bf-payload-inspection-preset-chip--dimmed" : ""}`}
+                        aria-pressed={isActive}
+                        data-testid={`payload-inspection-time-preset-${value}`}
+                        onClick={() => setPreset(value)}
+                      >
+                        {label}{" "}
+                        <span
+                          className="bf-payload-inspection-preset-chip-count"
+                          data-testid={`payload-inspection-time-preset-${value}-count`}
+                        >
+                          {count}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {buckets.length > 0 && (
+                  <div
+                    className="bf-payload-inspection-histogram"
+                    data-testid="payload-inspection-histogram"
+                  >
+                    {buckets.map((bucket) => {
+                      const maxCount = Math.max(...buckets.map((b) => b.count));
+                      const isSelected = timeFilter.kind === "hour" && timeFilter.hourKey === bucket.key;
+                      const dimmed = isBucketDimmed(bucket, timeFilter, now);
+                      return (
+                        <button
+                          key={bucket.key}
+                          type="button"
+                          className={`bf-payload-inspection-histogram-hour${
+                            isSelected ? " bf-payload-inspection-histogram-hour--selected" : ""
+                          }${dimmed ? " bf-payload-inspection-histogram-hour--dimmed" : ""}`}
+                          aria-pressed={isSelected}
+                          data-testid="payload-inspection-histogram-hour"
+                          onClick={() => setHour(bucket.key)}
+                        >
+                          <span
+                            className="bf-payload-inspection-histogram-hour-label"
+                            data-testid="payload-inspection-histogram-hour-label"
+                          >
+                            {bucket.label}
+                          </span>
+                          <span
+                            className="bf-payload-inspection-histogram-hour-bar"
+                            data-testid="payload-inspection-histogram-hour-bar"
+                            style={{ width: `${Math.round((bucket.count / maxCount) * 100)}%` }}
+                          />
+                          <span
+                            className="bf-payload-inspection-histogram-hour-count"
+                            data-testid="payload-inspection-histogram-hour-count"
+                          >
+                            {bucket.count}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                <div
+                  className="bf-payload-inspection-outcome-filter"
+                  role="tablist"
+                  aria-label="Outcome filter"
+                  data-testid="payload-inspection-outcome-filter"
+                >
+                  {OUTCOME_FILTERS.map(({ value, label }) => (
+                    <button
+                      key={value}
+                      type="button"
+                      role="tab"
+                      aria-selected={outcome === value}
+                      className={`bf-search-mode-option${
+                        outcome === value ? " bf-search-mode-option--active" : ""
+                      }`}
+                      data-testid={`payload-inspection-outcome-filter-${value}`}
+                      onClick={() => setOutcome(value)}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+
+                <input
+                  type="search"
+                  className="bf-payload-inspection-search"
+                  data-testid="payload-inspection-search"
+                  placeholder="Search retained text…"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                />
+              </div>
+            )}
             <div className="bf-payload-inspection-count" data-testid="payload-inspection-count">
-              {exchanges.length} exchange{exchanges.length === 1 ? "" : "s"} ·{" "}
-              {totalReplacements} replacement{totalReplacements === 1 ? "" : "s"}
+              {filteredExchanges.length} of {exchanges.length} exchange
+              {exchanges.length === 1 ? "" : "s"} · {filteredReplacements} replacement
+              {filteredReplacements === 1 ? "" : "s"}
             </div>
             <ul className="bf-payload-inspection-list" data-testid="payload-inspection-list">
-              {exchanges.map((exchange) => {
+              {filteredExchanges.map((exchange) => {
                 const key = rowKey(exchange);
                 const isSelected = key === selectedKey;
                 return (
@@ -239,6 +428,11 @@ export function PayloadInspection() {
                       : "Nothing retained yet."}
                 </li>
               )}
+              {exchanges.length > 0 && filteredExchanges.length === 0 && (
+                <li className="bf-empty" data-testid="payload-inspection-list-filtered-empty">
+                  No retained exchanges match these filters.
+                </li>
+              )}
             </ul>
           </aside>
           <div className="bf-payload-inspection-detail">
@@ -270,6 +464,10 @@ export function PayloadInspection() {
               <p className="bf-empty" data-testid="payload-inspection-unprotected-active">
                 Unprotected mode is active — the blindfolding pipeline is skipped
                 entirely while it's on, so there is nothing entity-free to retain.
+              </p>
+            ) : exchanges.length > 0 ? (
+              <p className="bf-empty" data-testid="payload-inspection-filtered-empty">
+                No retained exchange matches the current filters.
               </p>
             ) : (
               <p className="bf-empty" data-testid="payload-inspection-no-retained">
