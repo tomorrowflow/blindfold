@@ -12,12 +12,16 @@ const NAV_LABELS = [
   "Graph editor",
   "Review inbox",
   "Audit log",
+  "Processing trace",
+  // Payload inspection (issue #432): its own primary-nav destination, not
+  // nested under Processing trace's own inline expansion.
+  "Payload inspection",
   "Access",
   "Settings",
 ];
 
 test.describe("management shell", () => {
-  test("sidebar renders all eight destinations and routes switch on click", async ({ page }) => {
+  test("sidebar renders all ten destinations and routes switch on click", async ({ page }) => {
     await page.goto("/ui/");
     // Scoped to the sidebar landmark, not the whole page: issue #110's Home/Status
     // review-inbox rail card also renders a "Review inbox" link (its own "Open
@@ -44,6 +48,25 @@ test.describe("management shell", () => {
       "page"
     );
     await expect(page.getByRole("heading", { name: "Entity list" })).toBeVisible();
+  });
+
+  test("Payload inspection is its own nav destination, distinct from Processing trace", async ({
+    page,
+  }) => {
+    await page.goto("/ui/");
+    const sidebar = page.getByRole("navigation", { name: "Management navigation" });
+
+    await sidebar.getByRole("link", { name: "Payload inspection" }).click();
+    await expect(page).toHaveURL(/\/ui\/payload-inspection$/);
+    await expect(sidebar.getByRole("link", { name: "Payload inspection" })).toHaveAttribute(
+      "aria-current",
+      "page"
+    );
+    await expect(sidebar.getByRole("link", { name: "Processing trace" })).not.toHaveAttribute(
+      "aria-current",
+      "page"
+    );
+    await expect(page.getByRole("heading", { name: "Payload inspection" })).toBeVisible();
   });
 
   test("sidebar collapses and expands", async ({ page }) => {
