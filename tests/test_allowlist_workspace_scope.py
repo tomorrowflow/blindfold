@@ -115,3 +115,18 @@ def test_tokens_returns_only_learned_tokens_across_every_scope_not_the_seeded_ha
     allowlist.add("Fritz")
 
     assert allowlist.tokens() == frozenset({"Helga", "Fritz"})
+
+
+def test_learned_entries_returns_the_workspaces_own_entries_plus_all_workspaces_entries():
+    # issue #443's listing surface: a workspace's own learned entries, plus
+    # every all-workspaces entry -- never the seeded half, and never a
+    # different workspace's own entry.
+    allowlist = Allowlist()
+    allowlist.add_seeded("Ollama")
+    allowlist.add("Helga", workspace="workspace-a")
+    allowlist.add("Fritz", workspace="workspace-b")
+    allowlist.add("Wilhelm")  # all-workspaces
+
+    entries = allowlist.learned_entries("workspace-a")
+
+    assert set(entries) == {("Helga", "workspace-a"), ("Wilhelm", None)}

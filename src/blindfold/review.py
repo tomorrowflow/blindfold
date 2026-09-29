@@ -819,6 +819,16 @@ class Allowlist:
         a reviewer, not a blind spot."""
         return frozenset(scope for scope, tokens in self._learned.items() if token in tokens)
 
+    def learned_entries(self, workspace: str) -> list[tuple[str, str | None]]:
+        """Every learned entry visible to ``workspace`` -- that workspace's own
+        entries plus every all-workspaces entry, as ``(token, scope)`` pairs
+        (``scope`` is ``None`` for an all-workspaces entry) -- never the
+        seeded half, and never a *different* workspace's own entry (issue
+        #443's listing surface, ADR-0010 #423 amendment decision 4)."""
+        own = [(token, workspace) for token in sorted(self._learned.get(workspace, set()))]
+        all_workspaces = [(token, None) for token in sorted(self._learned.get(None, set()))]
+        return own + all_workspaces
+
     def tokens(self) -> frozenset[str]:
         """Every LEARNED token across every scope (issue #168's persistence
         surface — hydration/listing operate on the learned half only; the

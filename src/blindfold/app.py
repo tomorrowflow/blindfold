@@ -2611,9 +2611,32 @@ async def confirm_review_item(
     }
 
 
+_VALID_REJECT_SCOPES = ("workspace", "all")
+
+
+async def _read_optional_json_object_body(request: Request) -> dict:
+    """Parse ``request``'s body as a JSON object, tolerating no body at all
+    (``{}``) -- reject's ``scope`` field is optional, so a caller sending no
+    body (every reject before issue #443) must keep working unchanged. A
+    non-empty body that isn't a JSON object is a 422, same as an invalid
+    field value would be.
+    """
+    raw = await request.body()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=422, detail="invalid JSON body") from exc
+    if not isinstance(parsed, dict):
+        raise HTTPException(status_code=422, detail="request body must be a JSON object")
+    return parsed
+
+
 @app.post("/v1/management/review-inbox/{item_id}/reject")
 async def reject_review_item(
     item_id: str,
+    request: Request,
     inbox: ReviewInbox = Depends(get_review_inbox),
     allowlist: Allowlist = Depends(get_allowlist),
     allowlist_store: "PostgresAllowlistStore | None" = Depends(get_allowlist_store),
@@ -2621,32 +2644,129 @@ async def reject_review_item(
     """Reject a candidate → grows the allowlist (ADR-0010).
 
     The token joins the allowlist and is never blindfolded again on subsequent
-    requests. Existing exchanges that already restored remain consistent (the
-    real-value mapping was only ever local to that exchange's session).
+    requests in the applied scope. Existing exchanges that already restored
+    remain consistent (the real-value mapping was only ever local to that
+    exchange's session).
 
     Also persists the token through the store seam (issue #168) when one is
     configured, so the reject survives a process restart -- see
     ``get_allowlist_store()``. With no store configured (the in-memory default),
-    ``allowlist_store`` is ``None`` and this is a no-op: behavior stays exactly
-    as before this slice (acceptance criterion 4).
+    ``allowlist_store`` is ``None`` and this is a no-op.
 
-    Writes an all-workspaces entry (``workspace=None``) unconditionally -- ADR-
-    0010 #423 amendment decision 7 (a reject-time scope choice, defaulting to
-    the item's own workspace) is the next slice's job; this slice only builds
-    the machinery a scoped write would use.
+    Takes an optional JSON body ``{"scope": "workspace" | "all"}`` (ADR-0010
+    #423 amendment decisions 3/7, issue #443). Omitted -- or ``"workspace"``,
+    the same thing spelled out -- defaults to ``item.workspace`` (captured at
+    detection time, issue #171; never a path or query parameter, since a
+    reject has no client-supplied workspace to trust). ``"all"`` is the
+    explicit, disclosed all-workspaces choice (ADR-0010 #417 amendment: a
+    fail-open states its effect where the choice is made). Any other value is
+    a 422 that changes nothing -- the item stays in the inbox, the allowlist
+    is untouched. The response reports the scope actually applied.
     """
     item = inbox.get(item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="review item not found")
-    allowlist.add(item.real, workspace=None)
+    body = await _read_optional_json_object_body(request)
+    scope = body.get("scope", "workspace")
+    if scope not in _VALID_REJECT_SCOPES:
+        raise HTTPException(
+            status_code=422, detail="scope must be 'workspace' or 'all'"
+        )
+    target_workspace = None if scope == "all" else item.workspace
+    allowlist.add(item.real, workspace=target_workspace)
     if allowlist_store is not None:
-        allowlist_store.add(item.real, workspace=None)
+        allowlist_store.add(item.real, workspace=target_workspace)
     inbox.remove(item_id)
     return {
         "id": item.id,
         "real": item.real,
         "action": "rejected",
+        "scope": scope,
     }
+
+
+@app.get("/v1/management/allowlist/learned")
+async def list_learned_allowlist_entries(
+    request: Request,
+    workspace: str,
+    rbac: RbacRegistry = Depends(get_rbac),
+    allowlist: Allowlist = Depends(get_allowlist),
+) -> dict:
+    """List learned allowlist entries visible to ``workspace`` (ADR-0010 #423
+    amendment decision 4, issue #443): that workspace's own learned entries
+    plus every all-workspaces entry. Never the seeded half, which has no
+    listing affordance -- it is never a store row (:meth:`Allowlist.learned_entries`).
+
+    Gated the same way ``list_review_inbox`` is (viewer on the queried
+    workspace): a mistaken reject may be a real value, the same sensitivity
+    class that endpoint's own gate protects.
+    """
+    _require_role(request, workspace, "viewer", rbac)
+    return {
+        "entries": [
+            {"token": token, "workspace": scope, "all_workspaces": scope is None}
+            for token, scope in allowlist.learned_entries(workspace)
+        ]
+    }
+
+
+@app.delete("/v1/management/allowlist/learned/{token}")
+async def remove_learned_allowlist_entry(
+    token: str,
+    workspace: str | None = None,
+    allowlist: Allowlist = Depends(get_allowlist),
+    allowlist_store: "PostgresAllowlistStore | None" = Depends(get_allowlist_store),
+) -> dict:
+    """Remove one learned ``(token, scope)`` entry (ADR-0010 #423 amendment
+    decision 4, issue #443) -- restores novelty discovery for that value in
+    that scope. ``workspace`` omitted targets the all-workspaces scope, the
+    same convention :meth:`Allowlist.remove` itself uses.
+
+    Never touches the seeded half: a token that is also seeded stays
+    suppressed everywhere after its learned entry is removed. A missing
+    entry (no learned row for this exact ``(token, scope)``) is a 404.
+
+    Gated exactly the way ``reject_review_item`` is today -- no additional
+    role check (ADR-0010 #423 amendment consequence: don't add a stronger
+    role ahead of #38/#424).
+    """
+    if workspace not in allowlist.learned_scopes(token):
+        raise HTTPException(status_code=404, detail="learned allowlist entry not found")
+    allowlist.remove(token, workspace=workspace)
+    if allowlist_store is not None:
+        allowlist_store.remove(token, workspace=workspace)
+    return {"token": token, "workspace": workspace, "action": "removed"}
+
+
+@app.post("/v1/management/allowlist/learned/{token}/widen")
+async def widen_learned_allowlist_entry(
+    token: str,
+    workspace: str | None = None,
+    allowlist: Allowlist = Depends(get_allowlist),
+    allowlist_store: "PostgresAllowlistStore | None" = Depends(get_allowlist_store),
+) -> dict:
+    """Widen one workspace-scoped learned entry to all-workspaces (ADR-0010
+    #423 amendment decision 4, issue #443) -- a chosen fail-open, applied as
+    remove-plus-add so only the all-workspaces entry exists afterward. There
+    is no narrowing endpoint (to narrow, remove the all-workspaces entry and
+    let each workspace review the value again -- the fail-closed direction).
+
+    ``workspace`` omitted targets the all-workspaces scope itself -- already
+    maximally wide, so this is a no-op. A missing entry (no learned row for
+    this exact ``(token, scope)``) is a 404.
+
+    Gated exactly the way ``reject_review_item`` is today -- no additional
+    role check, same as :func:`remove_learned_allowlist_entry`.
+    """
+    if workspace not in allowlist.learned_scopes(token):
+        raise HTTPException(status_code=404, detail="learned allowlist entry not found")
+    if workspace is not None:
+        allowlist.remove(token, workspace=workspace)
+        allowlist.add(token, workspace=None)
+        if allowlist_store is not None:
+            allowlist_store.remove(token, workspace=workspace)
+            allowlist_store.add(token, workspace=None)
+    return {"token": token, "workspace": None, "action": "widened"}
 
 
 async def _stream_restored(

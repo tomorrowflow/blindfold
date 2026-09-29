@@ -153,8 +153,9 @@ async def test_confirm_reject_calls_grow_entity_graph_and_allowlist_at_api_seam(
 
     # Confirm grew the entity graph: same real value → its provisional surrogate.
     assert mapping.surrogate_for("Astrid") == confirmable.provisional_surrogate
-    # Reject grew the allowlist: the token is recorded.
-    assert allowlist.contains("BUFGRP")
+    # Reject grew the allowlist: the token is recorded, scoped to the item's
+    # own workspace -- the default reject scope since issue #443.
+    assert allowlist.contains("BUFGRP", rejectable.workspace)
     # Both items are gone from the inbox (already covered above, but reasserted
     # so this seam test stands alone as the parity guard).
     assert inbox.list() == []

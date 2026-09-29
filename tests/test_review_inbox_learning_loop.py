@@ -47,6 +47,7 @@ from blindfold.app import (
     get_upstream_client,
 )
 from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
+from blindfold.policy import DEFAULT_WORKSPACE
 from blindfold.rbac import RbacRegistry
 from blindfold.review import Allowlist, ReviewInbox
 from blindfold.store import vendored_seed_repository
@@ -494,9 +495,10 @@ async def test_reject_grows_allowlist_so_candidate_is_never_blindfolded_again():
     finally:
         app.dependency_overrides.clear()
 
-    # Allowlist effects: the rejected token is recorded, the inbox is empty,
-    # and L3 was not consulted again for the rejected candidate.
-    assert allowlist.contains("Helga")
+    # Allowlist effects: the rejected token is recorded (scoped to the item's
+    # own workspace -- the default reject scope since issue #443), the inbox
+    # is empty, and L3 was not consulted again for the rejected candidate.
+    assert allowlist.contains("Helga", DEFAULT_WORKSPACE)
     assert inbox.list() == []
     assert "Helga" not in adjudicator.calls[calls_after_reject:]
     # Turn 2 egress carries the plain token — the system honored the reject.

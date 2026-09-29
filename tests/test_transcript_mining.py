@@ -296,7 +296,9 @@ async def test_rejecting_a_mined_proposal_grows_allowlist_via_existing_loop():
 
     assert resp.status_code == 200
     assert resp.json()["action"] == "rejected"
-    assert allowlist.contains("Helmut")
+    # Scoped to the mined item's own workspace -- the default reject scope
+    # since issue #443 (mined items default to DEFAULT_WORKSPACE).
+    assert allowlist.contains("Helmut", DEFAULT_WORKSPACE)
     assert inbox.list() == []
 
 

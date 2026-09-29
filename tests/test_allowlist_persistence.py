@@ -107,8 +107,10 @@ async def test_reject_persists_the_token_through_the_store_seam():
         )
 
     assert resp.status_code == 200
-    assert store.added == [("Helga", None)]
-    assert allowlist.contains("Helga")
+    # Scoped to the item's own workspace -- the default reject scope since
+    # issue #443 (this item defaults to DEFAULT_WORKSPACE).
+    assert store.added == [("Helga", item.workspace)]
+    assert allowlist.contains("Helga", item.workspace)
 
 
 def test_reject_then_simulated_restart_still_suppresses_the_token():

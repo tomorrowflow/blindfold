@@ -40,3 +40,39 @@ def test_tokens_survive_a_new_store_instance_same_dsn_sqlite(tmp_path):
 
     store2 = PostgresAllowlistStore(dsn)
     assert ("Helga", None) in store2.entries()
+
+
+def test_a_remove_of_a_workspace_scoped_entry_survives_a_restart_sqlite(tmp_path):
+    # Issue #443 acceptance criterion: every mutation (including remove and
+    # widen, both a remove+add under the hood) persists through the store and
+    # survives a restart.
+    from blindfold.store.allowlist_store import PostgresAllowlistStore
+
+    db_path = tmp_path / "allowlist_remove_restart.sqlite3"
+    dsn = f"sqlite:///{db_path}"
+
+    store1 = PostgresAllowlistStore(dsn)
+    store1.add("Helga", workspace="ws-a")
+    store1.add("Helga", workspace="ws-b")
+    store1.remove("Helga", workspace="ws-a")
+
+    store2 = PostgresAllowlistStore(dsn)
+    entries = store2.entries()
+    assert ("Helga", "ws-a") not in entries
+    assert ("Helga", "ws-b") in entries
+
+
+def test_a_widen_remove_plus_add_survives_a_restart_sqlite(tmp_path):
+    from blindfold.store.allowlist_store import PostgresAllowlistStore
+
+    db_path = tmp_path / "allowlist_widen_restart.sqlite3"
+    dsn = f"sqlite:///{db_path}"
+
+    store1 = PostgresAllowlistStore(dsn)
+    store1.add("Helga", workspace="ws-a")
+    store1.remove("Helga", workspace="ws-a")
+    store1.add("Helga", workspace=None)
+
+    store2 = PostgresAllowlistStore(dsn)
+    entries = store2.entries()
+    assert entries == [("Helga", None)]
