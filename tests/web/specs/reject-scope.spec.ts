@@ -29,11 +29,26 @@ const REJECT_SCOPE_REMOVE_TOKEN = "Wendell Okafor";
 const REJECT_SCOPE_WIDEN_TOKEN = "Briony Castellan";
 const REJECT_SCOPE_ALLWS_TOKEN = "Solenne Marchetti";
 
-const test = base.extend<{ alicePage: Page }>({
+const test = base.extend<{ alicePage: Page; davePage: Page }>({
   alicePage: async ({ browser }, use) => {
     const context = await browser.newContext({
       baseURL: BASE_URL,
       extraHTTPHeaders: { "x-blindfold-identity": "alice" },
+    });
+    const page = await context.newPage();
+    await use(page);
+    await context.close();
+  },
+  // dave holds ONLY curator on WORKSPACE ("acme") -- no viewer, so he can select
+  // the workspace (curator is enough to appear in the switcher) but is refused
+  // both the review-inbox list AND (browser-verify, issue #444) the Rejected
+  // view's own learned-allowlist list, which renders the exact same sensitivity
+  // class of real value (serve_fixture.py's build_app grants this on every port,
+  // REJECT_SCOPE only swaps the review_inbox/allowlist instances, never rbac).
+  davePage: async ({ browser }, use) => {
+    const context = await browser.newContext({
+      baseURL: BASE_URL,
+      extraHTTPHeaders: { "x-blindfold-identity": "dave" },
     });
     const page = await context.newPage();
     await use(page);
@@ -239,5 +254,48 @@ test.describe("Rejected view", () => {
     const firstPartyHost = new URL(BASE_URL).host;
     const thirdParty = [...requestHosts].filter((host) => host !== firstPartyHost);
     expect(thirdParty, `unexpected non-loopback requests: ${thirdParty.join(", ")}`).toEqual([]);
+  });
+});
+
+test.describe("Rejected view — dave (curator only, no viewer)", () => {
+  // Browser-verify privacy property (issue #444): a learned-allowlist token IS a
+  // real entity value (app.py's reject_review_item stores item.real verbatim;
+  // list_learned_allowlist_entries's own docstring: "a mistaken reject may be a
+  // real value, the same sensitivity class" the review-inbox list already
+  // viewer-gates). The Rejected view's tab renders regardless of role (only the
+  // Inbox tab's content branches on `locked`), so this pins that the API's own
+  // viewer gate -- not any client-side check -- is what keeps the three seeded
+  // real tokens (REJECT_SCOPE_REMOVE_TOKEN / WIDEN_TOKEN / ALLWS_TOKEN) out of
+  // both the DOM and the network response dave's browser actually receives.
+  test("never shows or receives a real learned-allowlist value for an unauthorized viewer", async ({
+    davePage,
+  }) => {
+    await davePage.goto("/ui/inbox");
+
+    const [learnedResponse] = await Promise.all([
+      davePage.waitForResponse((res) => res.url().includes("/v1/management/allowlist/learned")),
+      davePage.getByTestId("review-inbox-tab-rejected").click(),
+    ]);
+
+    expect(learnedResponse.ok()).toBeFalsy();
+    expect(learnedResponse.status()).toBe(403);
+    const responseText = await learnedResponse.text();
+    for (const token of [
+      REJECT_SCOPE_REMOVE_TOKEN,
+      REJECT_SCOPE_WIDEN_TOKEN,
+      REJECT_SCOPE_ALLWS_TOKEN,
+      REJECT_SCOPE_WORKSPACE_REAL,
+      REJECT_SCOPE_ALL_REAL,
+    ]) {
+      expect(responseText).not.toContain(token);
+      await expect(davePage.locator("body")).not.toContainText(token);
+    }
+
+    // The client swallows the 403 into an empty list (RejectedList's own
+    // `.catch(() => setEntries([]))`) rather than a distinct locked state --
+    // a UX ambiguity, not a privacy leak: no row, and therefore no Remove/Widen
+    // affordance carrying a real value, is ever rendered.
+    await expect(davePage.getByTestId("rejected-item")).toHaveCount(0);
+    await expect(davePage.getByTestId("rejected-list-empty")).toBeVisible();
   });
 });
