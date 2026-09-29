@@ -67,13 +67,17 @@ def test_bare_surname_of_a_confirmed_entity_blinds_to_the_aligned_surrogate_comp
     blinded, _session = blindfold_payload(payload, mapping, None, None)
 
     text = blinded["messages"][0]["content"]
-    # The word-bounded prose occurrence is caught -- the URL slug's underscore-glued
-    # "Jane_Doe" is the #386-named symmetric-miss residual (out of scope both there
-    # and here: no word boundary exists before an underscore, so neither the
-    # blinder nor the gate can see it; left untouched deliberately).
+    # The word-bounded prose occurrence is caught.
     assert "Doe was referenced" not in text
     assert "Brenner was referenced" in text
-    assert "https://example.org/wiki/Jane_Doe" in text
+    # The URL slug's underscore-glued "Jane_Doe" was the #386-named symmetric-miss
+    # residual this file used to accept deliberately ("no word boundary exists
+    # before an underscore, so neither the blinder nor the gate can see it") --
+    # issue #440 closes it: the whole slug is now its own recognised form
+    # (``engine._slug_pair_map``), substituted as one unit rather than left for
+    # the bare-component pass above to partially (and incorrectly) claim.
+    assert "Jane_Doe" not in text
+    assert "https://example.org/wiki/Alex_Brenner" in text
 
     # Must not raise: the gate's checked surface is exactly what the blinder just
     # rewrote (ADR-0051 symmetry over this confirmed-entity sub-span).

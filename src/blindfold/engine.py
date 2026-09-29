@@ -23,6 +23,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Any, NoReturn
+from urllib.parse import quote
 
 from .detection import Entity, detect_l2, detect_pii
 from .l3 import _capitalized_token_matches
@@ -2003,6 +2004,196 @@ def _confirmed_pair_map(
     return pairs
 
 
+# Issue #440: the recognised URL-slug joiners. Named explicitly, per the issue's
+# own instruction not to chase every conceivable encoding -- ``_`` (wiki style) and
+# ``-`` (blog/CMS style) only.
+_SLUG_JOINERS: tuple[str, ...] = ("_", "-")
+
+
+def _slug_shape_forms(words: Sequence[str]) -> dict[tuple[str, bool, bool], str]:
+    """Every recognised URL-slug rendering of ``words`` (issue #440), keyed by the
+    shape that produced it: ``(joiner, lowercased, percent_encoded)``.
+
+    Covers, for a value with two or more words: ``_``-joined and ``-``-joined,
+    each in original case and lowercased, and the percent-encoded rendering of
+    each (``urllib.parse.quote``'s standard uppercase-hex encoding -- this is what
+    makes a non-ASCII name's slug recognisable, since ``quote`` leaves an
+    all-ASCII, hyphen/underscore-joined string unchanged). Empty for a single-word
+    value: there is no join convention to render, and that class is out of this
+    issue's scope.
+
+    Keyed by shape (not flattened to a bare set of strings) so a real value's
+    shape can be looked up against its PAIRED surrogate's own rendering of the
+    identical shape (:func:`_slug_pair_map`) -- the substitution must reuse the
+    same joiner/casing/encoding it matched on, or the rewritten URL would mix
+    conventions.
+    """
+    if len(words) < 2:
+        return {}
+    forms: dict[tuple[str, bool, bool], str] = {}
+    for joiner in _SLUG_JOINERS:
+        for lower in (False, True):
+            rendered = [word.lower() for word in words] if lower else list(words)
+            plain = joiner.join(rendered)
+            forms[(joiner, lower, False)] = plain
+            forms[(joiner, lower, True)] = quote(plain)
+    return forms
+
+
+def _slug_variation_forms(value: str) -> list[str]:
+    """Every distinct literal text :func:`_slug_shape_forms` produces for
+    ``value`` -- for a caller (``leak_gate``, mint-time value-set checks) that
+    needs only the text to search for, not the shape-to-shape correspondence
+    with a paired surrogate.
+    """
+    return sorted(set(_slug_shape_forms(value.split()).values()))
+
+
+def _slug_pair_map(real: str, surrogate: str) -> dict[str, str]:
+    """Real-slug-text -> surrogate-slug-text, one entry per recognised shape, for
+    one (real, surrogate) pair (issue #440) -- the blinder's own slug-form
+    substitution map, and (via :func:`_slug_variation_forms`) the same derivation
+    ``leak_gate`` checks.
+
+    A match on the real's rendering in a given shape becomes the surrogate
+    rendered in that SAME shape (same joiner, same casing, same
+    percent-encoded-or-not) -- the URL stays well-formed and restore reverses it
+    back to the identical slug text, never to the canonical space-joined form,
+    because what gets ``session.record``ed is this map's own key/value text, not
+    ``real``/``surrogate`` themselves.
+
+    Unlike :func:`_confirmed_component_map`/:func:`_provisional_component_map`
+    (bare WORD components, positionally aligned, ambiguous across entities
+    excluded), this is a WHOLE-value pair scoped to one entity/item at a time --
+    a full name's slug is specific enough that cross-entity ambiguity is not a
+    realistic concern the way a single shared word is.
+
+    ``surrogate`` need not have the same word count as ``real``: a single-word
+    surrogate has no joiner of its own, so it is rendered in the matched shape's
+    casing/percent-encoding only (no join).
+    """
+    real_shapes = _slug_shape_forms(real.split())
+    if not real_shapes:
+        return {}
+    surrogate_words = surrogate.split()
+    surrogate_shapes = (
+        _slug_shape_forms(surrogate_words) if len(surrogate_words) >= 2 else None
+    )
+    pairs: dict[str, str] = {}
+    for shape, real_text in real_shapes.items():
+        if surrogate_shapes is not None:
+            surrogate_text = surrogate_shapes[shape]
+        else:
+            joiner, lower, percent = shape
+            word = surrogate_words[0].lower() if lower else surrogate_words[0]
+            surrogate_text = quote(word) if percent else word
+        pairs[real_text] = surrogate_text
+    return pairs
+
+
+def _collect_confirmed_slug_spans(
+    text: str,
+    mapping: SurrogateMapping,
+    session: ExchangeSession,
+    hop_ctx: "_HopContext | None",
+    exclude: Sequence[tuple[int, int]] = (),
+    world_acting: bool = False,
+) -> list[ReplacementSpan]:
+    """Collect issue #440's URL-slug-form replacement spans for CONFIRMED entities
+    against frozen ``text`` -- the entity-graph mirror of
+    :func:`_collect_provisional_slug_spans`, modeled on
+    :func:`_collect_confirmed_component_spans`'s own precedent but over a WHOLE
+    real/surrogate pair (:func:`_slug_pair_map`) rather than a bare word component.
+
+    Deliberately collected at HIGHER precedence than
+    :func:`_collect_confirmed_component_spans` (``exclude`` here only ever holds
+    L2's own ranges plus the self-poisoning/containment guards, never the
+    component pass's ranges -- it is the other direction round, below) --
+    :func:`_real_value_pattern`'s own boundary rule treats ``-`` as a non-word
+    character, so the bare-component pass would otherwise be free to claim just a
+    surname inside a hyphen-joined slug (``"jane-doe"`` -> a component match on
+    bare ``"doe"`` alone), leaving the given-name half and the joiner untouched
+    and the URL malformed. Claiming the whole slug span here first prevents that
+    partial, URL-breaking substitution.
+    """
+    entities = mapping.entities()
+    claimed = list(exclude)
+    spans: list[ReplacementSpan] = []
+    for entity in entities:
+        if _is_fallback_surrogate(entity.surrogate):
+            continue
+        contained = world_acting and _is_plausible_named_surrogate(entity.surrogate)
+        pairs = _slug_pair_map(entity.canonical, entity.surrogate)
+        for value in sorted(pairs, key=len, reverse=True):
+            target = pairs[value]
+            if contained:
+                target = session.contain(entity.canonical)
+            occurrences = [
+                (match.start(), match.end())
+                for match in _real_value_pattern(value).finditer(text)
+                if not _overlaps_any(match.start(), match.end(), claimed)
+            ]
+            if not occurrences:
+                continue
+            claimed.extend(occurrences)
+            session.record(target, value)
+            if hop_ctx is not None:
+                hop_ctx.surrogates.append(target)
+            for start, end in occurrences:
+                spans.append(ReplacementSpan(start, end, target, value, "confirmed_slug"))
+    return spans
+
+
+def _collect_provisional_slug_spans(
+    text: str,
+    inbox: ReviewInbox | None,
+    session: ExchangeSession,
+    hop_ctx: "_HopContext | None",
+    exclude: Sequence[tuple[int, int]] = (),
+    world_acting: bool = False,
+) -> list[ReplacementSpan]:
+    """Collect issue #440's URL-slug-form replacement spans for PROVISIONAL
+    (review-inbox) items against frozen ``text`` -- mirrors
+    :func:`_collect_confirmed_slug_spans` on the provisional side, the way
+    :func:`_collect_provisional_pair_spans` mirrors
+    :func:`_collect_confirmed_component_spans`. Deterministic only: reads
+    ``inbox.list()``, never runs L3, never calls ``inbox.upsert``.
+
+    Every recognised variation (not just ``item.real``) contributes its own slug
+    pairs -- an organisation's legal-form-stripped bare variation (#289/#296) gets
+    its own slug rendering too, longest value first so a longer slug always wins
+    the position over a shorter one nested inside it, mirroring every other
+    pass's own precedence rule.
+    """
+    if inbox is None:
+        return []
+    claimed = list(exclude)
+    spans: list[ReplacementSpan] = []
+    for item in inbox.list():
+        contained = world_acting and _is_plausible_named_surrogate(item.provisional_surrogate)
+        pairs: dict[str, str] = {}
+        for variation in item.variations:
+            pairs.update(_slug_pair_map(variation, item.provisional_surrogate))
+        for value in sorted(pairs, key=len, reverse=True):
+            target = pairs[value]
+            if contained:
+                target = session.contain(item.real)
+            occurrences = [
+                (match.start(), match.end())
+                for match in _real_value_pattern(value).finditer(text)
+                if not _overlaps_any(match.start(), match.end(), claimed)
+            ]
+            if not occurrences:
+                continue
+            claimed.extend(occurrences)
+            session.record(target, value)
+            if hop_ctx is not None:
+                hop_ctx.surrogates.append(target)
+            for start, end in occurrences:
+                spans.append(ReplacementSpan(start, end, target, value, "provisional_slug"))
+    return spans
+
+
 def _collect_confirmed_component_spans(
     text: str,
     mapping: SurrogateMapping,
@@ -2355,18 +2546,49 @@ def _blindfold_text(
     # ``session.record``, never ``_apply_spans``), so a second read would return
     # the identical ranges.
 
-    # Issue #394: a CONFIRMED entity's own bare-word component (e.g. "Doe" once
-    # "Jane Doe" -> "Alex Brenner" is in the entity graph) -- the confirmed-side
-    # mirror of #306's provisional-pair component pass, run at L2 precedence
-    # (excludes L2's own claimed ranges plus the injected-surrogate guard above)
-    # so a confirmed component always wins over a provisional one for the same
-    # literal text below.
-    confirmed_component_spans = _collect_confirmed_component_spans(
+    # Issue #440: a known real value's URL-slug forms ('_'/'-'-joined, either
+    # case, percent-encoded-or-not -- see ``_slug_pair_map``) claim their WHOLE
+    # span before either bare-component pass below runs. ``_real_value_pattern``'s
+    # boundary rule treats ``-`` as a non-word character, so without this the
+    # confirmed-component pass just below would be free to match a bare surname
+    # alone inside a hyphen-joined slug (``"jane-doe"`` -> just "doe"), leaving
+    # the given-name half and the joiner untouched and the URL malformed.
+    # Confirmed wins over provisional here too, mirroring every other pass's own
+    # precedence rule.
+    confirmed_slug_spans = _collect_confirmed_slug_spans(
         text,
         mapping,
         session,
         hop_ctx,
         exclude=l2_ranges + injected_ranges + containment_ranges,
+        world_acting=world_acting,
+    )
+    confirmed_slug_ranges = [(span.start, span.end) for span in confirmed_slug_spans]
+    provisional_slug_spans = _collect_provisional_slug_spans(
+        text,
+        inbox,
+        session,
+        hop_ctx,
+        exclude=l2_ranges + injected_ranges + containment_ranges + confirmed_slug_ranges,
+        world_acting=world_acting,
+    )
+    slug_ranges = confirmed_slug_ranges + [
+        (span.start, span.end) for span in provisional_slug_spans
+    ]
+
+    # Issue #394: a CONFIRMED entity's own bare-word component (e.g. "Doe" once
+    # "Jane Doe" -> "Alex Brenner" is in the entity graph) -- the confirmed-side
+    # mirror of #306's provisional-pair component pass, run at L2 precedence
+    # (excludes L2's own claimed ranges plus the injected-surrogate guard above)
+    # so a confirmed component always wins over a provisional one for the same
+    # literal text below. Also excludes the slug passes' own ranges above (issue
+    # #440), so a slug's own bare surname is never re-claimed piecemeal.
+    confirmed_component_spans = _collect_confirmed_component_spans(
+        text,
+        mapping,
+        session,
+        hop_ctx,
+        exclude=l2_ranges + injected_ranges + containment_ranges + slug_ranges,
         world_acting=world_acting,
     )
     confirmed_component_ranges = [
@@ -2399,20 +2621,29 @@ def _blindfold_text(
         inbox,
         session,
         hop_ctx,
-        exclude=l2_ranges + confirmed_component_ranges + injected_ranges + containment_ranges,
+        exclude=l2_ranges
+        + confirmed_component_ranges
+        + injected_ranges
+        + containment_ranges
+        + slug_ranges,
         world_acting=world_acting,
     )
     pp_ranges = [(span.start, span.end) for span in pp_spans]
 
     # L1 deterministic PII (ADR-0003): regex over the full text, reserved-
     # namespace surrogates (ADR-0005). Excludes L2 + the confirmed-component pass +
-    # the provisional-pair pass's ranges so any entity-graph/provisional match has
-    # already won; PII spans cover what L1 alone is meant to catch.
+    # the provisional-pair pass's ranges + the slug passes' ranges (issue #440) so
+    # any entity-graph/provisional/slug match has already won; PII spans cover
+    # what L1 alone is meant to catch.
     l1_started_at = time.monotonic()
     l1_spans = _collect_l1_spans(
         text,
         mapping,
-        exclude=l2_ranges + confirmed_component_ranges + pp_ranges + containment_ranges,
+        exclude=l2_ranges
+        + confirmed_component_ranges
+        + pp_ranges
+        + containment_ranges
+        + slug_ranges,
     )
     if hop_ctx is not None:
         hop_ctx.l1_duration_ms += (time.monotonic() - l1_started_at) * 1000
@@ -2433,7 +2664,13 @@ def _blindfold_text(
 
     result = _apply_spans(
         text,
-        containment_spans + l2_spans + confirmed_component_spans + pp_spans + l1_spans,
+        containment_spans
+        + l2_spans
+        + confirmed_slug_spans
+        + provisional_slug_spans
+        + confirmed_component_spans
+        + pp_spans
+        + l1_spans,
         leaf=leaf,
     )
     # L3 candidate-span adjudication (ADR-0003 / ADR-0010): novel capitalized tokens
@@ -4275,7 +4512,15 @@ def leak_gate(
             range_collisions.append(_range_declared_collision_reason(ref))
 
     for real in mapping.real_values():
-        _check_value_set([real], scrub_entity_reference(real, mapping))
+        # Issue #440: ``real`` here ranges over every seeded real -- a confirmed
+        # entity's canonical form AND every one of its variations, since
+        # ``real_values()`` flattens both -- so adding this value's own URL-slug
+        # forms here covers the confirmed side in full, with no separate
+        # per-entity loop needed (mirrors how the whole-value check already
+        # covers canonical + variations in one pass, before this issue).
+        _check_value_set(
+            [real, *_slug_variation_forms(real)], scrub_entity_reference(real, mapping)
+        )
     for entity in entities:
         _check_value_set(
             list(_confirmed_pair_map(entity, confirmed_component_map)),
@@ -4290,8 +4535,16 @@ def leak_gate(
         # includes ``item.real``, but this is the fail-closed backstop: check
         # ``item.real`` explicitly rather than trust the (defaultable) ``variations``
         # field to carry it, so the real-value check can never silently go quiet.
+        #
+        # Issue #440: every variation's own URL-slug forms are checked too, the
+        # provisional-side mirror of the ``real_values()`` loop above -- this is
+        # what covers a SAME-EXCHANGE mint (the referent has no entry in
+        # ``mapping.real_values()`` yet, only here).
+        slug_forms: list[str] = []
+        for variation in item.variations:
+            slug_forms.extend(_slug_variation_forms(variation))
         _check_value_set(
-            list(_provisional_pair_map(item, component_map)),
+            [*_provisional_pair_map(item, component_map), *slug_forms],
             f"review-inbox item {item.id} (surrogate: {item.provisional_surrogate})",
             item_id=item.id,
         )
