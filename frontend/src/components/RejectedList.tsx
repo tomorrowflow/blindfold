@@ -88,10 +88,10 @@ export function RejectedList({ workspace }: { workspace: string }) {
           ))}
         </ul>
       )}
-      {widenTarget && (
+      {widenTarget?.workspace != null && (
         <WidenConfirmDialog
           token={widenTarget.token}
-          workspace={widenTarget.workspace as string}
+          workspace={widenTarget.workspace}
           onClose={() => setWidenTarget(null)}
           onWidened={() => {
             setWidenTarget(null);
