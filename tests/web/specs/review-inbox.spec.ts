@@ -4,9 +4,12 @@ import { test, expect } from "./fixtures";
 // embedded Vue page (`/ui/review-inbox`, retired) into the unified shell at `/ui/inbox`,
 // restyled to the token set. The sidebar's Review inbox nav item carries a lime
 // pending-count badge fed by the same `review_inbox.pending` count `/v1/status`
-// exposes (issue #92, deliberately NOT workspace-gated) — confirm/reject behavior
-// itself is unchanged (ported from the legacy page's tests,
-// `tests/test_review_inbox_spa.py` / `test_review_inbox_learning_loop.py`).
+// exposes (issue #92, deliberately NOT workspace-gated) — confirm behavior itself
+// is unchanged (ported from the legacy page's tests, `tests/test_review_inbox_spa.py`
+// / `test_review_inbox_learning_loop.py`); reject now opens a scope dialog (ADR-0010
+// #423 amendment, issue #444) instead of triaging immediately -- see
+// reject-scope.spec.ts for the dialog's own scope/disclosure/network coverage and
+// the Rejected view.
 //
 // GET /v1/management/review-inbox is now `viewer`-gated (ADR-0035, issue #152) —
 // same gate as the audit log view (audit-log-shell.spec.ts) — so the list/triage
@@ -133,34 +136,36 @@ test.describe("review inbox — alice (holds viewer)", () => {
     expect(backgroundColor).not.toBe(curatorGreen);
   });
 
-  test("reject states its consequence next to the control (ADR-0010's #417 amendment)", async ({
+  test("reject opens a scope dialog defaulting to 'This workspace', with the #417 disclosure (issue #444)", async ({
     alicePage,
   }) => {
     // Confirm and reject are not symmetric: confirm keeps protection
-    // (workspace-scoped, reversible), reject removes it (process-global,
-    // permanent). A human-chosen fail-open is only real if the human is told
-    // it is one, so the consequence sits next to the control -- plain terms,
-    // no scare styling, no modal.
+    // (workspace-scoped, reversible), reject removes it (learned, in a chosen
+    // scope). A human-chosen fail-open is only real if the human is told it
+    // is one -- the reject dialog (ADR-0010's #423 amendment) always offers
+    // both scopes and states the effect next to the choice. Full scope/
+    // disclosure/network coverage lives in reject-scope.spec.ts's own
+    // dedicated fixture; this just pins that Reject opens the dialog rather
+    // than triaging immediately, on the shared port.
     await alicePage.goto("/ui/inbox");
     const klaus = alicePage.getByTestId("review-inbox-item").filter({ hasText: "Klaus Bergmann" });
-    const consequence = klaus.getByTestId("review-inbox-item-reject-consequence");
-    await expect(consequence).toBeVisible();
-    await expect(consequence).toContainText("Never blindfolded again");
-    await expect(consequence).toContainText("every request");
-    await expect(consequence).toContainText("every workspace");
+    await klaus.getByRole("button", { name: "Reject" }).click();
 
-    // Adjacent to Reject, not to Confirm -- and not styled as a scare/red warning.
-    const rejectBtn = klaus.getByRole("button", { name: "Reject" });
-    const rejectBox = await rejectBtn.boundingBox();
-    const consequenceBox = await consequence.boundingBox();
-    const confirmBox = await klaus.getByRole("button", { name: "Confirm" }).boundingBox();
-    if (!rejectBox || !consequenceBox || !confirmBox) throw new Error("missing bounding box");
-    const distanceToReject = Math.abs(consequenceBox.y - (rejectBox.y + rejectBox.height));
-    const distanceToConfirm = Math.abs(consequenceBox.x - confirmBox.x);
-    expect(distanceToReject).toBeLessThan(distanceToConfirm);
+    const dialog = alicePage.getByTestId("reject-dialog");
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByTestId("reject-scope-workspace")).toBeChecked();
+    await expect(dialog.getByTestId("reject-scope-all")).not.toBeChecked();
 
-    const color = await consequence.evaluate((el) => getComputedStyle(el).color);
-    expect(color).not.toBe("rgb(179, 38, 30)"); // --bf-red
+    const disclosure = dialog.getByTestId("reject-dialog-disclosure");
+    await expect(disclosure).toContainText("Never blindfolded again");
+    await expect(disclosure).not.toContainText("every workspace");
+    const color = await disclosure.evaluate((el) => getComputedStyle(el).color);
+    expect(color).not.toBe("rgb(179, 38, 30)"); // --bf-red, no scare styling
+
+    // Cancel leaves the item in the inbox -- the next test still expects it there.
+    await dialog.getByTestId("reject-dialog-cancel").click();
+    await expect(dialog).toBeHidden();
+    await expect(klaus).toBeVisible();
   });
 
   test("confirming an item removes it from the list and decrements the sidebar badge", async ({
@@ -179,7 +184,8 @@ test.describe("review inbox — alice (holds viewer)", () => {
   }) => {
     // Runs after the "confirming an item" test above (shared server, sequential
     // workers) — "Klaus Bergmann" is already triaged, so "Nordwind Systems" is the
-    // one remaining item.
+    // one remaining item. Confirms the default scope (issue #444's dialog) via
+    // the dialog's own Reject button.
     await alicePage.goto("/ui/inbox");
     await expect(alicePage.getByTestId("review-inbox-item")).toHaveCount(1);
 
@@ -188,6 +194,10 @@ test.describe("review inbox — alice (holds viewer)", () => {
       .filter({ hasText: "Nordwind Systems" })
       .getByRole("button", { name: "Reject" })
       .click();
+    const dialog = alicePage.getByTestId("reject-dialog");
+    await expect(dialog).toBeVisible();
+    await dialog.getByTestId("reject-dialog-confirm").click();
+    await expect(dialog).toBeHidden();
 
     const empty = alicePage.getByTestId("review-inbox-empty");
     await expect(empty).toBeVisible();

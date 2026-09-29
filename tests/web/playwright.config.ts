@@ -59,6 +59,10 @@ const LEAK_TAXONOMY_PORT = 8961;
 // window-relative time presets and per-hour histogram -- see serve_fixture.py's
 // `_build_payload_inspection_filters_fixture`.
 const PAYLOAD_INSPECTION_FILTERS_PORT = 8962;
+// Thirteenth fixture instance (issue #444): the reject-scope dialog + Rejected
+// view need their own review-inbox/allowlist state -- see serve_fixture.py's
+// REJECT_SCOPE fixture state.
+const REJECT_SCOPE_PORT = 8963;
 
 export default defineConfig({
   testDir: "./specs",
@@ -202,6 +206,17 @@ export default defineConfig({
         // Issue #437: pin the fixture's retained-exchange timestamps to the
         // same fixed instant the spec pins the browser clock to.
         BLINDFOLD_FIXTURE_ANCHOR_ISO: ANCHOR_ISO,
+      },
+    },
+    {
+      command: "uv run python serve_fixture.py",
+      cwd: __dirname,
+      url: `http://127.0.0.1:${REJECT_SCOPE_PORT}/ui/inbox`,
+      reuseExistingServer: false,
+      timeout: 20_000,
+      env: {
+        BLINDFOLD_FIXTURE_PORT: String(REJECT_SCOPE_PORT),
+        BLINDFOLD_FIXTURE_STATE: "reject_scope",
       },
     },
   ],

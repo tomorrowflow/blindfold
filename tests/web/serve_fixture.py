@@ -230,6 +230,12 @@ PAYLOAD_INSPECTION_FILTERS = FIXTURE_STATE == "payload_inspection_filters"
 # home-status.spec.ts's "recent-blocks empty state" test asserts that port's
 # blocks.recent stays empty.
 LEAK_TAXONOMY = FIXTURE_STATE == "leak_taxonomy"
+# Thirteenth fixture instance (issue #444): the reject-scope dialog + Rejected
+# view need their own review-inbox/allowlist state, distinct from the shared
+# port's own Klaus Bergmann/Nordwind Systems candidates (review-inbox.spec.ts's
+# own confirm/reject sequence consumes both of those) and from every other
+# port's allowlist (empty everywhere else). See _build_reject_scope_fixture below.
+REJECT_SCOPE = FIXTURE_STATE == "reject_scope"
 
 WORKSPACE = "acme"
 REAL_PERSON = "Martin Bach"
@@ -286,6 +292,22 @@ REVIEW_ITEM_CONTEXT_TWO = "Nordwind Systems signed the new contract yesterday."
 # sub_reason.py's `_LeakyMapping` does. Distinct from every other real value
 # seeded above so this fixture's two ports never share entity content.
 LEAK_TAXONOMY_DEFECT_REAL = "Rutherford Kessling"
+
+# The reject-scope fixture's own review-inbox candidates (issue #444) -- distinct
+# from REVIEW_ITEM_REAL_ONE/TWO above so this port's own two dialog-flow specs
+# (default "This workspace" scope, explicit "All workspaces" scope) never share
+# entity content with the shared port's confirm/reject sequence.
+REJECT_SCOPE_WORKSPACE_REAL = "Priya Kestrel"
+REJECT_SCOPE_WORKSPACE_CONTEXT = "Loop in Priya Kestrel before the launch."
+REJECT_SCOPE_ALL_REAL = "Talia Renwick"
+REJECT_SCOPE_ALL_CONTEXT = "Talia Renwick approved the budget increase."
+# Pre-seeded learned entries (issue #444) for the Rejected view's own list/
+# remove/widen specs -- seeded directly into the allowlist rather than reached
+# through a reject, so those specs don't depend on the dialog-flow specs' own
+# run order.
+REJECT_SCOPE_REMOVE_TOKEN = "Wendell Okafor"
+REJECT_SCOPE_WIDEN_TOKEN = "Briony Castellan"
+REJECT_SCOPE_ALLWS_TOKEN = "Solenne Marchetti"
 
 # Processing trace's own "confirmed" surrogate chip (issue #154, ADR-0035): a
 # hop-injected surrogate that's already a re-identifiable known entity, distinct
@@ -1219,6 +1241,31 @@ def build_app():
             leak_taxonomy_block_history,
             inbox=leak_taxonomy_inbox,
         )
+
+    if REJECT_SCOPE:
+        # Issue #444: a fresh review-inbox (two candidates, one per dialog-flow
+        # spec) and a fresh allowlist pre-seeded with the Rejected view's own
+        # three learned entries -- replaces the shared port's Klaus Bergmann/
+        # Nordwind Systems review_inbox and empty allowlist for this port only.
+        reject_scope_inbox = ReviewInbox()
+        reject_scope_inbox.upsert(
+            REJECT_SCOPE_WORKSPACE_REAL,
+            context=REJECT_SCOPE_WORKSPACE_CONTEXT,
+            entity_type="person",
+            workspace=WORKSPACE,
+        )
+        reject_scope_inbox.upsert(
+            REJECT_SCOPE_ALL_REAL,
+            context=REJECT_SCOPE_ALL_CONTEXT,
+            entity_type="person",
+            workspace=WORKSPACE,
+        )
+        reject_scope_allowlist = Allowlist()
+        reject_scope_allowlist.add(REJECT_SCOPE_REMOVE_TOKEN, workspace=WORKSPACE)
+        reject_scope_allowlist.add(REJECT_SCOPE_WIDEN_TOKEN, workspace=WORKSPACE)
+        reject_scope_allowlist.add(REJECT_SCOPE_ALLWS_TOKEN, workspace=None)
+        app.dependency_overrides[get_review_inbox] = lambda: reject_scope_inbox
+        app.dependency_overrides[get_allowlist] = lambda: reject_scope_allowlist
 
     if FORCE_DEPENDENCIES_HEALTHY:
         # See _build_empty_app()'s identical override for why upstream gets its

@@ -2665,6 +2665,10 @@ body {
   margin: 0 auto;
 }
 
+.bf-review-inbox > .bf-search-mode-toggle {
+  margin-top: 16px;
+}
+
 .bf-review-inbox-list {
   list-style: none;
   margin: 16px 0 0;
@@ -2725,24 +2729,6 @@ body {
   align-items: flex-start;
   gap: 8px;
   flex-shrink: 0;
-}
-
-.bf-review-inbox-item-reject-group {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-}
-
-/* Issue #417 (ADR-0010 amendment): reject's effect stated next to the control,
-   in plain terms -- what it does, never how to feel about it. No scare
-   styling: same neutral muted tone as the surrogate/context copy nearby. */
-.bf-review-inbox-item-reject-consequence {
-  max-width: 140px;
-  font-size: 0.75rem;
-  line-height: 1.3;
-  color: #6b7589;
-  text-align: center;
 }
 
 .bf-review-inbox-error {
@@ -2823,6 +2809,119 @@ body {
 .bf-btn-lime[disabled] {
   opacity: 0.6;
   cursor: progress;
+}
+
+/* -----------------------------------------------------------------------
+   Rejected view (ADR-0010 #423 amendment, issue #444)
+   ----------------------------------------------------------------------- */
+
+.bf-rejected-list {
+  list-style: none;
+  margin: 16px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.bf-rejected-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--bf-card);
+  border: 1px solid var(--bf-border-soft);
+  border-radius: 13px;
+  padding: 14px 16px;
+}
+
+.bf-rejected-item-token {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--bf-font-mono);
+  font-size: 0.875rem;
+}
+
+.bf-rejected-item-scope {
+  font-size: 0.75rem;
+  color: #6b7589;
+}
+
+.bf-rejected-item-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+/* -----------------------------------------------------------------------
+   Reject dialog + Widen confirmation (ADR-0010 #423 amendment, issue #444) --
+   the same centered-overlay shape as .bf-merge-overlay/.bf-merge-dialog.
+   ----------------------------------------------------------------------- */
+
+.bf-reject-overlay,
+.bf-widen-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 500;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.bf-reject-dialog,
+.bf-widen-dialog {
+  background: var(--bf-card);
+  border-radius: 8px;
+  padding: 24px;
+  max-width: 420px;
+  width: 90%;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+}
+
+.bf-reject-dialog h2,
+.bf-widen-dialog h2 {
+  margin: 0 0 12px;
+  font-size: 1.1rem;
+}
+
+.bf-reject-scope-options {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.bf-reject-scope-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.875rem;
+  cursor: pointer;
+}
+
+/* Issue #417's rule applied to the dialog: state the effect next to the
+   choice, in plain terms -- no scare styling, same neutral muted tone as the
+   rest of this view's copy. */
+.bf-reject-dialog-disclosure,
+.bf-widen-dialog-disclosure {
+  font-size: 0.8125rem;
+  line-height: 1.4;
+  color: #6b7589;
+  margin: 0 0 16px;
+}
+
+.bf-reject-dialog-error,
+.bf-widen-dialog-error {
+  color: var(--bf-red);
+  font-size: 0.8125rem;
+  margin-bottom: 12px;
+}
+
+.bf-reject-dialog-footer,
+.bf-widen-dialog-footer {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
 }
 
 /* -----------------------------------------------------------------------

@@ -26,19 +26,26 @@
 //
 // Reject's consequence, disclosed (ADR-0010's #417 amendment): confirm and
 // reject are not symmetric — confirm keeps protection (workspace-scoped,
-// reversible through curation), reject removes it (process-global, permanent).
-// A human-chosen fail-open is only real if the human is told it is one, so the
-// effect is stated next to the control, in plain terms — what it does, never
-// how to feel about it. No modal, no scare styling.
+// reversible through curation), reject removes it (learned, in a chosen scope).
+// A human-chosen fail-open is only real if the human is told it is one.
+//
+// Reject scope + a Rejected view (ADR-0010's #423 amendment, issue #444): reject
+// now opens a dialog offering "This workspace" (preselected) or "All workspaces",
+// with the #417 disclosure following the selection — stated next to the choice
+// rather than a fixed line next to the button. A "Rejected" tab inside this same
+// destination (not under Settings) lists learned entries for the current
+// workspace plus every all-workspaces entry, with Remove and (workspace-scoped
+// rows only) Widen to all workspaces.
 
 import { useEffect, useState } from "react";
 import { useReviewInboxPending } from "../components/ReviewInboxContext";
 import { useWorkspace } from "../components/WorkspaceContext";
+import { RejectDialog } from "../components/RejectDialog";
+import { RejectedList } from "../components/RejectedList";
 import { Check, CheckCircle2, Lock } from "../components/icons";
 import { fetchReviewInbox, type ReviewItem } from "../lib/reviewInboxApi";
 
 const CONFIRM_URL = (id: string) => `/v1/management/review-inbox/${encodeURIComponent(id)}/confirm`;
-const REJECT_URL = (id: string) => `/v1/management/review-inbox/${encodeURIComponent(id)}/reject`;
 
 function ContextWithHighlight({ item }: { item: ReviewItem }) {
   const offset = item.context_offset;
@@ -62,6 +69,8 @@ export function ReviewInbox() {
   const [locked, setLocked] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [rejectTarget, setRejectTarget] = useState<ReviewItem | null>(null);
+  const [tab, setTab] = useState<"inbox" | "rejected">("inbox");
   const { refreshPending } = useReviewInboxPending();
 
   useEffect(() => {
@@ -89,11 +98,11 @@ export function ReviewInbox() {
     };
   }, [workspace]);
 
-  async function triage(item: ReviewItem, url: string) {
+  async function confirmItem(item: ReviewItem) {
     setBusyId(item.id);
     setError(null);
     try {
-      const r = await fetch(url, { method: "POST" });
+      const r = await fetch(CONFIRM_URL(item.id), { method: "POST" });
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       setItems((prev) => (prev ?? []).filter((i) => i.id !== item.id));
       refreshPending();
@@ -104,6 +113,12 @@ export function ReviewInbox() {
     }
   }
 
+  function handleRejected(item: ReviewItem) {
+    setItems((prev) => (prev ?? []).filter((i) => i.id !== item.id));
+    setRejectTarget(null);
+    refreshPending();
+  }
+
   return (
     <div className="bf-review-inbox" data-testid="review-inbox-page">
       <h1>Review inbox</h1>
@@ -111,70 +126,102 @@ export function ReviewInbox() {
         Provisional surrogates detected in traffic. Confirm to keep, or reject to
         discard the candidate.
       </p>
-      {error && <p className="bf-review-inbox-error">{error}</p>}
-      {items === null && !locked && <p className="bf-review-inbox-loading">Loading…</p>}
-      {locked && (
-        <div className="bf-review-inbox-locked" data-testid="review-inbox-locked">
-          <Lock size={20} />
-          <span>You need the viewer role to see the review inbox for this workspace.</span>
-        </div>
-      )}
-      {items !== null && !locked && items.length === 0 && (
-        <div className="bf-review-inbox-empty" data-testid="review-inbox-empty">
-          <span className="bf-review-inbox-empty-badge" data-testid="review-inbox-empty-badge">
-            <CheckCircle2 size={28} aria-hidden="true" />
-          </span>
-          <h2>Inbox clear</h2>
-          <p>Every provisional candidate has been reviewed.</p>
-        </div>
-      )}
-      {items !== null && !locked && items.length > 0 && (
-        <ul className="bf-review-inbox-list">
-          {items.map((item) => (
-            <li key={item.id} className="bf-review-inbox-item" data-testid="review-inbox-item">
-              <span
-                className={`bf-kind-mark bf-kind-mark--${item.kind}`}
-                aria-hidden="true"
-              />
-              <div className="bf-review-inbox-item-content">
-                <div className="bf-review-inbox-item-header">
-                  <span className="bf-review-inbox-item-surrogate">
-                    {item.provisional_surrogate}
-                  </span>
-                  <span className="bf-kind-label">{item.kind}</span>
-                </div>
-                <ContextWithHighlight item={item} />
-              </div>
-              <div className="bf-review-inbox-item-actions">
-                <div className="bf-review-inbox-item-reject-group">
-                  <button
-                    type="button"
-                    className="bf-btn-outline"
-                    disabled={busyId === item.id}
-                    onClick={() => triage(item, REJECT_URL(item.id))}
-                  >
-                    Reject
-                  </button>
+      <div
+        className="bf-search-mode-toggle"
+        role="tablist"
+        aria-label="Review inbox or Rejected"
+        data-testid="review-inbox-tabs"
+      >
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "inbox"}
+          className={`bf-search-mode-option${tab === "inbox" ? " bf-search-mode-option--active" : ""}`}
+          onClick={() => setTab("inbox")}
+          data-testid="review-inbox-tab-inbox"
+        >
+          Inbox
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={tab === "rejected"}
+          className={`bf-search-mode-option${tab === "rejected" ? " bf-search-mode-option--active" : ""}`}
+          onClick={() => setTab("rejected")}
+          data-testid="review-inbox-tab-rejected"
+        >
+          Rejected
+        </button>
+      </div>
+      {tab === "rejected" ? (
+        workspace && <RejectedList workspace={workspace} />
+      ) : (
+        <>
+          {error && <p className="bf-review-inbox-error">{error}</p>}
+          {items === null && !locked && <p className="bf-review-inbox-loading">Loading…</p>}
+          {locked && (
+            <div className="bf-review-inbox-locked" data-testid="review-inbox-locked">
+              <Lock size={20} />
+              <span>You need the viewer role to see the review inbox for this workspace.</span>
+            </div>
+          )}
+          {items !== null && !locked && items.length === 0 && (
+            <div className="bf-review-inbox-empty" data-testid="review-inbox-empty">
+              <span className="bf-review-inbox-empty-badge" data-testid="review-inbox-empty-badge">
+                <CheckCircle2 size={28} aria-hidden="true" />
+              </span>
+              <h2>Inbox clear</h2>
+              <p>Every provisional candidate has been reviewed.</p>
+            </div>
+          )}
+          {items !== null && !locked && items.length > 0 && (
+            <ul className="bf-review-inbox-list">
+              {items.map((item) => (
+                <li key={item.id} className="bf-review-inbox-item" data-testid="review-inbox-item">
                   <span
-                    className="bf-review-inbox-item-reject-consequence"
-                    data-testid="review-inbox-item-reject-consequence"
-                  >
-                    Never blindfolded again, on every request, in every workspace.
-                  </span>
-                </div>
-                <button
-                  type="button"
-                  className="bf-btn-lime"
-                  disabled={busyId === item.id}
-                  onClick={() => triage(item, CONFIRM_URL(item.id))}
-                >
-                  <Check size={16} aria-hidden="true" />
-                  Confirm
-                </button>
-              </div>
-            </li>
-          ))}
-        </ul>
+                    className={`bf-kind-mark bf-kind-mark--${item.kind}`}
+                    aria-hidden="true"
+                  />
+                  <div className="bf-review-inbox-item-content">
+                    <div className="bf-review-inbox-item-header">
+                      <span className="bf-review-inbox-item-surrogate">
+                        {item.provisional_surrogate}
+                      </span>
+                      <span className="bf-kind-label">{item.kind}</span>
+                    </div>
+                    <ContextWithHighlight item={item} />
+                  </div>
+                  <div className="bf-review-inbox-item-actions">
+                    <button
+                      type="button"
+                      className="bf-btn-outline"
+                      disabled={busyId === item.id}
+                      onClick={() => setRejectTarget(item)}
+                    >
+                      Reject
+                    </button>
+                    <button
+                      type="button"
+                      className="bf-btn-lime"
+                      disabled={busyId === item.id}
+                      onClick={() => confirmItem(item)}
+                    >
+                      <Check size={16} aria-hidden="true" />
+                      Confirm
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+      {rejectTarget && (
+        <RejectDialog
+          item={rejectTarget}
+          onClose={() => setRejectTarget(null)}
+          onRejected={() => handleRejected(rejectTarget)}
+        />
       )}
     </div>
   );
