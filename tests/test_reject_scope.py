@@ -143,19 +143,24 @@ async def test_reject_with_no_body_scopes_to_the_items_own_workspace_end_to_end(
                 headers={"x-blindfold-workspace": "workspace-a"},
             )
             assert "Helga" not in adjudicator.calls[calls_after_reject:]
+            assert "Helga" in recorded[-1].content.decode("utf-8")
+
+            calls_before_b = len(adjudicator.calls)
 
             # Turn 3, workspace B: still a novel candidate -- L3 adjudicates
-            # it fresh and it never crosses egress in the clear.
+            # it and it never crosses egress in the clear. Fresh prose, so the
+            # L3 content cache (keyed on the candidate's context) can't replay
+            # turn 1's verdict and the adjudicator call below is real evidence.
             resp_b = await client.post(
                 "/v1/messages",
-                json=_payload("Please mention Helga again."),
+                json=_payload("Please brief Helga in workspace B."),
                 headers={"x-blindfold-workspace": "workspace-b"},
             )
     finally:
         app.dependency_overrides.clear()
 
     assert resp_b.status_code == 200
-    assert "Helga" in adjudicator.calls
+    assert "Helga" in adjudicator.calls[calls_before_b:]
     egressed_b = recorded[-1].content.decode("utf-8")
     assert "Helga" not in egressed_b
 

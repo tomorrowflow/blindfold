@@ -774,9 +774,9 @@ class Allowlist:
 
     def add(self, token: str, workspace: str | None = None) -> None:
         """Learn a reject, scoped to ``workspace`` (``None`` — the default —
-        is the all-workspaces scope, today's only scope: ADR-0010 #423
-        amendment decision 7 (a reject-time scope choice) is the next slice's
-        job)."""
+        is the all-workspaces scope). The reject endpoint picks the scope
+        (ADR-0010 #423 amendment decision 7, issue #443): the item's own
+        workspace unless the caller explicitly chooses all workspaces."""
         self._learned.setdefault(workspace, set()).add(token)
 
     def remove(self, token: str, workspace: str | None = None) -> None:
