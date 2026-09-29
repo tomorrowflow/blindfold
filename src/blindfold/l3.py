@@ -562,8 +562,8 @@ class AllowlistSuppressionDetail:
     list before any trace existed for it -- see :class:`SuppressionTrace`),
     so ``source``/``scope`` can only ever describe a **near miss**: the same
     token IS learned-rejected, just not in a scope that matches this
-    candidate's request -- some other workspace, never seeded, all-workspaces,
-    or the request's own workspace (any of those would have suppressed it).
+    candidate's request -- i.e. only for some other workspace (a seeded,
+    all-workspaces, or own-workspace entry would have suppressed it).
     Recorded regardless of whether it mattered, mirroring how
     :class:`CaseInconsistencyRunDetail` is recorded for a run regardless of
     outcome -- exactly the "why didn't this suppress, even though the token
