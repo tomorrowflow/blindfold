@@ -138,6 +138,60 @@ def test_case_inconsistency_detail_attributes_survival_to_the_conjunctive_rule_n
     assert halyard_token.lowercase_count <= halyard_token.capitalized_count
 
 
+def test_seeded_allowlist_detail_is_none_with_no_allowlist_footprint():
+    # Issue #442: the common case -- a survivor with no allowlist relationship
+    # at all reports no detail, same as before this issue's own condition
+    # gained one.
+    from blindfold.review import Allowlist
+
+    text = "Please contact Klaus tomorrow."
+    allowlist = Allowlist()
+
+    candidates = select_candidate_spans(
+        text, known_entities=[], allowlist=allowlist, trace_suppression=True
+    )
+
+    klaus = next(c for c in candidates if c.text == "Klaus")
+    condition = next(
+        c
+        for c in klaus.suppression_trace.conditions
+        if c.name == SUPPRESSION_CONDITION_SEEDED_ALLOWLIST
+    )
+    assert condition.suppressed is False
+    assert condition.detail is None
+
+
+def test_seeded_allowlist_detail_reports_a_near_miss_learned_in_another_workspace():
+    # ADR-0010 #423 amendment (issue #442): "Klaus" is learned-rejected in
+    # workspace-a only, so a request from workspace-b still mints it -- but
+    # the trace records that near miss (learned, in workspace-a) instead of
+    # leaving the reviewer to wonder why a familiar-looking token wasn't
+    # suppressed.
+    from blindfold.review import Allowlist
+
+    text = "Please contact Klaus tomorrow."
+    allowlist = Allowlist()
+    allowlist.add("Klaus", workspace="workspace-a")
+
+    candidates = select_candidate_spans(
+        text,
+        known_entities=[],
+        allowlist=allowlist,
+        trace_suppression=True,
+        workspace="workspace-b",
+    )
+
+    klaus = next(c for c in candidates if c.text == "Klaus")
+    condition = next(
+        c
+        for c in klaus.suppression_trace.conditions
+        if c.name == SUPPRESSION_CONDITION_SEEDED_ALLOWLIST
+    )
+    assert condition.suppressed is False
+    assert condition.detail.source == "learned"
+    assert condition.detail.scope == "workspace-a"
+
+
 def test_trace_suppression_does_not_change_candidate_selection():
     # Read-only: the trace is a pure side-channel over a decision already
     # made -- it must never change which tokens are selected, their order, or
@@ -311,6 +365,54 @@ async def test_review_inbox_response_exposes_the_suppression_trace():
         SUPPRESSION_CONDITION_CASE_INCONSISTENCY,
     ]
     assert all(not c["suppressed"] for c in trace["conditions"])
+
+
+@pytest.mark.anyio
+async def test_review_inbox_response_exposes_the_allowlist_condition_detail():
+    # Issue #442: the review-inbox response is the serialization surface named
+    # in the issue's own brief ("surface the detail wherever the trace is
+    # serialized, for example the review-inbox response").
+    from blindfold.rbac import RbacRegistry
+    from blindfold.review import Allowlist
+
+    allowlist = Allowlist()
+    allowlist.add("Klaus", workspace="workspace-a")
+    candidates = select_candidate_spans(
+        "Please contact Klaus tomorrow.",
+        known_entities=[],
+        allowlist=allowlist,
+        trace_suppression=True,
+        workspace="workspace-b",
+    )
+    klaus = next(c for c in candidates if c.text == "Klaus")
+    rbac = RbacRegistry()
+    rbac.grant("alice", "ws-a", "viewer")
+    inbox = ReviewInbox()
+    inbox.upsert(
+        "Klaus",
+        context="Please contact Klaus tomorrow.",
+        suppression_trace=klaus.suppression_trace,
+    )
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_review_inbox] = lambda: inbox
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://proxy.test"
+        ) as client:
+            resp = await client.get(
+                "/v1/management/review-inbox",
+                params={"workspace": "ws-a"},
+                headers={"x-blindfold-identity": "alice"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    trace = resp.json()["items"][0]["suppression_trace"]
+    allowlist_condition = next(
+        c for c in trace["conditions"] if c["name"] == SUPPRESSION_CONDITION_SEEDED_ALLOWLIST
+    )
+    assert allowlist_condition["detail"] == {"source": "learned", "scope": "workspace-a"}
 
 
 @pytest.mark.anyio

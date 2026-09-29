@@ -39,6 +39,7 @@ from typing import TYPE_CHECKING, Protocol
 import httpx
 
 from .detection import Entity
+from .policy import DEFAULT_WORKSPACE
 
 if TYPE_CHECKING:
     from .review import Allowlist
@@ -552,6 +553,35 @@ class CaseInconsistencyRunDetail:
 
 
 @dataclass(frozen=True)
+class AllowlistSuppressionDetail:
+    """The seeded_allowlist condition's evidence for a surviving candidate
+    (issue #442, ADR-0010 #423 amendment decision 7).
+
+    A survivor's ``seeded_allowlist`` outcome is always ``suppressed=False``
+    by construction (a match would have removed the token from the candidate
+    list before any trace existed for it -- see :class:`SuppressionTrace`),
+    so ``source``/``scope`` can only ever describe a **near miss**: the same
+    token IS learned-rejected, just not in a scope that matches this
+    candidate's request -- some other workspace, never seeded, all-workspaces,
+    or the request's own workspace (any of those would have suppressed it).
+    Recorded regardless of whether it mattered, mirroring how
+    :class:`CaseInconsistencyRunDetail` is recorded for a run regardless of
+    outcome -- exactly the "why didn't this suppress, even though the token
+    looks familiar" question a reviewer would otherwise have to reconstruct
+    by hand.
+
+    ``source`` is always ``"learned"`` here (a seeded near miss is
+    impossible -- the seeded half is workspace-independent, so it either
+    suppresses everywhere or not at all). ``scope`` is the other workspace's
+    slug, never ``None`` (an all-workspaces learned entry would have
+    suppressed too).
+    """
+
+    source: str
+    scope: str | None
+
+
+@dataclass(frozen=True)
 class SuppressionConditionOutcome:
     """One ADR-0023 suppression condition's outcome for a single candidate
     (issue #350).
@@ -561,14 +591,17 @@ class SuppressionConditionOutcome:
     ``case_inconsistency`` are its two ``None``-able parameters; the other
     three conditions always evaluate (against an empty set, if their
     parameter was omitted). Distinct from ``suppressed=False``, which means
-    the condition ran and did not fire. ``detail`` is populated only for the
-    case-inconsistency condition.
+    the condition ran and did not fire. ``detail`` is populated for the
+    case-inconsistency condition (:class:`CaseInconsistencyRunDetail`) and,
+    since issue #442, for the seeded_allowlist condition
+    (:class:`AllowlistSuppressionDetail`, a near-miss diagnostic -- see its
+    own docstring).
     """
 
     name: str
     evaluated: bool
     suppressed: bool
-    detail: CaseInconsistencyRunDetail | None = None
+    detail: CaseInconsistencyRunDetail | AllowlistSuppressionDetail | None = None
 
 
 @dataclass(frozen=True)
@@ -729,6 +762,7 @@ def select_candidate_spans(
     system_confined_tokens: frozenset[str] = frozenset(),
     case_inconsistency: "CaseInconsistencySuppression | None" = None,
     trace_suppression: bool = False,
+    workspace: str = DEFAULT_WORKSPACE,
 ) -> list[CandidateSpan]:
     """Flag the unknown capitalized tokens in ``text``, with minimal context.
 
@@ -814,10 +848,19 @@ def select_candidate_spans(
     ``CandidateSpan`` exactly, trace field included (``None``). Purely
     additive -- never consulted here or anywhere downstream, so candidate
     selection itself is provably identical whether this is on or off.
+
+    ``workspace`` (issue #442, ADR-0010 #423 amendment) is the requesting
+    workspace slug, consulted by the allowlist condition alone: a token
+    learned-rejected for a workspace other than this one (and not seeded or
+    learned for all workspaces) is NOT suppressed here -- see
+    :meth:`~blindfold.review.Allowlist.contains`. Defaults to the default
+    workspace slug, reproducing today's behavior for a caller with no
+    workspace in context (an all-workspaces learned entry, the only kind
+    ``reject_review_item`` writes this slice, matches regardless).
     """
     known_surfaces = _known_surfaces(known_entities)
     capitalized_positions = _capitalized_positions(text)
-    phrase_ranges = _allowlisted_phrase_ranges(text, allowlist)
+    phrase_ranges = _allowlisted_phrase_ranges(text, allowlist, workspace)
     case_inconsistency_suppressed = _case_inconsistency_suppressed_starts(
         text, case_inconsistency
     )
@@ -833,7 +876,7 @@ def select_candidate_spans(
             continue
         if token in known_surfaces:
             continue
-        if allowlist is not None and allowlist.contains(token):
+        if allowlist is not None and allowlist.contains(token, workspace):
             continue
         if any(start <= match.start() < end for start, end in phrase_ranges):
             continue
@@ -849,7 +892,12 @@ def select_candidate_spans(
         context, context_offset = _context_window(text, start, end)
         suppression_trace = (
             _survivor_suppression_trace(
-                allowlist, case_inconsistency, case_inconsistency_run_details, match.start()
+                allowlist,
+                case_inconsistency,
+                case_inconsistency_run_details,
+                match.start(),
+                token,
+                workspace,
             )
             if trace_suppression
             else None
@@ -867,16 +915,43 @@ def select_candidate_spans(
     return candidates
 
 
+def _allowlist_suppression_detail(
+    allowlist: "Allowlist | None", token: str, workspace: str
+) -> AllowlistSuppressionDetail | None:
+    """The seeded_allowlist condition's near-miss detail for a surviving
+    ``token`` (issue #442) -- see :class:`AllowlistSuppressionDetail`.
+
+    ``None`` when ``allowlist`` wasn't supplied, or the token has no
+    allowlist footprint at all. When it has one learned in more than one
+    workspace other than this request's own (a rare edge case -- the same
+    literal token rejected in two different workspaces, neither this one),
+    the alphabetically-first scope is reported; the detail is diagnostic
+    only, never consulted by any selection/suppression decision.
+    """
+    if allowlist is None:
+        return None
+    other_scopes = sorted(
+        scope
+        for scope in allowlist.learned_scopes(token)
+        if scope is not None and scope != workspace
+    )
+    if not other_scopes:
+        return None
+    return AllowlistSuppressionDetail(source="learned", scope=other_scopes[0])
+
+
 def _survivor_suppression_trace(
     allowlist: "Allowlist | None",
     case_inconsistency: "CaseInconsistencySuppression | None",
     case_inconsistency_run_details: dict[int, CaseInconsistencyRunDetail],
     match_start: int,
+    token: str,
+    workspace: str,
 ) -> SuppressionTrace:
     """Build the five-condition trace for a candidate that survived every
     ADR-0023 condition (issue #350) -- every outcome is ``suppressed=False``
     by construction; only ``evaluated`` (for the two ``None``-able
-    conditions) and the case-inconsistency ``detail`` vary per call.
+    conditions) and each condition's own ``detail`` vary per call.
     """
     return SuppressionTrace(
         conditions=(
@@ -884,6 +959,7 @@ def _survivor_suppression_trace(
                 SUPPRESSION_CONDITION_SEEDED_ALLOWLIST,
                 evaluated=allowlist is not None,
                 suppressed=False,
+                detail=_allowlist_suppression_detail(allowlist, token, workspace),
             ),
             SuppressionConditionOutcome(
                 SUPPRESSION_CONDITION_DECLARED_TOOL_VOCABULARY,
@@ -948,7 +1024,7 @@ def select_phone_candidate_spans(text: str) -> list[CandidateSpan]:
 
 
 def _allowlisted_phrase_ranges(
-    text: str, allowlist: "Allowlist | None"
+    text: str, allowlist: "Allowlist | None", workspace: str
 ) -> list[tuple[int, int]]:
     """Char ranges in ``text`` where a multi-word :meth:`Allowlist.phrases` entry
     literally occurs (issue #294), case- and whitespace-normalized: each phrase's
@@ -958,11 +1034,15 @@ def _allowlisted_phrase_ranges(
     not only at the single seed token — this is the pre-scan that makes that
     possible without threading the allowlist through the coalescing pass in
     engine.py.
+
+    ``workspace`` (issue #442, ADR-0010 #423 amendment) restricts the phrase
+    set to whatever is suppressed for this request's workspace -- seeded,
+    plus that workspace's and the all-workspaces learned entries.
     """
     if allowlist is None:
         return []
     ranges: list[tuple[int, int]] = []
-    for phrase in allowlist.phrases():
+    for phrase in allowlist.phrases(workspace):
         words = phrase.split()
         if len(words) < 2:
             continue
@@ -1097,6 +1177,7 @@ class L3Detector:
         phone_candidates_enabled: bool = True,
         system_confined_tokens: frozenset[str] = frozenset(),
         case_inconsistency: "CaseInconsistencySuppression | None" = None,
+        workspace: str = DEFAULT_WORKSPACE,
     ) -> list[tuple[CandidateSpan, L3Adjudication]]:
         if self._deterministic_only:
             return []
@@ -1133,7 +1214,7 @@ class L3Detector:
             select_candidate_spans(
                 text, known_entities, self._allowlist, declared_tools,
                 system_confined_tokens, case_inconsistency,
-                trace_suppression=True,
+                trace_suppression=True, workspace=workspace,
             )
             + (select_phone_candidate_spans(text) if phone_candidates_enabled else []),
             key=lambda candidate: candidate.start,

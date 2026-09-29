@@ -26,7 +26,7 @@ def test_add_is_idempotent_under_the_unique_token_constraint_sqlite(tmp_path):
     store.add("Klaus")
     store.add("Klaus")  # must not raise
 
-    assert store.tokens().count("Klaus") == 1
+    assert store.entries().count(("Klaus", None)) == 1
 
 
 def test_tokens_survive_a_new_store_instance_same_dsn_sqlite(tmp_path):
@@ -39,4 +39,4 @@ def test_tokens_survive_a_new_store_instance_same_dsn_sqlite(tmp_path):
     store1.add("Helga")
 
     store2 = PostgresAllowlistStore(dsn)
-    assert "Helga" in store2.tokens()
+    assert ("Helga", None) in store2.entries()

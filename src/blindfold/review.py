@@ -743,33 +743,97 @@ class Allowlist:
     Once a token is on the allowlist, L3 must not re-flag it on subsequent
     requests — over-redaction is a quality bug the learning loop fixes.
 
-    Entries are single tokens (checked by exact equality, ``contains``) or
-    **phrases** — an entry carrying internal whitespace, e.g. a rejected
-    multi-word/coalesced review item ("Apple Development", issue #162/#167).
-    A phrase is consulted at the *span* level (``phrases()``, issue #294): the
-    granularity mismatch where minting is span-granular but suppression was
-    only ever token-granular meant a multi-word reject was silently undone on
-    the very next hop, re-flagging both components and re-coalescing them into
-    the same entity. Single-token semantics are unchanged either way.
+    Two halves, with different scopes (ADR-0010 #423 amendment, issue #442):
+    the **seeded** half is global and immutable at runtime — loaded once from
+    the vendored artifact (:meth:`add_seeded`) and never grown or shrunk by a
+    reject. The **learned** half is scoped: every entry belongs to one
+    workspace slug, or to ``None`` (all workspaces). A token is suppressed for
+    workspace ``W`` when it is seeded, learned for ``None``, or learned for
+    ``W`` — so every query (:meth:`contains`, :meth:`phrases`, :meth:`source`)
+    takes the workspace as an argument; it is never state on this class.
+
+    Entries are single tokens (checked by exact equality) or **phrases** — an
+    entry carrying internal whitespace, e.g. a rejected multi-word/coalesced
+    review item ("Apple Development", issue #162/#167). A phrase is consulted
+    at the *span* level (``phrases()``, issue #294): the granularity mismatch
+    where minting is span-granular but suppression was only ever
+    token-granular meant a multi-word reject was silently undone on the very
+    next hop, re-flagging both components and re-coalescing them into the
+    same entity. Single-token semantics are unchanged either way, per scope.
     """
 
     def __init__(self) -> None:
-        self._tokens: set[str] = set()
+        self._seeded: set[str] = set()
+        # scope (a workspace slug, or None for all-workspaces) -> its tokens.
+        self._learned: dict[str | None, set[str]] = {}
 
-    def add(self, token: str) -> None:
-        self._tokens.add(token)
+    def add_seeded(self, token: str) -> None:
+        """Grow the seeded half (ADR-0023/ADR-0032's curated vendored tokens,
+        loaded once at startup) — never touched by a reject."""
+        self._seeded.add(token)
 
-    def contains(self, token: str) -> bool:
-        return token in self._tokens
+    def add(self, token: str, workspace: str | None = None) -> None:
+        """Learn a reject, scoped to ``workspace`` (``None`` — the default —
+        is the all-workspaces scope, today's only scope: ADR-0010 #423
+        amendment decision 7 (a reject-time scope choice) is the next slice's
+        job)."""
+        self._learned.setdefault(workspace, set()).add(token)
+
+    def remove(self, token: str, workspace: str | None = None) -> None:
+        """Drop a learned entry from ``workspace``'s scope (or the
+        all-workspaces scope). A no-op when ``token`` isn't learned in that
+        exact scope. Never touches the seeded half, which has no removal
+        affordance (ADR-0010 #423 amendment decision 4) — a token also seeded
+        stays suppressed everywhere after its learned entry is removed."""
+        self._learned.get(workspace, set()).discard(token)
+
+    def contains(self, token: str, workspace: str | None = None) -> bool:
+        """Whether ``token`` is suppressed for ``workspace`` — seeded,
+        learned for all workspaces, or learned for ``workspace`` itself."""
+        if token in self._seeded:
+            return True
+        if token in self._learned.get(None, set()):
+            return True
+        return workspace is not None and token in self._learned.get(workspace, set())
+
+    def source(self, token: str, workspace: str | None = None) -> tuple[str, str | None] | None:
+        """The entry that suppresses ``token`` for ``workspace``, as
+        ``(source, scope)`` — ``("seeded", None)``, ``("learned", None)`` (all
+        workspaces), or ``("learned", workspace)``. ``None`` when nothing
+        suppresses it. Seeded is checked first: it can never be removed, so it
+        is the more foundational half when a token happens to be both."""
+        if token in self._seeded:
+            return ("seeded", None)
+        if token in self._learned.get(None, set()):
+            return ("learned", None)
+        if workspace is not None and token in self._learned.get(workspace, set()):
+            return ("learned", workspace)
+        return None
+
+    def learned_scopes(self, token: str) -> frozenset[str | None]:
+        """Every scope ``token`` is learned under, regardless of whether that
+        scope matches any particular request's workspace — diagnostic use
+        only (the suppression-trace near-miss detail, issue #442): a candidate
+        that survives selection in workspace B despite ``token`` being
+        learned-rejected in workspace A is a scope mismatch worth surfacing to
+        a reviewer, not a blind spot."""
+        return frozenset(scope for scope, tokens in self._learned.items() if token in tokens)
 
     def tokens(self) -> frozenset[str]:
-        return frozenset(self._tokens)
+        """Every LEARNED token across every scope (issue #168's persistence
+        surface — hydration/listing operate on the learned half only; the
+        seeded half is never a store row)."""
+        return frozenset(token for tokens in self._learned.values() for token in tokens)
 
-    def phrases(self) -> frozenset[str]:
+    def phrases(self, workspace: str | None = None) -> frozenset[str]:
         """Entries carrying internal whitespace — multi-word allowlist values,
-        consulted span-wise rather than by single-token equality (issue #294).
-        """
-        return frozenset(token for token in self._tokens if _WHITESPACE_RE.search(token))
+        consulted span-wise rather than by single-token equality (issue #294)
+        — restricted to whatever is suppressed for ``workspace`` (seeded, plus
+        that workspace's and the all-workspaces learned entries)."""
+        seeded_and_learned = self._seeded | self._learned.get(None, set())
+        if workspace is not None:
+            seeded_and_learned = seeded_and_learned | self._learned.get(workspace, set())
+        return frozenset(token for token in seeded_and_learned if _WHITESPACE_RE.search(token))
 
 
 def _provisional_pool_entry(pool_key: str, position: int) -> str:

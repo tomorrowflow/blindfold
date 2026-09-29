@@ -162,7 +162,8 @@ def test_mining_never_proposes_a_reserved_form_candidate(monkeypatch):
                                       declared_tools=frozenset(),
                                       system_confined_tokens=frozenset(),
                                       case_inconsistency=None,
-                                      trace_suppression=False):
+                                      trace_suppression=False,
+                                      workspace="default"):
         start = text.find("BFX0008")
         end = start + len("BFX0008")
         return [

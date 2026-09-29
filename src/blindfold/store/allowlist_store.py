@@ -45,18 +45,55 @@ class PostgresAllowlistStore:
                 conn.execute(_MIGRATIONS_SQL)
             conn.commit()
 
-    def add(self, token: str) -> None:
-        """Persist ``token`` (upsert -- rejecting the same token twice is a no-op)."""
+    def add(self, token: str, workspace: str | None = None) -> None:
+        """Persist ``(token, workspace)`` (upsert -- rejecting the same token
+        in the same scope twice is a no-op). ``workspace=None`` (the default)
+        is the all-workspaces scope (ADR-0010 #423 amendment decision 6/7) --
+        the only scope this slice's ``reject_review_item`` writes.
+
+        Uniqueness is per ``(token, workspace)``, enforced by a pair of
+        partial unique indexes rather than one plain constraint (``NULL``s
+        are distinct from each other in a plain ``UNIQUE`` -- see
+        migrations.sql). The ``ON CONFLICT`` target names the matching
+        partial index explicitly so Postgres and SQLite both infer the same
+        one this insert could violate.
+        """
         with connect(self._dsn) as conn:
-            conn.execute(
-                "INSERT INTO allowlist_entries (token) VALUES (%s) "
-                "ON CONFLICT (token) DO NOTHING",
-                (token,),
-            )
+            if workspace is None:
+                conn.execute(
+                    "INSERT INTO allowlist_entries (token, workspace) VALUES (%s, NULL) "
+                    "ON CONFLICT (token) WHERE workspace IS NULL DO NOTHING",
+                    (token,),
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO allowlist_entries (token, workspace) VALUES (%s, %s) "
+                    "ON CONFLICT (token, workspace) WHERE workspace IS NOT NULL DO NOTHING",
+                    (token, workspace),
+                )
             conn.commit()
 
-    def tokens(self) -> list[str]:
-        """Every persisted learned-reject token, in no particular order."""
+    def remove(self, token: str, workspace: str | None = None) -> None:
+        """Drop the learned entry for ``(token, workspace)``. A no-op when no
+        such row exists. Never touches a seeded token -- this store only ever
+        holds learned rows (ADR-0010 #423 amendment decision 4)."""
         with connect(self._dsn) as conn:
-            rows = conn.execute("SELECT token FROM allowlist_entries").fetchall()
-        return [row[0] for row in rows]
+            if workspace is None:
+                conn.execute(
+                    "DELETE FROM allowlist_entries WHERE token = %s AND workspace IS NULL",
+                    (token,),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM allowlist_entries WHERE token = %s AND workspace = %s",
+                    (token, workspace),
+                )
+            conn.commit()
+
+    def entries(self) -> list[tuple[str, str | None]]:
+        """Every persisted learned-reject ``(token, workspace)`` pair, in no
+        particular order -- ``workspace`` is ``None`` for an all-workspaces
+        entry."""
+        with connect(self._dsn) as conn:
+            rows = conn.execute("SELECT token, workspace FROM allowlist_entries").fetchall()
+        return [(row[0], row[1]) for row in rows]

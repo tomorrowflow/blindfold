@@ -173,8 +173,23 @@ CREATE TABLE IF NOT EXISTS l3_gliner_activation (
 -- union'd with the vendored seeded_allowlist.txt at startup.
 CREATE TABLE IF NOT EXISTS allowlist_entries (
     id    INTEGER PRIMARY KEY,
-    token TEXT NOT NULL UNIQUE
+    token TEXT NOT NULL
 );
+
+-- Issue #442 (ADR-0010 #423 amendment decision 6) -- see migrations.sql's own
+-- comment for the full rationale. NULL = all workspaces; a pre-existing row
+-- migrates as NULL, unchanged behavior.
+ALTER TABLE allowlist_entries ADD COLUMN IF NOT EXISTS workspace TEXT;
+
+-- SQLite has no ALTER TABLE ... DROP CONSTRAINT -- this exact statement shape
+-- is recognized by apply_sqlite_migrations (dialect.py) and translated into a
+-- table rebuild that drops the inline UNIQUE(token) from a pre-existing
+-- database, guarded by an existence check (a no-op once already rebuilt).
+ALTER TABLE allowlist_entries DROP CONSTRAINT IF EXISTS allowlist_entries_token_key;
+CREATE UNIQUE INDEX IF NOT EXISTS allowlist_entries_all_workspaces_key
+    ON allowlist_entries (token) WHERE workspace IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS allowlist_entries_token_workspace_key
+    ON allowlist_entries (token, workspace) WHERE workspace IS NOT NULL;
 
 -- Review inbox (ADR-0037, issue #169): the provisionally-blindfolded novel
 -- candidates awaiting human review (ADR-0010). `id` is caller-assigned

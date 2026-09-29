@@ -95,7 +95,8 @@ def test_request_path_never_crashes_or_mints_on_a_reserved_form_candidate(monkey
                                       declared_tools=frozenset(),
                                       system_confined_tokens=frozenset(),
                                       case_inconsistency=None,
-                                      trace_suppression=False):
+                                      trace_suppression=False,
+                                      workspace="default"):
         start = text_arg.find("BFX0008")
         end = start + len("BFX0008")
         return [

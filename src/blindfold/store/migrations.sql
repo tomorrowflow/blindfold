@@ -172,16 +172,36 @@ CREATE TABLE IF NOT EXISTS l3_gliner_activation (
 
 -- Learned allowlist rejects (ADR-0010, issue #168): a bare token a human rejected
 -- from the review inbox, persisted so the reject survives a process restart --
--- union'd with the vendored seeded_allowlist.txt at startup. Process-global, not
--- workspace-scoped (deliberate: matches the in-memory Allowlist's own
--- process-global scope; per-workspace scoping is a follow-up, not this slice).
--- Only the bare token is ever written here -- never `context` (leak-audit: a
--- rejected token is already a non-protected value per ADR-0010/ADR-0032, the same
--- plaintext-token storage class as seeded_allowlist.txt).
+-- union'd with the vendored seeded_allowlist.txt at startup. Only the bare token
+-- is ever written here -- never `context` (leak-audit: a rejected token is
+-- already a non-protected value per ADR-0010/ADR-0032, the same plaintext-token
+-- storage class as seeded_allowlist.txt).
 CREATE TABLE IF NOT EXISTS allowlist_entries (
     id    SERIAL PRIMARY KEY,
-    token TEXT NOT NULL UNIQUE
+    token TEXT NOT NULL
 );
+
+-- Issue #442 (ADR-0010 #423 amendment decision 6): a learned reject is
+-- workspace-scoped -- NULL means "all workspaces". A pre-existing row (from
+-- before this column existed) has no workspace recorded and comes out NULL =
+-- all-workspaces (decision 5), reproducing its prior everywhere-behavior
+-- exactly, no data step required.
+ALTER TABLE allowlist_entries ADD COLUMN IF NOT EXISTS workspace TEXT;
+
+-- The old bare `UNIQUE (token)` is superseded by uniqueness per
+-- (token, workspace) -- but NULLs are distinct from each other in a plain
+-- UNIQUE, so a pair of partial unique indexes is what actually closes the
+-- gap for the two workspace states (a plain `UNIQUE (token, workspace)` would
+-- let the same token be persisted twice as all-workspaces). Postgres names an
+-- inline column UNIQUE `<table>_<column>_key` by default; SQLite has no
+-- `DROP CONSTRAINT` at all, so `apply_sqlite_migrations` (dialect.py)
+-- recognizes this exact statement shape and rebuilds the table instead,
+-- guarded by an existence check -- see its own docstring.
+ALTER TABLE allowlist_entries DROP CONSTRAINT IF EXISTS allowlist_entries_token_key;
+CREATE UNIQUE INDEX IF NOT EXISTS allowlist_entries_all_workspaces_key
+    ON allowlist_entries (token) WHERE workspace IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS allowlist_entries_token_workspace_key
+    ON allowlist_entries (token, workspace) WHERE workspace IS NOT NULL;
 
 -- Review inbox (ADR-0037, issue #169): the provisionally-blindfolded novel
 -- candidates awaiting human review (ADR-0010), persisted as a durable

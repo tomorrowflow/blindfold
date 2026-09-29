@@ -38,6 +38,20 @@ _ALTER_ADD_COLUMN_IF_NOT_EXISTS_RE = re.compile(
     re.IGNORECASE | re.DOTALL,
 )
 
+# Issue #442 (ADR-0010 #423 amendment): SQLite has no `ALTER TABLE ... DROP
+# CONSTRAINT` at all (Postgres does, and drops the constraint for real there --
+# see migrations.sql's own comment). migrations_sqlite.sql still writes this
+# exact statement shape for a 1:1 read against migrations.sql; apply_sqlite_
+# migrations() intercepts it and rebuilds the named table instead, dropping
+# whatever inline column-level UNIQUE constraint(s) its original `CREATE TABLE`
+# baked in (a pre-existing database's `token TEXT NOT NULL UNIQUE`, in
+# particular) -- guarded by an existence check so it is a no-op once already
+# rebuilt, or against a fresh database that never had one.
+_DROP_CONSTRAINT_IF_EXISTS_RE = re.compile(
+    r"ALTER\s+TABLE\s+(\w+)\s+DROP\s+CONSTRAINT\s+IF\s+EXISTS\s+(\w+)",
+    re.IGNORECASE,
+)
+
 # `--` line comments may themselves contain a `;` (e.g. this module's own docstring-style
 # prose), which would otherwise fool a naive split-on-`;` statement splitter -- strip
 # comments before splitting.
@@ -100,13 +114,63 @@ def _existing_columns(conn: SQLiteDialectConnection, table: str) -> set[str]:
     return {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
 
+def _has_inline_unique_constraint(conn: SQLiteDialectConnection, table: str) -> bool:
+    """True if `table` still carries an autoindex SQLite created for an inline
+    column-level UNIQUE (or PRIMARY KEY on a non-rowid column) from its
+    original `CREATE TABLE` -- SQLite names these `sqlite_autoindex_*`,
+    distinguishing them from an explicit `CREATE INDEX`/`CREATE UNIQUE INDEX`.
+    """
+    indexes = conn.execute(f"PRAGMA index_list({table})").fetchall()
+    return any(row[1].startswith("sqlite_autoindex_") for row in indexes)
+
+
+def _rebuild_table_dropping_inline_unique_constraints(
+    conn: SQLiteDialectConnection, table: str
+) -> None:
+    """Rebuild `table`, preserving every column (name, type, NOT NULL, default,
+    primary key) and all rows, but dropping any inline column-level UNIQUE
+    constraint(s) its original `CREATE TABLE` baked in -- SQLite's answer to
+    Postgres's `ALTER TABLE ... DROP CONSTRAINT` for this one constraint kind.
+
+    Guarded by `_has_inline_unique_constraint`: a no-op once already rebuilt
+    (idempotent), and a no-op against a table that never had one (e.g. a
+    fresh database whose `CREATE TABLE` in this same migration pass never
+    declared an inline UNIQUE to begin with).
+    """
+    if not _has_inline_unique_constraint(conn, table):
+        return
+    columns = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    # row shape: (cid, name, type, notnull, dflt_value, pk)
+    defs = []
+    for _cid, name, coltype, notnull, default, pk in columns:
+        parts = [name, coltype or "TEXT"]
+        if pk:
+            parts.append("PRIMARY KEY")
+        elif notnull:
+            parts.append("NOT NULL")
+        if default is not None:
+            parts.append(f"DEFAULT {default}")
+        defs.append(" ".join(parts))
+    column_list = ", ".join(name for _cid, name, *_rest in columns)
+    rebuilt_table = f"{table}__rebuilt_442"
+    conn.execute(f"CREATE TABLE {rebuilt_table} ({', '.join(defs)})")
+    conn.execute(
+        f"INSERT INTO {rebuilt_table} ({column_list}) SELECT {column_list} FROM {table}"
+    )
+    conn.execute(f"DROP TABLE {table}")
+    conn.execute(f"ALTER TABLE {rebuilt_table} RENAME TO {table}")
+
+
 def apply_sqlite_migrations(conn: SQLiteDialectConnection, sql_text: str) -> None:
     """Apply the SQLite migrations dialect statement-by-statement, idempotently.
 
     `CREATE TABLE IF NOT EXISTS` statements execute as-is (SQLite handles their
     idempotency natively). An `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`
     statement instead checks `PRAGMA table_info` and only runs a plain
-    `ADD COLUMN` when the column is actually missing.
+    `ADD COLUMN` when the column is actually missing. An `ALTER TABLE ... DROP
+    CONSTRAINT IF EXISTS` statement (issue #442) triggers a table rebuild that
+    drops an inline column-level UNIQUE -- see
+    `_rebuild_table_dropping_inline_unique_constraints`.
     """
     uncommented = _LINE_COMMENT_RE.sub("", sql_text)
     for raw in uncommented.split(";"):
@@ -119,6 +183,12 @@ def apply_sqlite_migrations(conn: SQLiteDialectConnection, sql_text: str) -> Non
             table, column, coltype = match.group(1), match.group(2), match.group(3).strip()
             if column not in _existing_columns(conn, table):
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {coltype}")
+            continue
+
+        drop_constraint_match = _DROP_CONSTRAINT_IF_EXISTS_RE.match(stmt)
+        if drop_constraint_match:
+            table = drop_constraint_match.group(1)
+            _rebuild_table_dropping_inline_unique_constraints(conn, table)
             continue
 
         conn.execute(stmt)

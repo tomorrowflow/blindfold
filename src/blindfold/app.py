@@ -161,6 +161,7 @@ from .gliner_status import (
     retry_gliner_provisioning,
 )
 from .l3 import (
+    AllowlistSuppressionDetail,
     CandidateSpan,
     CaseInconsistencyEvidence,
     CaseInconsistencySuppression,
@@ -336,14 +337,16 @@ _mapping = SurrogateMapping.from_pairs(vendored_seed_repository().seeded_pairs()
 
 # Process-wide review-inbox + allowlist (ADR-0010). The inbox holds provisional
 # candidates awaiting human review; the allowlist holds tokens the user has
-# rejected (never blindfolded again), plus the curated seeded allowlist (ADR-0023,
-# issue #71) loaded at startup with identical semantics -- both suppress novelty
-# discovery only, never protection. Tests substitute their own via
+# rejected (never blindfolded again, learned half), plus the curated seeded
+# allowlist (ADR-0023, issue #71) loaded at startup (seeded half) -- both
+# suppress novelty discovery only, never protection, and both suppress in
+# every workspace, but only the seeded half is immutable and un-removable
+# (ADR-0010 #423 amendment, issue #442). Tests substitute their own via
 # dependency_overrides[get_review_inbox] / get_allowlist.
 _review_inbox = ReviewInbox()
 _allowlist = Allowlist()
 for _seeded_token in load_seeded_allowlist_tokens():
-    _allowlist.add(_seeded_token)
+    _allowlist.add_seeded(_seeded_token)
 del _seeded_token
 
 # Process-wide L3 detector (ADR-0022 / issue #57): a singleton (like `_mapping` /
@@ -851,19 +854,22 @@ def get_allowlist_store() -> "PostgresAllowlistStore | None":
 def hydrate_allowlist_from_store(
     allowlist: Allowlist, store: "PostgresAllowlistStore | None"
 ) -> None:
-    """Load every persisted learned-reject token from ``store`` into ``allowlist``
-    (issue #168, acceptance criteria 2/3).
+    """Load every persisted learned-reject ``(token, workspace)`` entry from
+    ``store`` into ``allowlist`` (issue #168, acceptance criteria 2/3; scoped
+    since issue #442 -- ADR-0010 #423 amendment acceptance criterion "hydration
+    after restart restores every scope correctly").
 
     Called once at startup, after the vendored-seed load, so the process-global
     ``_allowlist`` ends up the union of the seed and every reject persisted before
-    this restart -- a rejected token is never re-proposed to the review inbox.
+    this restart, each restored to its own scope -- a rejected token is never
+    re-proposed to the review inbox in a workspace its scope covers.
     ``store=None`` (no persistent store configured) is a no-op: the in-memory
     default path stays exactly as before this slice (acceptance criterion 4).
     """
     if store is None:
         return
-    for token in store.tokens():
-        allowlist.add(token)
+    for token, workspace in store.entries():
+        allowlist.add(token, workspace=workspace)
 
 
 def get_review_inbox_store() -> "PostgresReviewInboxStore | None":
@@ -2497,26 +2503,38 @@ def _suppression_trace_dict(trace: "SuppressionTrace | None") -> dict | None:
                 "name": condition.name,
                 "evaluated": condition.evaluated,
                 "suppressed": condition.suppressed,
-                "detail": (
-                    {
-                        "run_start": condition.detail.run_start,
-                        "run_end": condition.detail.run_end,
-                        "tokens": [
-                            {
-                                "token": token.token,
-                                "lowercase_count": token.lowercase_count,
-                                "capitalized_count": token.capitalized_count,
-                                "in_common_word_list": token.in_common_word_list,
-                            }
-                            for token in condition.detail.tokens
-                        ],
-                    }
-                    if condition.detail is not None
-                    else None
-                ),
+                "detail": _suppression_condition_detail_dict(condition.detail),
             }
             for condition in trace.conditions
         ]
+    }
+
+
+def _suppression_condition_detail_dict(detail: object) -> dict | None:
+    """Render one :class:`~blindfold.l3.SuppressionConditionOutcome`'s
+    ``detail`` -- a :class:`~blindfold.l3.CaseInconsistencyRunDetail`
+    (case-inconsistency condition) or, since issue #442, an
+    :class:`~blindfold.l3.AllowlistSuppressionDetail` (seeded_allowlist
+    condition's near-miss diagnostic) -- or ``None`` when the condition
+    carries none. Dispatches on shape rather than the condition's own name so
+    this stays correct even if a future condition reuses either detail type.
+    """
+    if detail is None:
+        return None
+    if isinstance(detail, AllowlistSuppressionDetail):
+        return {"source": detail.source, "scope": detail.scope}
+    return {
+        "run_start": detail.run_start,
+        "run_end": detail.run_end,
+        "tokens": [
+            {
+                "token": token.token,
+                "lowercase_count": token.lowercase_count,
+                "capitalized_count": token.capitalized_count,
+                "in_common_word_list": token.in_common_word_list,
+            }
+            for token in detail.tokens
+        ],
     }
 
 
@@ -2611,13 +2629,18 @@ async def reject_review_item(
     ``get_allowlist_store()``. With no store configured (the in-memory default),
     ``allowlist_store`` is ``None`` and this is a no-op: behavior stays exactly
     as before this slice (acceptance criterion 4).
+
+    Writes an all-workspaces entry (``workspace=None``) unconditionally -- ADR-
+    0010 #423 amendment decision 7 (a reject-time scope choice, defaulting to
+    the item's own workspace) is the next slice's job; this slice only builds
+    the machinery a scoped write would use.
     """
     item = inbox.get(item_id)
     if item is None:
         raise HTTPException(status_code=404, detail="review item not found")
-    allowlist.add(item.real)
+    allowlist.add(item.real, workspace=None)
     if allowlist_store is not None:
-        allowlist_store.add(item.real)
+        allowlist_store.add(item.real, workspace=None)
     inbox.remove(item_id)
     return {
         "id": item.id,

@@ -2459,6 +2459,7 @@ def _blindfold_text(
             phone_candidates_enabled=phone_candidates_enabled,
             system_confined_tokens=system_confined_tokens,
             case_inconsistency=case_inconsistency,
+            workspace=workspace,
         )
         if hop_ctx is not None:
             confirmed = sum(1 for _, decision in adjudications if decision.is_entity)

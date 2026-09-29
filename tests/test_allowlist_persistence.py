@@ -59,10 +59,10 @@ def test_get_allowlist_store_returns_a_store_when_database_url_configured(monkey
         def __init__(self, database_url):
             calls.append(database_url)
 
-        def add(self, token):
+        def add(self, token, workspace=None):
             pass
 
-        def tokens(self):
+        def entries(self):
             return []
 
     monkeypatch.setattr("blindfold.store.allowlist_store.PostgresAllowlistStore", _FakeStore)
@@ -77,12 +77,12 @@ class _RecordingAllowlistStore:
     """Test double standing in for PostgresAllowlistStore -- no real Postgres."""
 
     def __init__(self) -> None:
-        self.added: list[str] = []
+        self.added: list[tuple[str, str | None]] = []
 
-    def add(self, token: str) -> None:
-        self.added.append(token)
+    def add(self, token: str, workspace: str | None = None) -> None:
+        self.added.append((token, workspace))
 
-    def tokens(self) -> list[str]:
+    def entries(self) -> list[tuple[str, str | None]]:
         return list(self.added)
 
 
@@ -107,7 +107,7 @@ async def test_reject_persists_the_token_through_the_store_seam():
         )
 
     assert resp.status_code == 200
-    assert store.added == ["Helga"]
+    assert store.added == [("Helga", None)]
     assert allowlist.contains("Helga")
 
 
@@ -131,6 +131,29 @@ def test_reject_then_simulated_restart_still_suppresses_the_token():
     candidates = select_candidate_spans(text, known_entities=[], allowlist=allowlist)
 
     assert "Helga" not in {c.text for c in candidates}
+
+
+def test_hydrate_restores_every_scope_correctly():
+    # Issue #442 acceptance criterion: hydration after restart restores every
+    # scope correctly -- an all-workspaces entry, a workspace-a entry, and a
+    # workspace-b entry, persisted together, must each suppress exactly where
+    # they should once "restarted" into a fresh Allowlist.
+    from blindfold.app import hydrate_allowlist_from_store
+
+    store = _RecordingAllowlistStore()
+    store.add("Fritz")  # all-workspaces
+    store.add("Helga", workspace="workspace-a")
+    store.add("Werner", workspace="workspace-b")
+
+    allowlist = Allowlist()
+    hydrate_allowlist_from_store(allowlist, store)
+
+    assert allowlist.contains("Fritz", "workspace-a")
+    assert allowlist.contains("Fritz", "workspace-b")
+    assert allowlist.contains("Helga", "workspace-a")
+    assert not allowlist.contains("Helga", "workspace-b")
+    assert allowlist.contains("Werner", "workspace-b")
+    assert not allowlist.contains("Werner", "workspace-a")
 
 
 def test_hydrate_allowlist_from_store_is_a_no_op_when_store_is_none():
