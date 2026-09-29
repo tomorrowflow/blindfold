@@ -255,8 +255,9 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   deterministic over time. The two verdicts are **not symmetric** (ADR-0010 amendment,
   issue #417): confirm *keeps* the value protected — the **provisional surrogate**
   becomes canonical, so the deterministic pass reaches it everywhere afterwards — and
-  applies to the item's own **workspace**; reject *stops* protecting it, process-wide
-  and persistently. Confirm is therefore the clearance for a blocking row that is a
+  applies to the item's own **workspace**; reject *stops* protecting it, persistently,
+  in the item's workspace by default or in all workspaces when explicitly chosen
+  (ADR-0010 amendment, issue #423). Confirm is therefore the clearance for a blocking row that is a
   genuine referent; reject is for a candidate that was never an entity. Any affordance
   whose effect is to stop protecting a value states that effect where the choice is
   made.
@@ -266,11 +267,15 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   **learned** (a reject verdict from the review inbox) and **seeded** (a
   curated list of common framework/code tokens shipped with Blindfold, plus —
   since issue #353 — this file's own Glossary vocabulary, mechanically kept in
-  sync with a dedicated test). Both carry identical semantics, and both are
-  **process-global**: unlike **confirm**, which is workspace-scoped, a learned
-  entry from one workspace's reject suppresses that value's novelty discovery in
-  every workspace (ADR-0010 amendment, issue #417; unresolved, tracked as issue
-  #423). a registered **Term** always wins over an
+  sync with a dedicated test). Both suppress the same way, but their scopes differ
+  (ADR-0010 amendment, issue #423). The seeded half is global and immutable at
+  runtime. Each learned entry is scoped to one **workspace** (the default for a
+  reject) or to **all workspaces** (an explicit choice, with its effect disclosed).
+  A candidate is suppressed in a request's workspace when a seeded entry, that
+  workspace's learned entry, or an all-workspaces learned entry contains it. Learned
+  entries can be removed or widened to all workspaces, never narrowed. Entries learned
+  before issue #423 carry no workspace and count as all-workspaces. A registered
+  **Term** always wins over an
   allowlist entry — the allowlist suppresses novelty discovery, never
   protection. A phrase entry is matched against the hop text span-wise, case-
   and whitespace-normalized (issue #294) — it never implicitly suppresses one

@@ -94,14 +94,83 @@ standing alone:
 
 ### Not decided here
 
-Tracked as issue `#423`. The **scope** defect this amendment documents — a learned reject applies to every workspace while
-confirm applies to one — is left open deliberately. Closing it means splitting the seeded half
-(deliberately global, and since `#353` carrying this repository's own glossary) from the learned
-half, ruling on existing global entries, and deciding whether one workspace's reject should be
-*offerable* to others rather than silently applied. Each is arguable; none is mechanical.
+The **scope** defect this amendment documents — a learned reject applies to every workspace while
+confirm applies to one — was left open here and is decided in the `#423` amendment below.
 
 ### Related (issue #404)
 
 Who may *read* a pending candidate, and whether that read is audited, is decided in ADR-0028's
 `#404` amendment: triage is a real-space crossing, gated on `curator`, masked by default behind an
 audited per-item reveal. It changes who performs this loop's entry point, not the loop itself.
+
+## Amendment (issue #423): a learned reject is workspace-scoped unless someone chooses otherwise
+
+Closes the scope question the `#417` amendment left open.
+
+### Decision
+
+**The allowlist has two halves with different scopes, and a learned reject defaults to the narrow
+one.**
+
+1. **The seeded half stays global and immutable at runtime.** It ships with Blindfold, is curated
+   per release (ADR-0023, ADR-0032), and since `#353` carries this repository's own glossary. It is
+   loaded from the vendored artifact, never written as store rows, and nothing at runtime adds to
+   or removes from it.
+2. **The learned half is scoped.** Every learned entry carries a scope: one workspace, or **all
+   workspaces**. A candidate is suppressed in a request's workspace when that workspace's entries,
+   the all-workspaces entries, or the seeded half contain it. The workspace is the one the engine
+   already threads to candidate selection. This is the same shape as the workspace-scoped
+   declared-tool registry (`#302`).
+3. **A reject defaults to the item's own workspace.** "All workspaces" is an explicit choice made
+   in the reject dialog, which is always shown, even on an install with one workspace, and has
+   "this workspace" preselected. The API follows suit: `POST …/reject` takes an optional
+   `scope` of `workspace` or `all`. When it is omitted, the reject applies to `workspace`. The
+   narrow scope is the default because a reject is a fail-open, and ADR-0009's posture gives the
+   fail-open the narrow default. The `#417` disclosure changes with the selected scope, and its
+   "in every workspace" wording appears only when "all" is chosen.
+4. **Learned entries can be listed, removed, and widened.** Removing a learned entry restores
+   novelty discovery for that value in its scope. Widening a workspace entry to all workspaces is a
+   chosen fail-open and carries the same disclosure as the dialog. There is no narrowing. To narrow,
+   an operator removes the all-workspaces entry and lets each workspace review the value again,
+   which is the fail-closed direction. Removal applies only to learned entries. A seeded token is
+   never removable this way, even when the same token is also learned.
+5. **Existing learned entries become all-workspaces entries.** Before this change, every reject
+   applied everywhere, and the workspace that created each one was never recorded. Migrating them
+   as all-workspaces keeps behaviour identical and invents no provenance. They appear in the new
+   list, where they can be removed.
+6. **The store records scope as a nullable column.** `allowlist_entries.workspace` is `NULL` for an
+   all-workspaces entry, and an entry is unique per `(token, workspace)`, not per token. The
+   migration is additive and idempotent in both dialects (ADR-0043). Existing rows come out as
+   `NULL`, which is decision 5 with no data step.
+7. **The suppression trace names the source without changing its shape.** The `#350` contract of
+   five conditions in fixed order stays as it is. The allowlist condition gains a detail giving
+   the matching entry's source (`seeded` or `learned`) and, for a learned entry, its scope. Before
+   this, a learned reject reported under the seeded condition's name with nothing to tell the two
+   apart.
+
+### Rejected options
+
+- **Keep it global; the `#417` disclosure is enough.** A disclosed fail-open that nobody chose is
+  still a fail-open nobody chose. The common case ("a false positive is false everywhere") remains
+  one deliberate click away.
+- **Scope silently, with no global choice.** This is fail-closed, but it makes a real
+  deployment-wide false positive a per-workspace chore, and operators would work around it.
+- **Offer one workspace's reject to the others as a suggestion.** There is nobody to offer it to
+  while one person holds every role (v1). It belongs with application-wide auth (`#38`), if
+  anywhere.
+- **Re-scope existing entries to the default workspace.** It fabricates provenance and could
+  silently resume protection, or fail to, in a way no one chose.
+- **A sentinel slug for "all workspaces".** It could collide with a real slug and hides the meaning
+  that `NULL` states.
+
+### Consequences
+
+- **Role gate.** In v1, choosing "all workspaces", widening, and removing are gated the same way
+  reject is. The global choice is the natural seam for a stronger role when `#38`/`#424` land, and
+  is recorded here so it is not rediscovered.
+- **`#424`.** The learned-entries list shows rejected tokens in plaintext. A mistaken reject may be a
+  real value, so that list joins the review inbox's masking scope when auth lands. In v1 it is
+  plaintext, because a reject asserts the value is non-sensitive.
+- **`#135`.** "Promote a dismissal-log entry" gains a concrete learned target: a persisted,
+  removable all-workspaces entry. That target is distinct from editing the shipped seed. Its option
+  (a) no longer means "lost on restart", which has been untrue since `#168`.
