@@ -1,5 +1,6 @@
 import { test as base, expect } from "@playwright/test";
 import { REAL_ORG, REAL_PERSON } from "./fixtures";
+import { ANCHOR_MS, ANCHOR_TIMEZONE_ID } from "../fixtureAnchor";
 
 // Payload inspection list filters (issue #434, ADR-0059 amendment #431 §8):
 // window-relative time presets, a per-hour histogram, an outcome filter, and
@@ -120,10 +121,13 @@ retainedTest.describe("Payload inspection — search over blindfolded text", () 
 
 // Dedicated fixture (port 8962, serve_fixture.py's
 // _build_payload_inspection_filters_fixture): three retained exchanges spread
-// across real wall-clock time -- "recent" (20 min ago, sent), "hour_ago" (85
-// min ago, blocked), "yesterday" (26h ago, sent) -- so the time presets and
+// around a shared fixed anchor instant (tests/web/fixtureAnchor.ts) --
+// "recent" (20 min before the anchor, sent), "hour_ago" (85 min before,
+// blocked), "yesterday" (26h before, sent) -- so the time presets and
 // histogram have something to differentiate, unlike the RETAINED fixture
-// above whose two rows both land at build time.
+// above whose two rows both land at build time. The browser clock below is
+// pinned to that same anchor (issue #437) so neither count depends on real
+// wall-clock time or on how long the fixture process has been running.
 const FILTERS_BASE_URL = "http://127.0.0.1:8962";
 
 const filtersTest = base.extend<{ alicePage: import("@playwright/test").Page }>({
@@ -131,8 +135,14 @@ const filtersTest = base.extend<{ alicePage: import("@playwright/test").Page }>(
     const context = await browser.newContext({
       baseURL: FILTERS_BASE_URL,
       extraHTTPHeaders: { "x-blindfold-identity": "alice" },
+      timezoneId: ANCHOR_TIMEZONE_ID,
     });
     const page = await context.newPage();
+    // Fixes Date.now()/`new Date()` to the same anchor the fixture's
+    // timestamps are relative to, without faking setTimeout/setInterval --
+    // the SPA's 2s exchange-list poll (PayloadInspection.tsx's
+    // POLL_INTERVAL_MS) still fires on the real wall clock.
+    await page.clock.setFixedTime(ANCHOR_MS);
     await use(page);
     await context.close();
   },

@@ -731,38 +731,46 @@ def _build_payload_inspection_retained_fixture(*, armed: bool, pending_surrogate
 
 
 def _build_payload_inspection_filters_fixture():
-    """Issue #434: seeds retained exchanges spread across distinct real
-    wall-clock offsets, so the exchange list's window-relative time presets
-    and per-hour histogram (ADR-0059 amendment #431 §8) have something to
-    differentiate -- unlike _build_payload_inspection_retained_fixture above,
-    whose two rows both land within the same instant at fixture-build time.
+    """Issue #434 (offsets fixed to a shared anchor by #437): seeds retained
+    exchanges spread across distinct offsets, so the exchange list's
+    window-relative time presets and per-hour histogram (ADR-0059 amendment
+    #431 §8) have something to differentiate -- unlike
+    _build_payload_inspection_retained_fixture above, whose two rows both
+    land within the same instant at fixture-build time.
 
-    Offsets are real deltas from THIS PROCESS'S OWN start time, not a frozen/
-    injected clock: the filters read Date.now() in the browser, so the
-    fixture's "past" has to be genuinely in the past relative to whenever the
-    test actually runs, not relative to some fixed epoch. Three exchanges:
+    Offsets are deltas from a fixed anchor instant
+    (BLINDFOLD_FIXTURE_ANCHOR_ISO, set by playwright.config.ts from
+    tests/web/fixtureAnchor.ts's ANCHOR_ISO -- the one place both this
+    fixture and the spec's browser-clock pin read the same literal from),
+    not this process's own real start time: the filters read Date.now() in
+    the browser, and the spec pins that to the very same anchor via
+    page.clock.setFixedTime, so the fixture's "past" is genuinely in the
+    past relative to the instant the browser believes it is, regardless of
+    when the test actually runs or how long the fixture process has been up.
+    Falls back to real wall-clock time if the env var is unset (e.g. a
+    manual `serve_fixture.py` run outside the Playwright harness), matching
+    the pre-#437 behaviour for that case. Three exchanges:
 
-    - "recent" (20 min ago, sent) -- inside the last hour and today, but
-      OUTSIDE the last 15 minutes, so that chip reads a real zero (dimmed,
-      still clickable) rather than the trivial case of every chip having a
-      hit.
-    - "within_hour_ago" (85 min ago, blocked/"never sent") -- outside the
-      last hour, inside today. The 65-minute gap from "recent" guarantees a
-      DIFFERENT hour bucket (any two timestamps more than 60 minutes apart
-      cannot share one, since a bucket spans at most 60 minutes) regardless
-      of what minute this process happens to boot in.
-    - "yesterday" (26 hours ago, sent) -- outside today by construction: any
-      offset >= 24h always lands on a calendar date strictly before today's,
-      whatever today's time-of-day is.
+    - "recent" (20 min before the anchor, sent) -- inside the last hour and
+      today, but OUTSIDE the last 15 minutes, so that chip reads a real zero
+      (dimmed, still clickable) rather than the trivial case of every chip
+      having a hit.
+    - "within_hour_ago" (85 min before the anchor, blocked/"never sent") --
+      outside the last hour, inside today. The 65-minute gap from "recent"
+      guarantees a DIFFERENT hour bucket (any two timestamps more than 60
+      minutes apart cannot share one, since a bucket spans at most 60
+      minutes).
+    - "yesterday" (26 hours before the anchor, sent) -- outside today by
+      construction: any offset >= 24h always lands on a calendar date
+      strictly before the anchor's, whatever the anchor's time-of-day is.
 
-    Residual flake window, accepted rather than engineered around further:
-    if this process boots within the first 85 minutes after local midnight,
-    "within_hour_ago" could itself read as yesterday, undercounting "today"
-    by one. Rare, and the same category of real-wall-clock risk every
-    since-relative filter (e.g. AuditLog.tsx's "Last 24 hours") already
-    carries.
+    The anchor is fixed at midday UTC (see fixtureAnchor.ts), and the spec
+    pins the browser context's timezone to UTC too, so none of the three
+    offsets above can ever cross a local-midnight boundary -- there is no
+    flake window left to accept.
     """
-    now = datetime.now(timezone.utc)
+    anchor_iso = os.environ.get("BLINDFOLD_FIXTURE_ANCHOR_ISO")
+    now = datetime.fromisoformat(anchor_iso) if anchor_iso else datetime.now(timezone.utc)
     ts_recent = (now - timedelta(minutes=20)).isoformat()
     ts_hour_ago = (now - timedelta(minutes=85)).isoformat()
     ts_yesterday = (now - timedelta(hours=26)).isoformat()

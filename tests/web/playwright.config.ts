@@ -1,4 +1,5 @@
 import { defineConfig } from "@playwright/test";
+import { ANCHOR_ISO } from "./fixtureAnchor";
 
 const PORT = 8951;
 // Second fixture instance (issue #96): same `serve_fixture.py`, left at its honest
@@ -198,6 +199,9 @@ export default defineConfig({
       env: {
         BLINDFOLD_FIXTURE_PORT: String(PAYLOAD_INSPECTION_FILTERS_PORT),
         BLINDFOLD_FIXTURE_STATE: "payload_inspection_filters",
+        // Issue #437: pin the fixture's retained-exchange timestamps to the
+        // same fixed instant the spec pins the browser clock to.
+        BLINDFOLD_FIXTURE_ANCHOR_ISO: ANCHOR_ISO,
       },
     },
   ],
