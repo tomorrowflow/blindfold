@@ -184,8 +184,8 @@ test.describe("review inbox — alice (holds viewer)", () => {
   }) => {
     // Runs after the "confirming an item" test above (shared server, sequential
     // workers) — "Klaus Bergmann" is already triaged, so "Nordwind Systems" is the
-    // one remaining item. Confirms the default scope (issue #444's dialog) via
-    // the dialog's own Reject button.
+    // one remaining item. Reject now opens issue #444's scope dialog; this
+    // accepts its default ("This workspace") via the dialog's own Reject button.
     await alicePage.goto("/ui/inbox");
     await expect(alicePage.getByTestId("review-inbox-item")).toHaveCount(1);
 
