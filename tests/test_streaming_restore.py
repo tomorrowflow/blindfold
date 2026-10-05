@@ -8,9 +8,16 @@ Closed-world (ADR-0006): only surrogates injected for this exchange are reversed
 coincidental surrogate-shaped token the provider emitted is left untouched.
 """
 
+import random
+
 import pytest
 
-from blindfold.engine import ExchangeSession, StreamingRestorer, _restore_text
+from blindfold.engine import (
+    ExchangeSession,
+    StreamingRestorer,
+    _blocked_by_a_different_surname,
+    _restore_text,
+)
 
 
 def _session_with(injected: dict[str, str]) -> ExchangeSession:
@@ -241,8 +248,6 @@ def test_streaming_restore_matches_whole_text_restore_over_generated_texts():
     # issue #457: property-style parity over generated mixes of bare first names, the
     # own surname, other surnames and ADR-0024 suffix forms, at several chunk sizes
     # each -- the streamed output must equal _restore_text on the whole text.
-    import random
-
     rng = random.Random(457)
     session = _session_with(_PARITY_INJECTED)
     for _ in range(400):
@@ -269,8 +274,6 @@ def test_first_name_guard_does_not_withhold_a_full_single_word_surrogate():
 
 @pytest.mark.parametrize("token", ["Distel", "Distels", "Distel's", "Distelen", "Distel'"])
 def test_first_name_guard_treats_own_surname_plus_adr_0024_suffix_as_own_surname(token):
-    from blindfold.engine import _blocked_by_a_different_surname
-
     text = f"Carla {token} kam."
 
     assert _blocked_by_a_different_surname(text, len("Carla"), "Distel") is False
