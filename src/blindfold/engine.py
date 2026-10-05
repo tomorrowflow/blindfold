@@ -2412,6 +2412,31 @@ def _collect_provisional_pair_spans(
     return spans
 
 
+def _record_l1_spans(
+    spans: Sequence[ReplacementSpan],
+    session: ExchangeSession,
+    hop_ctx: "_HopContext | None",
+) -> None:
+    """Record :func:`_collect_l1_spans`'s output in ``session`` (and ``hop_ctx``'s
+    per-kind L1 counts, when threaded).
+
+    Bookkeeping is deduplicated per distinct real value, not per occurrence --
+    mirrors the pre-#325 loop, where the first occurrence's whole-string
+    ``.replace()`` had already consumed every later occurrence of the same value
+    by the time the loop reached it.
+    """
+    seen_values: set[str] = set()
+    for span in spans:
+        if span.real in seen_values:
+            continue
+        seen_values.add(span.real)
+        session.record(span.surrogate, span.real)
+        if hop_ctx is not None:
+            kind = span.layer.split(":", 1)[1]
+            hop_ctx.l1_counts[kind] = hop_ctx.l1_counts.get(kind, 0) + 1
+            hop_ctx.surrogates.append(span.surrogate)
+
+
 def _collect_l1_spans(
     text: str,
     mapping: SurrogateMapping,
@@ -2633,15 +2658,7 @@ def _blindfold_text(
     )
     if hop_ctx is not None:
         hop_ctx.l1_duration_ms += (time.monotonic() - email_started_at) * 1000
-    seen_email_values: set[str] = set()
-    for span in email_spans:
-        if span.real in seen_email_values:
-            continue
-        seen_email_values.add(span.real)
-        session.record(span.surrogate, span.real)
-        if hop_ctx is not None:
-            hop_ctx.l1_counts["email"] = hop_ctx.l1_counts.get("email", 0) + 1
-            hop_ctx.surrogates.append(span.surrogate)
+    _record_l1_spans(email_spans, session, hop_ctx)
     email_ranges = [(span.start, span.end) for span in email_spans]
     # Issue #325: stages 1 (L2), 1.5 (the provisional-pair pass, ADR-0051) and 2
     # (L1) each *collect* replacement spans against ``text`` -- the untouched,
@@ -2801,20 +2818,7 @@ def _blindfold_text(
     )
     if hop_ctx is not None:
         hop_ctx.l1_duration_ms += (time.monotonic() - l1_started_at) * 1000
-    seen_l1_values: set[str] = set()
-    for span in l1_spans:
-        # Bookkeeping is deduplicated per distinct real value, not per
-        # occurrence -- mirrors the pre-#325 loop, where the first occurrence's
-        # whole-string ``.replace()`` had already consumed every later
-        # occurrence of the same value by the time the loop reached it.
-        if span.real in seen_l1_values:
-            continue
-        seen_l1_values.add(span.real)
-        session.record(span.surrogate, span.real)
-        if hop_ctx is not None:
-            kind = span.layer.split(":", 1)[1]
-            hop_ctx.l1_counts[kind] = hop_ctx.l1_counts.get(kind, 0) + 1
-            hop_ctx.surrogates.append(span.surrogate)
+    _record_l1_spans(l1_spans, session, hop_ctx)
 
     result = _apply_spans(
         text,

@@ -232,3 +232,108 @@ def test_known_org_in_email_domain_is_claimed_whole_regardless_of_case(address):
     assert "Team Atlas" not in text
 
     assert re.search(r"pii-user-\d+@blindfold\.invalid", text) is not None, text
+
+
+def test_known_multi_word_org_in_email_domain_is_claimed_whole():
+    # The multi-word half of the "single-word and multi-word org" criterion: the
+    # org's hyphen-joined slug form sits in the domain label.
+    mapping = SurrogateMapping()
+    mapping.seed("Northwind Analytics", "Team Atlas")
+
+    payload = {
+        "model": "claude-3-5-sonnet",
+        "messages": [
+            {
+                "role": "user",
+                "content": "Reach out to info@northwind-analytics.example today.",
+            }
+        ],
+    }
+
+    blinded, session = blindfold_payload(payload, mapping, None, None)
+    text = blinded["messages"][0]["content"]
+
+    assert "northwind" not in text.lower()
+    assert "analytics" not in text.lower()
+    assert "team" not in text.lower()
+    match = re.search(r"pii-user-\d+@blindfold\.invalid", text)
+    assert match is not None, text
+
+    leak_gate(blinded, mapping, None)
+
+    response = {
+        "role": "assistant",
+        "content": [{"type": "text", "text": f"Sent to {match.group(0)}."}],
+    }
+    restored = restore_response(response, session)
+    assert restored["content"][0]["text"] == "Sent to info@northwind-analytics.example."
+
+
+@pytest.mark.parametrize("address", ["jane.doe@example.com", "Jane.Doe@Example.com"])
+def test_known_persons_full_name_as_first_dot_last_local_part_is_claimed_whole(address):
+    mapping = SurrogateMapping()
+    mapping.seed("Jane Doe", "Alex Brenner")
+
+    payload = {
+        "model": "claude-3-5-sonnet",
+        "messages": [{"role": "user", "content": f"Reach out to {address} today."}],
+    }
+
+    blinded, session = blindfold_payload(payload, mapping, None, None)
+    text = blinded["messages"][0]["content"]
+
+    assert "jane" not in text.lower()
+    assert "doe" not in text.lower()
+    assert "example.com" not in text.lower()
+    assert "brenner" not in text.lower()
+    match = re.search(r"pii-user-\d+@blindfold\.invalid", text)
+    assert match is not None, text
+
+    leak_gate(blinded, mapping, None)
+
+    response = {
+        "role": "assistant",
+        "content": [{"type": "text", "text": f"Sent to {match.group(0)}."}],
+    }
+    restored = restore_response(response, session)
+    assert restored["content"][0]["text"] == f"Sent to {address}."
+
+
+def test_known_entity_email_in_a_tool_result_hop_is_claimed_whole():
+    # Clause A across hops: the claim applies to a tool-result body, not just a
+    # user turn.
+    mapping = SurrogateMapping()
+    mapping.seed("Northwind", "Team Atlas")
+
+    payload = {
+        "model": "claude-3-5-sonnet",
+        "messages": [
+            {"role": "user", "content": "Who handles invoices?"},
+            {
+                "role": "assistant",
+                "content": [
+                    {"type": "tool_use", "id": "t1", "name": "lookup", "input": {}}
+                ],
+            },
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "t1",
+                        "content": "Contact: info@northwind.example",
+                    }
+                ],
+            },
+        ],
+    }
+
+    blinded, _session = blindfold_payload(payload, mapping, None, None)
+    egress = str(blinded)
+
+    assert "northwind" not in egress.lower()
+    assert "info@" not in egress
+    assert "Team Atlas" not in egress
+    assert re.search(r"pii-user-\d+@blindfold\.invalid", egress) is not None, egress
+
+    leak_gate(blinded, mapping, None)
