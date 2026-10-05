@@ -61,6 +61,20 @@ from .surrogates import SurrogateMapping
 
 logger = logging.getLogger(__name__)
 
+# ADR-0060 amendment 2026-10-05, decision 8 (issue #449): the one fixed,
+# value-free sentence the proxy ever adds to an outbound payload. Appended to
+# the end of `system` whenever this exchange injected any reserved-form token
+# (containment, ADR-0060 §3, or pool exhaustion, ADR-0052) -- never when it
+# didn't. Describes the token's SHAPE in words; carries no reserved-token
+# literal and no value, so it is itself indistinguishable from ordinary prose
+# to every detection layer.
+RESERVED_TOKEN_NOTE = (
+    "Some identifiers above are privacy placeholders the user's privacy gateway "
+    "substituted for a name. They are opaque: they cannot be searched for or "
+    "resolved to a real identity. If a result concerns one, tell the user this "
+    "reflects their privacy protection working as intended, not a tool fault."
+)
+
 
 class LeakError(Exception):
     """A real entity value was found in a payload about to egress (or that did).
@@ -515,7 +529,98 @@ def blindfold_payload(
 
     _blindfold_tools_messages(out.get("tools"), mapping, session, inbox)
 
+    _append_reserved_token_note_messages(out, session)
+
     return out, session
+
+
+def _any_reserved_token_injected(session: ExchangeSession) -> bool:
+    """True if this exchange injected at least one reserved-form token (ADR-0060
+    amendment, decision 8) -- a containment token or a pool-exhaustion fallback
+    alike, since both are minted through the same reserved-namespace family and
+    both leave their surrogate in :attr:`ExchangeSession.injected` the same way
+    any other injected surrogate does.
+    """
+    return any(is_reserved_provisional_surrogate_form(token) for token in session.injected)
+
+
+def _append_note_to_text_blocks(blocks: list[Any]) -> None:
+    """Append :data:`RESERVED_TOKEN_NOTE` onto the LAST ``type: "text"`` block's
+    own ``text`` string, rather than pushing a new block, whenever one exists.
+
+    This matters beyond style: :func:`leak_gate`'s ADR-0051 #406 leaf-pairing
+    joins the blind pass's recorded spans to the gate's own mirror walk by
+    TRAVERSAL POSITION, over an aggregate leaf-COUNT invariant -- a brand new
+    leaf this function's caller didn't exist for would silently invalidate
+    that pairing for the WHOLE request (falling back to the safe-but-coarser
+    exhaustive check, per that function's own documented mismatch handling).
+    Appending onto an EXISTING leaf's string instead changes no leaf's
+    position or count: :data:`RESERVED_TOKEN_NOTE` is fixed text with no real
+    entity in it, so the characters a prior pass already recorded spans
+    against are untouched and the new suffix can never falsely collide with
+    one. Only when ``blocks`` carries no text block at all does a new one get
+    appended, the one case with no existing leaf to extend safely.
+    """
+    for block in reversed(blocks):
+        if (
+            isinstance(block, dict)
+            and block.get("type") == "text"
+            and isinstance(block.get("text"), str)
+        ):
+            block["text"] = f"{block['text']}\n\n{RESERVED_TOKEN_NOTE}"
+            return
+    blocks.append({"type": "text", "text": RESERVED_TOKEN_NOTE})
+
+
+def _append_reserved_token_note_messages(out: dict[str, Any], session: ExchangeSession) -> None:
+    """ADR-0060 amendment, decision 8: append :data:`RESERVED_TOKEN_NOTE` to the
+    end of an Anthropic Messages payload's ``system`` -- string or block-list
+    shape alike -- iff this exchange injected a reserved-form token. Called
+    last, after every other pass in :func:`blindfold_payload` has already run,
+    so detection never scans the note itself and it can never be minted.
+    """
+    if not _any_reserved_token_injected(session):
+        return
+    system = out.get("system")
+    if system is None:
+        out["system"] = RESERVED_TOKEN_NOTE
+    elif isinstance(system, str):
+        out["system"] = f"{system}\n\n{RESERVED_TOKEN_NOTE}"
+    elif isinstance(system, list):
+        _append_note_to_text_blocks(system)
+
+
+def _append_reserved_token_note_chat_completions(
+    out: dict[str, Any], session: ExchangeSession
+) -> None:
+    """ADR-0060 amendment, decision 8, for the OpenAI Chat Completions dialect --
+    mirrors :func:`_append_reserved_token_note_messages`. The "system region"
+    here is every ``role: "system"`` message (same definition
+    :func:`extract_system_confined_tokens_chat_completions` uses); the note is
+    appended to the LAST one, or a new one is inserted at the front of
+    ``messages`` when the request declared none.
+    """
+    if not _any_reserved_token_injected(session):
+        return
+    messages = out.get("messages")
+    if not isinstance(messages, list):
+        return
+    system_messages = [
+        message
+        for message in messages
+        if isinstance(message, dict) and message.get("role") == "system"
+    ]
+    if not system_messages:
+        messages.insert(0, {"role": "system", "content": RESERVED_TOKEN_NOTE})
+        return
+    last = system_messages[-1]
+    content = last.get("content")
+    if content is None:
+        last["content"] = RESERVED_TOKEN_NOTE
+    elif isinstance(content, str):
+        last["content"] = f"{content}\n\n{RESERVED_TOKEN_NOTE}"
+    elif isinstance(content, list):
+        _append_note_to_text_blocks(content)
 
 
 def _close_cross_hop_mint_gap(
@@ -637,6 +742,8 @@ def blindfold_chat_completions_payload(
         )
 
     _blindfold_tools_chat_completions(out.get("tools"), mapping, session, inbox)
+
+    _append_reserved_token_note_chat_completions(out, session)
 
     return out, session
 
