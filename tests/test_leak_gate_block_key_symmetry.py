@@ -115,6 +115,56 @@ def test_a_key_named_id_inside_a_tool_call_input_is_still_gated():
         leak_gate(outbound, _mapping())
 
 
+def _blind(outbound: dict, mapping: SurrogateMapping):
+    blinded, session = blindfold_payload(outbound, mapping)
+    return blinded, session
+
+
+def test_the_pairing_walk_sees_block_types_so_unvisited_leaves_are_not_excused():
+    # A text block's `citations` leaf is never rewritten by the blinder, and a
+    # tool_use `input` key named "id" IS. If the gate stripped `type` before leaf
+    # pairing, its mirror walk would run the generic walk on both blocks, the leaf
+    # counts would balance, and the pairing would shift: the unrewritten real in
+    # `cited_text` would be excused as a "range declared collision".
+    mapping = _mapping()
+    outbound = _assistant(
+        {
+            "type": "text",
+            "text": "ok",
+            "citations": [
+                {"type": "char_location", "cited_text": f"{REAL} said so", "document_index": 0}
+            ],
+        }
+    )
+    outbound["messages"][1]["content"].append(
+        {"type": "tool_use", "id": "toolu_1", "name": "t", "input": {"id": REAL, "tool_use_id": "q"}}
+    )
+    blinded, session = _blind(outbound, mapping)
+
+    with pytest.raises(LeakError):
+        leak_gate(blinded, mapping, session=session)
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        {"type": "thinking", "thinking": "ok", "signature": f"Eq4B/{REAL}/AAAA"},
+        {"type": "tool_use", "id": f"toolu_/{REAL}/x", "name": "t", "input": {"k": "v"}},
+        {"type": "tool_result", "tool_use_id": f"toolu_/{REAL}/x", "content": "ok"},
+        {"type": "text", "text": "ok", "id": f"x/{REAL}/y"},
+        {"type": "document", "title": "t", "source": {"type": "text", "id": f"a/{REAL}/b"}},
+    ],
+)
+def test_a_forbidden_block_key_collision_holds_with_the_session_pairing_path(block):
+    mapping = _mapping()
+    blinded, session = _blind(_assistant(block), mapping)
+
+    collisions = leak_gate(blinded, mapping, session=session)
+
+    assert len(collisions) == 1
+    assert REAL not in collisions[0]
+
+
 _ORDINARY_KEYS = ("text", "title", "content", "source", "name", "description", "url", "thinking")
 _BLOCK_TYPES = ("thinking", "redacted_thinking", "document", "search_result")
 

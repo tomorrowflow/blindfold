@@ -4977,10 +4977,10 @@ def _gate_excluded_view(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
     # dispatch cannot key on safely.
     messages = view.get("messages")
     if isinstance(messages, list):
-        view["messages"] = _strip_block_type_non_hop_fields(messages, forbidden, flat=True)
+        view["messages"] = _strip_block_type_non_hop_fields(messages, forbidden)
     system = view.get("system")
     if isinstance(system, list):
-        view["system"] = _strip_block_type_non_hop_fields(system, forbidden, flat=True)
+        view["system"] = _strip_block_type_non_hop_fields(system, forbidden)
     tools = view.get("tools")
     if isinstance(tools, list):
         for tool in tools:
@@ -5001,6 +5001,27 @@ def _gate_excluded_view(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
                         parameters, forbidden
                     )
     return view, "\x00".join(forbidden)
+
+
+def _strip_blinder_forbidden_block_keys(view: dict[str, Any]) -> tuple[dict[str, Any], str]:
+    """Issue #460 (ADR-0051 set symmetry): strip every :data:`_BLOCK_NON_HOP_KEYS` key
+    (``type``/``id``/``tool_use_id``/``signature``) from ``view``'s ``messages``/
+    ``system``, returning the stripped view and the NUL-joined text it carried (a
+    declared collision, not a leak).
+
+    Runs AFTER :func:`_split_blinder_visited_leaves`, never before: the pairing walk
+    dispatches on each block's ``type`` exactly as the blinder did, so removing the
+    discriminator first would make it walk different leaves than the blinder visited
+    (visiting a text block's ``citations`` or a tool call's ``name``, skipping
+    ``input.id``) and shift the pairing.
+    """
+    forbidden: list[str] = []
+    stripped = dict(view)
+    for field in ("messages", "system"):
+        value = stripped.get(field)
+        if isinstance(value, list):
+            stripped[field] = _strip_block_type_non_hop_fields(value, forbidden, flat=True)
+    return stripped, "\x00".join(forbidden)
 
 
 def _declared_collision_reason(ref: str) -> str:
@@ -5438,6 +5459,9 @@ def leak_gate(
         )
     else:
         leaf_pairs = []
+    gate_view, block_key_text = _strip_blinder_forbidden_block_keys(gate_view)
+    if block_key_text:
+        forbidden_text = f"{forbidden_text}\x00{block_key_text}"
     outbound_text = _collect_text(gate_view)
 
     def _check_value_set(
