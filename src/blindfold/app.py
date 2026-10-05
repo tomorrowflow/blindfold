@@ -137,6 +137,8 @@ from .engine import (
     LeakError,
     StreamingRestorer,
     UnresolvedSurrogateError,
+    append_reserved_token_note_chat_completions,
+    append_reserved_token_note_messages,
     blindfold_chat_completions_payload,
     blindfold_payload,
     chat_completions_tool_container,
@@ -2108,6 +2110,9 @@ async def _exchange(
     blindfold: Callable[..., tuple[dict, ExchangeSession]],
     send_upstream: Callable[[dict, dict[str, str]], Awaitable[dict]],
     tool_container: Callable[[dict], object] = messages_tool_container,
+    append_reserved_token_note: Callable[
+        [dict, ExchangeSession], None
+    ] = append_reserved_token_note_messages,
     declared_tool_vocabulary: DeclaredToolVocabulary | None = None,
     contained_response_memory: ContainedResponseMemory | None = None,
     containment_registry: ContainmentRegistry | None = None,
@@ -2138,6 +2143,21 @@ async def _exchange(
     :func:`_leak_gate_or_block` so its mirror walk visits exactly the same
     tool-description container ``blindfold`` itself did, never a shape-blind
     superset of it.
+    ``append_reserved_token_note`` (ADR-0060 amendment decision 8, issue #449)
+    is a fifth dialect-paired member --
+    :func:`~blindfold.engine.append_reserved_token_note_messages` (default) or
+    :func:`~blindfold.engine.append_reserved_token_note_chat_completions`.
+    Called below strictly AFTER :func:`_leak_gate_or_block` has already run
+    (and passed -- a block returns before reaching this call), onto the SAME
+    ``blinded`` dict the gate just inspected. This ordering is itself the
+    reviewer-found-hole (cycle 2) fix: the note used to be
+    ``blindfold``'s own last step, so a reserved-form token present anywhere
+    in the request added the note's leaf BEFORE ``leak_gate``'s mirror walk
+    ever ran, which could silently cancel out, in aggregate leaf count only,
+    an unrelated leaf stripped elsewhere in the same request -- see the
+    comment above :data:`~blindfold.engine.RESERVED_TOKEN_NOTE`. Calling it
+    here instead means ``leak_gate`` never observes the note at all, for any
+    payload.
     ``declared_tool_vocabulary`` and ``mint_inbox`` are the two further
     deliberate differences count_tokens needs (issue #322): it measures rather
     than uses, so it must not grow the workspace's durable declared-tool
@@ -2290,6 +2310,10 @@ async def _exchange(
                 world_acting=world_acting,
             )
             return block
+        # ADR-0060 amendment decision 8 (issue #449): appended onto `blinded`
+        # only now -- `leak_gate` above has already inspected this exact dict
+        # and passed. See `append_reserved_token_note`'s own parameter doc.
+        append_reserved_token_note(blinded, session)
 
     if streamed:
         upstream_start = time.monotonic()
@@ -2551,6 +2575,7 @@ async def chat_completions(
         extract_world_acting=is_world_acting_request_chat_completions,
         blindfold=blindfold_chat_completions_payload,
         tool_container=chat_completions_tool_container,
+        append_reserved_token_note=append_reserved_token_note_chat_completions,
         send_upstream=upstream.send_chat_completions,
         declared_tool_vocabulary=declared_tool_vocabulary,
         containment_registry=containment_registry,
