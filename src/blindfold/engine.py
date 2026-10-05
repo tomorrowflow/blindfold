@@ -4367,7 +4367,13 @@ def _first_name_guard_map(injected: dict[str, str]) -> dict[str, str]:
         if not any(char.isalpha() for char in first_word):
             continue
         surnames.setdefault(first_word, set()).add(surrogate_words[-1])
-    return {word: next(iter(own)) for word, own in surnames.items() if len(own) == 1}
+    # A word that is itself a full (single-word) surrogate key restores exactly,
+    # so the component guard must not withhold it (issue #457).
+    return {
+        word: next(iter(own))
+        for word, own in surnames.items()
+        if len(own) == 1 and word not in injected
+    }
 
 
 def _blocked_by_a_different_surname(text: str, pos: int, own_surname: str) -> bool:
@@ -4382,7 +4388,9 @@ def _blocked_by_a_different_surname(text: str, pos: int, own_surname: str) -> bo
     if match is None:
         return False
     token = match.group(1)
-    return token[0].isupper() and token != own_surname
+    if token == own_surname or token in {own_surname + suffix for suffix in _SUFFIXES}:
+        return False
+    return token[0].isupper()
 
 
 def _first_name_guard_resolution(buffer: str, pos: int) -> tuple[bool, int]:
@@ -4429,6 +4437,17 @@ def _first_name_guard_resolution(buffer: str, pos: int) -> tuple[bool, int]:
     return True, j
 
 
+def _restorable_injected(session: ExchangeSession, world_acting: bool) -> dict[str, str]:
+    """``session.injected`` minus, for a contained response, plausible named surrogates (#450)."""
+    if not world_acting:
+        return session.injected
+    return {
+        surrogate: real
+        for surrogate, real in session.injected.items()
+        if not _is_plausible_named_surrogate(surrogate)
+    }
+
+
 def _restore_text(
     text: str, session: ExchangeSession, world_acting: bool = False
 ) -> str:
@@ -4466,20 +4485,14 @@ def _restore_text(
     only withholds a first-name component match that would otherwise fire when a
     different surname-like token follows it in ``text``.
     """
-    injected = session.injected
-    if world_acting:
-        injected = {
-            surrogate: real
-            for surrogate, real in injected.items()
-            if not _is_plausible_named_surrogate(surrogate)
-        }
+    injected = _restorable_injected(session, world_acting)
     restore_map = dict(_component_restore_map(injected))
     restore_map.update(
         (surrogate, real)
         for surrogate, real in injected.items()
         if not is_reserved_provisional_surrogate_form(surrogate)
     )
-    guard_map = _first_name_guard_map(session.injected)
+    guard_map = _first_name_guard_map(injected)
     return _apply_restore_pass(text, restore_map, guard_map)
 
 
@@ -4561,65 +4574,77 @@ class StreamingRestorer:
         return restored
 
     def _restore_prefix(self, safe_len: int) -> tuple[str, int]:
-        """Restore the buffer's safe prefix, extending if a match straddles ``safe_len``.
+        """Restore the buffer up to a cut that is safe to emit, starting from ``safe_len``.
 
-        A surrogate (plus a possible closed-set suffix, ADR-0024) may start within the
-        safe prefix and extend into the tail; in that case we restore the full match
-        (and consume up to its end), preserving the sliding-window invariant. Matching
-        against the word-boundary pattern (not a bare substring search) is what lets a
-        candidate starting in the safe prefix correctly resolve its suffix/no-suffix
-        boundary decision — the ``_tail`` headroom guarantees enough trailing buffer is
-        already present to do so conclusively.
+        The cut (``end``) must be a place where restoring ``buffer[:end]`` now and
+        ``buffer[end:]`` later equals restoring the whole text -- the streaming = whole-text
+        parity ``_restore_text`` defines (issue #457, re-file of #441's cycle 3). Every
+        key match in the buffer (full surrogate, ADR-0036 component, with its ADR-0024
+        suffix) is an interval ``[start, window_end)`` the cut must not land inside:
 
-        ADR-0036: a surrogate *component* is also a restore key and, being a
-        substring of its parent surrogate, is already covered by the existing tail
-        sizing — but it must be checked here too, or a component split right at the
-        boundary is truncated out of the buffer before its remainder arrives.
+        * a plain match's window is the match itself;
+        * a guarded bare first-name component (:func:`_first_name_guard_map`) is decided
+          by the token that follows it, so a *settled* match's window runs to the end of
+          that token (:func:`_first_name_guard_resolution`'s ``extend_to``) -- the
+          truncated text handed to :func:`_restore_text` must contain the decisive token
+          or it re-derives a different verdict;
+        * an *unsettled* guarded match (deciding token still partly or wholly unbuffered)
+          bars every cut after its start.
 
-        issue #441 cycle 2: a guarded bare first-name component (see
-        :func:`_first_name_guard_map`) match ending near ``safe_len`` can have its
-        deciding token — whatever follows it — only partially buffered, or not yet
-        arrived at all. Emitting up to (or past) such a match before the decision is
-        settled is exactly the streaming defect: the text handed to
-        :func:`_restore_text` ends right where the guard would have looked, which
-        reads as "nothing follows" and lets the match through. ``hold_back_at``
-        tracks the earliest such unresolved match's start and, if any was found,
-        caps ``end`` there — the ambiguous match (and anything after it) stays in
-        the buffer for a later ``feed()``/``flush()`` call, once the buffer holds
-        enough to resolve it for certain. A guarded match that's already resolved
-        instead extends ``end`` to :func:`_first_name_guard_resolution`'s own
-        ``extend_to`` -- at least as far as ``match.end()`` as before, and further
-        when needed so the decisive following token is included in what gets handed
-        to :func:`_restore_text`, which re-derives the same guard verdict from that
-        (possibly truncated) text and must see the identical token to reach it.
+        Phase 1 extends ``end`` forward over every window it falls inside, repeating
+        until it stops moving (a settled match's window may start a further match, and
+        the old single pass never re-checked matches beginning past ``safe_len``).
+        Phase 2 retracts ``end`` to the start of whichever unsettled match, or window a
+        cap would cut, it still sits at or inside, repeating until stable. Retracting is
+        always sound -- it only emits less now -- and only decreases ``end``, so the
+        loop terminates; it runs after extension so the two can never chase each other.
+
+        The ``_tail`` headroom (longest surrogate + longest suffix) is what guarantees a
+        non-guarded match straddling ``safe_len`` is already fully buffered.
         """
-        end = safe_len
-        keys = list(self._session.injected) + list(
-            _component_restore_map(self._session.injected)
-        )
-        guard_map = _first_name_guard_map(self._session.injected)
-        hold_back_at: int | None = None
-        for surrogate in sorted(keys, key=len, reverse=True):
-            pattern = _surrogate_pattern(surrogate)
+        buffer = self._buffer
+        injected = _restorable_injected(self._session, self._world_acting)
+        keys = list(injected) + list(_component_restore_map(injected))
+        guard_map = _first_name_guard_map(injected)
+        windows: list[tuple[int, int]] = []
+        unsettled: list[int] = []
+        for key in keys:
+            pattern = _surrogate_pattern(key)
+            own_surname = guard_map.get(key)
             search_start = 0
-            while search_start < safe_len:
-                match = pattern.search(self._buffer, search_start)
-                if match is None or match.start() >= safe_len:
-                    break
-                end = max(end, match.end())
-                own_surname = guard_map.get(surrogate)
+            while (match := pattern.search(buffer, search_start)) is not None:
+                window_end = match.end()
                 if own_surname is not None:
-                    resolved, extend_to = _first_name_guard_resolution(
-                        self._buffer, match.end()
-                    )
-                    if resolved:
-                        end = max(end, extend_to)
-                    elif hold_back_at is None or match.start() < hold_back_at:
-                        hold_back_at = match.start()
+                    settled, extend_to = _first_name_guard_resolution(buffer, match.end())
+                    if settled:
+                        window_end = max(window_end, extend_to)
+                    else:
+                        unsettled.append(match.start())
+                windows.append((match.start(), window_end))
                 search_start = match.start() + 1
-        if hold_back_at is not None and hold_back_at < end:
-            end = hold_back_at
-        restored = _restore_text(self._buffer[:end], self._session, self._world_acting)
+
+        end = safe_len
+        moved = True
+        while moved:
+            moved = False
+            for start, window_end in windows:
+                if start < end < window_end:
+                    end = window_end
+                    moved = True
+
+        moved = True
+        while moved:
+            moved = False
+            for start in unsettled:
+                if start < end:
+                    end = start
+                    moved = True
+            for start, window_end in windows:
+                if start < end < window_end:
+                    end = start
+                    moved = True
+
+        restored = _restore_text(buffer[:end], self._session, self._world_acting)
         return restored, end
 
 

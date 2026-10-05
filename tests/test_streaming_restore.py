@@ -10,7 +10,7 @@ coincidental surrogate-shaped token the provider emitted is left untouched.
 
 import pytest
 
-from blindfold.engine import ExchangeSession, StreamingRestorer
+from blindfold.engine import ExchangeSession, StreamingRestorer, _restore_text
 
 
 def _session_with(injected: dict[str, str]) -> ExchangeSession:
@@ -169,3 +169,109 @@ def test_streaming_restore_is_closed_world_for_coincidental_lookalikes():
 
     assert "Tobias Lehmann" in out
     assert "Markus Wagner" not in out  # real value never appears
+
+
+# --- issue #457 (re-file of #441): streaming == whole-text with several guarded matches ---
+
+_PARITY_SESSION = {"Carla Distel": "Sarah Bergmann"}
+
+
+def _stream(text: str, chunk_size: int, injected: dict[str, str] = _PARITY_SESSION) -> str:
+    restorer = StreamingRestorer(_session_with(injected))
+    out = [restorer.feed(text[i : i + chunk_size]) for i in range(0, len(text), chunk_size)]
+    out.append(restorer.flush())
+    return "".join(out)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Carla Carla Fischer",
+        "Heute sah ich Carla Carla Fischer und Carla Carla Fischer; danach kam Carla.",
+        "Carla Carla Müller-Lüdenscheidt-Hohenzollern und seine ganze Familie kam mit.",
+    ],
+    ids=["repeated-first-name", "repeated-with-trailing-bare", "repeated-long-compound"],
+)
+@pytest.mark.parametrize("chunk_size", range(1, 41))
+def test_streaming_restore_matches_whole_text_restore_with_several_guarded_first_names(
+    text, chunk_size
+):
+    # issue #457: the cut is a fixpoint -- it never lands inside a guarded match's
+    # decision window and every guarded match before the cut is checked -- so the
+    # joined stream equals _restore_text at every chunk size.
+    session = _session_with(_PARITY_SESSION)
+
+    assert _stream(text, chunk_size) == _restore_text(text, session)
+
+
+_PARITY_FRAGMENTS = (
+    "Carla",  # bare surrogate first name
+    "Carla",
+    "Distel",  # the surrogate's own surname
+    "Fischer",  # other surnames
+    "Weber",
+    "Müller-Lüdenscheidt-Hohenzollern",
+    "Carlas",  # ADR-0024 suffix forms
+    "Carla's",
+    "Distels",
+    "Distel's",
+    "Carla Distel",
+    "Carla Distels",
+    "Carla Distel's",
+    "und",
+    "sagte",
+    "Berta Vogel",
+    "Berta",
+    "Vogel",
+    "Berta Vogelen",
+    "Teststraße 5",
+)
+_PARITY_INJECTED = {"Carla Distel": "Sarah Bergmann", "Berta Vogel": "Anna Schmidt"}
+
+
+def _generated_parity_text(rng) -> str:
+    pieces: list[str] = []
+    for _ in range(rng.randint(1, 14)):
+        pieces.append(rng.choice(_PARITY_FRAGMENTS))
+        pieces.append(rng.choice((" ", " ", " ", ", ", ". ", "  ", "\n")))
+    return "".join(pieces).rstrip(" ") if rng.random() < 0.5 else "".join(pieces)
+
+
+def test_streaming_restore_matches_whole_text_restore_over_generated_texts():
+    # issue #457: property-style parity over generated mixes of bare first names, the
+    # own surname, other surnames and ADR-0024 suffix forms, at several chunk sizes
+    # each -- the streamed output must equal _restore_text on the whole text.
+    import random
+
+    rng = random.Random(457)
+    session = _session_with(_PARITY_INJECTED)
+    for _ in range(400):
+        text = _generated_parity_text(rng)
+        expected = _restore_text(text, session)
+        for chunk_size in (1, 2, 3, 5, 7, 11, 16, 25, 40, rng.randint(1, 60)):
+            assert _stream(text, chunk_size, _PARITY_INJECTED) == expected, (
+                text,
+                chunk_size,
+            )
+
+
+def test_first_name_guard_does_not_withhold_a_full_single_word_surrogate():
+    # issue #457 (quality): "Carla" is itself a full single-word surrogate here, so
+    # restoring it is exact -- the bare-first-name guard (for the *component* of
+    # "Carla Distel") must not withhold it before a different surname.
+    injected = {"Carla Distel": "Sarah Bergmann", "Carla": "Anna"}
+    text = "Carla Fischer kam."
+
+    assert _restore_text(text, _session_with(injected)) == "Anna Fischer kam."
+    for chunk_size in (1, 3, 7, 40):
+        assert _stream(text, chunk_size, injected) == "Anna Fischer kam."
+
+
+@pytest.mark.parametrize("token", ["Distel", "Distels", "Distel's", "Distelen", "Distel'"])
+def test_first_name_guard_treats_own_surname_plus_adr_0024_suffix_as_own_surname(token):
+    from blindfold.engine import _blocked_by_a_different_surname
+
+    text = f"Carla {token} kam."
+
+    assert _blocked_by_a_different_surname(text, len("Carla"), "Distel") is False
+    assert _blocked_by_a_different_surname("Carla Distelx kam.", len("Carla"), "Distel") is True
