@@ -64,11 +64,29 @@ logger = logging.getLogger(__name__)
 
 # ADR-0060 amendment 2026-10-05, decision 8 (issue #449): the one fixed,
 # value-free sentence the proxy ever adds to an outbound payload. Appended to
-# the end of `system` whenever this exchange injected any reserved-form token
-# (containment, ADR-0060 §3, or pool exhaustion, ADR-0052) -- never when it
-# didn't. Describes the token's SHAPE in words; carries no reserved-token
+# the end of `system` whenever the outbound exchange carries any reserved-form
+# token (containment, ADR-0060 §3, or pool exhaustion, ADR-0052) -- never when
+# it doesn't. Describes the token's SHAPE in words; carries no reserved-token
 # literal and no value, so it is itself indistinguishable from ordinary prose
 # to every detection layer.
+#
+# Reviewer-found hole (cycle 2 -> cycle 3): `blindfold_payload`/
+# `blindfold_chat_completions_payload` used to append this note themselves, as
+# their own last step. Appending it anywhere other than onto an EXISTING text
+# leaf adds a leaf the original blind pass never created -- and
+# `leak_gate`'s `_split_blinder_visited_leaves` (issue #416) only fails closed
+# on a leaf-count DISAGREEMENT; it can't see a phantom added leaf canceling
+# out, in aggregate count alone, an unrelated leaf `_strip_schema_structural_
+# tokens` strips elsewhere in the very same request. That coincidence let a
+# genuine miss get excused against an unrelated leaf's recorded surrogate
+# range (`test_leak_gate_catches_a_genuine_miss_the_notes_own_new_leaf_would_
+# have_masked`, tests/test_reserved_token_note.py). The fix is structural, not
+# another special case: these two functions below no longer get called from
+# inside `blindfold_payload`/`blindfold_chat_completions_payload` at all.
+# `app.py`'s shared exchange sequence calls them itself, strictly AFTER
+# `leak_gate` has already run (and raised or passed) on the note-free
+# `blinded` payload -- so the gate's mirror walk can never observe the note's
+# own leaf, for any of the three "adds a new leaf" shapes, by construction.
 RESERVED_TOKEN_NOTE = (
     "Some identifiers above are privacy placeholders the user's privacy gateway "
     "substituted for a name. They are opaque: they cannot be searched for or "
@@ -530,8 +548,6 @@ def blindfold_payload(
 
     _blindfold_tools_messages(out.get("tools"), mapping, session, inbox)
 
-    _append_reserved_token_note_messages(out, session)
-
     return out, session
 
 
@@ -590,12 +606,19 @@ def _append_note_to_text_blocks(blocks: list[Any]) -> None:
     blocks.append({"type": "text", "text": RESERVED_TOKEN_NOTE})
 
 
-def _append_reserved_token_note_messages(out: dict[str, Any], session: ExchangeSession) -> None:
+def append_reserved_token_note_messages(out: dict[str, Any], session: ExchangeSession) -> None:
     """ADR-0060 amendment, decision 8: append :data:`RESERVED_TOKEN_NOTE` to the
     end of an Anthropic Messages payload's ``system`` -- string or block-list
-    shape alike -- iff this exchange injected a reserved-form token. Called
-    last, after every other pass in :func:`blindfold_payload` has already run,
-    so detection never scans the note itself and it can never be minted.
+    shape alike -- iff this exchange's outbound content carries a reserved-form
+    token.
+
+    NOT called from :func:`blindfold_payload` (reviewer-found hole, cycle 2 ->
+    cycle 3 -- see the comment above :data:`RESERVED_TOKEN_NOTE`). The caller
+    (``app.py``'s shared exchange sequence) must call this only AFTER
+    :func:`leak_gate` has already run on ``out`` and either raised or passed --
+    never before, and never on a view ``leak_gate`` will still inspect -- so
+    detection and the gate's leaf-position pairing never see the note at all,
+    and it can never be minted.
     """
     if not _any_reserved_token_present(out, session):
         return
@@ -608,12 +631,13 @@ def _append_reserved_token_note_messages(out: dict[str, Any], session: ExchangeS
         _append_note_to_text_blocks(system)
 
 
-def _append_reserved_token_note_chat_completions(
+def append_reserved_token_note_chat_completions(
     out: dict[str, Any], session: ExchangeSession
 ) -> None:
     """ADR-0060 amendment, decision 8, for the OpenAI Chat Completions dialect --
-    mirrors :func:`_append_reserved_token_note_messages`. The "system region"
-    here is every ``role: "system"`` message (same definition
+    mirrors :func:`append_reserved_token_note_messages` (including the same
+    call-after-``leak_gate``-only discipline). The "system region" here is
+    every ``role: "system"`` message (same definition
     :func:`extract_system_confined_tokens_chat_completions` uses); the note is
     appended to the LAST one, or a new one is inserted at the front of
     ``messages`` when the request declared none.
@@ -760,8 +784,6 @@ def blindfold_chat_completions_payload(
         )
 
     _blindfold_tools_chat_completions(out.get("tools"), mapping, session, inbox)
-
-    _append_reserved_token_note_chat_completions(out, session)
 
     return out, session
 
