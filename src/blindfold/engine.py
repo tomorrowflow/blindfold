@@ -55,6 +55,7 @@ from .store._mint import (
     _PERSON_POOL,
     _real_value_pattern,
     containment_surrogate,
+    contains_reserved_provisional_surrogate_form,
     is_reserved_provisional_surrogate_form,
 )
 from .surrogates import SurrogateMapping
@@ -534,14 +535,31 @@ def blindfold_payload(
     return out, session
 
 
-def _any_reserved_token_injected(session: ExchangeSession) -> bool:
-    """True if this exchange injected at least one reserved-form token (ADR-0060
-    amendment, decision 8) -- a containment token or a pool-exhaustion fallback
-    alike, since both are minted through the same reserved-namespace family and
-    both leave their surrogate in :attr:`ExchangeSession.injected` the same way
-    any other injected surrogate does.
+def _any_reserved_token_present(out: dict[str, Any], session: ExchangeSession) -> bool:
+    """True if a reserved-form token (ADR-0060 amendment, decision 8) is present
+    in this outbound exchange -- either because THIS exchange injected one (a
+    containment token or a pool-exhaustion fallback alike, both minted through
+    the same reserved-namespace family and both left in
+    :attr:`ExchangeSession.injected`), OR because the already-blinded payload
+    ``out`` carries one anywhere in its text, e.g. a reserved token a PRIOR
+    exchange injected that the client echoed back in message history this
+    exchange never re-injects (reviewer finding, cycle 1 -> this cycle: a
+    main-conversation request's own history turn is not world-acting and
+    injects nothing itself, so ``session.injected`` alone missed it -- the ADR
+    text names "a request whose content carries any reserved-form token", not
+    "this exchange's own injections").
+
+    Scanning ``out`` -- not the original, unblinded ``payload`` -- matters:
+    `out` is what the blind pass actually produced, is what the leak_gate
+    this note must pass alongside checks, and is the only view guaranteed to
+    still carry a token the ORIGINAL payload held in a shape the blinder
+    rewrote around (unlikely for an opaque reserved token specifically, since
+    nothing ever mints INTO one, but keeping this scan on the same payload
+    the gate sees is the one invariant that can't drift).
     """
-    return any(is_reserved_provisional_surrogate_form(token) for token in session.injected)
+    if any(is_reserved_provisional_surrogate_form(token) for token in session.injected):
+        return True
+    return contains_reserved_provisional_surrogate_form(_collect_text(out))
 
 
 def _append_note_to_text_blocks(blocks: list[Any]) -> None:
@@ -579,7 +597,7 @@ def _append_reserved_token_note_messages(out: dict[str, Any], session: ExchangeS
     last, after every other pass in :func:`blindfold_payload` has already run,
     so detection never scans the note itself and it can never be minted.
     """
-    if not _any_reserved_token_injected(session):
+    if not _any_reserved_token_present(out, session):
         return
     system = out.get("system")
     if system is None:
@@ -600,7 +618,7 @@ def _append_reserved_token_note_chat_completions(
     appended to the LAST one, or a new one is inserted at the front of
     ``messages`` when the request declared none.
     """
-    if not _any_reserved_token_injected(session):
+    if not _any_reserved_token_present(out, session):
         return
     messages = out.get("messages")
     if not isinstance(messages, list):

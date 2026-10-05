@@ -25,6 +25,7 @@ from blindfold.engine import (
     ExchangeSession,
     blindfold_chat_completions_payload,
     blindfold_payload,
+    chat_completions_tool_container,
     leak_gate,
 )
 from blindfold.l3 import L3Adjudication, L3Detector
@@ -359,6 +360,7 @@ async def test_end_to_end_the_stub_upstream_receives_the_note_appended_once():
     assert len(recorded) == 1
     outbound = recorded[0].content.decode()
     assert outbound.count(RESERVED_TOKEN_NOTE) == 1
+    assert "Elena Voss" not in outbound
     sent = recorded[0].content
     import json
 
@@ -393,3 +395,92 @@ def test_a_pool_exhaustion_fallback_token_also_triggers_the_note_without_world_a
     blinded, _session = blindfold_payload(payload, mapping, None, inbox, world_acting=False)
 
     assert RESERVED_TOKEN_NOTE in blinded["system"]
+
+
+def test_note_fires_on_a_history_carried_reserved_token_the_main_conversation_wrote_back():
+    # Reviewer finding, cycle 1 -> this cycle: `_any_reserved_token_injected` only
+    # checked `session.injected` -- every surrogate THIS exchange actually spliced
+    # in. A main-conversation request (not world-acting) never injects anything
+    # itself; its own prior turn's reserved token is only present because the
+    # CLIENT echoed it back in message history. `session.injected` is empty for
+    # this request, so the note never fired even though a reserved-form token is
+    # plainly present in the outbound payload -- the exact clause ADR-0060
+    # amendment #8 names ("a request whose content carries any reserved-form
+    # token", not "this exchange's own injections").
+    mapping = SurrogateMapping()
+    inbox = ReviewInbox()
+    payload = {
+        "system": "You are a helpful assistant.",
+        "messages": [
+            {"role": "assistant", "content": "I searched for BFW0000 and found nothing."},
+            {"role": "user", "content": "Why?"},
+        ],
+    }
+
+    blinded, session = blindfold_payload(
+        payload, mapping, None, inbox, world_acting=False
+    )
+
+    assert session.injected == {}
+    assert RESERVED_TOKEN_NOTE in blinded["system"]
+    leak_gate(blinded, mapping, session=session)  # must not raise
+    assert inbox.list() == []
+
+
+def test_note_fires_on_a_history_carried_reserved_token_inside_a_tool_result():
+    # Same gap as the assistant-text case above, for a tool_result block's own
+    # nested content -- the other shape the reviewer named explicitly.
+    mapping = SurrogateMapping()
+    inbox = ReviewInbox()
+    payload = {
+        "system": "You are a helpful assistant.",
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_1",
+                        "content": [
+                            {"type": "text", "text": "No record found for BFW0000."}
+                        ],
+                    }
+                ],
+            },
+        ],
+    }
+
+    blinded, session = blindfold_payload(
+        payload, mapping, None, inbox, world_acting=False
+    )
+
+    assert session.injected == {}
+    assert RESERVED_TOKEN_NOTE in blinded["system"]
+    leak_gate(blinded, mapping, session=session)  # must not raise
+    assert inbox.list() == []
+
+
+def test_chat_completions_note_fires_on_a_history_carried_reserved_token():
+    # Chat Completions dialect counterpart -- reviewer asked for coverage in
+    # both dialects.
+    mapping = SurrogateMapping()
+    inbox = ReviewInbox()
+    payload = {
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "assistant", "content": "I searched for BFW0000 and found nothing."},
+            {"role": "user", "content": "Why?"},
+        ],
+    }
+
+    blinded, session = blindfold_chat_completions_payload(
+        payload, mapping, None, inbox, world_acting=False
+    )
+
+    assert session.injected == {}
+    system_message = blinded["messages"][0]
+    assert RESERVED_TOKEN_NOTE in system_message["content"]
+    leak_gate(
+        blinded, mapping, session=session, tool_container=chat_completions_tool_container
+    )  # must not raise
+    assert inbox.list() == []

@@ -267,6 +267,17 @@ _ALL_RESERVED_PREFIXES: tuple[str, ...] = (
 _RESERVED_SURROGATE_RE = re.compile(
     rf"^(?:{'|'.join(_ALL_RESERVED_PREFIXES)})\d{{4,}}$"
 )
+# Issue #449 (ADR-0060 amendment, decision 8): the reserved-token note's trigger
+# needs to find a reserved-form token occurring ANYWHERE in already-assembled
+# outbound text (e.g. one a prior exchange injected and the client echoed back
+# in message history this exchange never re-injects), not just a value that IS
+# one, end to end. Same prefix family and digit shape as `_RESERVED_SURROGATE_RE`
+# -- kept as a sibling pattern, not a `re.search` reuse of the anchored one, so
+# the two can't drift -- with the identical word-boundary convention
+# `_real_value_pattern` uses ("not adjacent to a word character").
+_RESERVED_SURROGATE_SCAN_RE = re.compile(
+    rf"(?<!\w)(?:{'|'.join(_ALL_RESERVED_PREFIXES)})\d{{4,}}(?!\w)"
+)
 
 
 def is_reserved_provisional_surrogate_form(value: str) -> bool:
@@ -282,6 +293,16 @@ def is_reserved_provisional_surrogate_form(value: str) -> bool:
     regardless of which fallback path originally minted that shape.
     """
     return bool(_RESERVED_SURROGATE_RE.match(value))
+
+
+def contains_reserved_provisional_surrogate_form(text: str) -> bool:
+    """True if ``text`` contains a reserved-form token ANYWHERE in it, at a word
+    boundary (issue #449) -- the scanning counterpart to
+    :func:`is_reserved_provisional_surrogate_form`'s whole-value match, for
+    text that may carry a reserved token alongside ordinary prose (e.g. a
+    client's echoed-back history turn).
+    """
+    return bool(_RESERVED_SURROGATE_SCAN_RE.search(text))
 
 
 # Issue #335 (mirroring review._MAX_FALLBACK_ATTEMPTS, issue #331): a bound on
