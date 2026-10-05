@@ -135,8 +135,11 @@ from .engine import (
     DeclaredToolVocabulary,
     ExchangeSession,
     LeakError,
+    RESERVED_TOKEN_NOTE,
     StreamingRestorer,
     UnresolvedSurrogateError,
+    append_reserved_token_note_chat_completions,
+    append_reserved_token_note_messages,
     blindfold_chat_completions_payload,
     blindfold_payload,
     chat_completions_tool_container,
@@ -152,6 +155,7 @@ from .engine import (
     messages_tool_container,
     non_hop_block_type_fields,
     remember_contained_response,
+    reserved_token_note_applies,
     resolution_gate,
     restore_chat_completion,
     restore_response,
@@ -1792,6 +1796,68 @@ def _reject_openai_stream() -> JSONResponse:
     )
 
 
+def _leak_block(
+    exc: LeakError, workspace: str, audit_log: AuditLog, block_history: BlockHistory
+) -> JSONResponse:
+    """The canonical fail-closed block for a :class:`LeakError` the pre-egress gate raised."""
+    # SEC-3 (issue #40): `exc`'s message is already the one scrubbed reason
+    # string leak_gate logged -- forward it as-is so the 503 body, the audit
+    # record, and the log line all carry the identical scrubbed reference.
+    #
+    # Issue #417: `exc.item_id` (set by `leak_gate` only for a match on a
+    # provisional review-inbox row) is the structural signal that splits
+    # the block taxonomy -- never parse `reason` for it. A row match is
+    # curation work with a row to act on; anything else is a blinder-miss
+    # defect, same class as detection_internal. `leak_detected` itself is
+    # never renamed (ADR-0057, Claude Desktop's 3P Gateway mode keys on
+    # it) -- it keeps meaning the defect cause; the row cause is additive.
+    is_review_inbox_match = exc.item_id is not None
+    return _blocked_response(
+        event="blocked-leak",
+        reason=str(exc),
+        workspace=workspace,
+        audit_log=audit_log,
+        sub_reason="leak_detected_review_inbox" if is_review_inbox_match else "leak_detected",
+        block_history=block_history,
+        remedy=(
+            _LEAK_DETECTED_REVIEW_INBOX_REMEDY
+            if is_review_inbox_match
+            else _LEAK_DETECTED_DEFECT_REMEDY
+        ),
+        item_id=exc.item_id,
+    )
+
+
+def _reserved_token_note_gate_or_block(
+    blinded: dict,
+    session: ExchangeSession,
+    mapping: SurrogateMapping,
+    workspace: str,
+    audit_log: AuditLog,
+    block_history: BlockHistory,
+    inbox: ReviewInbox | None,
+) -> JSONResponse | None:
+    """ADR-0060 amendment point 8 (issue #458): when the reserved-token note will be
+    appended to ``blinded``, run one extra exhaustive :func:`leak_gate` pass over
+    the note alone and return the standard leak block on a hit.
+
+    The note is appended AFTER the note-free payload's own gate (so that gate's
+    leaf pairing is untouched), which left the bytes actually sent unchecked: a
+    mapped real equal to a word of the note's fixed sentence would egress.
+    ``session`` only decides whether the note applies; it is deliberately NOT
+    passed to :func:`leak_gate` -- nothing the blinder wrote is in the note, so
+    there is no range-scoped excuse to grant and the check stays exhaustive.
+    ``None`` (and no extra pass at all) when no reserved-form token is present.
+    """
+    if not reserved_token_note_applies(blinded, session):
+        return None
+    try:
+        leak_gate({"system": RESERVED_TOKEN_NOTE}, mapping, inbox)
+    except LeakError as exc:
+        return _leak_block(exc, workspace, audit_log, block_history)
+    return None
+
+
 def _leak_gate_or_block(
     blinded: dict,
     mapping: SurrogateMapping,
@@ -1842,39 +1908,7 @@ def _leak_gate_or_block(
     try:
         declared_collisions = leak_gate(blinded, mapping, inbox, session, tool_container)
     except LeakError as exc:
-        # SEC-3 (issue #40): `exc`'s message is already the one scrubbed reason
-        # string leak_gate logged — forward it as-is so the 503 body, the audit
-        # record, and the log line all carry the identical scrubbed reference.
-        #
-        # Issue #417: `exc.item_id` (set by `leak_gate` only for a match on a
-        # provisional review-inbox row) is the structural signal that splits
-        # the block taxonomy -- never parse `reason` for it. A row match is
-        # curation work with a row to act on; anything else is a blinder-miss
-        # defect, same class as detection_internal. `leak_detected` itself is
-        # never renamed (ADR-0057, Claude Desktop's 3P Gateway mode keys on
-        # it) -- it keeps meaning the defect cause; the row cause is additive.
-        is_review_inbox_match = exc.item_id is not None
-        return (
-            _blocked_response(
-                event="blocked-leak",
-                reason=str(exc),
-                workspace=workspace,
-                audit_log=audit_log,
-                sub_reason=(
-                    "leak_detected_review_inbox"
-                    if is_review_inbox_match
-                    else "leak_detected"
-                ),
-                block_history=block_history,
-                remedy=(
-                    _LEAK_DETECTED_REVIEW_INBOX_REMEDY
-                    if is_review_inbox_match
-                    else _LEAK_DETECTED_DEFECT_REMEDY
-                ),
-                item_id=exc.item_id,
-            ),
-            [],
-        )
+        return _leak_block(exc, workspace, audit_log, block_history), []
     for reason in declared_collisions:
         logger.warning("leak_gate: %s", reason)
         audit_log.append(
@@ -2108,6 +2142,9 @@ async def _exchange(
     blindfold: Callable[..., tuple[dict, ExchangeSession]],
     send_upstream: Callable[[dict, dict[str, str]], Awaitable[dict]],
     tool_container: Callable[[dict], object] = messages_tool_container,
+    append_reserved_token_note: Callable[
+        [dict, ExchangeSession], None
+    ] = append_reserved_token_note_messages,
     declared_tool_vocabulary: DeclaredToolVocabulary | None = None,
     contained_response_memory: ContainedResponseMemory | None = None,
     containment_registry: ContainmentRegistry | None = None,
@@ -2138,6 +2175,21 @@ async def _exchange(
     :func:`_leak_gate_or_block` so its mirror walk visits exactly the same
     tool-description container ``blindfold`` itself did, never a shape-blind
     superset of it.
+    ``append_reserved_token_note`` (ADR-0060 amendment decision 8, issue #449)
+    is a fifth dialect-paired member --
+    :func:`~blindfold.engine.append_reserved_token_note_messages` (default) or
+    :func:`~blindfold.engine.append_reserved_token_note_chat_completions`.
+    Called below strictly AFTER :func:`_leak_gate_or_block` has already run
+    (and passed -- a block returns before reaching this call), onto the SAME
+    ``blinded`` dict the gate just inspected. This ordering is itself the
+    reviewer-found-hole (cycle 2) fix: the note used to be
+    ``blindfold``'s own last step, so a reserved-form token present anywhere
+    in the request added the note's leaf BEFORE ``leak_gate``'s mirror walk
+    ever ran, which could silently cancel out, in aggregate leaf count only,
+    an unrelated leaf stripped elsewhere in the same request -- see the
+    comment above :data:`~blindfold.engine.RESERVED_TOKEN_NOTE`. Calling it
+    here instead means ``leak_gate`` never observes the note at all, for any
+    payload.
     ``declared_tool_vocabulary`` and ``mint_inbox`` are the two further
     deliberate differences count_tokens needs (issue #322): it measures rather
     than uses, so it must not grow the workspace's durable declared-tool
@@ -2268,6 +2320,12 @@ async def _exchange(
             blinded, mapping, workspace, audit_log, block_history, inbox, session,
             tool_container,
         )
+        if block is None:
+            # ADR-0060 point 8 (issue #458): gated BEFORE retention so a note-gate
+            # block is retained as "never sent" like any other leak block.
+            block = _reserved_token_note_gate_or_block(
+                blinded, session, mapping, workspace, audit_log, block_history, inbox
+            )
         if retain_rewritten_leaves and rewritten_leaf_store is not None:
             # ADR-0059 §4: a blocked exchange is retained too, marked "never
             # sent" -- the blindfolded payload was fully constructed (the
@@ -2290,6 +2348,10 @@ async def _exchange(
                 world_acting=world_acting,
             )
             return block
+        # ADR-0060 amendment decision 8 (issue #449): appended onto `blinded`
+        # only now -- `leak_gate` above has already inspected this exact dict
+        # and passed. See `append_reserved_token_note`'s own parameter doc.
+        append_reserved_token_note(blinded, session)
 
     if streamed:
         upstream_start = time.monotonic()
@@ -2551,6 +2613,7 @@ async def chat_completions(
         extract_world_acting=is_world_acting_request_chat_completions,
         blindfold=blindfold_chat_completions_payload,
         tool_container=chat_completions_tool_container,
+        append_reserved_token_note=append_reserved_token_note_chat_completions,
         send_upstream=upstream.send_chat_completions,
         declared_tool_vocabulary=declared_tool_vocabulary,
         containment_registry=containment_registry,
