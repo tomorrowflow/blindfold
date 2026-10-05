@@ -3634,7 +3634,11 @@ def _apply_provisional_pairs(
     return _apply_spans(text, spans, leaf=session._current_leaf())
 
 
-def _apply_restore_pass(text: str, restore_map: dict[str, str]) -> str:
+def _apply_restore_pass(
+    text: str,
+    restore_map: dict[str, str],
+    guard_map: dict[str, str] | None = None,
+) -> str:
     """Substitute every key of ``restore_map``, longest key first, in a single
     left-to-right, non-overlapping scan of ``text``.
 
@@ -3650,9 +3654,17 @@ def _apply_restore_pass(text: str, restore_map: dict[str, str]) -> str:
     single scan over the untouched ``text`` makes that structurally impossible:
     at each position we try every key longest-first and advance past whichever
     one matches, so an inserted ``real`` is never re-examined as input.
+
+    issue #441: ``guard_map`` (keyed by the same restore-map key, see
+    :func:`_first_name_guard_map`) withholds a match that would otherwise fire --
+    a first-name component immediately followed by a *different*, capitalised
+    surname-like token names someone else, not the surrogate's own referent. A
+    blocked match falls through to the next candidate key (if any), and
+    eventually to the plain single-character copy below -- it never half-matches.
     """
     if not restore_map:
         return text
+    guard_map = guard_map or {}
     patterns = [
         (real, key, _surrogate_pattern(key))
         for key, real in sorted(restore_map.items(), key=lambda kv: len(kv[0]), reverse=True)
@@ -3663,10 +3675,16 @@ def _apply_restore_pass(text: str, restore_map: dict[str, str]) -> str:
     while i < n:
         for real, key, pattern in patterns:
             match = pattern.match(text, i)
-            if match:
-                pieces.append(real + match.group(0)[len(key):])
-                i = match.end()
-                break
+            if match is None:
+                continue
+            own_surname = guard_map.get(key)
+            if own_surname is not None and _blocked_by_a_different_surname(
+                text, match.end(), own_surname
+            ):
+                continue
+            pieces.append(real + match.group(0)[len(key):])
+            i = match.end()
+            break
         else:
             pieces.append(text[i])
             i += 1
@@ -3747,6 +3765,60 @@ def _component_restore_map(injected: dict[str, str]) -> dict[str, str]:
     return {word: next(iter(targets)) for word, targets in candidates.items() if len(targets) == 1}
 
 
+_FOLLOWING_TOKEN_RE = re.compile(r"\s+(\w[\w'-]*)")
+
+
+def _first_name_guard_map(injected: dict[str, str]) -> dict[str, str]:
+    """Derive the (first-name component -> surrogate's own surname) guard (issue #441).
+
+    ADR-0005 draws every plausible person surrogate from common given names, so a
+    bare first-name component restore key (``_component_restore_map``) is expected
+    to collide with text that names an unrelated person who happens to share that
+    given name. The chosen rule (issue #441's own "at minimum"): a first-name
+    component immediately followed by a capitalised surname-like token that is
+    **not** the surrogate's own surname names someone else, and must be left
+    unrestored at that occurrence. A bare occurrence with nothing, or a
+    lowercase/non-name token, following it is still the surrogate's own referent
+    and restores as before -- this only ever *removes* a restore that would
+    otherwise fire, never adds one.
+
+    Only the first (given-name) position contributes a guard; the surname
+    position has no analogous collision this issue reports. Two pairs
+    disagreeing on which surname backs the same first-name word drop the guard
+    entirely rather than guess, falling back to the existing, already-reviewed
+    unguarded component-restore behavior.
+    """
+    surnames: dict[str, set[str]] = {}
+    for surrogate, real in injected.items():
+        if _is_fallback_surrogate(surrogate):
+            continue
+        surrogate_words = surrogate.split()
+        if len(surrogate_words) < 2:
+            continue
+        first_word = surrogate_words[0]
+        if first_word in _COMPONENT_STOPWORDS:
+            continue
+        if not any(char.isalpha() for char in first_word):
+            continue
+        surnames.setdefault(first_word, set()).add(surrogate_words[-1])
+    return {word: next(iter(own)) for word, own in surnames.items() if len(own) == 1}
+
+
+def _blocked_by_a_different_surname(text: str, pos: int, own_surname: str) -> bool:
+    """True when a capitalised, non-matching surname-like token immediately follows ``pos``.
+
+    issue #441: this is the guard's only check -- a lowercase token (a verb, "Carla
+    said...") or no following token at all means the bare first name still refers
+    to the surrogate's own referent, so this returns ``False`` and restore
+    proceeds unchanged.
+    """
+    match = _FOLLOWING_TOKEN_RE.match(text, pos)
+    if match is None:
+        return False
+    token = match.group(1)
+    return token[0].isupper() and token != own_surname
+
+
 def _restore_text(text: str, session: ExchangeSession) -> str:
     """Restore both passes (ADR-0036) in one combined, single-scan call (issue #304).
 
@@ -3764,6 +3836,11 @@ def _restore_text(text: str, session: ExchangeSession) -> str:
     token surviving into the client-visible response is the disclosure, not a restore
     miss. ``_component_restore_map`` already excludes a reserved/fallback surrogate's
     own components (issue #329), so only the first pass needs the guard here.
+
+    issue #441: :func:`_first_name_guard_map` rides along as a third, orthogonal
+    derivation over the same ``session.injected`` -- it never adds a restore key,
+    only withholds a first-name component match that would otherwise fire when a
+    different surname-like token follows it in ``text``.
     """
     restore_map = dict(_component_restore_map(session.injected))
     restore_map.update(
@@ -3771,7 +3848,8 @@ def _restore_text(text: str, session: ExchangeSession) -> str:
         for surrogate, real in session.injected.items()
         if not is_reserved_provisional_surrogate_form(surrogate)
     )
-    return _apply_restore_pass(text, restore_map)
+    guard_map = _first_name_guard_map(session.injected)
+    return _apply_restore_pass(text, restore_map, guard_map)
 
 
 def _restore_json_value(value: Any, session: ExchangeSession) -> Any:

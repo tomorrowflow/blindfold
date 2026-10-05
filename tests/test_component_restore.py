@@ -55,6 +55,40 @@ def test_bare_first_name_component_restores_by_positional_alignment():
     assert _restore("Hallo Carla!", session) == "Hallo Sarah!"
 
 
+def test_bare_first_name_component_followed_by_a_different_surname_is_left_untouched():
+    # issue #441 acceptance criterion 1: the model names someone else entirely who
+    # happens to share the seeded person's surrogate first name ("Carla") followed
+    # by a different, invented surname ("Fischer" -- not the surrogate's own
+    # "Distel"). That mention belongs to another referent and must restore
+    # unchanged, not have the seeded person's real first name spliced onto a
+    # stranger's surname.
+    session = _session_with({"Carla Distel": "Sarah Bergmann"})
+
+    text = "Carla Fischer ist eine bekannte Physikerin."
+    assert _restore(text, session) == text
+
+
+def test_bare_first_name_component_referring_to_the_referent_still_restores():
+    # issue #441 acceptance criterion 2: the #441 guard must only ever withhold a
+    # restore, never regress the ADR-0036 abbreviation case it protects -- a bare
+    # first name used on its own, meaning the surrogate's own referent, still
+    # restores to the real first name.
+    session = _session_with({"Carla Distel": "Sarah Bergmann"})
+
+    text = "Carla called the office this morning."
+    assert _restore(text, session) == "Sarah called the office this morning."
+
+
+def test_full_surrogate_with_adr_0024_suffix_still_restores_despite_the_441_guard():
+    # issue #441 acceptance criterion 3: the new first-name guard only ever
+    # applies to a bare component match -- the full surrogate "Carla Distel"
+    # restores to "Sarah Bergmann" as before, including the ADR-0024 genitive
+    # suffix transfer ("Distels" -> "Bergmanns"), unaffected by the guard.
+    session = _session_with({"Carla Distel": "Sarah Bergmann"})
+
+    assert _restore("Carla Distels Bericht", session) == "Sarah Bergmanns Bericht"
+
+
 def test_component_restore_never_invents_a_value_from_a_foreign_exchanges_pair_table():
     # issue #395 leak-audit clause: restore is closed-world -- a component may
     # only resolve to a pair recorded in *this* ``ExchangeSession``, never a
