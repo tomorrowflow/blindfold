@@ -2058,14 +2058,13 @@ def _collect_containment_spans(
 
     Issue #451: :meth:`ExchangeSession.contain` is only called for a candidate
     ONCE an actual occurrence in ``text`` is confirmed, never while merely
-    building the candidate set. With a process-wide ``containment_registry``
-    (ADR-0060 amendment point 7), calling it eagerly for every plausible-named
-    entity the whole (workspace-agnostic) ``mapping``/``inbox`` has ever seen
-    -- regardless of whether that entity is mentioned anywhere in THIS hop --
-    would advance a workspace's token cursor for referents that never actually
-    appeared in its own traffic, breaking "two workspaces do not share
-    numbering state" the moment two workspaces' requests are processed in the
-    same process.
+    building the candidate set, so this pass never registers a referent the
+    hop does not mention. The slug/component/provisional-pair passes still
+    contain eagerly per candidate, so a workspace's numbering under a
+    ``containment_registry`` (ADR-0060 amendment point 7) can still include
+    referents its own traffic never named -- harmless to stability and
+    uniqueness (each workspace keeps its own map), but not "numbered in order
+    of first mention".
     """
     owners: dict[str, str] = {real: real for real in session.contained_reals()}
     for entity in mapping.entities():

@@ -22,6 +22,10 @@ unchanged).
 
 from __future__ import annotations
 
+import re
+
+import pytest
+
 from blindfold.engine import (
     ContainmentRegistry,
     ExchangeSession,
@@ -158,3 +162,80 @@ def test_the_registry_itself_is_the_only_state_nothing_reaches_the_store():
     entities_after = [(e.canonical, e.surrogate) for e in mapping.entities()]
     assert entities_after == entities_before
     assert inbox.list() == []
+
+
+async def _post_messages(payload: dict, mapping: SurrogateMapping, registry: ContainmentRegistry) -> list:
+    """POST ``payload`` to the real ``/v1/messages`` route behind a stub
+    upstream, with ``registry`` as the process's containment registry, and
+    return the recorded upstream request bodies (what reached the "provider").
+    """
+    import httpx
+
+    from blindfold.app import (
+        app,
+        get_containment_registry,
+        get_mapping,
+        get_review_inbox,
+        get_upstream_client,
+    )
+    from blindfold.upstream import UpstreamClient
+
+    recorded: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        recorded.append(request.content.decode())
+        return httpx.Response(
+            200,
+            json={
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "text", "text": "No results found."}],
+                "model": "claude-3-5-sonnet",
+                "stop_reason": "end_turn",
+            },
+        )
+
+    stub = UpstreamClient(
+        base_url="http://upstream.test",
+        client=httpx.AsyncClient(base_url="http://upstream.test", transport=httpx.MockTransport(handler)),
+    )
+    app.dependency_overrides[get_upstream_client] = lambda: stub
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_review_inbox] = lambda: ReviewInbox()
+    app.dependency_overrides[get_containment_registry] = lambda: registry
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://proxy.test"
+        ) as proxy_client:
+            resp = await proxy_client.post("/v1/messages", json=payload)
+    finally:
+        app.dependency_overrides.clear()
+    assert resp.status_code == 200
+    return recorded
+
+
+@pytest.mark.anyio
+async def test_the_real_route_never_gives_two_referents_one_token_across_requests():
+    # The app boundary actually wires the process registry through: two
+    # separate /v1/messages requests about two different referents reach the
+    # stub provider with two different reserved tokens (per-exchange
+    # numbering would hand both BFW0000 -- the #451 conflation), and never
+    # the real value or its plausible-pool surrogate.
+    mapping = SurrogateMapping()
+    mapping.seed("Elena Voss", "Bernhard Vogt")
+    mapping.seed("Rolf Brandt", "Claudia Reinhardt")
+    registry = ContainmentRegistry()
+
+    bodies = []
+    for query in ("Please search for Elena Voss", "Please search for Rolf Brandt"):
+        payload = {"model": "claude-3-5-sonnet", **_world_acting_search_payload(query)}
+        bodies += await _post_messages(payload, mapping, registry)
+
+    assert len(bodies) == 2
+    for body in bodies:
+        for value in ("Elena Voss", "Bernhard Vogt", "Rolf Brandt", "Claudia Reinhardt"):
+            assert value not in body
+    tokens = [set(re.findall(r"BFW\d{4}", body)) for body in bodies]
+    assert len(tokens[0]) == len(tokens[1]) == 1
+    assert tokens[0] != tokens[1]
