@@ -1,6 +1,6 @@
 # ADR-0060: A world-acting request carries only reserved-namespace surrogates, and they are never restored
 
-**Status:** Accepted
+**Status:** Accepted; amended 2026-10-05 (#438, #439, see the amendment at the end)
 **Date:** 2026-09-21
 
 ## Context
@@ -101,7 +101,8 @@ provider-defined client-executed tools, which is the safe direction.
 ### 3. Containment is scoped to the request, not to an argument position
 
 In a world-acting request, **every surrogate drawn from a plausible named pool — person and
-org — is instead drawn from the reserved namespace** of ADR-0052 (`BFP0007`, `BFO0003`).
+org — is instead drawn from the reserved namespace** of ADR-0052 (`BFW0000`; the
+containment prefix is `BFW`, corrected 2026-10-05).
 Dates, numbers and non-named entities are unaffected: they cannot summon a locatable human.
 
 The unit is the request because the model, not Blindfold, authors the executed argument. The
@@ -230,3 +231,204 @@ split this extends), ADR-0006 (restore mechanics — amended by §4), ADR-0020 (
 ADR-0036 (component restore), ADR-0050 and ADR-0051 (gate scope and set symmetry),
 ADR-0052 (the reserved namespace and its closed syntactic class), ADR-0057 (Claude Desktop
 in 3P Gateway mode).
+
+## Amendment 2026-10-05: contained responses (#438, #439)
+
+### What the live re-check measured
+
+#413 re-ran the run-3 search scenario on a fresh store (2026-09-29). Containment held: every
+fan-out request carried only the reserved token, no plausible pool name reached a search
+engine, and there were no blocks. **§6's prediction did not hold**:
+
+- **A reserved token is not opaque to a real search engine.** The engine matched it
+  approximately: the letter prefix as an acronym, the body as a hex colour. It returned pages
+  of unrelated results.
+- **The results flooded the review inbox.** When the client relayed them back, Blindfold minted
+  their contents: 0 → 64 pending items, nearly all from search-result titles and snippets. This
+  is consequence 3 of #397, the input that produced the #386/#394 deadlocks, and it is still
+  produced. A generic website name minted this way was then contained into a second reserved
+  token inside a later executed query.
+- **The disclosure reads as a malfunction (#439).** Both the model and the user-visible answer
+  reported a broken search tool that "rewrites queries", and advised contacting an
+  administrator. Nothing false was attributed to the user's entity, which is §4's goal, but the
+  user is told the system is broken rather than that it is protecting them.
+
+How the client relays results, measured on the same captures by structure only:
+
+- The fan-out response carries `server_tool_use`, `web_search_tool_result` and `text` blocks.
+- On the next main-conversation request the client re-wraps them as **string `tool_result`
+  blocks**.
+- Only 61–69% of eight-word shingles survive verbatim, but 92–94% of capitalised
+  (candidate-name) tokens occur somewhere in a fan-out response.
+
+Recognition by exact bytes therefore misses about a third; recognition at the level of a
+**candidate** catches nearly all of it.
+
+The code also showed that the containment token is renumbered from zero in every request, so
+one token names different referents across fan-outs. It also showed that the containment
+branch contains a candidate *before* any reserved-form check, so a reserved token the model
+copies into a later fan-out can be contained a second time. Separately, §3's examples named
+the exhaustion prefixes; the containment prefix is `BFW`.
+
+### §6, corrected
+
+No token shape can make a search engine return nothing: an engine that discards the token
+still searches the surrounding prose. The guarantee containment gives is narrower and holds:
+
+> A contained request's results are about **no one the user named**.
+
+They are, however, about *someone*: third parties the provider itself produced. So the defect
+#438 measured is not that the token is searchable. It is that **Blindfold treats
+provider-originated content as a novelty input.** Every word in a contained response came from
+the provider's side of the blindfold. Blinding it protects nothing the provider does not
+already hold, and minting it only poisons the workspace.
+
+### Decision
+
+1. **The reserved-form shape is unchanged.** ADR-0052's constraints (a single opaque ASCII token,
+   no separator, no natural-language word, a closed syntactic class) stay as they are.
+
+2. **A contained response is not a novelty input.** A **contained response** is the response
+   to a world-acting request, per §2. A candidate recognised as coming from one is exempt from
+   **novelty minting**: it is never added to the review inbox as a provisional entity.
+   - The deterministic blinder and the pre-egress leak gate apply to it in full, so a *known*
+     entity that appears in results is still substituted.
+   - This is sound because restore is closed-world (ADR-0006, and point 4 below): the only reals
+     that can be in the bytes Blindfold returned are already known, and the deterministic
+     blinder reaches every known real.
+
+3. **Recognition uses two rules, because the client drops all metadata.**
+   - **Structural.** A provider result block echoed back in assistant role (for example a
+     `web_search_tool_result`, or an MCP tool result) is a contained response by its block type.
+     This covers clients that declare the provider tool in the main conversation.
+   - **Candidate-level memory.** This covers clients that fan out and re-wrap, like Claude
+     Desktop. A candidate in a later request is exempt only if **both** hold:
+     - it lies inside a `tool_result` block
+     - its string occurs in a remembered contained response, by the leak gate's word-boundary
+       rule (`_real_value_pattern`)
+
+   User-authored text is **never** exempt, even when the string matches. A colleague's name the
+   user types does not lose protection because it once appeared in a search result: the
+   association with the user's context is new information the provider does not hold.
+
+4. **Restore on a contained response covers only what the request carried.** No plausible named
+   surrogate entered a world-acting request (§3), so a named-pool surrogate string in its
+   response is a coincidence: a real stranger in the results who shares a pool name. Restoring
+   it would attribute the stranger's text to the user's entity. Named-pool surrogates therefore
+   pass through a contained response verbatim. Reserved tokens stay unrestored (§4), and
+   non-named surrogates (dates, numbers) restore as usual. This also makes the bytes point 3
+   remembers exactly what the provider sent.
+
+5. **Scope is every world-acting request, by §2's structural test**, whatever the tool. A
+   search-only rule would bring back the maintained tool list that §2 rejected.
+
+6. **A reserved-form string is never contained.** ADR-0052 §2 already forbids minting a
+   candidate of reserved form; this extends it to containment.
+   - Reserved-form strings are dropped at L3 candidate filtering, the same way the reserved
+     phone range already is.
+   - `contain()` fails closed on one as a backstop.
+   - It is the same closed syntactic class and the check is O(1).
+
+7. **A containment token is stable per referent for the life of the process.** The map from
+   referent to index is in-process and workspace-scoped, and never persisted. Restore is
+   unaffected, because reserved tokens are never restored. A restart renumbers, so conflation
+   comes back only across a restart.
+
+8. **The model is told what the token means.** A request whose content carries any reserved-form
+   token, whether from containment or exhaustion, gets a **reserved-token note**: a fixed,
+   value-free sentence appended to the end of `system`. It says that such identifiers are
+   privacy placeholders the user's gateway put in place of a name, that they cannot be
+   searched or resolved, and that results about one should be explained as protection, not as
+   a tool fault.
+   - **Placement.** It is appended **after** blinding, so detection never scans it; the leak
+     gate does, and it carries no values.
+   - **Cost.** It breaks the prompt cache once, when the first token appears, and is stable
+     after that.
+   - **ADR-0002.** It still holds: what is added carries no real value.
+   - **The exception.** This note is the **one** case in which Blindfold adds content to a
+     payload. The proxy otherwise never augments a request.
+
+9. **The disclosure is also out-of-band.**
+   - **Trace.** The Processing trace (ADR-0035) records, per exchange, whether the request was
+     world-acting, how many tokens were contained, and how many candidates point 2 exempted.
+     These are counts only.
+   - **Management app.** It marks such an exchange as having run on a placeholder, with a short
+     explanation.
+   - **Menu bar.** There is no notification there.
+
+10. **The recognition memory is hashed, refreshed on every hit, bounded, and in-process.**
+    - **What it stores.** Point 3's memory holds keyed hashes of the word n-grams (up to six
+      words) of each contained response, never its plaintext.
+    - **Refresh.** A relayed result is re-sent on every later turn of the conversation, so an
+      entry is refreshed on every hit and lives exactly as long as the conversation keeps
+      re-sending it. A fixed TTL would only delay the flood.
+    - **Bound.** The memory is size-bounded.
+    - **Restart.** It is lost on restart, and old history is then minted as before. That errs
+      over-protective, and is accepted.
+
+11. **Transcript mining uses the same predicate.** Where the memory is unreachable (offline
+    mining), only the structural rule applies.
+
+### Consequences
+
+- The inbox flood is removed at its source, and the deadlock class's input with it. The
+  predicted residue is the client's own wrapper vocabulary, a handful of tokens per relayed
+  block, which is not in any contained response.
+- Exemption is decided **per candidate, inside tool-result blocks only**. A result block that
+  mixes contained output with user data keeps full detection for everything the response did
+  not contain.
+- Point 4 narrows restore on one class of response. A contained response whose model text
+  legitimately mentions the user's entity by its plausible surrogate cannot occur: no
+  plausible surrogate was sent into that request.
+- Point 8 introduces a carve-out from "the proxy adds nothing". It is fixed text in one
+  precisely decidable case, and it is recorded in `CONTEXT.md`.
+- Generalising point 2 to **all** provider-originated content (ordinary assistant turns the
+  client echoes back) could also raise L3 precision, but it is a different decision with a
+  different risk profile, since ordinary responses are restored and mix provider text with user
+  reals. It is **out of scope, not rejected**.
+
+### Rejected options
+
+- **Reshape the token** (no acronym-like prefix, no hex-like body): it moves the noise rather
+  than removing it, since any query returns something. It also forces a migration of a shape
+  `_is_fallback_surrogate` already recognises in two forms.
+- **A form search engines drop** (private-use characters, punctuation-only): it breaks ADR-0052's
+  ASCII and no-separator constraints, and a dropped token leaves the engine searching the bare
+  prose.
+- **A self-describing in-band token** (#439 decision 1): it puts a natural-language word in the
+  token, which ADR-0052 §1 forbids, and makes the token searchable by meaning.
+- **Down-weight contained-response candidates**: it still floods, only more slowly.
+- **A quarantine queue for them**: it is curation work nobody will do.
+- **Exempt a whole block when a reserved token appears in it**: the token's presence is
+  incidental, the model may paraphrase it away, and it has no answer for a mixed block.
+- **Span hash fingerprints**: measured at about 65% coverage against the client's re-wrapping.
+- **Search-only scope**: a maintained tool list, rejected in §2.
+- **Per-request token numbering** (the status quo): one token names several referents in the
+  main conversation.
+- **A keyed-hash token derivation**: a long-lived pseudonym sent to public search engines.
+- **Inject the note only into world-acting requests**: the misreading was written by the main
+  conversation, which is not world-acting.
+- **Never inject; rely on out-of-band signals**: the user reads the model's explanation, not
+  the trace.
+- **Annotate inline next to each token**: it disturbs the token's surroundings and the
+  shape guarantees.
+- **A menu bar notification**: every web search would notify.
+- **A fixed TTL for the memory**: it re-mints when the conversation outlives it.
+- **Persist the memory**: a new durable table holding derived third-party data, for the gain
+  of surviving a restart.
+
+### Verification
+
+This is again a prediction. It is confirmed by a live re-check on the #372 rig, with a fresh
+store and the run-3 search scenario. The re-check passes if:
+
+1. The scenario completes with no blocks.
+2. Every fan-out carries only containment tokens, and one referent keeps one token across
+   fan-outs.
+3. The review inbox gains **no** item whose real occurs in a contained response, and at most
+   three items in total.
+4. The user-visible answer attributes the unrelated or empty results to a placeholder or to
+   protection, not to a broken tool.
+5. The trace shows the world-acting flag and the contained and exempted counts.
+6. Any leak check uses the gate's standalone-only boundary rule (`_real_value_pattern`), never
+   substring counts.

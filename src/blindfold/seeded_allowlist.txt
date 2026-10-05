@@ -375,3 +375,5 @@ World-acting tool
 Repository visibility
 Blinder-written range
 Block retryability
+Contained response
+Reserved-token note

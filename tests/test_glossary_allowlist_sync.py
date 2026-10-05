@@ -8,12 +8,14 @@ own tool results. ``Surrogate`` is a measured false positive in #74 runs 10 and
 11.
 
 ``extract_glossary_terms`` mechanically enumerates CONTEXT.md's Glossary section
-(the 63 top-level ``- **Term** -- ...`` headings, ADR-0023 curation input for this
+(the 65 top-level ``- **Term** -- ...`` headings, ADR-0023 curation input for this
 slice; ADR-0059 §4 added "Payload inspection" and "Retained payload" to the
 Glossary, moving the count from 57 to 59, ADR-0060 added "Executed argument"
 and "World-acting tool", moving the count from 59 to 61, and ADR-0051's #406
 amendment added "Blinder-written range", moving it from 61 to 62, and ADR-0057's
-#390 amendment added "Block retryability", moving it from 62 to 63). Every one of those 63
+#390 amendment added "Block retryability", moving it from 62 to 63, and ADR-0060's
+2026-10-05 amendment added "Contained response" and "Reserved-token note", moving it
+from 63 to 65). Every one of those 65
 terms must appear either in the seeded allowlist (``load_seeded_allowlist_tokens``)
 or in ``GLOSSARY_EXCLUSIONS`` with a recorded reason -- so a new glossary term
 added later can't silently drift out of sync with the allowlist the way the whole
@@ -38,16 +40,18 @@ from blindfold.allowlist_seed import (
 )
 
 
-def test_extract_glossary_terms_finds_exactly_the_63_glossary_headings():
+def test_extract_glossary_terms_finds_exactly_the_65_glossary_headings():
     terms = extract_glossary_terms()
 
-    assert len(terms) == 63
+    assert len(terms) == 65
     assert "Surrogate" in terms
     assert "Blindfold" in terms
     assert "Executed argument" in terms
     assert "World-acting tool" in terms
     assert "Blinder-written range" in terms
     assert "Block retryability" in terms
+    assert "Contained response" in terms
+    assert "Reserved-token note" in terms
     # Nested Detection-layers sub-bullets (L1/L2/L3) are indented, not top-level
     # Glossary headings, so they must not be picked up.
     assert "L1" not in terms

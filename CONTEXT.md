@@ -606,7 +606,20 @@ to add it via `/grill-with-docs`, not to invent a synonym.
   any declared tool lacking an `input_schema`, or `mcp_servers` present — rather than from a
   maintained list of tool semantics. In a world-acting request, every surrogate drawn from a
   plausible named pool is instead drawn from the **reserved namespace**, and a
-  reserved-namespace surrogate is never restored.
+  reserved-namespace surrogate is never restored. The containment token is stable per referent
+  for the life of the process, and a reserved-form string is never itself contained.
+- **Contained response** (ADR-0060 amendment 2026-10-05) — the response to a **world-acting
+  request**. Every word in it is provider-originated, so it is never a novelty input: a candidate
+  recognised as coming from one is not minted. It is still deterministically blinded and
+  gate-checked. Recognition is structural (a provider result block echoed back in assistant
+  role) or by candidate (inside a `tool_result` block **and** present in a remembered contained
+  response). User-authored text is never exempt. Restore on a contained response leaves
+  plausible named surrogate strings alone, because none was sent. _Avoid_: search result (too
+  narrow), trusted content (nothing in it is trusted, only already held by the provider).
+- **Reserved-token note** (ADR-0060 amendment 2026-10-05) — a fixed, value-free sentence that
+  Blindfold appends to `system`, after blinding, on any request whose content carries a
+  reserved-form token. It tells the model the token is a privacy placeholder, not a tool fault.
+  It is the **only** content the proxy ever adds to a payload.
 
 ## Key invariants
 
