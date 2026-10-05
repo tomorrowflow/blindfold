@@ -434,13 +434,11 @@ def test_memory_without_a_refreshing_hit_is_eventually_evicted():
 # bound).
 #
 # Leak-audit:
-# - A: the stub upstream records every request; asserted that neither invented
-#   name crosses egress unsubstituted on any turn where it would matter (here,
-#   both are genuinely NOVEL third parties the provider itself introduced --
-#   nothing in `mapping`/`inbox` to substitute -- so this is the same "an
-#   unknown real stays out of the inbox" property the fan-out AC names, now
-#   proven through the real DI-wired app instead of a direct `blindfold_payload`
-#   call).
+# - A: the stub upstream records every request's bytes. Both invented names
+#   are NOVEL third parties the provider itself introduced, so they egress
+#   verbatim by design (amendment point 2) -- the clause-A property is that a
+#   KNOWN real relayed in the same exempted block is still substituted on
+#   every relay turn, asserted on the recorded egress bytes.
 # - D: no leak_gate call needed beyond what `_exchange` itself already runs on
 #   every request (200 responses below ARE that pass).
 # - B/C/F: N/A, same reasoning as the module docstring -- no new restore path,
@@ -465,6 +463,7 @@ def _make_scripted_stub_upstream(responses: list[dict], recorded: list[httpx.Req
 @pytest.mark.anyio
 async def test_v1_messages_remembers_its_own_world_acting_response_and_exempts_a_later_relay():
     mapping = SurrogateMapping()
+    mapping.seed("Anneke Brandt", "Johanna Reinholt")
     inbox = ReviewInbox()
     memory = ContainedResponseMemory()
     recorded: list[httpx.Request] = []
@@ -542,6 +541,7 @@ async def test_v1_messages_remembers_its_own_world_acting_response_and_exempts_a
                                         "tool_use_id": "toolu_relay_1",
                                         "content": (
                                             "Found: Petra Lindqvist, Soren Dahlberg."
+                                            " Anneke Brandt reviewed it."
                                         ),
                                     }
                                 ],
@@ -554,9 +554,10 @@ async def test_v1_messages_remembers_its_own_world_acting_response_and_exempts_a
     finally:
         app.dependency_overrides.clear()
 
-    # Clause A: every request the stub upstream actually received, across
-    # every turn -- the fan-out's own request never named either third party
-    # (nothing to blind yet), and neither relay ever carried a real value this
-    # exchange owed protection to (both names are the provider's own novel
-    # third parties, not the user's entity).
+    # Clause A, on the recorded egress bytes of every relay turn: the known
+    # real inside the exempted tool_result block is still substituted.
     assert len(recorded) == 1 + relay_turns
+    for relay_request in recorded[1:]:
+        egress = relay_request.content.decode()
+        assert "Anneke Brandt" not in egress
+        assert "Johanna Reinholt" in egress
