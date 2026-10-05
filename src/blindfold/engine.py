@@ -3783,7 +3783,11 @@ def _restore_block_value(
         return _restore_text(value, session, world_acting)
     if isinstance(value, dict):
         return {
-            k: (v if k in _BLOCK_NON_HOP_KEYS else _restore_block_value(v, session, world_acting))
+            k: (
+                v
+                if k in _BLOCK_NON_HOP_KEYS
+                else _restore_block_value(v, session, world_acting)
+            )
             for k, v in value.items()
         }
     if isinstance(value, list):

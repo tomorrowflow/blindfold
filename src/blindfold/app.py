@@ -101,6 +101,7 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from datetime import datetime
+from typing import Protocol
 from urllib.parse import quote
 
 import httpx
@@ -1868,6 +1869,17 @@ def _leak_gate_or_block(
     return None, declared_collisions
 
 
+class _RestoreResponse(Protocol):
+    """A provider-shape restore seam (``restore_response``/``restore_chat_completion``).
+
+    ``world_acting`` is the exchange's own verdict (ADR-0060 amendment point 4, #450).
+    """
+
+    def __call__(
+        self, response: dict, session: ExchangeSession, *, world_acting: bool = False
+    ) -> dict: ...
+
+
 def _resolution_gate_or_block(
     restored: dict,
     session: ExchangeSession,
@@ -2086,7 +2098,7 @@ async def _exchange(
     contained_response_memory: ContainedResponseMemory | None = None,
     containment_registry: ContainmentRegistry | None = None,
     mint_inbox: Callable[[ReviewInbox], ReviewInbox] = lambda inbox: inbox,
-    restore: Callable[[dict, ExchangeSession], dict] | None = None,
+    restore: _RestoreResponse | None = None,
     streaming_supported: bool = False,
     reject_stream_request: bool = False,
     payload_inspection: PayloadInspection | None = None,
