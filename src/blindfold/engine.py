@@ -4861,7 +4861,9 @@ def _strip_schema_structural_tokens(
     return node
 
 
-def _strip_block_type_non_hop_fields(node: Any, forbidden: list[str]) -> Any:
+def _strip_block_type_non_hop_fields(
+    node: Any, forbidden: list[str], flat: bool = False, in_json_input: bool = False
+) -> Any:
     """Recursively strip :data:`_BLOCK_TYPE_NON_HOP_KEYS` fields (issue #374, e.g.
     ``redacted_thinking.data``) from a content-block subtree, appending their text to
     ``forbidden``.
@@ -4871,6 +4873,14 @@ def _strip_block_type_non_hop_fields(node: Any, forbidden: list[str]) -> Any:
     keyed the same way via :func:`_non_hop_keys_for_block_type`): the same field is
     excluded on both sides, at any nesting depth a content block can appear (a
     ``tool_result``'s nested content list, a ``search_result``'s nested content, ...).
+
+    ``flat`` (issue #460, ADR-0051 set symmetry): also strip every
+    :data:`_BLOCK_NON_HOP_KEYS` key (``type``/``id``/``tool_use_id``/``signature``),
+    derived from that one set -- the blinder never rewrites them, so a match confined
+    there is a declared collision, not a leak. Not applied inside a tool call's
+    ``input`` (``in_json_input``): the blinder rewrites arbitrary JSON there,
+    including a key that happens to be named ``id``, so the gate keeps checking it.
+    Off for :func:`resolution_gate`, which walks a response, not a request.
     """
     if isinstance(node, dict):
         block_type = node.get("type")
@@ -4878,20 +4888,34 @@ def _strip_block_type_non_hop_fields(node: Any, forbidden: list[str]) -> Any:
         # tool call's arbitrary JSON `input` (or a JSON-Schema `properties` map), a
         # key named "type" can just as legally hold an unrelated nested object, and
         # `_BLOCK_TYPE_NON_HOP_KEYS.get` would raise on trying to hash it.
+        is_block_type = isinstance(block_type, str)
         excluded = (
             _BLOCK_TYPE_NON_HOP_KEYS.get(block_type, frozenset())
-            if isinstance(block_type, str)
+            if is_block_type
             else frozenset()
         )
+        flat_here = flat and not in_json_input
+        if flat_here:
+            excluded = excluded | _BLOCK_NON_HOP_KEYS
+        is_tool_call = is_block_type and block_type in _TOOL_CALL_BLOCK_TYPES
         stripped: dict[str, Any] = {}
         for key, value in node.items():
-            if key in excluded and isinstance(value, str):
-                forbidden.append(value)
-                continue
-            stripped[key] = _strip_block_type_non_hop_fields(value, forbidden)
+            if key in excluded:
+                if isinstance(value, str):
+                    forbidden.append(value)
+                    continue
+                if flat_here and key in _BLOCK_NON_HOP_KEYS:
+                    walk_string_leaves(value, forbidden.append)
+                    continue
+            stripped[key] = _strip_block_type_non_hop_fields(
+                value, forbidden, flat, in_json_input or (is_tool_call and key == "input")
+            )
         return stripped
     if isinstance(node, list):
-        return [_strip_block_type_non_hop_fields(item, forbidden) for item in node]
+        return [
+            _strip_block_type_non_hop_fields(item, forbidden, flat, in_json_input)
+            for item in node
+        ]
     return node
 
 
@@ -4953,10 +4977,10 @@ def _gate_excluded_view(payload: dict[str, Any]) -> tuple[dict[str, Any], str]:
     # dispatch cannot key on safely.
     messages = view.get("messages")
     if isinstance(messages, list):
-        view["messages"] = _strip_block_type_non_hop_fields(messages, forbidden)
+        view["messages"] = _strip_block_type_non_hop_fields(messages, forbidden, flat=True)
     system = view.get("system")
     if isinstance(system, list):
-        view["system"] = _strip_block_type_non_hop_fields(system, forbidden)
+        view["system"] = _strip_block_type_non_hop_fields(system, forbidden, flat=True)
     tools = view.get("tools")
     if isinstance(tools, list):
         for tool in tools:
