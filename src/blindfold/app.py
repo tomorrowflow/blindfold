@@ -1874,15 +1874,22 @@ def _resolution_gate_or_block(
     workspace: str,
     audit_log: AuditLog,
     block_history: BlockHistory,
+    world_acting: bool = False,
 ) -> JSONResponse | None:
     """Run the post-restore :func:`resolution_gate`; return a block ``JSONResponse`` if raised.
 
     Replaces #2's interim bare-500 with the canonical fail-closed block path
     (ADR-0009 / leak-audit clause F): an unresolved surrogate is a privacy bug we
     caught — surface it as a structured block + audit, never as an opaque 500.
+
+    ``world_acting`` (ADR-0060 amendment, decision point 4, issue #450): this
+    exchange's own world-acting verdict, threaded straight through to
+    :func:`~blindfold.engine.resolution_gate` so a contained response's
+    passed-through named-pool surrogate (see :func:`~blindfold.engine._restore_text`)
+    does not trip the gate.
     """
     try:
-        resolution_gate(restored, session)
+        resolution_gate(restored, session, world_acting=world_acting)
     except UnresolvedSurrogateError as exc:
         return _blocked_response(
             event="blocked-unresolved-surrogate",
@@ -2278,6 +2285,7 @@ async def _exchange(
                 open_stream_duration_ms, declared_collisions,
                 unlisted_forwarded_headers=unlisted_forwarded_headers,
                 exchange_id=exchange_id,
+                world_acting=world_acting,
             ),
             media_type="text/event-stream",
         )
@@ -2310,9 +2318,10 @@ async def _exchange(
         remember_contained_response(raw_response, workspace, contained_response_memory)
 
     if restore is not None:
-        result_body = restore(raw_response, session)
+        result_body = restore(raw_response, session, world_acting=world_acting)
         block = _resolution_gate_or_block(
-            result_body, session, workspace, audit_log, block_history
+            result_body, session, workspace, audit_log, block_history,
+            world_acting=world_acting,
         )
         if block is not None:
             _record_trace(
@@ -2850,6 +2859,7 @@ async def _stream_restored(
     declared_collisions: Sequence[str] = (),
     unlisted_forwarded_headers: Sequence[str] = (),
     exchange_id: str | None = None,
+    world_acting: bool = False,
 ) -> AsyncIterator[bytes]:
     """Stream restored SSE bytes to the client.
 
@@ -2899,8 +2909,14 @@ async def _stream_restored(
     event introducing a block type with a declared non-hop field (today, only
     ``redacted_thinking.data``) via :func:`_resolution_gate_checked_stream_text`,
     symmetric with the buffered path's own exclusion in :func:`resolution_gate`.
+
+    ``world_acting`` (ADR-0060 amendment, decision point 4, issue #450): this
+    exchange's own world-acting verdict, threaded into both ``StreamingRestorer``
+    and the terminal :func:`resolution_gate` check below -- the streaming leg of
+    the same point-4 restore narrowing the buffered path applies via ``restore``/
+    ``_resolution_gate_or_block``.
     """
-    restorer = StreamingRestorer(session)
+    restorer = StreamingRestorer(session, world_acting=world_acting)
     # Per-content-block index → accumulated partial_json fragments. Presence in this
     # dict marks the block as a tool_use whose deltas must be held back.
     tool_use_buffers: dict[int, list[str]] = {}
@@ -2930,7 +2946,8 @@ async def _stream_restored(
             while "\n\n" in buffer:
                 event, buffer = buffer.split("\n\n", 1)
                 async for out in _process_sse_event(
-                    event, restorer, tool_use_buffers, prose_block_deltas, session
+                    event, restorer, tool_use_buffers, prose_block_deltas, session,
+                    world_acting=world_acting,
                 ):
                     emitted.append(out)
                     yield out
@@ -2941,7 +2958,8 @@ async def _stream_restored(
         buffer += decoder.decode(b"", final=True)
         if buffer.strip():
             async for out in _process_sse_event(
-                buffer, restorer, tool_use_buffers, prose_block_deltas, session
+                buffer, restorer, tool_use_buffers, prose_block_deltas, session,
+                world_acting=world_acting,
             ):
                 emitted.append(out)
                 yield out
@@ -2996,7 +3014,8 @@ async def _stream_restored(
 
     try:
         resolution_gate(
-            {"stream": _resolution_gate_checked_stream_text(emitted)}, session
+            {"stream": _resolution_gate_checked_stream_text(emitted)}, session,
+            world_acting=world_acting,
         )
     except UnresolvedSurrogateError as exc:
         reason = (
@@ -3087,8 +3106,15 @@ async def _process_sse_event(
     tool_use_buffers: dict[int, list[str]],
     prose_block_deltas: dict[int, str],
     session: ExchangeSession,
+    world_acting: bool = False,
 ) -> AsyncIterator[bytes]:
-    """Split one SSE event into ``event:`` / ``data:`` lines and rewrite text/tool deltas."""
+    """Split one SSE event into ``event:`` / ``data:`` lines and rewrite text/tool deltas.
+
+    ``world_acting`` (ADR-0060 amendment, decision point 4, issue #450): this
+    exchange's own world-acting verdict, threaded into :func:`_restore_tool_use_json`
+    for the tool-call-argument leg -- the prose leg gets the same narrowing via
+    ``restorer``'s own ``world_acting`` (set once, at construction, by the caller).
+    """
     event_name, data_line = None, None
     for line in event.split("\n"):
         if line.startswith("event:"):
@@ -3145,7 +3171,7 @@ async def _process_sse_event(
         index = payload.get("index", 0)
         if index in tool_use_buffers:
             assembled = "".join(tool_use_buffers.pop(index))
-            restored_json = _restore_tool_use_json(assembled, session)
+            restored_json = _restore_tool_use_json(assembled, session, world_acting)
             yield _emit_input_json_delta(restored_json, index=index)
             yield (event + "\n\n").encode("utf-8")
             return
@@ -3169,7 +3195,9 @@ async def _process_sse_event(
     yield (event + "\n\n").encode("utf-8")
 
 
-def _restore_tool_use_json(assembled: str, session: ExchangeSession) -> str:
+def _restore_tool_use_json(
+    assembled: str, session: ExchangeSession, world_acting: bool = False
+) -> str:
     """Restore surrogates inside reassembled tool-call JSON; preserve escaping.
 
     Parses the full JSON, restores strings closed-world via ``session``, and re-encodes
@@ -3177,12 +3205,15 @@ def _restore_tool_use_json(assembled: str, session: ExchangeSession) -> str:
     correctly. If the upstream JSON didn't parse (truncated stream / provider bug),
     fall back to a closed-world text restore over the raw string — still safe because
     only injected surrogates are reversed.
+
+    ``world_acting`` (ADR-0060 amendment, decision point 4, issue #450): see
+    :func:`~blindfold.engine.restore_tool_call_json`.
     """
     try:
         parsed = json.loads(assembled)
     except json.JSONDecodeError:
-        return restore_tool_call_json(assembled, session)
-    restored = restore_tool_call_json(parsed, session)
+        return restore_tool_call_json(assembled, session, world_acting)
+    restored = restore_tool_call_json(parsed, session, world_acting)
     return json.dumps(restored)
 
 

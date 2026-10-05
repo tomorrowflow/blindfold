@@ -3711,7 +3711,9 @@ def _reapply_provisional_pairs_catchup(
     return _apply_spans(text, containment_spans + spans, leaf=leaf)
 
 
-def _restore_block(block: Any, session: ExchangeSession) -> Any:
+def _restore_block(
+    block: Any, session: ExchangeSession, world_acting: bool = False
+) -> Any:
     """Restore one response content block in place -- deny-by-default (issue #323).
 
     Mirrors :func:`_blindfold_block`'s inversion on the restore side: ``text`` and
@@ -3722,45 +3724,55 @@ def _restore_block(block: Any, session: ExchangeSession) -> Any:
     deny-by-default walk, so a surrogate injected into a hop this issue newly
     reaches is restored on the way back too, not left for
     :func:`resolution_gate`'s own exhaustive walk to fail-close on.
+
+    ``world_acting`` (ADR-0060 amendment, issue #450): passed straight through to
+    every leaf below, mirroring how :func:`_blindfold_block` threads its own
+    ``world_acting``/``contained_response`` flags -- this whole response is a
+    contained response when its exchange was world-acting, and every leaf of it
+    gets the same point-4 restore narrowing, not just its top-level text.
     """
     if not isinstance(block, dict):
         return block
     block_type = block.get("type")
     if block_type == "text" and isinstance(block.get("text"), str):
-        block["text"] = _restore_text(block["text"], session)
+        block["text"] = _restore_text(block["text"], session, world_acting)
         return block
     if block_type in _TOOL_RESULT_BLOCK_TYPES:
-        block["content"] = _restore_content(block.get("content"), session)
+        block["content"] = _restore_content(block.get("content"), session, world_acting)
         return block
     if block_type in _TOOL_CALL_BLOCK_TYPES:
         # Tool-call JSON (issue #11): restore surrogates inside string values
         # of structured args. The dict is already reassembled here (non-stream
         # path); JSON escaping is preserved because we walk the parsed value
         # and the ASGI serializer re-encodes string content for us.
-        block["input"] = _restore_json_value(block.get("input"), session)
+        block["input"] = _restore_json_value(block.get("input"), session, world_acting)
         return block
     non_hop_keys = _non_hop_keys_for_block_type(block_type)
     for key, value in list(block.items()):
         if key in non_hop_keys:
             continue
-        block[key] = _restore_block_value(value, session)
+        block[key] = _restore_block_value(value, session, world_acting)
     return block
 
 
-def _restore_content(content: Any, session: ExchangeSession) -> Any:
+def _restore_content(
+    content: Any, session: ExchangeSession, world_acting: bool = False
+) -> Any:
     """Restore a ``tool_result``/``mcp_tool_result``-shaped ``content`` field.
 
     ``content`` is either plain text or a nested content-block list (mirrors
     :func:`_blindfold_content`'s own two shapes).
     """
     if isinstance(content, str):
-        return _restore_text(content, session)
+        return _restore_text(content, session, world_acting)
     if isinstance(content, list):
-        return [_restore_block(block, session) for block in content]
+        return [_restore_block(block, session, world_acting) for block in content]
     return content
 
 
-def _restore_block_value(value: Any, session: ExchangeSession) -> Any:
+def _restore_block_value(
+    value: Any, session: ExchangeSession, world_acting: bool = False
+) -> Any:
     """Recursively restore every string leaf of a content-block subtree (issue #323).
 
     The restore-side counterpart to :func:`_blindfold_block_value`: every
@@ -3768,14 +3780,14 @@ def _restore_block_value(value: Any, session: ExchangeSession) -> Any:
     everything else is a candidate surrogate occurrence.
     """
     if isinstance(value, str):
-        return _restore_text(value, session)
+        return _restore_text(value, session, world_acting)
     if isinstance(value, dict):
         return {
-            k: (v if k in _BLOCK_NON_HOP_KEYS else _restore_block_value(v, session))
+            k: (v if k in _BLOCK_NON_HOP_KEYS else _restore_block_value(v, session, world_acting))
             for k, v in value.items()
         }
     if isinstance(value, list):
-        return [_restore_block_value(item, session) for item in value]
+        return [_restore_block_value(item, session, world_acting) for item in value]
     return value
 
 
@@ -3877,28 +3889,41 @@ def remember_contained_response(
 
 
 def restore_response(
-    response: dict[str, Any], session: ExchangeSession
+    response: dict[str, Any],
+    session: ExchangeSession,
+    world_acting: bool = False,
 ) -> dict[str, Any]:
     """Return a copy of an Anthropic Messages ``response`` with surrogates restored.
 
     Closed-world (ADR-0006): only surrogates recorded in ``session`` are reversed, so
     a surrogate-shaped token the provider emitted on its own is left untouched. The
     input ``response`` is not mutated.
+
+    ``world_acting`` (ADR-0060 amendment, decision point 4, issue #450): ``True``
+    when this ``response`` is itself a contained response -- the response to a
+    world-acting request. Threaded to every leaf via :func:`_restore_block`;
+    see :func:`_restore_text` for the narrowing itself. ``False`` (the default)
+    reproduces today's behavior exactly.
     """
     out = copy.deepcopy(response)
     content = out.get("content")
     if isinstance(content, list):
-        out["content"] = [_restore_block(block, session) for block in content]
+        out["content"] = [_restore_block(block, session, world_acting) for block in content]
     return out
 
 
 def restore_chat_completion(
-    response: dict[str, Any], session: ExchangeSession
+    response: dict[str, Any],
+    session: ExchangeSession,
+    world_acting: bool = False,
 ) -> dict[str, Any]:
     """Return a copy of an OpenAI Chat Completions ``response`` with surrogates restored.
 
     Walks ``choices[*].message.content`` (string or text-block list). Closed-world: only
     surrogates recorded in ``session`` are reversed (ADR-0006). The input is not mutated.
+
+    ``world_acting`` (ADR-0060 amendment, decision point 4, issue #450): see
+    :func:`restore_response`.
     """
     out = copy.deepcopy(response)
     for choice in out.get("choices", []) or []:
@@ -3909,7 +3934,7 @@ def restore_chat_completion(
             continue
         content = message.get("content")
         if isinstance(content, str):
-            message["content"] = _restore_text(content, session)
+            message["content"] = _restore_text(content, session, world_acting)
         elif isinstance(content, list):
             for block in content:
                 if (
@@ -3917,7 +3942,7 @@ def restore_chat_completion(
                     and block.get("type") == "text"
                     and isinstance(block.get("text"), str)
                 ):
-                    block["text"] = _restore_text(block["text"], session)
+                    block["text"] = _restore_text(block["text"], session, world_acting)
     return out
 
 
@@ -4262,7 +4287,9 @@ def _component_restore_map(injected: dict[str, str]) -> dict[str, str]:
     return {word: next(iter(targets)) for word, targets in candidates.items() if len(targets) == 1}
 
 
-def _restore_text(text: str, session: ExchangeSession) -> str:
+def _restore_text(
+    text: str, session: ExchangeSession, world_acting: bool = False
+) -> str:
     """Restore both passes (ADR-0036) in one combined, single-scan call (issue #304).
 
     The first pass (full surrogates, ``session.injected``) and the second pass (components,
@@ -4279,17 +4306,38 @@ def _restore_text(text: str, session: ExchangeSession) -> str:
     token surviving into the client-visible response is the disclosure, not a restore
     miss. ``_component_restore_map`` already excludes a reserved/fallback surrogate's
     own components (issue #329), so only the first pass needs the guard here.
+
+    ADR-0060 amendment, decision point 4 (issue #450): ``world_acting`` marks this
+    text as belonging to a CONTAINED response -- the response to a world-acting
+    request. No plausible named surrogate ever entered such a request (§3: every
+    named mention is redirected to a reserved-namespace containment token
+    instead), so a plausible-pool surrogate string here is a coincidence, a real
+    stranger in the results who shares a pool name. ``injected`` is filtered to
+    drop any plausible-named key (:func:`_is_plausible_named_surrogate`) before
+    either pass sees it, so it contributes no first-pass key AND no component --
+    the same "never a restore key" treatment the reserved-form guard above
+    already gets, applied to the other class point 4 names. ``False`` (the
+    default) reproduces today's behavior exactly for every pre-#450 caller.
     """
-    restore_map = dict(_component_restore_map(session.injected))
+    injected = session.injected
+    if world_acting:
+        injected = {
+            surrogate: real
+            for surrogate, real in injected.items()
+            if not _is_plausible_named_surrogate(surrogate)
+        }
+    restore_map = dict(_component_restore_map(injected))
     restore_map.update(
         (surrogate, real)
-        for surrogate, real in session.injected.items()
+        for surrogate, real in injected.items()
         if not is_reserved_provisional_surrogate_form(surrogate)
     )
     return _apply_restore_pass(text, restore_map)
 
 
-def _restore_json_value(value: Any, session: ExchangeSession) -> Any:
+def _restore_json_value(
+    value: Any, session: ExchangeSession, world_acting: bool = False
+) -> Any:
     """Recursively restore surrogates inside any JSON-shaped value (issue #11).
 
     Walks dicts/lists and rewrites string leaves with :func:`_restore_text`. Non-string
@@ -4297,23 +4345,29 @@ def _restore_json_value(value: Any, session: ExchangeSession) -> Any:
     only surrogates injected this exchange are reversed.
     """
     if isinstance(value, str):
-        return _restore_text(value, session)
+        return _restore_text(value, session, world_acting)
     if isinstance(value, dict):
-        return {k: _restore_json_value(v, session) for k, v in value.items()}
+        return {k: _restore_json_value(v, session, world_acting) for k, v in value.items()}
     if isinstance(value, list):
-        return [_restore_json_value(item, session) for item in value]
+        return [_restore_json_value(item, session, world_acting) for item in value]
     return value
 
 
-def restore_tool_call_json(value: Any, session: ExchangeSession) -> Any:
+def restore_tool_call_json(
+    value: Any, session: ExchangeSession, world_acting: bool = False
+) -> Any:
     """Public seam: restore surrogates inside tool-call JSON (ADR-0006, issue #11).
 
     Accepts either a parsed JSON value (dict/list/scalar) or a raw string. Closed-world:
     only surrogates injected for this exchange are reversed. Callers that have already
     reassembled streamed ``input_json_delta`` fragments hand the full assembled value
     in here, then re-encode for emission.
+
+    ``world_acting`` (ADR-0060 amendment, decision point 4, issue #450): see
+    :func:`restore_response`. ``False`` (the default) reproduces today's
+    behavior exactly.
     """
-    return _restore_json_value(value, session)
+    return _restore_json_value(value, session, world_acting)
 
 
 class StreamingRestorer:
@@ -4330,8 +4384,9 @@ class StreamingRestorer:
     there to make.
     """
 
-    def __init__(self, session: ExchangeSession) -> None:
+    def __init__(self, session: ExchangeSession, world_acting: bool = False) -> None:
         self._session = session
+        self._world_acting = world_acting
         self._buffer = ""
         # Tail held back equals the longest injected surrogate plus the longest
         # possible suffix; 0 means nothing to protect (no surrogates injected -> emit
@@ -4353,7 +4408,7 @@ class StreamingRestorer:
         """Emit any remaining buffered text, fully restored."""
         if not self._buffer:
             return ""
-        restored = _restore_text(self._buffer, self._session)
+        restored = _restore_text(self._buffer, self._session, self._world_acting)
         self._buffer = ""
         return restored
 
@@ -4386,7 +4441,7 @@ class StreamingRestorer:
                     break
                 end = max(end, match.end())
                 search_start = match.start() + 1
-        restored = _restore_text(self._buffer[:end], self._session)
+        restored = _restore_text(self._buffer[:end], self._session, self._world_acting)
         return restored, end
 
 
@@ -5092,7 +5147,11 @@ def leak_gate(
     return collisions
 
 
-def resolution_gate(restored_response: dict[str, Any], session: ExchangeSession) -> None:
+def resolution_gate(
+    restored_response: dict[str, Any],
+    session: ExchangeSession,
+    world_acting: bool = False,
+) -> None:
     """Post-restore resolution gate (SEC-6, ADR-0020): the detection half of the split.
 
     Raises :class:`UnresolvedSurrogateError` if an injected surrogate is still present
@@ -5122,12 +5181,23 @@ def resolution_gate(restored_response: dict[str, Any], session: ExchangeSession)
     surviving is the disclosure, not a restore miss -- so it must not trip this gate.
     Every other unresolved surrogate still fails closed exactly as before; the
     exemption is the same closed syntactic class restore itself uses, never widened.
+
+    ADR-0060 amendment, decision point 4 (issue #450): ``world_acting`` marks
+    ``restored_response`` as a contained response -- the response to a
+    world-acting request. A plausible-named-pool surrogate (:func:`_is_plausible_
+    named_surrogate`) is left client-visible there on purpose too (point 4:
+    "pass through a contained response verbatim"), so it must not trip this gate
+    either, the same way the reserved-form exemption above does not. Every other
+    unresolved surrogate -- including a plausible-pool one on a NON-world-acting
+    response -- still fails closed exactly as before.
     """
     forbidden: list[str] = []
     checked_view = _strip_block_type_non_hop_fields(restored_response, forbidden)
     restored_text = _collect_text(checked_view)
     for surrogate in session.injected:
         if is_reserved_provisional_surrogate_form(surrogate):
+            continue
+        if world_acting and _is_plausible_named_surrogate(surrogate):
             continue
         if _surrogate_pattern(surrogate).search(restored_text):
             message = f"injected surrogate left unresolved in response: {surrogate!r}"
