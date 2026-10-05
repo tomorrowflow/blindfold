@@ -135,12 +135,11 @@ from .engine import (
     DeclaredToolVocabulary,
     ExchangeSession,
     LeakError,
+    RESERVED_TOKEN_NOTE,
     StreamingRestorer,
     UnresolvedSurrogateError,
-    RESERVED_TOKEN_NOTE,
     append_reserved_token_note_chat_completions,
     append_reserved_token_note_messages,
-    reserved_token_note_applies,
     blindfold_chat_completions_payload,
     blindfold_payload,
     chat_completions_tool_container,
@@ -156,6 +155,7 @@ from .engine import (
     messages_tool_container,
     non_hop_block_type_fields,
     remember_contained_response,
+    reserved_token_note_applies,
     resolution_gate,
     restore_chat_completion,
     restore_response,
@@ -1843,10 +1843,11 @@ def _reserved_token_note_gate_or_block(
 
     The note is appended AFTER the note-free payload's own gate (so that gate's
     leaf pairing is untouched), which left the bytes actually sent unchecked: a
-    mapped real equal to a word of the note's fixed sentence would egress. No
-    ``session`` here -- nothing the blinder wrote is in the note, so there is no
-    range-scoped excuse to grant and the check stays exhaustive. ``None`` (and no
-    extra pass at all) when no reserved-form token is present.
+    mapped real equal to a word of the note's fixed sentence would egress.
+    ``session`` only decides whether the note applies; it is deliberately NOT
+    passed to :func:`leak_gate` -- nothing the blinder wrote is in the note, so
+    there is no range-scoped excuse to grant and the check stays exhaustive.
+    ``None`` (and no extra pass at all) when no reserved-form token is present.
     """
     if not reserved_token_note_applies(blinded, session):
         return None
