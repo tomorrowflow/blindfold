@@ -53,6 +53,13 @@ export type ProcessingTraceRecord = {
   // any record a pre-#400 code path could still produce (never true for a
   // real request today, kept optional-shaped defensively).
   exchange_id: string | null;
+  // ADR-0060 amendment point 9 (issue #453): out-of-band disclosure of
+  // containment. `world_acting` drives the "ran on a placeholder" badge;
+  // `contained_count`/`exempted_count` are counts only -- never a real value
+  // or a surrogate string.
+  world_acting: boolean;
+  contained_count: number;
+  exempted_count: number;
 };
 
 export type ProcessingTraceFetchResult =

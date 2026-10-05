@@ -1416,6 +1416,7 @@ def _record_trace(
     declared_collisions: Sequence[str] = (),
     unlisted_forwarded_headers: Sequence[str] = (),
     exchange_id: str | None = None,
+    world_acting: bool = False,
 ) -> None:
     """Append one scrubbed processing-trace record for this exchange (ADR-0035).
 
@@ -1444,11 +1445,21 @@ def _record_trace(
     request and also passes to `rewritten_leaf_store.retain` -- it lets the
     Processing trace view correlate one of its own rows with Payload
     inspection's separately-retained leaves for that same exchange.
+
+    ``world_acting`` (ADR-0060 amendment point 9, issue #453) is the caller's
+    own already-computed structural verdict (``extract_world_acting``),
+    threaded straight through -- never re-derived here. ``contained_count``/
+    ``exempted_count`` read straight off ``session`` (``contained_reals()``/
+    ``exempted_count()``) when one was constructed; both stay 0 for a block
+    raised before ``blindfold`` ever ran (``session is None``), the same
+    convention ``hops``/``l3_provider`` already follow.
     """
     hops = [hop.to_dict() for hop in session.hops] if session is not None else []
     l3_hops = [hop for hop in session.hops if hop.l3_provider is not None] if session else []
     l3_provider = l3_hops[0].l3_provider if l3_hops else None
     l3_duration_ms = sum(hop.l3_duration_ms for hop in l3_hops) if l3_hops else None
+    contained_count = len(session.contained_reals()) if session is not None else 0
+    exempted_count = session.exempted_count() if session is not None else 0
     trace.record(
         workspace=workspace,
         endpoint=endpoint,
@@ -1464,6 +1475,9 @@ def _record_trace(
         declared_collisions=declared_collisions,
         unlisted_forwarded_headers=unlisted_forwarded_headers,
         exchange_id=exchange_id,
+        world_acting=world_acting,
+        contained_count=contained_count,
+        exempted_count=exempted_count,
     )
 
 
@@ -2226,6 +2240,7 @@ async def _exchange(
                 reason=_block_reason(result),
                 unlisted_forwarded_headers=unlisted_forwarded_headers,
                 exchange_id=exchange_id,
+                world_acting=world_acting,
             )
             return result
         blinded, session = result
@@ -2253,6 +2268,7 @@ async def _exchange(
                 len(session.injected), start, reason=_block_reason(block), session=session,
                 unlisted_forwarded_headers=unlisted_forwarded_headers,
                 exchange_id=exchange_id,
+                world_acting=world_acting,
             )
             return block
 
@@ -2268,6 +2284,7 @@ async def _exchange(
                 declared_collisions=declared_collisions,
                 unlisted_forwarded_headers=unlisted_forwarded_headers,
                 exchange_id=exchange_id,
+                world_acting=world_acting,
             )
             return _upstream_error_response(exc, workspace, audit_log, upstream_health)
         upstream_health.mark_success()
@@ -2278,6 +2295,7 @@ async def _exchange(
                 open_stream_duration_ms, declared_collisions,
                 unlisted_forwarded_headers=unlisted_forwarded_headers,
                 exchange_id=exchange_id,
+                world_acting=world_acting,
             ),
             media_type="text/event-stream",
         )
@@ -2293,6 +2311,7 @@ async def _exchange(
             declared_collisions=declared_collisions,
             unlisted_forwarded_headers=unlisted_forwarded_headers,
             exchange_id=exchange_id,
+            world_acting=world_acting,
         )
         return _upstream_error_response(exc, workspace, audit_log, upstream_health)
     upstream_health.mark_success()
@@ -2322,6 +2341,7 @@ async def _exchange(
                 declared_collisions=declared_collisions,
                 unlisted_forwarded_headers=unlisted_forwarded_headers,
                 exchange_id=exchange_id,
+                world_acting=world_acting,
             )
             return block
     else:
@@ -2334,6 +2354,7 @@ async def _exchange(
         declared_collisions=declared_collisions,
         unlisted_forwarded_headers=unlisted_forwarded_headers,
         exchange_id=exchange_id,
+        world_acting=world_acting,
     )
     return result_body
 
@@ -2850,6 +2871,7 @@ async def _stream_restored(
     declared_collisions: Sequence[str] = (),
     unlisted_forwarded_headers: Sequence[str] = (),
     exchange_id: str | None = None,
+    world_acting: bool = False,
 ) -> AsyncIterator[bytes]:
     """Stream restored SSE bytes to the client.
 
@@ -3017,6 +3039,7 @@ async def _stream_restored(
             declared_collisions=declared_collisions,
             unlisted_forwarded_headers=unlisted_forwarded_headers,
             exchange_id=exchange_id,
+            world_acting=world_acting,
         )
         raise
 
@@ -3028,6 +3051,7 @@ async def _stream_restored(
             declared_collisions=declared_collisions,
             unlisted_forwarded_headers=unlisted_forwarded_headers,
             exchange_id=exchange_id,
+            world_acting=world_acting,
         )
     else:
         _record_trace(
@@ -3037,6 +3061,7 @@ async def _stream_restored(
             declared_collisions=declared_collisions,
             unlisted_forwarded_headers=unlisted_forwarded_headers,
             exchange_id=exchange_id,
+            world_acting=world_acting,
         )
 
 

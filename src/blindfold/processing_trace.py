@@ -61,6 +61,16 @@ class ProcessingTraceRecord:
     which forward only known names. A header name is a protocol identifier
     from Anthropic's own namespace, not user content, so recording it does not
     touch this record's scrub invariant.
+
+    ``world_acting``/``contained_count``/``exempted_count`` (ADR-0060
+    amendment point 9, issue #453) are the out-of-band disclosure of
+    containment: whether this exchange's request was world-acting (ADR-0060
+    §2), how many distinct referents this exchange drew a containment token
+    for (``len(ExchangeSession.contained_reals())``), and how many L3
+    candidates point 2 exempted from novelty minting (the structural #448
+    rule and the candidate-level #452 rule, both counted). Counts and a flag
+    only -- never a real value or a surrogate string. ``False``/``0`` for an
+    ordinary exchange.
     """
 
     ts: str
@@ -78,6 +88,9 @@ class ProcessingTraceRecord:
     declared_collisions: tuple[str, ...] = ()
     unlisted_forwarded_headers: tuple[str, ...] = ()
     exchange_id: str | None = None
+    world_acting: bool = False
+    contained_count: int = 0
+    exempted_count: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -96,6 +109,9 @@ class ProcessingTraceRecord:
             "declared_collisions": list(self.declared_collisions),
             "unlisted_forwarded_headers": list(self.unlisted_forwarded_headers),
             "exchange_id": self.exchange_id,
+            "world_acting": self.world_acting,
+            "contained_count": self.contained_count,
+            "exempted_count": self.exempted_count,
         }
 
 
@@ -130,6 +146,9 @@ class ProcessingTraceBuffer:
         declared_collisions: Sequence[str] = (),
         unlisted_forwarded_headers: Sequence[str] = (),
         exchange_id: str | None = None,
+        world_acting: bool = False,
+        contained_count: int = 0,
+        exempted_count: int = 0,
     ) -> None:
         self._entries.append(
             ProcessingTraceRecord(
@@ -148,6 +167,9 @@ class ProcessingTraceBuffer:
                 declared_collisions=tuple(declared_collisions),
                 unlisted_forwarded_headers=tuple(unlisted_forwarded_headers),
                 exchange_id=exchange_id,
+                world_acting=world_acting,
+                contained_count=contained_count,
+                exempted_count=exempted_count,
             )
         )
 

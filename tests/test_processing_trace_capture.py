@@ -541,3 +541,89 @@ async def test_passed_record_carries_scrubbed_per_hop_detail_and_l3_rollup():
     assert "Quentin" not in serialized
     assert "Report" not in serialized
     assert "Please ask" not in serialized  # no raw hop text
+
+
+class _ConfirmQuentinAsPerson:
+    """Like ``_ConfirmQuentinAdjudicator`` but types its one confirmation as a
+    person -- ADR-0060 §3's world-acting containment guard only redirects
+    ``_CONTAINED_ENTITY_TYPES`` ({"person", "organization"}), so a type-less
+    verdict (``_ConfirmQuentinAdjudicator``'s own default) would take the
+    ordinary novelty-mint path instead, not containment.
+    """
+
+    def adjudicate(self, candidate: CandidateSpan) -> L3Adjudication:
+        return L3Adjudication(is_entity=candidate.text == "Quentin", entity_type="person")
+
+
+@pytest.mark.anyio
+async def test_a_world_acting_exchange_records_the_flag_and_contained_count():
+    # ADR-0060 amendment point 9 (issue #453): out-of-band disclosure of
+    # containment. A world-acting request whose history confirms a brand-new
+    # person referent carries world_acting=True and contained_count=1 -- never
+    # a real value or a surrogate string (asserted below against the whole
+    # serialized record).
+    recorded: list[httpx.Request] = []
+    trace = ProcessingTraceBuffer()
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(
+        {"content": [{"type": "text", "text": "ok"}]}, recorded
+    )
+    app.dependency_overrides[get_l3_detector] = lambda: L3Detector(
+        _ConfirmQuentinAsPerson(), provider_name="omlx"
+    )
+    app.dependency_overrides[get_mapping] = lambda: SurrogateMapping()
+    app.dependency_overrides[get_review_inbox] = lambda: ReviewInbox()
+    app.dependency_overrides[get_processing_trace] = lambda: trace
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            resp = await client.post(
+                "/v1/messages",
+                json={
+                    "model": "m",
+                    "tools": [{"name": "web_search_20250101"}],
+                    "messages": [{"role": "user", "content": "Please search for Quentin"}],
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    record = trace.recent()[0]
+    assert record.world_acting is True
+    assert record.contained_count == 1
+    assert record.exempted_count == 0
+    serialized = str(record.to_dict())
+    assert "Quentin" not in serialized
+
+
+@pytest.mark.anyio
+async def test_an_ordinary_exchange_records_world_acting_false_and_zero_counts():
+    recorded: list[httpx.Request] = []
+    trace = ProcessingTraceBuffer()
+    app.dependency_overrides[get_upstream_client] = lambda: _make_stub_upstream(
+        {"content": [{"type": "text", "text": "ok"}]}, recorded
+    )
+    app.dependency_overrides[get_workspace_policies] = _deterministic_only_policies
+    app.dependency_overrides[get_processing_trace] = lambda: trace
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            resp = await client.post(
+                "/v1/messages",
+                json={
+                    "model": "m",
+                    "messages": [{"role": "user", "content": "Just a plain message."}],
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    record = trace.recent()[0]
+    assert record.world_acting is False
+    assert record.contained_count == 0
+    assert record.exempted_count == 0

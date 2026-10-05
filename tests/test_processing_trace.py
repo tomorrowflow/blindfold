@@ -173,3 +173,51 @@ def test_record_defaults_to_no_upstream_duration():
     record = buffer.recent()[0]
     assert record.upstream_duration_ms is None
     assert record.to_dict()["upstream_duration_ms"] is None
+
+
+def test_record_carries_world_acting_flag_and_containment_counts():
+    # ADR-0060 amendment point 9 (issue #453): per-exchange disclosure of
+    # containment -- whether the request was world-acting, how many tokens were
+    # contained, and how many candidates point 2 exempted from novelty minting.
+    # Counts and a flag only, never a real value or a surrogate string.
+    buffer = ProcessingTraceBuffer(maxlen=3)
+
+    buffer.record(
+        workspace="ws-a",
+        endpoint="messages",
+        streamed=False,
+        outcome="passed",
+        detected=0,
+        duration_ms=1.0,
+        world_acting=True,
+        contained_count=2,
+        exempted_count=3,
+    )
+
+    record = buffer.recent()[0]
+    assert record.world_acting is True
+    assert record.contained_count == 2
+    assert record.exempted_count == 3
+    serialized = record.to_dict()
+    assert serialized["world_acting"] is True
+    assert serialized["contained_count"] == 2
+    assert serialized["exempted_count"] == 3
+
+
+def test_record_defaults_world_acting_false_and_counts_zero():
+    # Ordinary exchanges (not world-acting) carry false/zero, never omitted.
+    buffer = ProcessingTraceBuffer(maxlen=3)
+
+    buffer.record(
+        workspace="ws-a",
+        endpoint="messages",
+        streamed=False,
+        outcome="passed",
+        detected=0,
+        duration_ms=1.0,
+    )
+
+    record = buffer.recent()[0]
+    assert record.world_acting is False
+    assert record.contained_count == 0
+    assert record.exempted_count == 0
