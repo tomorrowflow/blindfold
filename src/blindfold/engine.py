@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from typing import Any, NoReturn
 from urllib.parse import quote
 
+from .contained_response_memory import ContainedResponseMemory
 from .detection import Entity, detect_l2, detect_pii
 from .l3 import _capitalized_token_matches
 from .l3 import _SENTENCE_STOPWORDS as _COMPONENT_STOPWORDS
@@ -406,6 +407,7 @@ def blindfold_payload(
     case_inconsistency: "CaseInconsistencySuppression | None" = None,
     world_acting: bool = False,
     retain_rewritten_leaves: bool = False,
+    contained_response_memory: "ContainedResponseMemory | None" = None,
 ) -> tuple[dict[str, Any], ExchangeSession]:
     """Return a blindfolded copy of an Anthropic Messages ``payload`` plus the session.
 
@@ -474,6 +476,19 @@ def blindfold_payload(
     (:meth:`ExchangeSession.contain`) instead of the plausible pool --
     additive and non-durable, never written to ``mapping``/``inbox``. ``False``
     (the default) reproduces today's behavior exactly.
+
+    ``contained_response_memory`` (ADR-0060 amendment 2026-10-05, decision
+    points 3/10, issue #452): the process-lifetime
+    :class:`~blindfold.contained_response_memory.ContainedResponseMemory`, when
+    the caller has one wired. Every leaf structurally recognised as a
+    contained response (:func:`is_contained_response_block`) is remembered
+    into it; a candidate found inside a ``tool_result``/``mcp_tool_result``
+    block elsewhere is exempt from novelty minting too when its own text
+    matches a remembered one -- the candidate-level half of "a contained
+    response is not a novelty input", for a client (Claude Desktop) that
+    fans a world-acting request out and relays its results back with every
+    structural signal stripped. ``None`` (the default) reproduces today's
+    behavior exactly: only the structural rule (#448) applies.
     """
     session = ExchangeSession(retain_rewritten_leaves=retain_rewritten_leaves)
     out = copy.deepcopy(payload)
@@ -491,6 +506,7 @@ def blindfold_payload(
             system, mapping, session, l3_detector, inbox, declared_tools, ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
             case_inconsistency, world_acting=world_acting,
+            contained_response_memory=contained_response_memory,
         )
         session.hops.append(_finish_hop(ctx, "system", len(session.hops)))
 
@@ -500,6 +516,7 @@ def blindfold_payload(
             message.get("content"), mapping, session, l3_detector, inbox,
             declared_tools, ctx, workspace, phone_candidates_enabled,
             system_confined_tokens, case_inconsistency, world_acting=world_acting,
+            contained_response_memory=contained_response_memory,
         )
         session.hops.append(
             _finish_hop(ctx, _hop_kind_for_message(message), len(session.hops))
@@ -590,6 +607,7 @@ def blindfold_chat_completions_payload(
     case_inconsistency: "CaseInconsistencySuppression | None" = None,
     world_acting: bool = False,
     retain_rewritten_leaves: bool = False,
+    contained_response_memory: "ContainedResponseMemory | None" = None,
 ) -> tuple[dict[str, Any], ExchangeSession]:
     """Return a blindfolded copy of an OpenAI Chat Completions ``payload`` plus the session.
 
@@ -616,6 +634,14 @@ def blindfold_chat_completions_payload(
 
     ``world_acting`` (ADR-0060 §2-§3, issue #410) — see
     :func:`is_world_acting_request_chat_completions` and :func:`blindfold_payload`.
+
+    ``contained_response_memory`` (ADR-0060 amendment, issue #452) — see
+    :func:`blindfold_payload`. The Chat Completions shape has no
+    ``tool_result``/``mcp_tool_result`` content-block type (a tool result is
+    its own ``role: "tool"`` message, not a block), so the candidate-level
+    rule's first condition structurally never holds here -- threaded through
+    for signature parity with :func:`blindfold_payload`, not because this
+    shape is this issue's target.
     """
     session = ExchangeSession(retain_rewritten_leaves=retain_rewritten_leaves)
     out = copy.deepcopy(payload)
@@ -632,6 +658,7 @@ def blindfold_chat_completions_payload(
             message.get("content"), mapping, session, l3_detector, inbox,
             declared_tools, ctx, workspace, phone_candidates_enabled,
             system_confined_tokens, case_inconsistency, world_acting=world_acting,
+            contained_response_memory=contained_response_memory,
         )
         session.hops.append(
             _finish_hop(ctx, _hop_kind_for_message(message), len(session.hops))
@@ -1347,12 +1374,14 @@ def _blindfold_system(
     case_inconsistency: "CaseInconsistencySuppression | None" = None,
     provisional_catchup: bool = False,
     world_acting: bool = False,
+    contained_response_memory: "ContainedResponseMemory | None" = None,
 ) -> Any:
     if isinstance(system, str):
         return _blindfold_text(
             system, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
             case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
+            contained_response_memory=contained_response_memory,
         )
     if isinstance(system, list):
         return [
@@ -1360,6 +1389,7 @@ def _blindfold_system(
                 block, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
                 workspace, phone_candidates_enabled, system_confined_tokens,
                 case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
+                contained_response_memory=contained_response_memory,
             )
             for block in system
         ]
@@ -1382,6 +1412,8 @@ def _blindfold_content(
     world_acting: bool = False,
     leaf_kind: str = "text",
     contained_response: bool = False,
+    in_tool_result_block: bool = False,
+    contained_response_memory: "ContainedResponseMemory | None" = None,
 ) -> Any:
     """``leaf_kind`` (issue #399): the retained-leaf display label to use when
     ``content`` is itself a bare string leaf -- "text" for a message's own
@@ -1399,6 +1431,11 @@ def _blindfold_content(
     string leaf and every nested block found here, so a candidate anywhere
     inside a contained response is exempt from novelty minting, however
     deeply the block type nests its own payload.
+
+    ``in_tool_result_block``/``contained_response_memory`` (ADR-0060
+    amendment, issue #452): the candidate-level half of the same rule --
+    see :func:`_blindfold_block`'s own doc for ``in_tool_result_block``.
+    Passed straight through unchanged, the same way ``contained_response`` is.
     """
     if isinstance(content, str):
         return _blindfold_text(
@@ -1406,6 +1443,8 @@ def _blindfold_content(
             workspace, phone_candidates_enabled, system_confined_tokens,
             case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
             leaf_kind=leaf_kind, contained_response=contained_response,
+            in_tool_result_block=in_tool_result_block,
+            contained_response_memory=contained_response_memory,
         )
     if isinstance(content, list):
         return [
@@ -1414,6 +1453,8 @@ def _blindfold_content(
                 workspace, phone_candidates_enabled, system_confined_tokens,
                 case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
                 contained_response=contained_response,
+                in_tool_result_block=in_tool_result_block,
+                contained_response_memory=contained_response_memory,
             )
             for block in content
         ]
@@ -1507,6 +1548,17 @@ def tool_call_block_types() -> frozenset[str]:
 _TOOL_RESULT_BLOCK_TYPES = frozenset({"tool_result", "mcp_tool_result"})
 
 
+def tool_result_block_types() -> frozenset[str]:
+    """Public accessor for :data:`_TOOL_RESULT_BLOCK_TYPES` (issue #452).
+
+    Lets :mod:`~blindfold.mining`'s own read-only leaf walk recognise the
+    identical "lies inside a tool_result block" candidate-level signal
+    :func:`_blindfold_block` itself computes (``in_tool_result_block``),
+    rather than a second copy of the set that could drift from it.
+    """
+    return _TOOL_RESULT_BLOCK_TYPES
+
+
 def _blindfold_block(
     block: Any,
     mapping: SurrogateMapping,
@@ -1522,6 +1574,8 @@ def _blindfold_block(
     provisional_catchup: bool = False,
     world_acting: bool = False,
     contained_response: bool = False,
+    in_tool_result_block: bool = False,
+    contained_response_memory: "ContainedResponseMemory | None" = None,
 ) -> Any:
     """Rewrite one content block in place -- deny-by-default over its string leaves.
 
@@ -1553,6 +1607,24 @@ def _blindfold_block(
     ``hop_ctx.hop_kind`` and this block's ``type`` -- either signal exempts: a
     block nested inside an already-contained block is contained too, even if
     its own type alone wouldn't structurally qualify.
+
+    ``in_tool_result_block``/``contained_response_memory`` (ADR-0060
+    amendment 2026-10-05, decision points 3/10, issue #452): the
+    candidate-level half of the same rule, for a client that fans a
+    world-acting request out and relays its results back with every
+    structural signal stripped (Claude Desktop's own measured shape).
+    ``in_tool_result_block`` is this block's own verdict (``True`` once any
+    enclosing block's ``type`` is :data:`_TOOL_RESULT_BLOCK_TYPES`,
+    OR-combined with the caller's, the same inheritance
+    ``contained_response`` already has) -- a candidate inside is exempt from
+    novelty minting at the L3 mint call site (:func:`_blindfold_text`) only
+    when its own text also matches ``contained_response_memory``. This is
+    deliberately a WEAKER signal than ``is_contained_response_block``: it
+    fires for the bare, client-authored ``tool_result`` type too (not just
+    assistant-role provider result blocks), because the relayed block has no
+    other structural signal left to recognise it by -- the memory match is
+    what keeps user-authored text (never inside a tool_result block to begin
+    with) from ever being exempted by this half of the rule.
     """
     if not isinstance(block, dict):
         return block
@@ -1560,12 +1632,15 @@ def _blindfold_block(
     contained_response = contained_response or is_contained_response_block(
         hop_ctx.hop_kind if hop_ctx is not None else None, block_type
     )
+    in_tool_result_block = in_tool_result_block or block_type in _TOOL_RESULT_BLOCK_TYPES
     if block_type == "text" and isinstance(block.get("text"), str):
         block["text"] = _blindfold_text(
             block["text"], mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
             case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
             leaf_kind="text block", contained_response=contained_response,
+            in_tool_result_block=in_tool_result_block,
+            contained_response_memory=contained_response_memory,
         )
         return block
     if block_type in _TOOL_RESULT_BLOCK_TYPES:
@@ -1575,6 +1650,8 @@ def _blindfold_block(
             system_confined_tokens, case_inconsistency,
             provisional_catchup=provisional_catchup, world_acting=world_acting,
             leaf_kind="tool-result body", contained_response=contained_response,
+            in_tool_result_block=in_tool_result_block,
+            contained_response_memory=contained_response_memory,
         )
         return block
     if block_type in _TOOL_CALL_BLOCK_TYPES:
@@ -1600,6 +1677,8 @@ def _blindfold_block(
             case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
             leaf_kind=f"{block_type} block" if isinstance(block_type, str) else "block",
             contained_response=contained_response,
+            in_tool_result_block=in_tool_result_block,
+            contained_response_memory=contained_response_memory,
         )
     return block
 
@@ -1620,6 +1699,8 @@ def _blindfold_block_value(
     world_acting: bool = False,
     leaf_kind: str = "text",
     contained_response: bool = False,
+    in_tool_result_block: bool = False,
+    contained_response_memory: "ContainedResponseMemory | None" = None,
 ) -> Any:
     """Recursively rewrite every string leaf of a content-block subtree (issue #323).
 
@@ -1641,6 +1722,11 @@ def _blindfold_block_value(
     block's own verdict (:func:`_blindfold_block`), carried unchanged through
     every recursive call -- every string leaf anywhere in this subtree is
     exempt from novelty minting exactly when the enclosing block is.
+
+    ``in_tool_result_block``/``contained_response_memory`` (ADR-0060
+    amendment, issue #452): the candidate-level half of the same rule --
+    carried unchanged through every recursive call, same as
+    ``contained_response`` above.
     """
     if isinstance(value, str):
         return _blindfold_text(
@@ -1648,6 +1734,8 @@ def _blindfold_block_value(
             workspace, phone_candidates_enabled, system_confined_tokens,
             case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
             leaf_kind=leaf_kind, contained_response=contained_response,
+            in_tool_result_block=in_tool_result_block,
+            contained_response_memory=contained_response_memory,
         )
     if isinstance(value, dict):
         return {
@@ -1659,6 +1747,8 @@ def _blindfold_block_value(
                     workspace, phone_candidates_enabled, system_confined_tokens,
                     case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
                     leaf_kind=leaf_kind, contained_response=contained_response,
+                    in_tool_result_block=in_tool_result_block,
+                    contained_response_memory=contained_response_memory,
                 )
             )
             for k, v in value.items()
@@ -1670,6 +1760,8 @@ def _blindfold_block_value(
                 workspace, phone_candidates_enabled, system_confined_tokens,
                 case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
                 leaf_kind=leaf_kind, contained_response=contained_response,
+                in_tool_result_block=in_tool_result_block,
+                contained_response_memory=contained_response_memory,
             )
             for item in value
         ]
@@ -2495,6 +2587,8 @@ def _blindfold_text(
     world_acting: bool = False,
     leaf_kind: str = "text",
     contained_response: bool = False,
+    in_tool_result_block: bool = False,
+    contained_response_memory: "ContainedResponseMemory | None" = None,
 ) -> str:
     """Rewrite ``text`` by replacing every L2-detected entity span with its surrogate.
 
@@ -2564,12 +2658,28 @@ def _blindfold_text(
     entirely unaffected -- a *known* real is still substituted here exactly
     as on any other leaf. ``False`` (the default) reproduces today's
     behavior exactly.
+
+    ``in_tool_result_block``/``contained_response_memory`` (ADR-0060
+    amendment 2026-10-05, decision points 3/10, issue #452): the
+    candidate-level half of the same rule. Whenever ``contained_response``
+    is ``True`` here and a memory is wired, this leaf's own (pre-splice)
+    ``text`` is remembered into it -- point 10's "contents: keyed hashes of
+    the word n-grams ... of each contained response's text", gathered at
+    exactly the leaves the structural rule already recognises. Later, at
+    the L3 mint call site below, a candidate lying inside a ``tool_result``/
+    ``mcp_tool_result`` block (``in_tool_result_block``) whose own text
+    matches a remembered n-gram is exempt from novelty minting the same way
+    a structurally-contained candidate already is -- the recognition a
+    client that fans a request out and relays its results back with every
+    OTHER structural signal stripped still needs.
     """
     leaf = session._begin_leaf(_leaf_label(hop_ctx, leaf_kind))
     if provisional_catchup:
         return _reapply_provisional_pairs_catchup(
             text, mapping, session, inbox, hop_ctx, world_acting=world_acting, leaf=leaf,
         )
+    if contained_response and contained_response_memory is not None:
+        contained_response_memory.remember(workspace, text)
     # Issue #394/#410/#415: ``leaf`` carries whatever this leaf's OWN prior
     # splices (if any) already recorded -- empty on this leaf's first visit,
     # non-empty on the cross-hop closing sweep's re-entry (#386's
@@ -3020,6 +3130,27 @@ def _blindfold_text(
             # confirmed-component/provisional-pair passes above, independent
             # of this branch and of ``entity_type``.
             if contained_response:
+                continue
+            # ADR-0060 amendment 2026-10-05, decision points 3/10 (issue
+            # #452): the candidate-level half of the same rule, for a client
+            # that fans a world-acting request out and relays its results
+            # back into a LATER, non-world-acting request with every
+            # structural signal above stripped (Claude Desktop's own
+            # measured shape). Exempt only when BOTH hold: this candidate
+            # lies inside a ``tool_result``/``mcp_tool_result`` block
+            # (``in_tool_result_block``), AND its own literal text is itself
+            # a remembered n-gram of an earlier contained response
+            # (``contained_response_memory.remembers``, word-n-gram
+            # tokenization -- point 3's "matched by the leak gate's
+            # word-boundary rule"). User-authored text is never inside a
+            # tool_result block to begin with, so it can never take this
+            # branch regardless of a memory match -- point 3: "never
+            # exempt, even when the string matches".
+            if (
+                in_tool_result_block
+                and contained_response_memory is not None
+                and contained_response_memory.remembers(workspace, real)
+            ):
                 continue
             # ADR-0060 §3 (issue #410): a brand-new person/org referent, first
             # confirmed in THIS world-acting request, must never reach the

@@ -18,10 +18,12 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from .contained_response_memory import ContainedResponseMemory
 from .engine import (
     augmented_known_values,
     is_contained_response_block,
     non_hop_keys_for_block_type,
+    tool_result_block_types,
 )
 from .l3 import L3Detector
 from .policy import DEFAULT_WORKSPACE
@@ -37,14 +39,17 @@ Transcript = str | Sequence[Mapping[str, Any]]
 
 
 def _block_leaves(
-    block: Any, hop_role: str | None, contained: bool = False
-) -> Iterable[tuple[str, bool]]:
-    """Yield ``(text, contained_response)`` for every string leaf of one
-    content block -- mining's own read-only counterpart to the live blind
-    pass's block walk (:func:`~blindfold.engine._blindfold_block`), for
-    extracting scannable text rather than rewriting it in place. Protocol
-    fields (:func:`~blindfold.engine.non_hop_keys_for_block_type`) are
-    skipped -- the SAME closed set :func:`~blindfold.engine._blindfold_block`
+    block: Any,
+    hop_role: str | None,
+    contained: bool = False,
+    in_tool_result_block: bool = False,
+) -> Iterable[tuple[str, bool, bool]]:
+    """Yield ``(text, contained_response, in_tool_result_block)`` for every
+    string leaf of one content block -- mining's own read-only counterpart
+    to the live blind pass's block walk (:func:`~blindfold.engine._blindfold_block`),
+    for extracting scannable text rather than rewriting it in place.
+    Protocol fields (:func:`~blindfold.engine.non_hop_keys_for_block_type`)
+    are skipped -- the SAME closed set :func:`~blindfold.engine._blindfold_block`
     itself never treats as prose, not a second copy.
 
     ``contained`` is the enclosing block's own already-decided verdict,
@@ -56,39 +61,47 @@ def _block_leaves(
     ``web_search_result`` items) has its OWN block type, which would never
     itself match the structural rule -- the nested block is contained
     because its ENCLOSING block is, not because of its own type.
+
+    ``in_tool_result_block`` (issue #452) is the candidate-level signal's own
+    enclosing verdict, OR-combined the identical way against
+    :func:`~blindfold.engine.tool_result_block_types` -- the SAME set
+    :func:`~blindfold.engine._blindfold_block` computes ``in_tool_result_block``
+    against on the live request path.
     """
     if not isinstance(block, dict):
         return
     block_type = block.get("type")
     contained = contained or is_contained_response_block(hop_role, block_type)
+    in_tool_result_block = in_tool_result_block or block_type in tool_result_block_types()
     non_hop_keys = non_hop_keys_for_block_type(block_type)
     for key, value in block.items():
         if key in non_hop_keys:
             continue
         if isinstance(value, str):
-            yield value, contained
+            yield value, contained, in_tool_result_block
         elif isinstance(value, list):
             for item in value:
-                yield from _block_leaves(item, hop_role, contained)
+                yield from _block_leaves(item, hop_role, contained, in_tool_result_block)
 
 
-def _transcript_leaves(transcript: Transcript) -> Iterable[tuple[str, bool]]:
-    """Yield ``(text, contained_response)`` for every scannable string in
-    ``transcript`` -- a bare string yields itself once, never contained (the
-    structural rule can never apply: there is no role/block to recognise it
-    by). A structured ``messages`` list yields one leaf per block field (a
-    text block's own ``text``, a tool-result's ``content``, a search
-    result's ``title``/``url``, ...), each already resolved against the
-    message's own role and the block's own type (see :func:`_block_leaves`).
+def _transcript_leaves(transcript: Transcript) -> Iterable[tuple[str, bool, bool]]:
+    """Yield ``(text, contained_response, in_tool_result_block)`` for every
+    scannable string in ``transcript`` -- a bare string yields itself once,
+    never contained and never inside a tool_result block (neither rule can
+    ever apply: there is no role/block to recognise it by). A structured
+    ``messages`` list yields one leaf per block field (a text block's own
+    ``text``, a tool-result's ``content``, a search result's
+    ``title``/``url``, ...), each already resolved against the message's
+    own role and the block's own type (see :func:`_block_leaves`).
     """
     if isinstance(transcript, str):
-        yield transcript, False
+        yield transcript, False, False
         return
     for message in transcript:
         role = message.get("role")
         content = message.get("content")
         if isinstance(content, str):
-            yield content, False
+            yield content, False, False
         elif isinstance(content, list):
             for block in content:
                 yield from _block_leaves(block, role)
@@ -102,7 +115,7 @@ def _transcript_corpus_text(transcript: Transcript) -> str:
     """
     if isinstance(transcript, str):
         return transcript
-    return "\n".join(text for text, _ in _transcript_leaves(transcript))
+    return "\n".join(text for text, _, _ in _transcript_leaves(transcript))
 
 
 @dataclass(frozen=True)
@@ -127,6 +140,7 @@ def mine_transcripts(
     mapping: SurrogateMapping,
     inbox: ReviewInbox,
     workspace: str = DEFAULT_WORKSPACE,
+    contained_response_memory: "ContainedResponseMemory | None" = None,
 ) -> MiningReport:
     """Scan ``transcripts`` and propose novel L3-confirmed entities to the inbox.
 
@@ -150,6 +164,16 @@ def mine_transcripts(
     exempts anything from one -- "where the memory is unreachable (offline
     mining), only the structural rule applies" (point 11), and even that much
     needs the structure to be present at all.
+
+    ``contained_response_memory`` (issue #452), when the caller has a
+    reachable :class:`~blindfold.contained_response_memory.ContainedResponseMemory`
+    to pass in, extends this to the candidate-level half of the same rule --
+    a candidate inside a ``tool_result``/``mcp_tool_result`` block whose own
+    text matches a remembered contained response (:meth:`~blindfold.contained_response_memory.ContainedResponseMemory.remembers`
+    -- the SAME method the live request path calls, not a copy) is exempt
+    here too. Mining never *writes* to the memory (it never mutates
+    anything, ``mapping`` included) -- only the live request path populates
+    it. ``None`` (the default) reproduces "only the structural rule applies".
     """
     # Mining never mutates ``mapping``, so recover the entity-graph record list once
     # rather than per transcript: ``mapping.entities()`` regroups every seeded pair by
@@ -160,7 +184,7 @@ def mine_transcripts(
     for transcript in transcripts:
         scanned += 1
         corpus_text = _transcript_corpus_text(transcript)
-        for text, contained_response in _transcript_leaves(transcript):
+        for text, contained_response, in_tool_result_block in _transcript_leaves(transcript):
             for candidate, decision in detector.detect(text, known_entities):
                 if not decision.is_entity:
                     continue
@@ -168,6 +192,15 @@ def mine_transcripts(
                     # Point 2: every word here is provider-originated -- never
                     # added to the review inbox, left unmentioned entirely
                     # (mirrors the engine's own skip at its mint call site).
+                    continue
+                if (
+                    in_tool_result_block
+                    and contained_response_memory is not None
+                    and contained_response_memory.remembers(workspace, candidate.text)
+                ):
+                    # Issue #452's candidate-level half: the SAME exemption
+                    # the live request path's mint call site applies, not a
+                    # copy -- see ContainedResponseMemory.remembers's own doc.
                     continue
                 item = inbox.upsert(
                     candidate.text,

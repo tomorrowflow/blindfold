@@ -128,6 +128,7 @@ from .entity_graph import (
 )
 from .reidentify import InMemoryReIdentificationStore, ReIdentificationStore
 from .transit import TransitClient, TransitError
+from .contained_response_memory import ContainedResponseMemory
 from .engine import (
     DeclaredToolVocabulary,
     ExchangeSession,
@@ -373,6 +374,15 @@ _audit_log = AuditLog()
 # In-memory only, like `_workspace_policies` above. Tests substitute their own
 # via dependency_overrides[get_declared_tool_vocabulary].
 _declared_tool_vocabulary = DeclaredToolVocabulary()
+
+# Process-wide, workspace-scoped contained-response recognition memory
+# (ADR-0060 amendment 2026-10-05, decision points 3/10, issue #452): keyed
+# hashes of the word n-grams of every contained response seen on this proxy's
+# `/v1/messages` traffic, bounded and refreshed on every hit -- see
+# ContainedResponseMemory's own doc. In-memory only, lost on restart (the
+# amendment's own accepted, over-protective default). Tests substitute their
+# own via dependency_overrides[get_contained_response_memory].
+_contained_response_memory = ContainedResponseMemory()
 
 # Process-wide Unprotected-mode state (ADR-0038, issue #180): capability flag +
 # active/bound/expiry timer. Deliberately a singleton scoped to this proxy process
@@ -678,6 +688,10 @@ def get_workspace_policies() -> WorkspacePolicies:
 
 def get_declared_tool_vocabulary() -> DeclaredToolVocabulary:
     return _declared_tool_vocabulary
+
+
+def get_contained_response_memory() -> ContainedResponseMemory:
+    return _contained_response_memory
 
 
 def get_audit_log() -> AuditLog:
@@ -2045,6 +2059,7 @@ async def _exchange(
     send_upstream: Callable[[dict, dict[str, str]], Awaitable[dict]],
     tool_container: Callable[[dict], object] = messages_tool_container,
     declared_tool_vocabulary: DeclaredToolVocabulary | None = None,
+    contained_response_memory: ContainedResponseMemory | None = None,
     mint_inbox: Callable[[ReviewInbox], ReviewInbox] = lambda inbox: inbox,
     restore: Callable[[dict, ExchangeSession], dict] | None = None,
     streaming_supported: bool = False,
@@ -2076,7 +2091,12 @@ async def _exchange(
     deliberate differences count_tokens needs (issue #322): it measures rather
     than uses, so it must not grow the workspace's durable declared-tool
     vocabulary or the durable review inbox -- named parameters here rather
-    than lines omitted from a copy.
+    than lines omitted from a copy. ``contained_response_memory`` (ADR-0060
+    amendment, issue #452) gets the identical "a measurement is not a use"
+    treatment: count_tokens's own caller passes ``None`` (this parameter's
+    default), so a measurement call never remembers or consults a contained
+    response -- :func:`~blindfold.engine.blindfold_payload`'s own default
+    already reproduces "only the structural rule applies" for it.
 
     ``extract_case_inconsistency_evidence`` (ADR-0023, "Update (issue #342)",
     issue #345) computes the fifth suppression condition's evidence on the
@@ -2161,6 +2181,7 @@ async def _exchange(
                 case_inconsistency=case_inconsistency,
                 world_acting=world_acting,
                 retain_rewritten_leaves=retain_rewritten_leaves,
+                contained_response_memory=contained_response_memory,
             ),
             workspace,
             policy.deterministic_only,
@@ -2283,6 +2304,7 @@ async def messages(
     l3_detector: L3Detector = Depends(get_l3_detector),
     policies: WorkspacePolicies = Depends(get_workspace_policies),
     declared_tool_vocabulary: DeclaredToolVocabulary = Depends(get_declared_tool_vocabulary),
+    contained_response_memory: ContainedResponseMemory = Depends(get_contained_response_memory),
     audit_log: AuditLog = Depends(get_audit_log),
     block_history: BlockHistory = Depends(get_block_history),
     upstream_health: RecentFailureHealth = Depends(get_upstream_health),
@@ -2311,6 +2333,7 @@ async def messages(
         blindfold=blindfold_payload,
         send_upstream=upstream.send_messages,
         declared_tool_vocabulary=declared_tool_vocabulary,
+        contained_response_memory=contained_response_memory,
         restore=restore_response,
         streaming_supported=True,
         payload_inspection=payload_inspection,
