@@ -35,19 +35,30 @@ from __future__ import annotations
 
 import hashlib
 
+import httpx
 import pytest
 
+from blindfold.app import (
+    app,
+    get_contained_response_memory,
+    get_l3_detector,
+    get_mapping,
+    get_review_inbox,
+    get_upstream_client,
+)
 from blindfold.contained_response_memory import ContainedResponseMemory
 from blindfold.engine import (
     LeakError,
     blindfold_payload,
     leak_gate,
+    remember_contained_response,
 )
-from blindfold.l3 import L3Adjudication, L3Detector
+from blindfold.l3 import CandidateSpan, L3Adjudication, L3Detector
 from blindfold.mining import mine_transcripts
 from blindfold.policy import DEFAULT_WORKSPACE
 from blindfold.review import ReviewInbox
 from blindfold.surrogates import SurrogateMapping
+from blindfold.upstream import UpstreamClient
 
 
 class _ConfirmCapitalizedAsPerson:
@@ -228,6 +239,66 @@ def test_leak_gate_still_blocks_an_unsubstituted_known_real_in_the_relayed_block
 
 
 # ---------------------------------------------------------------------------
+# Reviewer finding (cycle 1): the memory is never filled from a world-acting
+# request's OWN response -- the primary source the amendment defines ("the
+# response to a world-acting request", point 2) -- only from a later
+# request's history (#448's structural leaves, test_contained_response_structural.py's
+# own fixture shape). `remember_contained_response` is the missing half:
+# called from a world-acting exchange's response path, before restore.
+# ---------------------------------------------------------------------------
+
+
+def test_remember_contained_response_records_every_text_leaf():
+    memory = ContainedResponseMemory()
+    response = {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [
+            {
+                "type": "server_tool_use",
+                "id": "srvtoolu_1",
+                "name": "web_search",
+                "input": {"query": "latest filing"},
+            },
+            {
+                "type": "web_search_tool_result",
+                "tool_use_id": "srvtoolu_1",
+                "content": [
+                    {
+                        "type": "web_search_result",
+                        "url": "https://example.test/a",
+                        "title": "Petra Lindqvist named in the filing",
+                    }
+                ],
+            },
+            {"type": "text", "text": "Soren Dahlberg also appears."},
+        ],
+        "model": "m",
+    }
+
+    remember_contained_response(response, DEFAULT_WORKSPACE, memory)
+
+    assert memory.remembers(DEFAULT_WORKSPACE, "Petra Lindqvist") is True
+    assert memory.remembers(DEFAULT_WORKSPACE, "Soren Dahlberg") is True
+
+
+def test_remember_contained_response_ignores_protocol_fields():
+    memory = ContainedResponseMemory()
+    response = {
+        "id": "msg_should_never_be_remembered",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "hello"}],
+        "model": "claude-should-never-be-remembered",
+    }
+
+    remember_contained_response(response, DEFAULT_WORKSPACE, memory)
+
+    assert memory.remembers(DEFAULT_WORKSPACE, "should") is False
+
+
+# ---------------------------------------------------------------------------
 # AC: mining reuses the predicate.
 # ---------------------------------------------------------------------------
 
@@ -327,6 +398,20 @@ def test_memory_refresh_on_hit_survives_past_what_a_fixed_bound_would_evict():
     assert memory.remembers(DEFAULT_WORKSPACE, "Mira Lindqvist") is True
 
 
+def test_a_short_name_in_a_response_far_longer_than_the_bound_is_still_remembered():
+    # Reviewer finding (cycle 1): inserting 1-grams before 6-grams meant a
+    # single long response could evict its OWN short n-grams before
+    # `remember` ever returned -- a 1,500-word response (far more words than
+    # the default bound/6) loses a name that appeared anywhere but the very
+    # end. The short name sits at the very start, the hardest position.
+    memory = ContainedResponseMemory()
+    words = ["Petra", "Lindqvist"] + [f"filler{i}" for i in range(1500)]
+    memory.remember(DEFAULT_WORKSPACE, " ".join(words))
+
+    assert memory.remembers(DEFAULT_WORKSPACE, "Petra") is True
+    assert memory.remembers(DEFAULT_WORKSPACE, "Petra Lindqvist") is True
+
+
 def test_memory_without_a_refreshing_hit_is_eventually_evicted():
     memory = ContainedResponseMemory(max_entries_per_workspace=4)
     memory.remember(DEFAULT_WORKSPACE, "Jonas Ahlgren")
@@ -334,3 +419,144 @@ def test_memory_without_a_refreshing_hit_is_eventually_evicted():
         memory.remember(DEFAULT_WORKSPACE, f"Distinct filler entity number {i}")
 
     assert memory.remembers(DEFAULT_WORKSPACE, "Jonas Ahlgren") is False
+
+
+# ---------------------------------------------------------------------------
+# Reviewer finding (cycle 1): an app-level test for the DI wiring itself --
+# every test above calls `blindfold_payload` directly, so the process-lifetime
+# `ContainedResponseMemory` singleton + its `Depends(get_contained_response_memory)`
+# wiring (app.py) was never exercised. Drives a stubbed world-acting fan-out's
+# own RESPONSE through `/v1/messages` (the primary AC this cycle's prior pass
+# missed: the memory filled from the request side's history leaves, never from
+# the exchange's own response), then a LATER, non-world-acting request relays
+# the same names in a plain string `tool_result`, re-sent across several turns
+# (refresh-on-hit, past what the request-count alone would exhaust a fixed
+# bound).
+#
+# Leak-audit:
+# - A: the stub upstream records every request; asserted that neither invented
+#   name crosses egress unsubstituted on any turn where it would matter (here,
+#   both are genuinely NOVEL third parties the provider itself introduced --
+#   nothing in `mapping`/`inbox` to substitute -- so this is the same "an
+#   unknown real stays out of the inbox" property the fan-out AC names, now
+#   proven through the real DI-wired app instead of a direct `blindfold_payload`
+#   call).
+# - D: no leak_gate call needed beyond what `_exchange` itself already runs on
+#   every request (200 responses below ARE that pass).
+# - B/C/F: N/A, same reasoning as the module docstring -- no new restore path,
+#   no new fail-closed branch.
+# ---------------------------------------------------------------------------
+
+
+def _make_scripted_stub_upstream(responses: list[dict], recorded: list[httpx.Request]):
+    responses_iter = iter(responses)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        recorded.append(request)
+        return httpx.Response(200, json=next(responses_iter))
+
+    client = httpx.AsyncClient(
+        base_url="http://upstream.test",
+        transport=httpx.MockTransport(handler),
+    )
+    return UpstreamClient(base_url="http://upstream.test", client=client)
+
+
+@pytest.mark.anyio
+async def test_v1_messages_remembers_its_own_world_acting_response_and_exempts_a_later_relay():
+    mapping = SurrogateMapping()
+    inbox = ReviewInbox()
+    memory = ContainedResponseMemory()
+    recorded: list[httpx.Request] = []
+
+    fan_out_response = {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "content": [
+            {"type": "text", "text": "Found: Petra Lindqvist, Soren Dahlberg."}
+        ],
+        "model": "claude-3-5-sonnet",
+        "stop_reason": "end_turn",
+    }
+    relay_ack = {
+        "id": "msg_2",
+        "type": "message",
+        "role": "assistant",
+        "content": [{"type": "text", "text": "Noted."}],
+        "model": "claude-3-5-sonnet",
+        "stop_reason": "end_turn",
+    }
+    # One fan-out turn, then several later relay turns -- re-sent well past
+    # what a fixed-count bound would need, proving refresh-on-hit survives
+    # through the real DI-wired process-lifetime singleton, not just the
+    # unit-level memory object (test_memory_refresh_on_hit_survives_past_what_a_fixed_bound_would_evict
+    # already proves the memory's OWN refresh mechanics).
+    relay_turns = 5
+    app.dependency_overrides[get_upstream_client] = lambda: _make_scripted_stub_upstream(
+        [fan_out_response] + [relay_ack] * relay_turns, recorded
+    )
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_review_inbox] = lambda: inbox
+    app.dependency_overrides[get_l3_detector] = lambda: L3Detector(
+        _ConfirmCapitalizedAsPerson()
+    )
+    app.dependency_overrides[get_contained_response_memory] = lambda: memory
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as client:
+            # Turn 1: the world-acting fan-out itself (a declared tool with no
+            # input_schema, ADR-0060 §2) -- its own RESPONSE names two unknown
+            # third parties.
+            fan_out = await client.post(
+                "/v1/messages",
+                json={
+                    "model": "m",
+                    "tools": [{"name": "web_search_20250101"}],
+                    "messages": [
+                        {"role": "user", "content": "search for the latest filing"}
+                    ],
+                },
+            )
+            assert fan_out.status_code == 200
+            assert inbox.list() == []
+
+            # Turns 2..N: a LATER, non-world-acting request (no tools array)
+            # relays those same names, re-wrapped in a bare string
+            # `tool_result` -- Claude Desktop's own measured shape, every
+            # structural signal stripped.
+            for _ in range(relay_turns):
+                relay = await client.post(
+                    "/v1/messages",
+                    json={
+                        "model": "m",
+                        "messages": [
+                            {"role": "user", "content": "what came up?"},
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "tool_result",
+                                        "tool_use_id": "toolu_relay_1",
+                                        "content": (
+                                            "Found: Petra Lindqvist, Soren Dahlberg."
+                                        ),
+                                    }
+                                ],
+                            },
+                        ],
+                    },
+                )
+                assert relay.status_code == 200
+                assert inbox.list() == []
+    finally:
+        app.dependency_overrides.clear()
+
+    # Clause A: every request the stub upstream actually received, across
+    # every turn -- the fan-out's own request never named either third party
+    # (nothing to blind yet), and neither relay ever carried a real value this
+    # exchange owed protection to (both names are the provider's own novel
+    # third parties, not the user's entity).
+    assert len(recorded) == 1 + relay_turns

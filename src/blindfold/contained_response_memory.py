@@ -40,9 +40,16 @@ def _word_ngrams(text: str, max_n: int) -> Iterator[str]:
     and a remembered response's n-grams (:func:`ContainedResponseMemory.remember`)
     are tokenized identically and can never silently disagree about what
     counts as a word.
+
+    Longest spans first, shortest (1-word) last: :meth:`ContainedResponseMemory.remember`
+    evicts least-recently-inserted first, and a single long response's own
+    n-grams can together exceed the per-workspace bound before `remember`
+    ever returns -- a candidate's own span is almost always 1-2 words, so
+    yielding those last keeps them most-recently-used and the longer,
+    less-useful shingles are what gets evicted first within that one call.
     """
     words = _WORD_RE.findall(text)
-    for n in range(1, max_n + 1):
+    for n in range(max_n, 0, -1):
         for start in range(len(words) - n + 1):
             yield " ".join(words[start : start + n])
 

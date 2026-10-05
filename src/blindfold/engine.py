@@ -3613,6 +3613,103 @@ def _restore_block_value(value: Any, session: ExchangeSession) -> Any:
     return value
 
 
+def _remember_block(
+    block: Any, workspace: str, contained_response_memory: "ContainedResponseMemory"
+) -> None:
+    """Record every string leaf of one response content block (issue #452).
+
+    Mirrors :func:`_restore_block`'s own deny-by-default dispatch exactly --
+    ``text`` and ``tool_result``/``mcp_tool_result`` get dedicated treatment,
+    everything else (``web_search_tool_result``, a future block shape) falls
+    through to the same generic walk -- so a block kind the restore side
+    already knows how to reach is remembered automatically, never a second,
+    driftable list of block types.
+    """
+    if not isinstance(block, dict):
+        return
+    block_type = block.get("type")
+    if block_type == "text" and isinstance(block.get("text"), str):
+        contained_response_memory.remember(workspace, block["text"])
+        return
+    if block_type in _TOOL_RESULT_BLOCK_TYPES:
+        _remember_content(block.get("content"), workspace, contained_response_memory)
+        return
+    non_hop_keys = _non_hop_keys_for_block_type(block_type)
+    for key, value in block.items():
+        if key in non_hop_keys:
+            continue
+        _remember_block_value(value, workspace, contained_response_memory)
+
+
+def _remember_content(
+    content: Any, workspace: str, contained_response_memory: "ContainedResponseMemory"
+) -> None:
+    """Mirrors :func:`_restore_content`'s own two shapes: plain text, or a
+    nested content-block list (``web_search_tool_result``'s own ``content``).
+    """
+    if isinstance(content, str):
+        contained_response_memory.remember(workspace, content)
+    elif isinstance(content, list):
+        for block in content:
+            _remember_block(block, workspace, contained_response_memory)
+
+
+def _remember_block_value(
+    value: Any, workspace: str, contained_response_memory: "ContainedResponseMemory"
+) -> None:
+    """Mirrors :func:`_restore_block_value`'s own recursive walk: every
+    :data:`_BLOCK_NON_HOP_KEYS` key is excluded at any nesting depth,
+    everything else is a candidate string leaf.
+    """
+    if isinstance(value, str):
+        contained_response_memory.remember(workspace, value)
+    elif isinstance(value, dict):
+        for k, v in value.items():
+            if k in _BLOCK_NON_HOP_KEYS:
+                continue
+            _remember_block_value(v, workspace, contained_response_memory)
+    elif isinstance(value, list):
+        for item in value:
+            _remember_block_value(item, workspace, contained_response_memory)
+
+
+def remember_contained_response(
+    response: dict[str, Any],
+    workspace: str,
+    contained_response_memory: "ContainedResponseMemory",
+) -> None:
+    """Record a world-acting request's OWN response into the candidate-level
+    recognition memory (ADR-0060 amendment 2026-10-05, decision points 2/10,
+    issue #452).
+
+    This is the primary source the amendment names: point 2 defines a
+    contained response as "the response to a world-acting request", not a
+    later request's history that happens to echo one back in assistant role
+    (the structural rule's own narrower leaves, #448, remembered from the
+    REQUEST side at :func:`_blindfold_text`). A client that fans a
+    world-acting request out to a sub-conversation (Claude Desktop's own
+    measured shape) never replays that sub-conversation's response as
+    assistant history at all -- only this call, from the response side of
+    the world-acting exchange itself, ever sees those bytes.
+
+    Called with the RAW (pre-restore) response, so the memory holds "exactly
+    what the provider sent" (amendment point 4) -- point 4's restore
+    narrowing for a world-acting response's own named-pool surrogates
+    already falls out of ADR-0006 closed-world restore (no plausible-pool
+    surrogate was ever injected into a world-acting request's own hops to
+    begin with, see ADR-0060 §3), so pre- and post-restore bytes coincide
+    here for every string this function reaches.
+
+    Mirrors :func:`restore_response`'s own top-level walk, substituting
+    "remember" for "restore" at every leaf -- not a second definition of
+    which fields are protocol vs. content.
+    """
+    content = response.get("content")
+    if isinstance(content, list):
+        for block in content:
+            _remember_block(block, workspace, contained_response_memory)
+
+
 def restore_response(
     response: dict[str, Any], session: ExchangeSession
 ) -> dict[str, Any]:

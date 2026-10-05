@@ -149,6 +149,7 @@ from .engine import (
     leak_gate,
     messages_tool_container,
     non_hop_block_type_fields,
+    remember_contained_response,
     resolution_gate,
     restore_chat_completion,
     restore_response,
@@ -2147,6 +2148,13 @@ async def _exchange(
     # they're pushed by two separate calls a few lines apart, each with its
     # own independently-read wall clock.
     exchange_id = uuid.uuid4().hex
+    # Issue #452: read below, after upstream responds, to decide whether to
+    # remember this exchange's own response into `contained_response_memory`.
+    # False under Unprotected mode (never computed there, same "this feature
+    # does nothing extra" discipline `declared_tool_vocabulary` already has
+    # for that branch) -- ADR-0038's detection bypass already means nothing
+    # downstream reads the memory for that exchange's own request side either.
+    world_acting = False
 
     if unprotected_mode.is_active():
         # ADR-0038: the detection pipeline is skipped entirely and the pre-egress
@@ -2265,6 +2273,17 @@ async def _exchange(
         return _upstream_error_response(exc, workspace, audit_log, upstream_health)
     upstream_health.mark_success()
     upstream_duration_ms = (time.monotonic() - upstream_start) * 1000
+
+    if world_acting and contained_response_memory is not None:
+        # ADR-0060 amendment point 2/10 (issue #452): THIS exchange's own
+        # response is a contained response -- remember it here, from the
+        # raw (pre-restore) bytes, regardless of whether this same exchange's
+        # later history ever echoes it back (the structural rule's own,
+        # narrower source, #448). Before `restore` so the memory holds
+        # exactly what the provider sent (point 4); see
+        # `remember_contained_response`'s own docstring for why pre/post
+        # restore coincide here.
+        remember_contained_response(raw_response, workspace, contained_response_memory)
 
     if restore is not None:
         result_body = restore(raw_response, session)
