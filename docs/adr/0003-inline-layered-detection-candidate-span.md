@@ -119,3 +119,48 @@ longer consulted for detection or validation. Nothing else #317 mounted changes:
 the checksum/check-digit-backed IBAN, credit card, and German-ID recognizers stay,
 and `detect_pii`'s one-`PiiSpan`-per-occurrence contract is re-pinned
 (`test_l1_email_detection_yields_one_span_per_occurrence_not_per_value`).
+
+## Update (2026-10-05): an email or hostname is a structural unit, never spliced into
+
+**Observed.** L2 (entity-graph substitution) runs strictly before L1. A known entity
+that occurs *inside* an email address or a URL hostname is therefore replaced first,
+with its plausible surrogate (ADR-0005). Surrogates are prose-shaped (capitalised,
+often several words), and the component match ignores case. So
+`info@<org>.example` becomes `info@<Two Words>.example`: the address is no longer
+email-shaped, and L1's anchored email detector skips it. The address is never minted
+as a reserved-namespace email surrogate. Its un-substituted remainder (local-part
+initials, domain fragments, the TLD) reaches the provider, the leak gate has no
+minted real to check it against, and the model is handed an invalid address. A URL
+hostname is broken the same way (`www.<Two Words>.example`).
+
+**Decision.**
+
+1. **An email address is claimed whole, before L2.** Any span L1's email detector
+   matches in the *original* text is minted as one reserved-namespace email surrogate
+   (`pii-user-NNNN@blindfold.invalid`) and restored whole, even when a known entity
+   occurs inside it. L2 and L3 never splice into a claimed email span. This is the
+   same "claim the whole span before either bare-component pass" rule issue #440
+   introduced for URL slugs, applied to emails.
+2. **A URL hostname keeps its shape.** A known entity occurring as a hostname label
+   (between `://` or `www.` and the TLD, or between dots) is substituted in a
+   **hostname-safe rendering** of its surrogate: lowercased, words joined by `-`, no
+   other characters. Restore reverses it to the original label text. The rendering
+   reuses #440's slug-form machinery. It is not a new pass.
+3. **A hostname is not itself PII.** Only the entity inside it is substituted, which
+   keeps the link readable to the model (it still sees that it points at the
+   organisation). An email address *is* PII under L1, so it is replaced whole.
+
+**Rejected.**
+
+- *Hostname-safe rendering for emails too* (`info@<two-words>.example`). It keeps
+  the organisation association visible to the model, but leaves the address
+  un-minted. The local part is still real, and the address bypasses L1, which is the
+  layer that owns emails. That is the asymmetric-cost case this ADR's invariant
+  already rules on.
+- *Running L1 before L2 globally.* That reorders every pass and reopens the
+  #292/#386 self-poisoning guards, which depend on L2 claiming its occurrences first.
+  Claiming only the structural spans is the narrow change.
+
+**Consequence.** The leak gate's check on an email is the reserved-email mint
+itself, as for every other email. The model loses the organisation association on
+emails (an accepted cost). Hostnames stay legible.
