@@ -39,8 +39,19 @@ co-occurring genuine referent's own restore is covered by the existing
 
 from __future__ import annotations
 
-from blindfold.engine import ExchangeSession, blindfold_payload
-from blindfold.l3 import CandidateSpan, L3Adjudication, L3DetectionInternalError
+from blindfold.engine import (
+    ExchangeSession,
+    blindfold_payload,
+    leak_gate,
+    resolution_gate,
+    restore_response,
+)
+from blindfold.l3 import (
+    CandidateSpan,
+    L3Adjudication,
+    L3DetectionInternalError,
+    L3Detector,
+)
 from blindfold.review import ReviewInbox
 from blindfold.surrogates import SurrogateMapping
 import pytest
@@ -139,8 +150,7 @@ class _ConfirmCapitalizedAsPerson:
         return L3Adjudication(is_entity=True, entity_type="person")
 
 
-@pytest.mark.anyio
-async def test_a_reserved_form_token_coexists_with_a_genuine_referent_leak_clean():
+def test_a_reserved_form_token_coexists_with_a_genuine_referent_leak_clean():
     # Leak-audit clause A: a genuine, brand-new referent in the SAME
     # world-acting request still egresses only its reserved-namespace
     # containment surrogate -- never the real name -- while the unrelated,
@@ -150,9 +160,6 @@ async def test_a_reserved_form_token_coexists_with_a_genuine_referent_leak_clean
     # this test isn't coupled to ADR-0060 amendment point 7's separate,
     # not-yet-landed per-referent numbering-stability decision -- out of
     # this issue's scope (#447 is point 6 only).
-    from blindfold.engine import leak_gate, resolution_gate, restore_response
-    from blindfold.l3 import L3Detector
-
     mapping = SurrogateMapping()
     detector = L3Detector(_ConfirmCapitalizedAsPerson())
     payload = {
