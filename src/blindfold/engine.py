@@ -16,6 +16,7 @@ from __future__ import annotations
 import copy
 import functools
 import hashlib
+import json
 import logging
 import re
 import threading
@@ -4061,6 +4062,85 @@ def remember_contained_response(
     if isinstance(content, list):
         for block in content:
             _remember_block(block, workspace, contained_response_memory)
+
+
+class StreamedResponseObserver:
+    """Rebuilds a streamed Messages response's content blocks from its raw SSE
+    events so :func:`remember_contained_response` can remember a streamed
+    world-acting response exactly as it remembers a buffered one (issue #459).
+
+    A pure observer: fed the provider-side event text (pre-restore, ADR-0060
+    amendment point 4) after the caller has already decided what to emit, it
+    never holds a chunk back and never transforms one. Block shapes mirror the
+    buffered response's: a block arrives whole in ``content_block_start``
+    (``web_search_tool_result``, ``mcp_tool_result``), ``text_delta`` /
+    ``thinking_delta`` fragments concatenate into that block's ``text`` /
+    ``thinking``, and ``input_json_delta`` fragments reassemble into its
+    ``input`` -- so :func:`_remember_block`'s one walk reaches every leaf the
+    non-streaming path does, with no second list of block kinds. A stream cut
+    off mid-way still yields every block that arrived (a half-received tool
+    call's unparseable ``input`` is left out). Malformed events are ignored.
+    """
+
+    def __init__(self) -> None:
+        self._blocks: dict[int, dict[str, Any]] = {}
+        self._input_json: dict[int, list[str]] = {}
+
+    def observe(self, event: str) -> None:
+        event_name, data_line = None, None
+        for line in event.split("\n"):
+            if line.startswith("event:"):
+                event_name = line[len("event:") :].strip()
+            elif line.startswith("data:"):
+                data_line = line[len("data:") :].strip()
+        if not data_line:
+            return
+        try:
+            payload = json.loads(data_line)
+        except json.JSONDecodeError:
+            return
+        if not isinstance(payload, dict):
+            return
+        index = payload.get("index", 0)
+        if not isinstance(index, int):
+            return
+        if event_name == "content_block_start":
+            block = payload.get("content_block")
+            if isinstance(block, dict):
+                self._blocks[index] = copy.deepcopy(block)
+        elif event_name == "content_block_delta":
+            delta = payload.get("delta")
+            block = self._blocks.get(index)
+            if not isinstance(delta, dict) or block is None:
+                return
+            kind = delta.get("type")
+            if kind == "text_delta":
+                self._append(block, "text", delta.get("text"))
+            elif kind == "thinking_delta":
+                self._append(block, "thinking", delta.get("thinking"))
+            elif kind == "input_json_delta" and isinstance(delta.get("partial_json"), str):
+                self._input_json.setdefault(index, []).append(delta["partial_json"])
+
+    @staticmethod
+    def _append(block: dict[str, Any], key: str, fragment: Any) -> None:
+        if isinstance(fragment, str):
+            existing = block.get(key)
+            block[key] = (existing if isinstance(existing, str) else "") + fragment
+
+    def response(self) -> dict[str, Any]:
+        content: list[dict[str, Any]] = []
+        for index in sorted(self._blocks):
+            block = self._blocks[index]
+            fragments = self._input_json.get(index)
+            if fragments:
+                try:
+                    parsed = json.loads("".join(fragments))
+                except json.JSONDecodeError:
+                    parsed = None
+                if isinstance(parsed, dict):
+                    block = {**block, "input": parsed}
+            content.append(block)
+        return {"content": content}
 
 
 def restore_response(

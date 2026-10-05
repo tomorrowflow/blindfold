@@ -156,6 +156,7 @@ from .engine import (
     non_hop_block_type_fields,
     remember_contained_response,
     reserved_token_note_applies,
+    StreamedResponseObserver,
     resolution_gate,
     restore_chat_completion,
     restore_response,
@@ -2377,6 +2378,7 @@ async def _exchange(
                 unlisted_forwarded_headers=unlisted_forwarded_headers,
                 exchange_id=exchange_id,
                 world_acting=world_acting,
+                contained_response_memory=contained_response_memory,
             ),
             media_type="text/event-stream",
         )
@@ -2943,6 +2945,32 @@ async def widen_learned_allowlist_entry(
     return {"token": token, "workspace": None, "action": "widened"}
 
 
+def _observe_streamed_event(
+    observer: StreamedResponseObserver | None, event: str, workspace: str
+) -> None:
+    """Feed one raw SSE event to the contained-response observer (issue #459).
+    Never raises: remembering is an observer, not part of the response."""
+    if observer is None:
+        return
+    try:
+        observer.observe(event)
+    except Exception:
+        logger.exception("contained_response_observer_failed: workspace=%s", workspace)
+
+
+def _remember_streamed_response(
+    observer: StreamedResponseObserver,
+    workspace: str,
+    contained_response_memory: ContainedResponseMemory,
+) -> None:
+    try:
+        remember_contained_response(
+            observer.response(), workspace, contained_response_memory
+        )
+    except Exception:
+        logger.exception("contained_response_memory_failed: workspace=%s", workspace)
+
+
 async def _stream_restored(
     upstream_response: httpx.Response,
     session: ExchangeSession,
@@ -2955,6 +2983,7 @@ async def _stream_restored(
     unlisted_forwarded_headers: Sequence[str] = (),
     exchange_id: str | None = None,
     world_acting: bool = False,
+    contained_response_memory: ContainedResponseMemory | None = None,
 ) -> AsyncIterator[bytes]:
     """Stream restored SSE bytes to the client.
 
@@ -3010,8 +3039,20 @@ async def _stream_restored(
     and the terminal :func:`resolution_gate` check below -- the streaming leg of
     the same point-4 restore narrowing the buffered path applies via ``restore``/
     ``_resolution_gate_or_block``.
+
+    ``contained_response_memory`` (ADR-0060 amendment points 2/4/10, issue #459):
+    for a world-acting exchange, a :class:`~blindfold.engine.StreamedResponseObserver`
+    watches the raw provider-side events and, once the stream ends -- normally,
+    cut off, or torn down by the client -- the reconstructed response is
+    remembered exactly as the buffered path's is. The observer only reads; no
+    chunk is held back for it, and a failure inside it never reaches the client.
     """
     restorer = StreamingRestorer(session, world_acting=world_acting)
+    response_observer = (
+        StreamedResponseObserver()
+        if world_acting and contained_response_memory is not None
+        else None
+    )
     # Per-content-block index → accumulated partial_json fragments. Presence in this
     # dict marks the block as a tool_use whose deltas must be held back.
     tool_use_buffers: dict[int, list[str]] = {}
@@ -3040,6 +3081,7 @@ async def _stream_restored(
             buffer += decoder.decode(raw)
             while "\n\n" in buffer:
                 event, buffer = buffer.split("\n\n", 1)
+                _observe_streamed_event(response_observer, event, workspace)
                 async for out in _process_sse_event(
                     event, restorer, tool_use_buffers, prose_block_deltas, session,
                     world_acting=world_acting,
@@ -3052,6 +3094,7 @@ async def _stream_restored(
         # reassembled above), still surface as a decode failure here.
         buffer += decoder.decode(b"", final=True)
         if buffer.strip():
+            _observe_streamed_event(response_observer, buffer, workspace)
             async for out in _process_sse_event(
                 buffer, restorer, tool_use_buffers, prose_block_deltas, session,
                 world_acting=world_acting,
@@ -3103,6 +3146,10 @@ async def _stream_restored(
         disconnected = True
         disconnect_reason = str(exc)
     finally:
+        if response_observer is not None:
+            _remember_streamed_response(
+                response_observer, workspace, contained_response_memory
+            )
         await upstream_response.aclose()
 
     upstream_duration_ms = open_stream_duration_ms + (time.monotonic() - consume_start) * 1000
