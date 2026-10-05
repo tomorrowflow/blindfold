@@ -1112,6 +1112,33 @@ def is_world_acting_request_messages(payload: dict[str, Any]) -> bool:
     return _is_world_acting_request(payload, lambda tool: "input_schema" in tool)
 
 
+def is_contained_response_block(hop_kind: str | None, block_type: Any) -> bool:
+    """ADR-0060 amendment 2026-10-05, decision point 3's structural rule
+    (issue #448): True when ``block_type`` is a provider result block echoed
+    back in **assistant** role -- the "a contained response is not a novelty
+    input" structural half.
+
+    Recognition is by block type and role, never a maintained list of tool
+    names (the same discipline :func:`_is_world_acting_request` already uses
+    for *declared* tools): the client-authored ``"tool_result"`` type is
+    excluded by name -- it carries data the CLIENT produced, echoed back in
+    **user** role by protocol, never exempt -- while every other block type
+    ending in ``"tool_result"`` (``web_search_tool_result``,
+    ``mcp_tool_result``, and any future provider tool's own result block) is
+    provider-executed by the API's own naming convention. The one shared
+    predicate here is also what :func:`~blindfold.mining.mine_transcripts`
+    calls (amendment point 11: "transcript mining uses the same predicate"),
+    so there is one source of truth, not a copy.
+    """
+    if hop_kind != "assistant":
+        return False
+    return (
+        isinstance(block_type, str)
+        and block_type != "tool_result"
+        and block_type.endswith("tool_result")
+    )
+
+
 _PLAUSIBLE_NAMED_SURROGATES: frozenset[str] = (
     frozenset(_PERSON_POOL)
     | frozenset(_ORG_POOL)
@@ -1354,6 +1381,7 @@ def _blindfold_content(
     provisional_catchup: bool = False,
     world_acting: bool = False,
     leaf_kind: str = "text",
+    contained_response: bool = False,
 ) -> Any:
     """``leaf_kind`` (issue #399): the retained-leaf display label to use when
     ``content`` is itself a bare string leaf -- "text" for a message's own
@@ -1363,13 +1391,21 @@ def _blindfold_content(
     each block's own :func:`_blindfold_block` dispatch, which derives its
     OWN leaf_kind per block type -- never propagated further down, matching
     ADR-0059 §2's flat, non-nested label shape.
+
+    ``contained_response`` (ADR-0060 amendment, issue #448): the caller's own
+    already-decided verdict -- True when this call is `_blindfold_block`'s
+    recursion into a provider result block's own ``content`` (see
+    :func:`is_contained_response_block`). Passed straight through to every
+    string leaf and every nested block found here, so a candidate anywhere
+    inside a contained response is exempt from novelty minting, however
+    deeply the block type nests its own payload.
     """
     if isinstance(content, str):
         return _blindfold_text(
             content, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
             case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
-            leaf_kind=leaf_kind,
+            leaf_kind=leaf_kind, contained_response=contained_response,
         )
     if isinstance(content, list):
         return [
@@ -1377,6 +1413,7 @@ def _blindfold_content(
                 block, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
                 workspace, phone_candidates_enabled, system_confined_tokens,
                 case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
+                contained_response=contained_response,
             )
             for block in content
         ]
@@ -1419,6 +1456,17 @@ _BLOCK_TYPE_NON_HOP_KEYS: dict[str, frozenset[str]] = {
 
 def _non_hop_keys_for_block_type(block_type: Any) -> frozenset[str]:
     return _BLOCK_NON_HOP_KEYS | _BLOCK_TYPE_NON_HOP_KEYS.get(block_type, frozenset())
+
+
+def non_hop_keys_for_block_type(block_type: Any) -> frozenset[str]:
+    """Public accessor for :func:`_non_hop_keys_for_block_type` (issue #448).
+
+    Lets a caller outside this module -- :mod:`~blindfold.mining`'s own
+    read-only leaf walk, which needs to skip the identical protocol fields
+    :func:`_blindfold_block` itself never treats as prose -- ask the one
+    closed set directly, rather than keeping a second, driftable copy.
+    """
+    return _non_hop_keys_for_block_type(block_type)
 
 
 def non_hop_block_type_fields(block_type: Any) -> frozenset[str]:
@@ -1473,6 +1521,7 @@ def _blindfold_block(
     case_inconsistency: "CaseInconsistencySuppression | None" = None,
     provisional_catchup: bool = False,
     world_acting: bool = False,
+    contained_response: bool = False,
 ) -> Any:
     """Rewrite one content block in place -- deny-by-default over its string leaves.
 
@@ -1496,16 +1545,27 @@ def _blindfold_block(
     type -- including any not yet named -- falls through to the generic walk:
     every key not in :data:`_BLOCK_NON_HOP_KEYS` is a candidate string leaf (or a
     subtree of them), recursed via :func:`_blindfold_block_value`.
+
+    ``contained_response`` (ADR-0060 amendment, issue #448): the caller's own
+    already-decided verdict, carried through from an enclosing contained
+    response's own recursion (see :func:`_blindfold_content`'s own doc). This
+    block's OWN verdict is :func:`is_contained_response_block` against
+    ``hop_ctx.hop_kind`` and this block's ``type`` -- either signal exempts: a
+    block nested inside an already-contained block is contained too, even if
+    its own type alone wouldn't structurally qualify.
     """
     if not isinstance(block, dict):
         return block
     block_type = block.get("type")
+    contained_response = contained_response or is_contained_response_block(
+        hop_ctx.hop_kind if hop_ctx is not None else None, block_type
+    )
     if block_type == "text" and isinstance(block.get("text"), str):
         block["text"] = _blindfold_text(
             block["text"], mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
             case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
-            leaf_kind="text block",
+            leaf_kind="text block", contained_response=contained_response,
         )
         return block
     if block_type in _TOOL_RESULT_BLOCK_TYPES:
@@ -1514,7 +1574,7 @@ def _blindfold_block(
             declared_tools, hop_ctx, workspace, phone_candidates_enabled,
             system_confined_tokens, case_inconsistency,
             provisional_catchup=provisional_catchup, world_acting=world_acting,
-            leaf_kind="tool-result body",
+            leaf_kind="tool-result body", contained_response=contained_response,
         )
         return block
     if block_type in _TOOL_CALL_BLOCK_TYPES:
@@ -1539,6 +1599,7 @@ def _blindfold_block(
             workspace, phone_candidates_enabled, system_confined_tokens,
             case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
             leaf_kind=f"{block_type} block" if isinstance(block_type, str) else "block",
+            contained_response=contained_response,
         )
     return block
 
@@ -1558,6 +1619,7 @@ def _blindfold_block_value(
     provisional_catchup: bool = False,
     world_acting: bool = False,
     leaf_kind: str = "text",
+    contained_response: bool = False,
 ) -> Any:
     """Recursively rewrite every string leaf of a content-block subtree (issue #323).
 
@@ -1574,13 +1636,18 @@ def _blindfold_block_value(
     carried unchanged through every recursive call -- every string leaf found
     anywhere in this subtree shares one flat label (e.g. ``"document
     block"``), matching ADR-0059 §2's flat, non-nested label shape.
+
+    ``contained_response`` (ADR-0060 amendment, issue #448): the enclosing
+    block's own verdict (:func:`_blindfold_block`), carried unchanged through
+    every recursive call -- every string leaf anywhere in this subtree is
+    exempt from novelty minting exactly when the enclosing block is.
     """
     if isinstance(value, str):
         return _blindfold_text(
             value, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
             workspace, phone_candidates_enabled, system_confined_tokens,
             case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
-            leaf_kind=leaf_kind,
+            leaf_kind=leaf_kind, contained_response=contained_response,
         )
     if isinstance(value, dict):
         return {
@@ -1591,7 +1658,7 @@ def _blindfold_block_value(
                     v, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
                     workspace, phone_candidates_enabled, system_confined_tokens,
                     case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
-                    leaf_kind=leaf_kind,
+                    leaf_kind=leaf_kind, contained_response=contained_response,
                 )
             )
             for k, v in value.items()
@@ -1602,7 +1669,7 @@ def _blindfold_block_value(
                 item, mapping, session, l3_detector, inbox, declared_tools, hop_ctx,
                 workspace, phone_candidates_enabled, system_confined_tokens,
                 case_inconsistency, provisional_catchup=provisional_catchup, world_acting=world_acting,
-                leaf_kind=leaf_kind,
+                leaf_kind=leaf_kind, contained_response=contained_response,
             )
             for item in value
         ]
@@ -2427,6 +2494,7 @@ def _blindfold_text(
     provisional_catchup: bool = False,
     world_acting: bool = False,
     leaf_kind: str = "text",
+    contained_response: bool = False,
 ) -> str:
     """Rewrite ``text`` by replacing every L2-detected entity span with its surrogate.
 
@@ -2486,6 +2554,16 @@ def _blindfold_text(
     ``hop_ctx.hop_kind`` (when a hop context is threaded) via
     :func:`_leaf_label`. Cosmetic only, never read for dispatch; unused
     entirely when retention is off.
+
+    ``contained_response`` (ADR-0060 amendment 2026-10-05, decision point 2,
+    issue #448): the caller's own already-decided verdict
+    (:func:`is_contained_response_block`, via :func:`_blindfold_block`) --
+    when ``True``, a candidate L3 confirms in ``text`` is never minted into
+    ``inbox`` (point 2: "not a novelty input"). The deterministic L1/L2/
+    confirmed-component/provisional-pair/containment passes above are
+    entirely unaffected -- a *known* real is still substituted here exactly
+    as on any other leaf. ``False`` (the default) reproduces today's
+    behavior exactly.
     """
     leaf = session._begin_leaf(_leaf_label(hop_ctx, leaf_kind))
     if provisional_catchup:
@@ -2928,6 +3006,20 @@ def _blindfold_text(
             # is the backstop for every OTHER ``.contain()`` call site; this
             # is the first line of defense for THIS one.
             if is_reserved_provisional_surrogate_form(real):
+                continue
+            # ADR-0060 amendment 2026-10-05, decision point 2 (issue #448): a
+            # contained response is not a novelty input. Every word here came
+            # from the provider's own side of the blindfold -- minting it
+            # would write a durable review-inbox row (and advance a pool
+            # cursor) over a referent the provider already holds, poisoning
+            # the workspace for no protection gained (the exact #438 flood
+            # this amendment closes). Left untouched: not minted, not
+            # contained either (containment is for a referent THIS exchange
+            # is about to send out, not one the provider already sent in) --
+            # a KNOWN real here was already substituted by L1/L2/the
+            # confirmed-component/provisional-pair passes above, independent
+            # of this branch and of ``entity_type``.
+            if contained_response:
                 continue
             # ADR-0060 §3 (issue #410): a brand-new person/org referent, first
             # confirmed in THIS world-acting request, must never reach the
