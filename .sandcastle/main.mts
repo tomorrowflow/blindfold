@@ -75,7 +75,8 @@ const MAX_ITERATIONS = 10;
 // After this many strikes the issue is escalated (Sandcastle → ready-for-human)
 // so the loop moves on. Nothing is lost: commits stay on the branch, the strikes
 // stay on the issue as a comment trail, and a human re-adds `Sandcastle` once the
-// scope or the blocker changes. Strike count lives in the issue's comments, so it
+// scope or the blocker changes (strikes count only since the last escalation, so
+// that re-add gets a fresh MAX_GATE_STRIKES). Strike count lives in the issue's comments, so it
 // survives across runs like every other piece of sandcastle state.
 const MAX_GATE_STRIKES = 3;
 
@@ -760,24 +761,46 @@ function issueCommentBodies(id: string): string[] {
 }
 
 const GATE_STRIKE_MARKER = "sandcastle:gate-strike:";
+const ESCALATED_MARKER = "sandcastle:escalated";
 
-// How many times this issue has already been blocked from merge. Counts the
-// strike markers rather than the `sandcastle:blocked:*` ones, which dedupe by
-// FAILING GATE (by design — so a reviewer→platform change of reason still
-// surfaces) and therefore saturate at a handful no matter how long the loop
-// spins. Strikes are numbered, so they accumulate one per blocked cycle.
+// How many times this issue has been escalated to a human so far. Each
+// escalation comment carries ESCALATED_MARKER (round 1 the bare legacy form,
+// later rounds `sandcastle:escalated:<round>`), so the count is the round the
+// issue is currently in once a human re-adds `Sandcastle`.
+function escalationRound(bodies: string[]): number {
+  return bodies.filter((b) => b.includes(ESCALATED_MARKER)).length;
+}
+
+// How many times this issue has been blocked from merge *since its last
+// escalation*. Counts the strike markers rather than the `sandcastle:blocked:*`
+// ones, which dedupe by FAILING GATE (by design — so a reviewer→platform change
+// of reason still surfaces) and therefore saturate at a handful no matter how
+// long the loop spins. Strikes are numbered, so they accumulate one per blocked
+// cycle. Counting only after the last escalation gives a human who re-adds
+// `Sandcastle` (scope or blocker changed) a fresh MAX_GATE_STRIKES, not a single
+// attempt that the old strikes immediately escalate again.
 function gateStrikes(id: string): number {
-  return issueCommentBodies(id).filter((b) => b.includes(GATE_STRIKE_MARKER)).length;
+  const bodies = issueCommentBodies(id);
+  let lastEscalation = -1;
+  bodies.forEach((b, i) => {
+    if (b.includes(ESCALATED_MARKER)) lastEscalation = i;
+  });
+  return bodies.slice(lastEscalation + 1).filter((b) => b.includes(GATE_STRIKE_MARKER)).length;
 }
 
 // Record one strike and return the new total. Numbered marker → `postOnce`
 // dedupes a *replayed* strike (same number, e.g. a re-run of the same cycle)
-// while still letting genuine successive strikes accumulate.
+// while still letting genuine successive strikes accumulate. After an
+// escalation the marker also carries the round (`gate-strike:r<round>-<n>`):
+// `postOnce` dedupes on the marker across the WHOLE comment history, so reusing
+// round 0's `gate-strike:1` would be silently skipped and the count would never
+// advance past 0.
 function recordGateStrike(id: string, branch: string, why: string): number {
   const next = gateStrikes(id) + 1;
+  const round = escalationRound(issueCommentBodies(id));
   postOnce(
     id,
-    `${GATE_STRIKE_MARKER}${next}`,
+    round === 0 ? `${GATE_STRIKE_MARKER}${next}` : `${GATE_STRIKE_MARKER}r${round}-${next}`,
     `⛔ **Gate strike ${next}/${MAX_GATE_STRIKES}** — \`${branch}\` was blocked from merge: ${why}.\n\n` +
       (next < MAX_GATE_STRIKES
         ? `Commits stay on the branch and the next cycle will retry. After ` +
@@ -817,9 +840,12 @@ function escalateToHuman(id: string, branch: string, why: string): void {
   } catch (err) {
     console.warn(`  (issue #${id} escalation label swap failed, continuing: ${err})`);
   }
+  // Round-numbered after the first escalation, for the same postOnce-dedupe
+  // reason as recordGateStrike's markers; escalationRound() counts both forms.
+  const round = escalationRound(issueCommentBodies(id));
   postOnce(
     id,
-    `sandcastle:escalated`,
+    round === 0 ? ESCALATED_MARKER : `${ESCALATED_MARKER}:${round + 1}`,
     `🚦 **Handed to a human after ${MAX_GATE_STRIKES} gate strikes.**\n\n` +
       `Last failure: ${why}.\n\n` +
       `Sandcastle has stopped re-picking this issue: \`Sandcastle\` and \`ready-for-agent\` removed, ` +
