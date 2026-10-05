@@ -143,9 +143,21 @@ hostname is broken the same way (`www.<Two Words>.example`).
    introduced for URL slugs, applied to emails.
 2. **A URL hostname keeps its shape.** A known entity occurring as a hostname label
    (between `://` or `www.` and the TLD, or between dots) is substituted in a
-   **hostname-safe rendering** of its surrogate: lowercased, words joined by `-`, no
-   other characters. Restore reverses it to the original label text. The rendering
-   reuses #440's slug-form machinery. It is not a new pass.
+   **hostname-safe rendering** of its surrogate: words joined by `-`, letters, digits
+   and `-` only. **The rendering mirrors the label's own case convention**: an
+   all-lowercase label gets the all-lowercase surrogate, and any other label gets the
+   surrogate's own casing. Restore reverses it to the original label text, exactly.
+   The rendering reuses #440's slug-form machinery. It is not a new pass.
+
+   *Corrected 2026-10-05 (issue #456, reviewer cycle 1).* The first wording said
+   "lowercased". With one lowercased target per real, two case forms of the same real
+   in one exchange collide on a single surrogate, and restore can't be exact (the
+   winner then depends on hash order). Uppercase letters are valid hostname
+   characters (RFC 1123's letters-digits-hyphen rule) and DNS compares them
+   case-insensitively (RFC 4343), so case-mirroring keeps every rendering a valid
+   hostname and gives each case form its own target. That is the per-form
+   convention #440 already uses for slugs. Rejected: falling back to a non-hostname
+   rendering for the second form, and accepting a lossy restore.
 3. **A hostname is not itself PII.** Only the entity inside it is substituted, which
    keeps the link readable to the model (it still sees that it points at the
    organisation). An email address *is* PII under L1, so it is replaced whole.
