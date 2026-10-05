@@ -203,6 +203,39 @@ test.describe("Processing trace — alice (holds viewer)", () => {
     await expect(systemCard.getByTestId("reveal-btn")).toHaveCount(1); // only the confirmed chip's
     await expect(chip.getByTestId("processing-trace-pending-review-link")).toHaveCount(0);
   });
+
+  // ADR-0060 amendment point 9 (issue #453): out-of-band disclosure of
+  // containment. The seeded "passed" record is also this fixture's own
+  // world-acting exchange (world_acting=True, contained_count=1) -- the
+  // seeded "blocked"/"upstream_error" records are ordinary (world_acting=False).
+  test("only the world-acting row shows the 'ran on a placeholder' badge", async ({
+    alicePage,
+  }) => {
+    await alicePage.goto("/ui/processing-trace");
+    const badges = alicePage.getByTestId("processing-trace-row-containment-badge");
+    await expect(badges).toHaveCount(1);
+    const worldActingRow = alicePage
+      .getByTestId("processing-trace-row")
+      .filter({ has: badges });
+    await expect(worldActingRow.getByTestId("processing-trace-row-outcome")).toContainText(
+      "Passed"
+    );
+  });
+
+  test("the badge carries a one-line explanation and exposes no value", async ({ alicePage }) => {
+    await alicePage.goto("/ui/processing-trace");
+    const badge = alicePage.getByTestId("processing-trace-row-containment-badge");
+    await expect(badge).toHaveText("Ran on a placeholder");
+    await expect(badge).toHaveAttribute(
+      "title",
+      "The search or tool ran on a privacy placeholder instead of a name, which is " +
+        "why results are unrelated or empty."
+    );
+    // Never a real value or a surrogate string -- the badge's own text/title is
+    // fixed, and the seeded row's hop surrogates are untouched by its presence.
+    await expect(badge).not.toContainText(TRACE_HOP_REAL);
+    await expect(badge).not.toContainText(TRACE_HOP_SURROGATE);
+  });
 });
 
 test.describe("Processing trace — dave (curator only, no viewer)", () => {

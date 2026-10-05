@@ -1094,6 +1094,13 @@ def build_app():
         # 118ms was blindfold's own L3 minting, the exact "90% blindfold" shape
         # the issue's own live example reports.
         upstream_duration_ms=15.0,
+        # ADR-0060 amendment point 9 (issue #453): this seeded row is also the
+        # fixture's own world-acting exchange, for the Processing trace view's
+        # "ran on a placeholder" badge -- counts only, no real value or
+        # surrogate string.
+        world_acting=True,
+        contained_count=1,
+        exempted_count=0,
     )
     processing_trace.record(
         workspace=WORKSPACE, endpoint="messages", streamed=False,

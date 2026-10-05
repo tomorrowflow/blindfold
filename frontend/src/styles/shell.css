@@ -720,6 +720,24 @@ body {
   border: 1px solid var(--bf-border);
 }
 
+/* Processing trace: world-acting containment disclosure (ADR-0060 amendment
+   point 9, issue #453) -- a neutral badge, not a warning: containment is the
+   proxy protecting the user, not a fault. */
+.bf-trace-containment-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 8px;
+  padding: 2px 8px;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  white-space: nowrap;
+  background: var(--bf-border-soft);
+  color: #6b7589;
+  border: 1px solid var(--bf-border);
+}
+
 /* Processing trace: inline per-hop expansion (ADR-0035, issue #153). */
 
 .bf-trace-row-clickable {

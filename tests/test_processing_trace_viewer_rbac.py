@@ -117,3 +117,38 @@ async def test_processing_trace_workspace_scoping_hides_other_workspace_records(
         app.dependency_overrides.clear()
 
     assert resp.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_processing_trace_response_exposes_containment_disclosure_fields():
+    # ADR-0060 amendment point 9 (issue #453): the management API exposes the
+    # new fields through this same existing trace listing -- no new endpoint.
+    rbac = RbacRegistry()
+    rbac.grant("alice", "ws-a", "viewer")
+    trace = _trace_with(
+        [
+            dict(
+                workspace="ws-a", endpoint="messages", streamed=False,
+                outcome="passed", detected=0, duration_ms=12.0,
+                world_acting=True, contained_count=2, exempted_count=1,
+            ),
+        ]
+    )
+
+    app.dependency_overrides[get_rbac] = lambda: rbac
+    app.dependency_overrides[get_processing_trace] = lambda: trace
+    try:
+        async with _make_client() as client:
+            resp = await client.get(
+                "/v1/management/processing-trace",
+                params={"workspace": "ws-a"},
+                headers={"x-blindfold-identity": "alice"},
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 200
+    (record,) = resp.json()["records"]
+    assert record["world_acting"] is True
+    assert record["contained_count"] == 2
+    assert record["exempted_count"] == 1

@@ -8,7 +8,7 @@
 
 import { Fragment, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Lock, CheckCircle2, AlertTriangle, CloudOff, ChevronDown } from "../components/icons";
+import { Lock, CheckCircle2, AlertTriangle, CloudOff, ChevronDown, EyeOff } from "../components/icons";
 import { RevealButton } from "../components/RevealButton";
 import { useWorkspace } from "../components/WorkspaceContext";
 import {
@@ -34,6 +34,26 @@ const OUTCOME_META = {
     className: "bf-trace-outcome-pill--upstream-error",
   },
 } as const;
+
+// ADR-0060 amendment point 9 (issue #453): the out-of-band disclosure for a
+// world-acting exchange -- a fixed, value-free explanation, never a real
+// value or a surrogate string (there is nothing per-row to interpolate).
+const CONTAINMENT_BADGE_EXPLANATION =
+  "The search or tool ran on a privacy placeholder instead of a name, which is " +
+  "why results are unrelated or empty.";
+
+function ContainmentBadge() {
+  return (
+    <span
+      className="bf-trace-containment-badge"
+      title={CONTAINMENT_BADGE_EXPLANATION}
+      data-testid="processing-trace-row-containment-badge"
+    >
+      <EyeOff size={12} />
+      Ran on a placeholder
+    </span>
+  );
+}
 
 function formatTime(ts: string): string {
   const date = new Date(ts);
@@ -378,6 +398,7 @@ export function ProcessingTrace() {
                           <Icon size={14} />
                           {meta.label}
                         </span>
+                        {row.world_acting && <ContainmentBadge />}
                       </td>
                       <td className="bf-mono-cell">{formatTime(row.ts)}</td>
                       <td className="bf-mono-cell" data-testid="processing-trace-row-total">

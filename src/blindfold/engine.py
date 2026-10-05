@@ -243,6 +243,14 @@ class ExchangeSession:
         self._workspace = workspace
         self._containment_registry = containment_registry
         self._contained: dict[str, str] = {}
+        # ADR-0060 amendment point 9 (issue #453): how many L3 candidates this
+        # exchange exempted from novelty minting because they were recognised
+        # as coming from a contained response -- the structural rule (#448)
+        # and the candidate-level remembered-n-gram rule (#452) both count,
+        # since both implement the same "not a novelty input" policy (point
+        # 2). Counts only; no real value or surrogate string is ever held
+        # here. Fed into the Processing trace's own ``exempted_count`` field.
+        self._exempted_count = 0
 
     def record(self, surrogate: str, real: str) -> None:
         self.injected[surrogate] = real
@@ -291,6 +299,18 @@ class ExchangeSession:
         already established for an ordinary provisional pair.
         """
         return dict(self._contained)
+
+    def record_exempted(self) -> None:
+        """One more L3 candidate exempted from novelty minting as a contained
+        response (ADR-0060 amendment point 9, issue #453) -- called from the
+        mint-or-contain loop's own two exemption branches in
+        :func:`_blindfold_text`, never computed independently here.
+        """
+        self._exempted_count += 1
+
+    def exempted_count(self) -> int:
+        """This exchange's own count so far (issue #453) -- see :meth:`record_exempted`."""
+        return self._exempted_count
 
     def reset_leaf_walk(self) -> None:
         """Rewind the leaf-visit cursor to the start of a fresh traversal pass
@@ -3296,6 +3316,7 @@ def _blindfold_text(
             # confirmed-component/provisional-pair passes above, independent
             # of this branch and of ``entity_type``.
             if contained_response:
+                session.record_exempted()
                 continue
             # ADR-0060 amendment 2026-10-05, decision points 3/10 (issue
             # #452): the candidate-level half of the same rule, for a client
@@ -3317,6 +3338,7 @@ def _blindfold_text(
                 and contained_response_memory is not None
                 and contained_response_memory.remembers(workspace, real)
             ):
+                session.record_exempted()
                 continue
             # ADR-0060 §3 (issue #410): a brand-new person/org referent, first
             # confirmed in THIS world-acting request, must never reach the
