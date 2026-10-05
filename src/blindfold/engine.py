@@ -2413,7 +2413,10 @@ def _collect_provisional_pair_spans(
 
 
 def _collect_l1_spans(
-    text: str, mapping: SurrogateMapping, exclude: Sequence[tuple[int, int]] = ()
+    text: str,
+    mapping: SurrogateMapping,
+    exclude: Sequence[tuple[int, int]] = (),
+    kinds: frozenset[str] | None = None,
 ) -> list[ReplacementSpan]:
     """Collect L1 deterministic-PII replacement spans against frozen ``text``
     (ADR-0003) -- pure detection (aside from ``mapping.mint_pii``'s unavoidable
@@ -2426,6 +2429,14 @@ def _collect_l1_spans(
     pre-#325 loop's ``if span.value not in result: continue`` guard, which
     relied on that text having already been overwritten.
 
+    ``kinds`` (issue #455), when given, restricts detection to those
+    :class:`~blindfold.detection.PiiSpan` kinds alone -- used by
+    :func:`_blindfold_text`'s own earlier email-claim pass (ADR-0003's
+    2026-10-05 amendment, decision 1) to consult the SAME derivation as this
+    function's own unrestricted call later in the pipeline, just filtered to
+    ``{"email"}`` and run at higher precedence. ``None`` (the default)
+    reproduces today's "every kind" behavior exactly.
+
     ``mapping.mint_pii`` is stable/idempotent per value (surrogates are
     stable), so a value with several surviving occurrences gets the same
     surrogate spliced into every one of them -- one :class:`ReplacementSpan`
@@ -2437,6 +2448,8 @@ def _collect_l1_spans(
     spans: list[ReplacementSpan] = []
     seen_values: set[str] = set()
     for pii_span in detect_pii(text):
+        if kinds is not None and pii_span.kind not in kinds:
+            continue
         if pii_span.value in seen_values:
             continue
         seen_values.add(pii_span.value)
@@ -2594,6 +2607,42 @@ def _blindfold_text(
         else []
     )
     containment_ranges = [(span.start, span.end) for span in containment_spans]
+    # ADR-0003 (2026-10-05 amendment, decision 1; issue #455): an email span
+    # L1's detector matches in the ORIGINAL (frozen, pre-splice) text is an
+    # email -- a structural unit -- and is claimed WHOLE here, before L2 or
+    # any bare-component/slug pass below gets a chance to splice a known
+    # entity's surrogate into its local part or domain. L2 runs case-
+    # insensitively and has no notion of email syntax, so without this an
+    # entity match inside an email (a surname in the local part, an org in
+    # the domain) would be replaced in place: the surrogate's own spaces/
+    # capitals break the address's email shape, L1's own later pass can no
+    # longer recognise it as one email, and the un-substituted remainder
+    # (local-part initials, domain fragments, the TLD) would reach the
+    # provider with no minted real for the leak gate to check against.
+    # Reuses :func:`_collect_l1_spans`'s own ``email``-kind detection -- the
+    # SAME derivation the unrestricted L1 pass further down the pipeline
+    # consults -- at this earlier precedence only; nothing double-mints,
+    # since this pass's claimed ranges are threaded into every later stage's
+    # own ``exclude``, including that later L1 pass's.
+    email_started_at = time.monotonic()
+    email_spans = _collect_l1_spans(
+        text,
+        mapping,
+        exclude=injected_ranges + containment_ranges,
+        kinds=frozenset({"email"}),
+    )
+    if hop_ctx is not None:
+        hop_ctx.l1_duration_ms += (time.monotonic() - email_started_at) * 1000
+    seen_email_values: set[str] = set()
+    for span in email_spans:
+        if span.real in seen_email_values:
+            continue
+        seen_email_values.add(span.real)
+        session.record(span.surrogate, span.real)
+        if hop_ctx is not None:
+            hop_ctx.l1_counts["email"] = hop_ctx.l1_counts.get("email", 0) + 1
+            hop_ctx.surrogates.append(span.surrogate)
+    email_ranges = [(span.start, span.end) for span in email_spans]
     # Issue #325: stages 1 (L2), 1.5 (the provisional-pair pass, ADR-0051) and 2
     # (L1) each *collect* replacement spans against ``text`` -- the untouched,
     # frozen hop text -- instead of mutating a shared accumulator mid-detection.
@@ -2610,7 +2659,7 @@ def _blindfold_text(
     l2_spans = [
         span
         for span in _collect_l2_spans(text, mapping)
-        if not _overlaps_any(span.start, span.end, containment_ranges)
+        if not _overlaps_any(span.start, span.end, containment_ranges + email_ranges)
     ]
     if hop_ctx is not None:
         hop_ctx.l2_count += len(l2_spans)
@@ -2652,7 +2701,7 @@ def _blindfold_text(
         mapping,
         session,
         hop_ctx,
-        exclude=l2_ranges + injected_ranges + containment_ranges,
+        exclude=l2_ranges + injected_ranges + containment_ranges + email_ranges,
         world_acting=world_acting,
     )
     confirmed_slug_ranges = [(span.start, span.end) for span in confirmed_slug_spans]
@@ -2661,7 +2710,11 @@ def _blindfold_text(
         inbox,
         session,
         hop_ctx,
-        exclude=l2_ranges + injected_ranges + containment_ranges + confirmed_slug_ranges,
+        exclude=l2_ranges
+        + injected_ranges
+        + containment_ranges
+        + email_ranges
+        + confirmed_slug_ranges,
         world_acting=world_acting,
     )
     slug_ranges = confirmed_slug_ranges + [
@@ -2680,7 +2733,11 @@ def _blindfold_text(
         mapping,
         session,
         hop_ctx,
-        exclude=l2_ranges + injected_ranges + containment_ranges + slug_ranges,
+        exclude=l2_ranges
+        + injected_ranges
+        + containment_ranges
+        + email_ranges
+        + slug_ranges,
         world_acting=world_acting,
     )
     confirmed_component_ranges = [
@@ -2717,6 +2774,7 @@ def _blindfold_text(
         + confirmed_component_ranges
         + injected_ranges
         + containment_ranges
+        + email_ranges
         + slug_ranges,
         world_acting=world_acting,
     )
@@ -2724,9 +2782,12 @@ def _blindfold_text(
 
     # L1 deterministic PII (ADR-0003): regex over the full text, reserved-
     # namespace surrogates (ADR-0005). Excludes L2 + the confirmed-component pass +
-    # the provisional-pair pass's ranges + the slug passes' ranges (issue #440) so
-    # any entity-graph/provisional/slug match has already won; PII spans cover
-    # what L1 alone is meant to catch.
+    # the provisional-pair pass's ranges + the slug passes' ranges (issue #440) +
+    # the email-claim pass's own ranges (issue #455 -- already minted above, so
+    # this unrestricted pass is left to pick up phone/id/presidio PII only; an
+    # email occurrence here is always already excluded, never re-detected) so
+    # any entity-graph/provisional/slug/email match has already won; PII spans
+    # cover what L1 alone is meant to catch.
     l1_started_at = time.monotonic()
     l1_spans = _collect_l1_spans(
         text,
@@ -2735,6 +2796,7 @@ def _blindfold_text(
         + confirmed_component_ranges
         + pp_ranges
         + containment_ranges
+        + email_ranges
         + slug_ranges,
     )
     if hop_ctx is not None:
@@ -2757,6 +2819,7 @@ def _blindfold_text(
     result = _apply_spans(
         text,
         containment_spans
+        + email_spans
         + l2_spans
         + confirmed_slug_spans
         + provisional_slug_spans
