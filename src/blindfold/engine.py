@@ -4200,7 +4200,11 @@ def _apply_provisional_pairs(
     return _apply_spans(text, spans, leaf=session._current_leaf())
 
 
-def _apply_restore_pass(text: str, restore_map: dict[str, str]) -> str:
+def _apply_restore_pass(
+    text: str,
+    restore_map: dict[str, str],
+    guard_map: dict[str, str] | None = None,
+) -> str:
     """Substitute every key of ``restore_map``, longest key first, in a single
     left-to-right, non-overlapping scan of ``text``.
 
@@ -4216,9 +4220,17 @@ def _apply_restore_pass(text: str, restore_map: dict[str, str]) -> str:
     single scan over the untouched ``text`` makes that structurally impossible:
     at each position we try every key longest-first and advance past whichever
     one matches, so an inserted ``real`` is never re-examined as input.
+
+    issue #441: ``guard_map`` (keyed by the same restore-map key, see
+    :func:`_first_name_guard_map`) withholds a match that would otherwise fire --
+    a first-name component immediately followed by a *different*, capitalised
+    surname-like token names someone else, not the surrogate's own referent. A
+    blocked match falls through to the next candidate key (if any), and
+    eventually to the plain single-character copy below -- it never half-matches.
     """
     if not restore_map:
         return text
+    guard_map = guard_map or {}
     patterns = [
         (real, key, _surrogate_pattern(key))
         for key, real in sorted(restore_map.items(), key=lambda kv: len(kv[0]), reverse=True)
@@ -4229,10 +4241,16 @@ def _apply_restore_pass(text: str, restore_map: dict[str, str]) -> str:
     while i < n:
         for real, key, pattern in patterns:
             match = pattern.match(text, i)
-            if match:
-                pieces.append(real + match.group(0)[len(key):])
-                i = match.end()
-                break
+            if match is None:
+                continue
+            own_surname = guard_map.get(key)
+            if own_surname is not None and _blocked_by_a_different_surname(
+                text, match.end(), own_surname
+            ):
+                continue
+            pieces.append(real + match.group(0)[len(key):])
+            i = match.end()
+            break
         else:
             pieces.append(text[i])
             i += 1
@@ -4313,6 +4331,104 @@ def _component_restore_map(injected: dict[str, str]) -> dict[str, str]:
     return {word: next(iter(targets)) for word, targets in candidates.items() if len(targets) == 1}
 
 
+_FOLLOWING_TOKEN_RE = re.compile(r"\s+(\w[\w'-]*)")
+
+
+def _first_name_guard_map(injected: dict[str, str]) -> dict[str, str]:
+    """Derive the (first-name component -> surrogate's own surname) guard (issue #441).
+
+    ADR-0005 draws every plausible person surrogate from common given names, so a
+    bare first-name component restore key (``_component_restore_map``) is expected
+    to collide with text that names an unrelated person who happens to share that
+    given name. The chosen rule (issue #441's own "at minimum"): a first-name
+    component immediately followed by a capitalised surname-like token that is
+    **not** the surrogate's own surname names someone else, and must be left
+    unrestored at that occurrence. A bare occurrence with nothing, or a
+    lowercase/non-name token, following it is still the surrogate's own referent
+    and restores as before -- this only ever *removes* a restore that would
+    otherwise fire, never adds one.
+
+    Only the first (given-name) position contributes a guard; the surname
+    position has no analogous collision this issue reports. Two pairs
+    disagreeing on which surname backs the same first-name word drop the guard
+    entirely rather than guess, falling back to the existing, already-reviewed
+    unguarded component-restore behavior.
+    """
+    surnames: dict[str, set[str]] = {}
+    for surrogate, real in injected.items():
+        if _is_fallback_surrogate(surrogate):
+            continue
+        surrogate_words = surrogate.split()
+        if len(surrogate_words) < 2:
+            continue
+        first_word = surrogate_words[0]
+        if first_word in _COMPONENT_STOPWORDS:
+            continue
+        if not any(char.isalpha() for char in first_word):
+            continue
+        surnames.setdefault(first_word, set()).add(surrogate_words[-1])
+    return {word: next(iter(own)) for word, own in surnames.items() if len(own) == 1}
+
+
+def _blocked_by_a_different_surname(text: str, pos: int, own_surname: str) -> bool:
+    """True when a capitalised, non-matching surname-like token immediately follows ``pos``.
+
+    issue #441: this is the guard's only check -- a lowercase token (a verb, "Carla
+    said...") or no following token at all means the bare first name still refers
+    to the surrogate's own referent, so this returns ``False`` and restore
+    proceeds unchanged.
+    """
+    match = _FOLLOWING_TOKEN_RE.match(text, pos)
+    if match is None:
+        return False
+    token = match.group(1)
+    return token[0].isupper() and token != own_surname
+
+
+def _first_name_guard_resolution(buffer: str, pos: int) -> tuple[bool, int]:
+    """Whether ``buffer`` holds enough text after ``pos`` to decide
+    :func:`_blocked_by_a_different_surname` there for certain (issue #441, streaming),
+    and -- when it does -- the position the caller must extend its restore window to
+    so a later truncated re-check (:func:`_restore_text` on a prefix of ``buffer``)
+    reaches the identical verdict instead of seeing a shorter following text.
+
+    ``pos`` sits right after a guarded bare first-name component match. The decision
+    depends on whatever token directly follows -- but in a stream, that token can
+    still be mid-flight: a chunk boundary can land in the whitespace run before it
+    (more whitespace, or the token itself, may be in the next chunk) or inside the
+    token itself (more letters may still arrive, which could flip the ``token !=
+    own_surname`` comparison, e.g. "Distel" so far, "Distels" once the rest lands).
+    In either case the buffer alone cannot yet tell ``_blocked_by_a_different_surname``
+    apart from its opposite answer, so this returns ``(False, ...)`` and the caller
+    must hold the match back rather than guess.
+
+    Once a non-whitespace character follows ``pos`` directly, or a following token is
+    itself terminated by a non-word/apostrophe/hyphen character before the buffer
+    ends, the text can never change the verdict with more data, so this returns
+    ``(True, extend_to)``. ``extend_to`` is the exact end of the decisive token --
+    the smallest prefix of ``buffer`` whose own ``_FOLLOWING_TOKEN_RE`` match (run
+    again later, against that truncated prefix) still captures the same token.
+    """
+    n = len(buffer)
+    if pos >= n:
+        return False, pos
+    if not buffer[pos].isspace():
+        return True, pos
+    i = pos
+    while i < n and buffer[i].isspace():
+        i += 1
+    if i >= n:
+        return False, i
+    if not (buffer[i].isalnum() or buffer[i] == "_"):
+        return True, i
+    j = i
+    while j < n and (buffer[j].isalnum() or buffer[j] == "_" or buffer[j] in "'-"):
+        j += 1
+    if j >= n:
+        return False, j
+    return True, j
+
+
 def _restore_text(
     text: str, session: ExchangeSession, world_acting: bool = False
 ) -> str:
@@ -4344,6 +4460,11 @@ def _restore_text(
     the same "never a restore key" treatment the reserved-form guard above
     already gets, applied to the other class point 4 names. ``False`` (the
     default) reproduces today's behavior exactly for every pre-#450 caller.
+
+    issue #441: :func:`_first_name_guard_map` rides along as a third, orthogonal
+    derivation over the same ``session.injected`` -- it never adds a restore key,
+    only withholds a first-name component match that would otherwise fire when a
+    different surname-like token follows it in ``text``.
     """
     injected = session.injected
     if world_acting:
@@ -4358,7 +4479,8 @@ def _restore_text(
         for surrogate, real in injected.items()
         if not is_reserved_provisional_surrogate_form(surrogate)
     )
-    return _apply_restore_pass(text, restore_map)
+    guard_map = _first_name_guard_map(session.injected)
+    return _apply_restore_pass(text, restore_map, guard_map)
 
 
 def _restore_json_value(
@@ -4453,11 +4575,30 @@ class StreamingRestorer:
         substring of its parent surrogate, is already covered by the existing tail
         sizing — but it must be checked here too, or a component split right at the
         boundary is truncated out of the buffer before its remainder arrives.
+
+        issue #441 cycle 2: a guarded bare first-name component (see
+        :func:`_first_name_guard_map`) match ending near ``safe_len`` can have its
+        deciding token — whatever follows it — only partially buffered, or not yet
+        arrived at all. Emitting up to (or past) such a match before the decision is
+        settled is exactly the streaming defect: the text handed to
+        :func:`_restore_text` ends right where the guard would have looked, which
+        reads as "nothing follows" and lets the match through. ``hold_back_at``
+        tracks the earliest such unresolved match's start and, if any was found,
+        caps ``end`` there — the ambiguous match (and anything after it) stays in
+        the buffer for a later ``feed()``/``flush()`` call, once the buffer holds
+        enough to resolve it for certain. A guarded match that's already resolved
+        instead extends ``end`` to :func:`_first_name_guard_resolution`'s own
+        ``extend_to`` -- at least as far as ``match.end()`` as before, and further
+        when needed so the decisive following token is included in what gets handed
+        to :func:`_restore_text`, which re-derives the same guard verdict from that
+        (possibly truncated) text and must see the identical token to reach it.
         """
         end = safe_len
         keys = list(self._session.injected) + list(
             _component_restore_map(self._session.injected)
         )
+        guard_map = _first_name_guard_map(self._session.injected)
+        hold_back_at: int | None = None
         for surrogate in sorted(keys, key=len, reverse=True):
             pattern = _surrogate_pattern(surrogate)
             search_start = 0
@@ -4466,7 +4607,18 @@ class StreamingRestorer:
                 if match is None or match.start() >= safe_len:
                     break
                 end = max(end, match.end())
+                own_surname = guard_map.get(surrogate)
+                if own_surname is not None:
+                    resolved, extend_to = _first_name_guard_resolution(
+                        self._buffer, match.end()
+                    )
+                    if resolved:
+                        end = max(end, extend_to)
+                    elif hold_back_at is None or match.start() < hold_back_at:
+                        hold_back_at = match.start()
                 search_start = match.start() + 1
+        if hold_back_at is not None and hold_back_at < end:
+            end = hold_back_at
         restored = _restore_text(self._buffer[:end], self._session, self._world_acting)
         return restored, end
 
