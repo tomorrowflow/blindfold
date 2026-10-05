@@ -130,6 +130,7 @@ from .reidentify import InMemoryReIdentificationStore, ReIdentificationStore
 from .transit import TransitClient, TransitError
 from .contained_response_memory import ContainedResponseMemory
 from .engine import (
+    ContainmentRegistry,
     DeclaredToolVocabulary,
     ExchangeSession,
     LeakError,
@@ -384,6 +385,17 @@ _declared_tool_vocabulary = DeclaredToolVocabulary()
 # amendment's own accepted, over-protective default). Tests substitute their
 # own via dependency_overrides[get_contained_response_memory].
 _contained_response_memory = ContainedResponseMemory()
+
+# Process-wide, workspace-scoped containment-token registry (ADR-0060
+# amendment point 7, issue #451): remembers every real -> reserved-namespace
+# containment token a workspace's world-acting requests have EVER minted, so
+# the SAME referent keeps the SAME token across exchanges instead of
+# renumbering from zero on every one -- without it, three fan-outs about three
+# different people in one process all see `BFW0000` and the model conflates
+# them. In-memory only, like `_declared_tool_vocabulary` above: no store
+# table, no mapping row, a restart renumbers (accepted). Tests substitute
+# their own via dependency_overrides[get_containment_registry].
+_containment_registry = ContainmentRegistry()
 
 # Process-wide Unprotected-mode state (ADR-0038, issue #180): capability flag +
 # active/bound/expiry timer. Deliberately a singleton scoped to this proxy process
@@ -693,6 +705,10 @@ def get_declared_tool_vocabulary() -> DeclaredToolVocabulary:
 
 def get_contained_response_memory() -> ContainedResponseMemory:
     return _contained_response_memory
+
+
+def get_containment_registry() -> ContainmentRegistry:
+    return _containment_registry
 
 
 def get_audit_log() -> AuditLog:
@@ -2061,6 +2077,7 @@ async def _exchange(
     tool_container: Callable[[dict], object] = messages_tool_container,
     declared_tool_vocabulary: DeclaredToolVocabulary | None = None,
     contained_response_memory: ContainedResponseMemory | None = None,
+    containment_registry: ContainmentRegistry | None = None,
     mint_inbox: Callable[[ReviewInbox], ReviewInbox] = lambda inbox: inbox,
     restore: Callable[[dict, ExchangeSession], dict] | None = None,
     streaming_supported: bool = False,
@@ -2098,6 +2115,12 @@ async def _exchange(
     default), so a measurement call never remembers or consults a contained
     response -- :func:`~blindfold.engine.blindfold_payload`'s own default
     already reproduces "only the structural rule applies" for it.
+
+    ``containment_registry`` (ADR-0060 amendment point 7, issue #451), when
+    supplied, is threaded through to ``blindfold`` below so a world-acting
+    request's containment token is stable for a referent across exchanges
+    rather than renumbered from zero on every one -- see
+    :func:`~blindfold.engine.blindfold_payload`.
 
     ``extract_case_inconsistency_evidence`` (ADR-0023, "Update (issue #342)",
     issue #345) computes the fifth suppression condition's evidence on the
@@ -2190,6 +2213,7 @@ async def _exchange(
                 world_acting=world_acting,
                 retain_rewritten_leaves=retain_rewritten_leaves,
                 contained_response_memory=contained_response_memory,
+                containment_registry=containment_registry,
             ),
             workspace,
             policy.deterministic_only,
@@ -2324,6 +2348,7 @@ async def messages(
     policies: WorkspacePolicies = Depends(get_workspace_policies),
     declared_tool_vocabulary: DeclaredToolVocabulary = Depends(get_declared_tool_vocabulary),
     contained_response_memory: ContainedResponseMemory = Depends(get_contained_response_memory),
+    containment_registry: ContainmentRegistry = Depends(get_containment_registry),
     audit_log: AuditLog = Depends(get_audit_log),
     block_history: BlockHistory = Depends(get_block_history),
     upstream_health: RecentFailureHealth = Depends(get_upstream_health),
@@ -2353,6 +2378,7 @@ async def messages(
         send_upstream=upstream.send_messages,
         declared_tool_vocabulary=declared_tool_vocabulary,
         contained_response_memory=contained_response_memory,
+        containment_registry=containment_registry,
         restore=restore_response,
         streaming_supported=True,
         payload_inspection=payload_inspection,
@@ -2456,6 +2482,7 @@ async def chat_completions(
     l3_detector: L3Detector = Depends(get_l3_detector),
     policies: WorkspacePolicies = Depends(get_workspace_policies),
     declared_tool_vocabulary: DeclaredToolVocabulary = Depends(get_declared_tool_vocabulary),
+    containment_registry: ContainmentRegistry = Depends(get_containment_registry),
     audit_log: AuditLog = Depends(get_audit_log),
     block_history: BlockHistory = Depends(get_block_history),
     upstream_health: RecentFailureHealth = Depends(get_upstream_health),
@@ -2485,6 +2512,7 @@ async def chat_completions(
         tool_container=chat_completions_tool_container,
         send_upstream=upstream.send_chat_completions,
         declared_tool_vocabulary=declared_tool_vocabulary,
+        containment_registry=containment_registry,
         restore=restore_chat_completion,
         reject_stream_request=True,
         payload_inspection=payload_inspection,

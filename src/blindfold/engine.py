@@ -202,7 +202,12 @@ def _hop_kind_for_message(message: dict[str, Any]) -> str:
 class ExchangeSession:
     """Records the surrogates injected for a single exchange (for closed-world restore)."""
 
-    def __init__(self, retain_rewritten_leaves: bool = False) -> None:
+    def __init__(
+        self,
+        retain_rewritten_leaves: bool = False,
+        workspace: str = DEFAULT_WORKSPACE,
+        containment_registry: "ContainmentRegistry | None" = None,
+    ) -> None:
         self.injected: dict[str, str] = {}  # surrogate -> real
         self.hops: list[HopDetail] = []  # scrubbed per-hop detail (ADR-0035, issue #153)
         # ADR-0059 §3-§4 (issue #399): Payload inspection's armed-only span
@@ -226,7 +231,17 @@ class ExchangeSession:
         # `injected` too (via the caller's own `session.record`, same as every
         # other surrogate) so hop/leak-gate bookkeeping sees it, but this dict is
         # what makes repeat lookups for the SAME real, across every hop of this
-        # request, return the SAME token.
+        # request, return the SAME token. Issue #451 (ADR-0060 amendment point
+        # 7): also the fallback numbering source when no `containment_registry`
+        # is supplied (every pre-#451 caller, and any test constructing a bare
+        # `ExchangeSession()`), reproducing the old per-exchange-only behavior
+        # exactly. When a registry IS supplied, this dict instead mirrors (a
+        # subset of) the registry's own state -- this exchange's own view of
+        # it -- so `contained_reals()` below still answers "every real THIS
+        # exchange has contained so far" without consulting other workspaces'
+        # or other exchanges' entries.
+        self._workspace = workspace
+        self._containment_registry = containment_registry
         self._contained: dict[str, str] = {}
 
     def record(self, surrogate: str, real: str) -> None:
@@ -236,9 +251,14 @@ class ExchangeSession:
         """Mint-or-reuse this exchange's ADR-0060 §3 containment token for ``real``.
 
         Never touches `SurrogateMapping`/`ReviewInbox` -- draws straight from the
-        reserved namespace (:func:`~blindfold.store._mint.containment_surrogate`),
-        positions starting fresh at 0 for every exchange (no durable cursor to
-        advance, matching ADR-0060 §3's "additive and non-durable").
+        reserved namespace (:func:`~blindfold.store._mint.containment_surrogate`).
+        Without a ``containment_registry`` (this session's default), positions
+        start fresh at 0 for every exchange, matching ADR-0060 §3's original
+        "additive and non-durable" shape. With one (issue #451, ADR-0060
+        amendment point 7 -- the shape every real exchange is wired with, see
+        ``blindfold_payload``/``blindfold_chat_completions_payload``), the SAME
+        referent keeps the SAME token across every exchange in this process:
+        the registry, not this dict, is the numbering source of record.
 
         ADR-0060 amendment point 6 (issue #447) backstop: fails closed
         (:class:`~blindfold.l3.L3DetectionInternalError`, ADR-0009) if ``real``
@@ -254,10 +274,13 @@ class ExchangeSession:
                 "contain() was handed a value of reserved form -- a "
                 "reserved-form string must never be contained"
             )
-        token = self._contained.get(real)
-        if token is None:
-            token = containment_surrogate(len(self._contained))
-            self._contained[real] = token
+        if self._containment_registry is not None:
+            token = self._containment_registry.contain(self._workspace, real)
+        else:
+            token = self._contained.get(real)
+            if token is None:
+                token = containment_surrogate(len(self._contained))
+        self._contained[real] = token
         return token
 
     def contained_reals(self) -> dict[str, str]:
@@ -408,6 +431,7 @@ def blindfold_payload(
     world_acting: bool = False,
     retain_rewritten_leaves: bool = False,
     contained_response_memory: "ContainedResponseMemory | None" = None,
+    containment_registry: "ContainmentRegistry | None" = None,
 ) -> tuple[dict[str, Any], ExchangeSession]:
     """Return a blindfolded copy of an Anthropic Messages ``payload`` plus the session.
 
@@ -489,8 +513,20 @@ def blindfold_payload(
     fans a world-acting request out and relays its results back with every
     structural signal stripped. ``None`` (the default) reproduces today's
     behavior exactly: only the structural rule (#448) applies.
+
+    ``containment_registry`` (ADR-0060 amendment point 7, issue #451), when
+    supplied, promotes that per-exchange containment token map to the
+    PROCESS's own lifetime, scoped per ``workspace`` -- the same referent then
+    keeps the same token across every exchange, never just within one. ``None``
+    (this function's own default) reproduces #410's original per-exchange-only
+    numbering; the app boundary (``app.py``'s ``_exchange``) always supplies
+    one for a real inference exchange.
     """
-    session = ExchangeSession(retain_rewritten_leaves=retain_rewritten_leaves)
+    session = ExchangeSession(
+        retain_rewritten_leaves=retain_rewritten_leaves,
+        workspace=workspace,
+        containment_registry=containment_registry,
+    )
     out = copy.deepcopy(payload)
     l3_provider = l3_detector.provider_name if l3_detector is not None else None
     inbox = _replay_inbox(l3_detector, inbox)
@@ -608,6 +644,7 @@ def blindfold_chat_completions_payload(
     world_acting: bool = False,
     retain_rewritten_leaves: bool = False,
     contained_response_memory: "ContainedResponseMemory | None" = None,
+    containment_registry: "ContainmentRegistry | None" = None,
 ) -> tuple[dict[str, Any], ExchangeSession]:
     """Return a blindfolded copy of an OpenAI Chat Completions ``payload`` plus the session.
 
@@ -642,8 +679,15 @@ def blindfold_chat_completions_payload(
     rule's first condition structurally never holds here -- threaded through
     for signature parity with :func:`blindfold_payload`, not because this
     shape is this issue's target.
+
+    ``containment_registry`` (ADR-0060 amendment point 7, issue #451) — see
+    :func:`blindfold_payload`.
     """
-    session = ExchangeSession(retain_rewritten_leaves=retain_rewritten_leaves)
+    session = ExchangeSession(
+        retain_rewritten_leaves=retain_rewritten_leaves,
+        workspace=workspace,
+        containment_registry=containment_registry,
+    )
     out = copy.deepcopy(payload)
     l3_provider = l3_detector.provider_name if l3_detector is not None else None
     inbox = _replay_inbox(l3_detector, inbox)
@@ -1201,6 +1245,53 @@ def is_world_acting_request_chat_completions(payload: dict[str, Any]) -> bool:
         return isinstance(function, dict) and "parameters" in function
 
     return _is_world_acting_request(payload, _has_schema)
+
+
+class ContainmentRegistry:
+    """Workspace-scoped, process-lifetime registry of every ADR-0060 §3
+    containment token minted so far (ADR-0060 amendment point 7, issue #451).
+
+    Today's ``ExchangeSession._contained`` map lives only as long as one
+    exchange, so numbering restarts at 0 on every world-acting request: across
+    three fan-outs about three different referents, the main conversation
+    sees one token (``BFW0000``) for all three, and the model conflates them.
+    This registry gives the real -> token map the PROCESS's own lifetime
+    instead, the same promotion :class:`DeclaredToolVocabulary` already made
+    for declared-tool names (issue #302) -- in-process only, never persisted:
+    no store table, no mapping row, no pool cursor. A restart renumbers from
+    zero; that is accepted (ADR-0060 §3's "additive and non-durable" already
+    covers this).
+
+    Scoped per workspace so two workspaces never share numbering state,
+    mirroring :class:`DeclaredToolVocabulary`'s own per-workspace dict.
+    """
+
+    def __init__(self) -> None:
+        self._by_workspace: dict[str, dict[str, str]] = {}
+        # Mirrors DeclaredToolVocabulary's own lock (issue #312): `contain`
+        # runs from the mint pass's `run_in_threadpool` worker, a real OS
+        # thread, same as every other process-wide mint-state seam.
+        self._lock = threading.Lock()
+
+    def contain(self, workspace: str, real: str) -> str:
+        """Mint-or-reuse ``workspace``'s containment token for ``real``.
+
+        Mirrors :meth:`ExchangeSession.contain` exactly, except the map
+        backing it outlives a single exchange -- the SAME referent gets the
+        SAME token on every later call, for the life of this registry.
+        """
+        if is_reserved_provisional_surrogate_form(real):
+            raise L3DetectionInternalError(
+                "contain() was handed a value of reserved form -- a "
+                "reserved-form string must never be contained"
+            )
+        with self._lock:
+            contained = self._by_workspace.setdefault(workspace, {})
+            token = contained.get(real)
+            if token is None:
+                token = containment_surrogate(len(contained))
+                contained[real] = token
+            return token
 
 
 class DeclaredToolVocabulary:
@@ -2056,31 +2147,38 @@ def _collect_containment_spans(
     provisional-pair pass. Additive and non-durable throughout
     (:meth:`ExchangeSession.contain`): neither ``mapping`` nor ``inbox`` is
     ever written here.
+
+    Issue #451: :meth:`ExchangeSession.contain` is only called for a candidate
+    ONCE an actual occurrence in ``text`` is confirmed, never while merely
+    building the candidate set, so this pass never registers a referent the
+    hop does not mention. The slug/component/provisional-pair passes still
+    contain eagerly per candidate, so a workspace's numbering under a
+    ``containment_registry`` (ADR-0060 amendment point 7) can still include
+    referents its own traffic never named -- harmless to stability and
+    uniqueness (each workspace keeps its own map), but not "numbered in order
+    of first mention".
     """
-    candidates: dict[str, str] = dict(session.contained_reals())
+    owners: dict[str, str] = {real: real for real in session.contained_reals()}
     for entity in mapping.entities():
         if not _is_plausible_named_surrogate(entity.surrogate):
             continue
-        token = session.contain(entity.canonical)
-        candidates.setdefault(entity.canonical, token)
+        owners.setdefault(entity.canonical, entity.canonical)
         for variation in entity.variations:
-            candidates.setdefault(variation, token)
+            owners.setdefault(variation, entity.canonical)
     if inbox is not None:
         for item in inbox.list():
             if not _is_plausible_named_surrogate(item.provisional_surrogate):
                 continue
-            token = session.contain(item.real)
-            candidates.setdefault(item.real, token)
+            owners.setdefault(item.real, item.real)
             for variation in item.variations:
-                candidates.setdefault(variation, token)
-    if not candidates:
+                owners.setdefault(variation, item.real)
+    if not owners:
         return []
     claimed = list(exclude)
     spans: list[ReplacementSpan] = []
-    for value in sorted(candidates, key=len, reverse=True):
+    for value in sorted(owners, key=len, reverse=True):
         if not value:
             continue
-        token = candidates[value]
         occurrences = [
             (match.start(), match.end())
             for match in _real_value_pattern(value).finditer(text)
@@ -2088,6 +2186,7 @@ def _collect_containment_spans(
         ]
         if not occurrences:
             continue
+        token = session.contain(owners[value])
         claimed.extend(occurrences)
         session.record(token, value)
         if hop_ctx is not None:
