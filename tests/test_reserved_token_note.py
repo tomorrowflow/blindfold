@@ -812,6 +812,66 @@ async def test_the_note_gate_block_carries_the_standard_leak_detected_taxonomy_a
 
 
 @pytest.mark.anyio
+async def test_a_note_gate_block_is_retained_as_never_sent():
+    # ADR-0059 section 4: a blocked exchange is retained marked blocked. The note
+    # gate runs before retention, so its block must not be retained as "sent".
+    import httpx
+
+    from blindfold.app import (
+        app,
+        get_l3_detector,
+        get_mapping,
+        get_payload_inspection,
+        get_review_inbox,
+        get_rewritten_leaf_store,
+        get_upstream_client,
+    )
+    from blindfold.payload_inspection import PayloadInspection
+    from blindfold.rewritten_leaves import RewrittenLeafStore
+    from blindfold.upstream import UpstreamClient
+
+    mapping = SurrogateMapping()
+    mapping.seed("Elena Voss", "Bernhard Vogt")
+    mapping.seed("protection", "Quillfeather")
+    inspection = PayloadInspection()
+    inspection.arm()
+    store = RewrittenLeafStore()
+    payload = {
+        "model": "claude-3-5-sonnet",
+        "tools": [{"name": "web_search_20250101"}],
+        "messages": [{"role": "user", "content": "Please search for Elena Voss"}],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("a blocked request must never reach the upstream")
+
+    client = httpx.AsyncClient(
+        base_url="http://upstream.test", transport=httpx.MockTransport(handler)
+    )
+    stub = UpstreamClient(base_url="http://upstream.test", client=client)
+    app.dependency_overrides[get_upstream_client] = lambda: stub
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_review_inbox] = lambda: ReviewInbox()
+    app.dependency_overrides[get_l3_detector] = lambda: L3Detector(
+        _ConfirmCapitalizedAsPerson()
+    )
+    app.dependency_overrides[get_payload_inspection] = lambda: inspection
+    app.dependency_overrides[get_rewritten_leaf_store] = lambda: store
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as proxy_client:
+            resp = await proxy_client.post("/v1/messages", json=payload)
+    finally:
+        app.dependency_overrides.clear()
+
+    assert resp.status_code == 503
+    (exchange,) = store.for_workspace("default")
+    assert exchange.blocked is True
+
+
+@pytest.mark.anyio
 async def test_chat_completions_a_mapped_real_equal_to_a_word_of_the_note_blocks_the_request():
     mapping = SurrogateMapping()
     mapping.seed("Elena Voss", "Bernhard Vogt")

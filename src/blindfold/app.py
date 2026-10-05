@@ -2319,6 +2319,12 @@ async def _exchange(
             blinded, mapping, workspace, audit_log, block_history, inbox, session,
             tool_container,
         )
+        if block is None:
+            # ADR-0060 point 8 (issue #458): gated BEFORE retention so a note-gate
+            # block is retained as "never sent" like any other leak block.
+            block = _reserved_token_note_gate_or_block(
+                blinded, session, mapping, workspace, audit_log, block_history, inbox
+            )
         if retain_rewritten_leaves and rewritten_leaf_store is not None:
             # ADR-0059 §4: a blocked exchange is retained too, marked "never
             # sent" -- the blindfolded payload was fully constructed (the
@@ -2344,19 +2350,6 @@ async def _exchange(
         # ADR-0060 amendment decision 8 (issue #449): appended onto `blinded`
         # only now -- `leak_gate` above has already inspected this exact dict
         # and passed. See `append_reserved_token_note`'s own parameter doc.
-        note_block = _reserved_token_note_gate_or_block(
-            blinded, session, mapping, workspace, audit_log, block_history, inbox
-        )
-        if note_block is not None:
-            _record_trace(
-                trace, workspace, endpoint, streamed, OUTCOME_BLOCKED,
-                len(session.injected), start, reason=_block_reason(note_block),
-                session=session,
-                unlisted_forwarded_headers=unlisted_forwarded_headers,
-                exchange_id=exchange_id,
-                world_acting=world_acting,
-            )
-            return note_block
         append_reserved_token_note(blinded, session)
 
     if streamed:
