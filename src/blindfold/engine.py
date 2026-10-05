@@ -238,7 +238,21 @@ class ExchangeSession:
         reserved namespace (:func:`~blindfold.store._mint.containment_surrogate`),
         positions starting fresh at 0 for every exchange (no durable cursor to
         advance, matching ADR-0060 §3's "additive and non-durable").
+
+        ADR-0060 amendment point 6 (issue #447) backstop: fails closed
+        (:class:`~blindfold.l3.L3DetectionInternalError`, ADR-0009) if ``real``
+        is itself of reserved form (:func:`~blindfold.store._mint.is_reserved_provisional_surrogate_form`)
+        -- a Blindfold-internal invariant violation, not a real value, so the
+        scrubbed message never echoes ``real``. Every caller is expected to
+        have already filtered a reserved-form candidate out before reaching
+        here (the mint loop's own L3-candidate-filtering check); this is the
+        last-resort backstop for any caller that didn't.
         """
+        if is_reserved_provisional_surrogate_form(real):
+            raise L3DetectionInternalError(
+                "contain() was handed a value of reserved form -- a "
+                "reserved-form string must never be contained"
+            )
         token = self._contained.get(real)
         if token is None:
             token = containment_surrogate(len(self._contained))
@@ -2900,6 +2914,21 @@ def _blindfold_text(
             adjudicator,
             suppression_trace,
         ) in group_infos:
+            # ADR-0060 amendment point 6 (issue #447): a reserved-form ``real``
+            # (ADR-0052's closed syntactic class, any prefix including the
+            # containment prefix) is dropped here, before either branch below
+            # gets a chance to mint or contain it -- the same role
+            # ``select_phone_candidate_spans``'s own ``is_reserved_phone_range``
+            # check already plays for the reserved PHONE range, one L3
+            # candidate-filtering step earlier. A graceful skip, not a block:
+            # the literal text is already untouched in ``result`` (nothing
+            # spliced it), so leaving it off ``spans`` entirely is exactly
+            # "reaches the provider unchanged, no second reserved token issued
+            # for it". ``ExchangeSession.contain``'s own reserved-form check
+            # is the backstop for every OTHER ``.contain()`` call site; this
+            # is the first line of defense for THIS one.
+            if is_reserved_provisional_surrogate_form(real):
+                continue
             # ADR-0060 §3 (issue #410): a brand-new person/org referent, first
             # confirmed in THIS world-acting request, must never reach the
             # review inbox at all -- ``inbox.upsert`` below would write a
