@@ -8,6 +8,8 @@ Closed-world (ADR-0006): only surrogates injected for this exchange are reversed
 coincidental surrogate-shaped token the provider emitted is left untouched.
 """
 
+import pytest
+
 from blindfold.engine import ExchangeSession, StreamingRestorer
 
 
@@ -102,6 +104,57 @@ def test_streaming_restore_reassembles_a_surrogate_component_split_across_chunks
     joined = "".join(emitted)
     assert joined == "Well then, Sarah is here!!!"
     assert "Carla" not in joined
+
+
+@pytest.mark.parametrize("chunk_size", range(1, 16))
+def test_streaming_restore_withholds_a_bare_first_name_followed_by_a_different_surname(
+    chunk_size,
+):
+    # issue #441 cycle 2 regression: the non-streaming guard (#441's own fix)
+    # withholds "Carla Fischer" (a stranger sharing the seeded person's
+    # surrogate first name) from restoring to "Sarah Fischer" -- but
+    # StreamingRestorer._restore_prefix could cut the safe prefix right after
+    # the bare first-name match, before the following surname had fully
+    # arrived in the buffer. At that instant the guard saw no following token
+    # at all and let the match straight through, splicing the real referent's
+    # first name onto the stranger's surname one chunk early. Every chunk size
+    # must reproduce the non-streaming (whole-text) outcome: unchanged text.
+    session = _session_with({"Carla Distel": "Sarah Bergmann"})
+    restorer = StreamingRestorer(session)
+    text = (
+        "Die Physikerin Carla Fischer ist eine bekannte Forscherin aus "
+        "Berlin und lehrt dort."
+    )
+
+    out = []
+    for i in range(0, len(text), chunk_size):
+        out.append(restorer.feed(text[i : i + chunk_size]))
+    out.append(restorer.flush())
+    joined = "".join(out)
+
+    assert joined == text
+    assert "Sarah Fischer" not in joined
+
+
+@pytest.mark.parametrize("chunk_size", range(1, 16))
+def test_streaming_restore_still_restores_the_referent_despite_the_441_guard(
+    chunk_size,
+):
+    # The streaming hold-back introduced for the test above must not regress
+    # the legitimate case it protects: a bare first name with no following
+    # surname at all is still the surrogate's own referent and must still
+    # restore, at every chunk size.
+    session = _session_with({"Carla Distel": "Sarah Bergmann"})
+    restorer = StreamingRestorer(session)
+    text = "Carla called the office this morning to say she'd be late."
+
+    out = []
+    for i in range(0, len(text), chunk_size):
+        out.append(restorer.feed(text[i : i + chunk_size]))
+    out.append(restorer.flush())
+    joined = "".join(out)
+
+    assert joined == "Sarah called the office this morning to say she'd be late."
 
 
 def test_streaming_restore_is_closed_world_for_coincidental_lookalikes():

@@ -3819,6 +3819,50 @@ def _blocked_by_a_different_surname(text: str, pos: int, own_surname: str) -> bo
     return token[0].isupper() and token != own_surname
 
 
+def _first_name_guard_resolution(buffer: str, pos: int) -> tuple[bool, int]:
+    """Whether ``buffer`` holds enough text after ``pos`` to decide
+    :func:`_blocked_by_a_different_surname` there for certain (issue #441, streaming),
+    and -- when it does -- the position the caller must extend its restore window to
+    so a later truncated re-check (:func:`_restore_text` on a prefix of ``buffer``)
+    reaches the identical verdict instead of seeing a shorter following text.
+
+    ``pos`` sits right after a guarded bare first-name component match. The decision
+    depends on whatever token directly follows -- but in a stream, that token can
+    still be mid-flight: a chunk boundary can land in the whitespace run before it
+    (more whitespace, or the token itself, may be in the next chunk) or inside the
+    token itself (more letters may still arrive, which could flip the ``token !=
+    own_surname`` comparison, e.g. "Distel" so far, "Distels" once the rest lands).
+    In either case the buffer alone cannot yet tell ``_blocked_by_a_different_surname``
+    apart from its opposite answer, so this returns ``(False, ...)`` and the caller
+    must hold the match back rather than guess.
+
+    Once a non-whitespace character follows ``pos`` directly, or a following token is
+    itself terminated by a non-word/apostrophe/hyphen character before the buffer
+    ends, the text can never change the verdict with more data, so this returns
+    ``(True, extend_to)``. ``extend_to`` is the exact end of the decisive token --
+    the smallest prefix of ``buffer`` whose own ``_FOLLOWING_TOKEN_RE`` match (run
+    again later, against that truncated prefix) still captures the same token.
+    """
+    n = len(buffer)
+    if pos >= n:
+        return False, pos
+    if not buffer[pos].isspace():
+        return True, pos
+    i = pos
+    while i < n and buffer[i].isspace():
+        i += 1
+    if i >= n:
+        return False, i
+    if not (buffer[i].isalnum() or buffer[i] == "_"):
+        return True, i
+    j = i
+    while j < n and (buffer[j].isalnum() or buffer[j] == "_" or buffer[j] in "'-"):
+        j += 1
+    if j >= n:
+        return False, j
+    return True, j
+
+
 def _restore_text(text: str, session: ExchangeSession) -> str:
     """Restore both passes (ADR-0036) in one combined, single-scan call (issue #304).
 
@@ -3935,11 +3979,30 @@ class StreamingRestorer:
         substring of its parent surrogate, is already covered by the existing tail
         sizing — but it must be checked here too, or a component split right at the
         boundary is truncated out of the buffer before its remainder arrives.
+
+        issue #441 cycle 2: a guarded bare first-name component (see
+        :func:`_first_name_guard_map`) match ending near ``safe_len`` can have its
+        deciding token — whatever follows it — only partially buffered, or not yet
+        arrived at all. Emitting up to (or past) such a match before the decision is
+        settled is exactly the streaming defect: the text handed to
+        :func:`_restore_text` ends right where the guard would have looked, which
+        reads as "nothing follows" and lets the match through. ``hold_back_at``
+        tracks the earliest such unresolved match's start and, if any was found,
+        caps ``end`` there — the ambiguous match (and anything after it) stays in
+        the buffer for a later ``feed()``/``flush()`` call, once the buffer holds
+        enough to resolve it for certain. A guarded match that's already resolved
+        instead extends ``end`` to :func:`_first_name_guard_resolution`'s own
+        ``extend_to`` -- at least as far as ``match.end()`` as before, and further
+        when needed so the decisive following token is included in what gets handed
+        to :func:`_restore_text`, which re-derives the same guard verdict from that
+        (possibly truncated) text and must see the identical token to reach it.
         """
         end = safe_len
         keys = list(self._session.injected) + list(
             _component_restore_map(self._session.injected)
         )
+        guard_map = _first_name_guard_map(self._session.injected)
+        hold_back_at: int | None = None
         for surrogate in sorted(keys, key=len, reverse=True):
             pattern = _surrogate_pattern(surrogate)
             search_start = 0
@@ -3948,7 +4011,18 @@ class StreamingRestorer:
                 if match is None or match.start() >= safe_len:
                     break
                 end = max(end, match.end())
+                own_surname = guard_map.get(surrogate)
+                if own_surname is not None:
+                    resolved, extend_to = _first_name_guard_resolution(
+                        self._buffer, match.end()
+                    )
+                    if resolved:
+                        end = max(end, extend_to)
+                    elif hold_back_at is None or match.start() < hold_back_at:
+                        hold_back_at = match.start()
                 search_start = match.start() + 1
+        if hold_back_at is not None and hold_back_at < end:
+            end = hold_back_at
         restored = _restore_text(self._buffer[:end], self._session)
         return restored, end
 
