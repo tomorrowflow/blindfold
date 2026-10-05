@@ -88,6 +88,8 @@ logger = logging.getLogger(__name__)
 # `leak_gate` has already run (and raised or passed) on the note-free
 # `blinded` payload -- so the gate's mirror walk can never observe the note's
 # own leaf, for any of the three "adds a new leaf" shapes, by construction.
+# The note itself is gate-checked separately (issue #458): a mapped real equal
+# to a word of this sentence fails closed (`app._reserved_token_note_gate_or_block`).
 RESERVED_TOKEN_NOTE = (
     "Some identifiers above are privacy placeholders the user's privacy gateway "
     "substituted for a name. They are opaque: they cannot be searched for or "
@@ -638,7 +640,7 @@ def blindfold_payload(
     return out, session
 
 
-def _any_reserved_token_present(out: dict[str, Any], session: ExchangeSession) -> bool:
+def reserved_token_note_applies(out: dict[str, Any], session: ExchangeSession) -> bool:
     """True if a reserved-form token (ADR-0060 amendment, decision 8) is present
     in this outbound exchange -- either because THIS exchange injected one (a
     containment token or a pool-exhaustion fallback alike, both minted through
@@ -707,7 +709,7 @@ def append_reserved_token_note_messages(out: dict[str, Any], session: ExchangeSe
     detection and the gate's leaf-position pairing never see the note at all,
     and it can never be minted.
     """
-    if not _any_reserved_token_present(out, session):
+    if not reserved_token_note_applies(out, session):
         return
     system = out.get("system")
     if system is None:
@@ -729,7 +731,7 @@ def append_reserved_token_note_chat_completions(
     appended to the LAST one, or a new one is inserted at the front of
     ``messages`` when the request declared none.
     """
-    if not _any_reserved_token_present(out, session):
+    if not reserved_token_note_applies(out, session):
         return
     messages = out.get("messages")
     if not isinstance(messages, list):

@@ -726,3 +726,127 @@ def test_leak_gate_catches_a_genuine_miss_the_notes_own_new_leaf_would_have_mask
 
     with pytest.raises(LeakError):
         leak_gate(blinded, mapping, None, session)
+
+
+# ---- issue #458 (re-file of #449): the note is gate-checked before it is appended ----
+
+
+@pytest.mark.anyio
+async def test_a_mapped_real_equal_to_a_word_of_the_note_blocks_the_request_instead_of_forwarding_it():
+    # ADR-0060 amendment point 8: "the leak gate does" scan the note. A mapped
+    # real that is one word of the note's fixed sentence must fail closed --
+    # forwarded neither with the note nor without it.
+    mapping = SurrogateMapping()
+    mapping.seed("Elena Voss", "Bernhard Vogt")
+    mapping.seed("protection", "Quillfeather")
+    payload = {
+        "model": "claude-3-5-sonnet",
+        "system": "You are a helpful assistant.",
+        "tools": [{"name": "web_search_20250101"}],
+        "messages": [{"role": "user", "content": "Please search for Elena Voss"}],
+    }
+
+    status, recorded = await _post_and_capture(payload, mapping)
+
+    assert status == 503
+    assert recorded == []
+
+
+async def _post_blocked_body(payload: dict, mapping: SurrogateMapping, path: str) -> dict:
+    import httpx
+
+    from blindfold.app import (
+        app,
+        get_l3_detector,
+        get_mapping,
+        get_openai_upstream_client,
+        get_review_inbox,
+        get_upstream_client,
+    )
+    from blindfold.upstream import UpstreamClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("a blocked request must never reach the upstream")
+
+    client = httpx.AsyncClient(
+        base_url="http://upstream.test", transport=httpx.MockTransport(handler)
+    )
+    stub = UpstreamClient(base_url="http://upstream.test", client=client)
+    app.dependency_overrides[get_upstream_client] = lambda: stub
+    app.dependency_overrides[get_openai_upstream_client] = lambda: stub
+    app.dependency_overrides[get_mapping] = lambda: mapping
+    app.dependency_overrides[get_review_inbox] = lambda: ReviewInbox()
+    app.dependency_overrides[get_l3_detector] = lambda: L3Detector(
+        _ConfirmCapitalizedAsPerson()
+    )
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://proxy.test"
+        ) as proxy_client:
+            resp = await proxy_client.post(path, json=payload)
+    finally:
+        app.dependency_overrides.clear()
+    assert resp.status_code == 503
+    return resp.json()
+
+
+@pytest.mark.anyio
+async def test_the_note_gate_block_carries_the_standard_leak_detected_taxonomy_and_no_real_value():
+    mapping = SurrogateMapping()
+    mapping.seed("Elena Voss", "Bernhard Vogt")
+    mapping.seed("protection", "Quillfeather")
+    payload = {
+        "model": "claude-3-5-sonnet",
+        "tools": [{"name": "web_search_20250101"}],
+        "messages": [{"role": "user", "content": "Please search for Elena Voss"}],
+    }
+
+    body = await _post_blocked_body(payload, mapping, "/v1/messages")
+
+    error = body["error"]
+    assert error["code"] == "blindfold_fail_closed"
+    assert error["sub_reason"] == "leak_detected"
+    assert "protection" not in error["reason"]
+    assert "Elena Voss" not in str(body)
+
+
+@pytest.mark.anyio
+async def test_chat_completions_a_mapped_real_equal_to_a_word_of_the_note_blocks_the_request():
+    mapping = SurrogateMapping()
+    mapping.seed("Elena Voss", "Bernhard Vogt")
+    mapping.seed("protection", "Quillfeather")
+    payload = {
+        "model": "m",
+        "tools": [{"type": "function", "function": {"name": "web_search"}}],
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Please search for Elena Voss"},
+        ],
+    }
+
+    body = await _post_blocked_body(payload, mapping, "/v1/chat/completions")
+
+    assert body["error"]["sub_reason"] == "leak_detected"
+
+
+@pytest.mark.anyio
+async def test_a_request_without_a_reserved_token_is_unaffected_by_a_mapped_note_word():
+    # No reserved-form token -> no note -> no extra pass: a mapping whose real
+    # equals a note word must not block (or alter) a request that never carries it.
+    mapping = SurrogateMapping()
+    mapping.seed("protection", "Quillfeather")
+    payload = {
+        "model": "claude-3-5-sonnet",
+        "system": "You are a helpful assistant.",
+        "messages": [{"role": "user", "content": "Hello there"}],
+    }
+
+    status, recorded = await _post_and_capture(payload, mapping)
+
+    assert status == 200
+    import json
+
+    sent = json.loads(recorded[0].content)
+    assert sent["system"] == "You are a helpful assistant."
+    assert RESERVED_TOKEN_NOTE not in recorded[0].content.decode()
